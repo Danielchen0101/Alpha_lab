@@ -1,400 +1,111 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { Form, Input, Button, Typography, Alert } from 'antd';
-import { LockOutlined, ArrowLeftOutlined, SafetyCertificateOutlined, SafetyOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
+import React, { useEffect, useState } from 'react';
+import { Alert, Button, Form, Input, Typography } from 'antd';
+import { ArrowLeftOutlined, LockOutlined } from '@ant-design/icons';
+import { Link } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 import { useLanguage } from '../contexts/LanguageContext';
+import '../styles/Auth.css';
 
 const { Title, Text } = Typography;
 
-const RESET_PASSWORD_STYLE_ID = 'reset-password-page-dark-styles';
-
 const ResetPassword: React.FC = () => {
-  const navigate = useNavigate();
-  const { t, language } = useLanguage();
-  const isCN = language === 'zh-CN';
+  const { t, language, setLanguage } = useLanguage();
   const [form] = Form.useForm();
+  const [checking, setChecking] = useState(true);
+  const [recoveryReady, setRecoveryReady] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
   const [updated, setUpdated] = useState(false);
-  const [linkInvalid, setLinkInvalid] = useState(false);
+  const [error, setError] = useState('');
   const [formValid, setFormValid] = useState(false);
 
   useEffect(() => {
     window.scrollTo(0, 0);
-    if (!document.getElementById(RESET_PASSWORD_STYLE_ID)) {
-      const style = document.createElement('style');
-      style.id = RESET_PASSWORD_STYLE_ID;
-      style.innerHTML = `
-        .reset-password-card .ant-input,
-        .reset-password-card .ant-input-affix-wrapper {
-          background: rgba(0,0,0,0.35) !important;
-          border: 1px solid rgba(255,255,255,0.10) !important;
-          color: #F8FAFC !important;
-          border-radius: 10px !important;
-        }
-        .reset-password-card .ant-btn-primary[disabled],
-        .reset-password-card .ant-btn-primary[disabled]:hover {
-          color: rgba(255,255,255,0.45) !important;
-          background: rgba(255,255,255,0.08) !important;
-          opacity: 1 !important;
-          border: 1px solid rgba(255,255,255,0.1) !important;
-          cursor: not-allowed !important;
-          box-shadow: none !important;
-        }
-        .trust-strip {
-          display: flex;
-          justify-content: center;
-          gap: 16px;
-          margin-top: 24px;
-          padding-top: 16px;
-          border-top: 1px solid rgba(255,255,255,0.06);
-          flex-wrap: wrap;
-        }
-        .trust-item {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          color: rgba(255,255,255,0.35);
-          font-size: 11px;
-        }
-        .trust-item svg {
-          font-size: 12px;
-          color: #10b981;
-        }
-
-        @media (max-width: 480px) {
-          .trust-strip { gap: 8px; margin-top: 16px; padding-top: 12px; }
-          .trust-item { gap: 4px; font-size: 10px; }
-          .trust-item svg { font-size: 10px; }
-        }
-        .reset-password-card .auth-input {
-          height: clamp(40px, 4vh, 44px) !important;
-          font-size: clamp(0.85rem, 1.1vw, 0.95rem) !important;
-        }
-        .reset-password-card .auth-btn {
-          height: clamp(40px, 4vh, 44px) !important;
-          font-size: clamp(0.9rem, 1.2vw, 1rem) !important;
-        }
-        @media (max-width: 480px) {
-          .reset-password-card .auth-input { height: 40px !important; font-size: 0.85rem !important; }
-          .reset-password-card .auth-btn { height: 40px !important; }
-        }
-        .reset-password-card .cf-turnstile { max-width: 100%; overflow: hidden; }
-        .reset-password-card .cf-turnstile iframe { max-width: 100% !important; }
-
-        .invalid-state-icon {
-          font-size: 48px;
-          color: #ff4d4f;
-          margin-bottom: 24px;
-          opacity: 0.8;
-        }
-      `;
-      document.head.appendChild(style);
+    const query = new URLSearchParams(window.location.search);
+    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    if (
+      query.get('error')
+      || hash.get('error')
+      || query.get('error_code')
+      || hash.get('error_code')
+      || query.get('error_description')
+      || hash.get('error_description')
+    ) {
+      setChecking(false);
+      return undefined;
     }
 
-    const params = new URLSearchParams(window.location.hash.replace('#', '?'));
-    const hashErr = params.get('error') || params.get('error_code') || params.get('error_description');
-    const urlParams = new URLSearchParams(window.location.search);
-    const searchErr = urlParams.get('error') || urlParams.get('error_code') || urlParams.get('error_description');
+    let active = true;
+    let observedRecoverySession = false;
 
-    if (hashErr || searchErr) {
-      setLinkInvalid(true);
-      setError(t.auth.resetLinkInvalid || 'Reset link is invalid or expired');
-      return;
-    }
+    const markRecoveryReady = () => {
+      if (!active) return;
+      observedRecoverySession = true;
+      setError('');
+      setRecoveryReady(true);
+      setChecking(false);
+      window.history.replaceState({}, document.title, '/reset-password');
+    };
 
-    // Check if user has a valid recovery session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) {
-        // No active session — check hash for type=recovery
-        const hashParams = new URLSearchParams(window.location.hash.replace('#', ''));
-        const type = hashParams.get('type');
-        if (type !== 'recovery') {
-          setLinkInvalid(true);
-          setError(t.auth.resetLinkInvalid || 'Reset link is invalid or expired');
-        }
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session && (event === 'PASSWORD_RECOVERY' || event === 'INITIAL_SESSION')) {
+        markRecoveryReady();
       }
     });
-  }, [t.auth.resetLinkInvalid]);
 
-  const onValuesChange = () => {
-    const vals = form.getFieldsValue();
-    setFormValid(!!vals.password && !!vals.confirmPassword && vals.password === vals.confirmPassword && vals.password.length >= 8);
-  };
-
-  const handleUpdate = async (values: { password: string; confirmPassword: string }) => {
-    if (values.password !== values.confirmPassword) {
-      setError(t.auth.passwordsDoNotMatchError);
-      return;
-    }
-    if (values.password.length < 8) {
-      setError(t.auth.passwordMinLength);
-      return;
-    }
-    setError('');
-    setSubmitting(true);
-    try {
-      const { error: updateError } = await supabase.auth.updateUser({
-        password: values.password,
+    void supabase.auth.getSession()
+      .then(({ data: { session } }) => {
+        if (session) markRecoveryReady();
+      })
+      .catch(() => {
+        // The timeout below presents the same invalid-link state if session recovery fails.
       });
-      if (updateError) {
-        const errMsg = updateError.message?.toLowerCase() || '';
-        if (errMsg.includes('otp_expired') || errMsg.includes('invalid') || errMsg.includes('expired')) {
-          setError(t.auth.resetLinkInvalid);
-        } else {
-          setError(updateError.message);
-        }
-        setSubmitting(false);
-        return;
+
+    const timeout = window.setTimeout(() => {
+      if (active && !observedRecoverySession) {
+        setRecoveryReady(false);
+        setChecking(false);
       }
+    }, 3500);
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  const handleUpdate = async ({ password, confirmPassword }: { password: string; confirmPassword: string }) => {
+    if (password !== confirmPassword || password.length < 8) { setError(password.length < 8 ? t.auth.passwordMinLength : t.auth.passwordsDoNotMatchError); return; }
+    setSubmitting(true);
+    setError('');
+    try {
+      const { error: updateError } = await supabase.auth.updateUser({ password });
+      if (updateError) { setError(t.auth.passwordUpdateFailed || t.auth.errorUnexpected); return; }
+      await supabase.auth.signOut({ scope: 'local' });
       setUpdated(true);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : (t.auth.passwordUpdateFailed || 'Password update failed');
-      setError(msg);
+      setRecoveryReady(false);
+      window.history.replaceState({}, document.title, '/reset-password');
+    } catch {
+      setError(t.auth.passwordUpdateFailed || t.auth.errorUnexpected);
+    } finally {
+      setSubmitting(false);
     }
-    setSubmitting(false);
   };
 
-  const containerStyle: React.CSSProperties = {
-    minHeight: '100vh',
-    backgroundColor: '#020611',
-    color: '#e2e8f0',
-    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 24,
-    position: 'relative',
-    overflow: 'hidden',
-  };
-
-  const glowStyle1: React.CSSProperties = {
-    position: 'absolute',
-    top: '10%', left: '15%', width: '60vw', height: '60vw',
-    maxWidth: 800, maxHeight: 800,
-    background: 'radial-gradient(circle, rgba(24,144,255,0.1) 0%, rgba(3,8,22,0) 70%)',
-    filter: 'blur(80px)', zIndex: 0, pointerEvents: 'none',
-  };
-
-  const glowStyle2: React.CSSProperties = {
-    position: 'absolute',
-    bottom: '10%', right: '15%', width: '50vw', height: '50vw',
-    maxWidth: 700, maxHeight: 700,
-    background: 'radial-gradient(circle, rgba(114,46,209,0.08) 0%, rgba(3,8,22,0) 70%)',
-    filter: 'blur(80px)', zIndex: 0, pointerEvents: 'none',
-  };
-
-  const cardStyle: React.CSSProperties = {
-    position: 'relative', zIndex: 1, width: '100%', boxSizing: 'border-box', maxWidth: 440,
-    background: 'rgba(17,25,40,0.65)',
-    border: '1px solid rgba(255,255,255,0.08)', borderRadius: 20,
-    backdropFilter: 'blur(24px)',
-    boxShadow: '0 30px 60px -12px rgba(0,0,0,0.8), 0 0 40px rgba(24,144,255,0.05)',
-    padding: 'clamp(28px, 5vh, 40px) clamp(24px, 5vw, 36px)',
-  };
-
-  if (linkInvalid) {
-    return (
-      <div style={containerStyle}>
-        <div style={glowStyle1} />
-        <div style={glowStyle2} />
-        <div style={cardStyle} className="reset-password-card">
-          <div style={{ textAlign: 'center' }}>
-            <img src="/brand/alphalab-logo.png" alt="AlphaLab" style={{ height: 24, marginBottom: 32, cursor: 'pointer' }} onClick={() => navigate('/')} />
-            <ExclamationCircleOutlined className="invalid-state-icon" />
-            <Title level={3} style={{ color: '#fff', marginBottom: 12 }}>{t.auth.resetLinkInvalid}</Title>
-            <Text style={{ color: '#94a3b8', display: 'block', marginBottom: 32, lineHeight: 1.6 }}>
-              {t.auth.errorResetLinkExpired}
-            </Text>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <Button 
-                type="primary" 
-                size="large" 
-                onClick={() => navigate('/forgot-password')}
-                className="auth-btn"
-                style={{
-                  height: 44, borderRadius: 10, fontWeight: 600,
-                  background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
-                  border: 'none', boxShadow: '0 8px 20px rgba(24,144,255,0.3)',
-                }}
-              >
-                {t.auth.requestNewResetLink}
-              </Button>
-              <Button 
-                ghost 
-                size="large" 
-                onClick={() => navigate('/signin')}
-                style={{ height: 44, borderRadius: 10, fontSize: '0.95rem', color: '#60a5fa', borderColor: '#1890ff' }}
-              >
-                {t.auth.backToSignIn}
-              </Button>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
+  const invalid = !checking && !recoveryReady && !updated;
   return (
-    <div style={containerStyle}>
-      <div style={glowStyle1} />
-      <div style={glowStyle2} />
-
-      <div style={cardStyle} className="reset-password-card">
-        <div style={{ marginBottom: 24, textAlign: 'center' }}>
-          <img src="/brand/alphalab-logo.png" alt="AlphaLab" style={{ height: 24, width: 'auto', objectFit: 'contain', cursor: 'pointer' }} onClick={() => navigate('/')} />
-        </div>
-
-        {updated ? (
-          <div style={{ textAlign: 'center' }}>
-            <div style={{
-              width: 64, height: 64, borderRadius: '50%', margin: '0 auto 24px',
-              background: 'rgba(82, 196, 26, 0.1)', border: '2px solid #52c41a',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 28, color: '#52c41a', boxShadow: '0 0 20px rgba(82, 196, 26, 0.2)',
-            }}>✓</div>
-            <Title level={3} style={{ color: '#fff', marginBottom: 12 }}>{t.auth.passwordUpdated}</Title>
-            <Text style={{ color: '#94a3b8', display: 'block', marginBottom: 32 }}>{t.auth.signInSubtitle}</Text>
-            <Button
-              type="primary" block size="large"
-              onClick={() => navigate('/signin')}
-              style={{
-                height: 44, borderRadius: 10, fontSize: '1rem', fontWeight: 600,
-                background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
-                border: 'none', color: '#fff',
-                boxShadow: '0 8px 20px rgba(24,144,255,0.3)',
-              }}
-            >
-              {t.auth.backToSignIn}
-            </Button>
-          </div>
-        ) : (
-          <>
-            <Title level={2} style={{
-              color: '#fff', marginBottom: 12, fontWeight: 700, fontSize: '1.6rem',
-              textAlign: 'center', letterSpacing: '-0.02em',
-            }}>
-              {t.auth.resetPasswordTitle}
-            </Title>
-            <Text style={{
-              color: '#cbd5e1', fontSize: '0.95rem', lineHeight: 1.6,
-              display: 'block', textAlign: 'center', marginBottom: 32,
-            }}>
-              {t.auth.resetPasswordDesc}
-            </Text>
-
-            {error && (
-              <Alert message={error} type="error" showIcon closable onClose={() => setError('')}
-                style={{ marginBottom: 20, borderRadius: 8, color: '#fca5a5', background: 'rgba(255,77,79,0.08)', border: '1px solid rgba(255,77,79,0.25)' }} />
-            )}
-
-            <Form
-              form={form}
-              layout="vertical"
-              onFinish={handleUpdate}
-              onValuesChange={onValuesChange}
-              autoComplete="off"
-            >
-              {/* New password */}
-              <Form.Item
-                name="password"
-                label={<span style={{ color: '#cbd5e1', fontWeight: 500 }}>{t.auth.newPassword}</span>}
-                rules={[
-                  { required: true, message: t.auth.passwordMinLength },
-                  { min: 8, message: t.auth.passwordMinLength },
-                ]}
-              >
-                <Input.Password
-                  prefix={<LockOutlined style={{ color: '#94A3B8' }} />}
-                  placeholder={t.auth.newPassword}
-                  size="large"
-                  className="auth-input"
-                />
-              </Form.Item>
-
-              {/* Confirm password */}
-              <Form.Item
-                name="confirmPassword"
-                label={<span style={{ color: '#cbd5e1', fontWeight: 500 }}>{t.auth.confirmNewPassword}</span>}
-                rules={[
-                  { required: true, message: t.auth.passwordsDoNotMatch },
-                  ({ getFieldValue }) => ({
-                    validator(_, value) {
-                      if (!value || getFieldValue('password') === value) return Promise.resolve();
-                      return Promise.reject(new Error(t.auth.passwordsDoNotMatch));
-                    },
-                  }),
-                ]}
-              >
-                <Input.Password
-                  prefix={<LockOutlined style={{ color: '#94A3B8' }} />}
-                  placeholder={t.auth.confirmNewPassword}
-                  size="large"
-                  className="auth-input"
-                />
-              </Form.Item>
-
-              {/* Submit */}
-              <Form.Item style={{ marginBottom: 16 }}>
-                <Button
-                  type="primary" htmlType="submit"
-                  loading={submitting}
-                  disabled={!formValid || submitting}
-                  block size="large"
-                  className="auth-btn"
-                  style={{
-                    height: 44, borderRadius: 10, fontSize: '1rem', fontWeight: 600,
-                    background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
-                    border: 'none', color: '#fff',
-                    boxShadow: '0 8px 20px rgba(24,144,255,0.3)',
-                  }}
-                >
-                  {submitting ? (t.auth.updating || 'Updating...') : t.auth.updatePassword}
-                </Button>
-              </Form.Item>
-
-              {!formValid && !submitting && (
-                <div style={{ textAlign: 'center', marginTop: -8, marginBottom: 16 }}>
-                  <span style={{ color: '#94a3b8', fontSize: 11 }}>
-                    {t.auth.resetHelperPassword}
-                  </span>
-                </div>
-              )}
-            </Form>
-
-            <div className="trust-strip">
-              <div className="trust-item">
-                <SafetyCertificateOutlined aria-hidden="true" />
-                <span>{t.auth.trustSecureAuth}</span>
-              </div>
-              <div className="trust-item">
-                <LockOutlined aria-hidden="true" />
-                <span>{t.auth.trustEncryptedConfigs}</span>
-              </div>
-              <div className="trust-item">
-                <SafetyOutlined aria-hidden="true" />
-                <span>{t.auth.trustCloudflare}</span>
-              </div>
-            </div>
-
-            {/* Back to Sign In */}
-            <div style={{ marginTop: 24, textAlign: 'center' }}>
-              <Link to="/signin" style={{
-                color: '#60a5fa', fontSize: '0.9rem', textDecoration: 'none',
-                display: 'inline-flex', alignItems: 'center', gap: 6, transition: 'color 0.2s',
-              }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = '#93c5fd'; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = '#60a5fa'; }}
-              >
-                <ArrowLeftOutlined /> {t.auth.backToSignIn}
-              </Link>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
+    <main className="auth-shell">
+      <nav className="auth-nav-top" aria-label={t.auth.backToHome}><Link to="/" className="auth-back-link-top"><ArrowLeftOutlined aria-hidden="true" />{t.auth.backToHome}</Link><button type="button" className="lang-toggle-btn" onClick={() => setLanguage(language === 'zh-CN' ? 'en-US' : 'zh-CN')} aria-label={language === 'zh-CN' ? 'Switch language to English' : '切换语言为中文'}>{language === 'zh-CN' ? 'EN' : '中文'}</button></nav>
+      <div className="auth-card-container"><section className="auth-card signup auth-card--compact"><header className="auth-card-header"><Link to="/" className="auth-brand-logo-text">Alpha<span className="accent">Lab</span></Link><span className="auth-card-eyebrow">{language === 'zh-CN' ? '账户恢复 / 02' : 'ACCOUNT RECOVERY / 02'}</span><Title level={1} className="auth-title">{updated ? t.auth.passwordUpdatedTitle : t.auth.resetPasswordTitle}</Title><Text className="auth-subtitle">{updated ? t.auth.passwordUpdatedDesc : t.auth.resetPasswordDesc}</Text></header><div className="auth-form-content">
+        {checking ? <div className="auth-status-panel" role="status" aria-live="polite"><span className="spinner is-dark" /><Text>{language === 'zh-CN' ? '正在验证恢复链接…' : 'Verifying recovery link…'}</Text></div> : updated ? <div className="auth-status-panel" role="status" aria-live="polite"><div className="auth-status-mark is-success" aria-hidden="true">✓</div><Link to="/signin" className="auth-link-forgot">{t.auth.backToSignIn}</Link></div> : invalid ? <div className="auth-status-panel" role="alert"><div className="auth-status-mark is-error" aria-hidden="true">!</div><Alert message={error || t.auth.resetLinkInvalid} description={t.auth.errorResetLinkExpired} type="error" showIcon /><Link to="/forgot-password" className="auth-link-forgot">{t.auth.requestNewResetLink}</Link></div> : <>
+          {error && <Alert message={error} type="error" showIcon closable onClose={() => setError('')} style={{ marginBottom: 18 }} />}
+          <Form form={form} layout="vertical" onFinish={handleUpdate} autoComplete="on" aria-busy={submitting} onValuesChange={(_, values) => setFormValid(!!values.password && values.password.length >= 8 && values.password === values.confirmPassword)}>
+            <Form.Item name="password" label={t.auth.newPassword} rules={[{ required: true, min: 8, message: t.auth.passwordMinLength }]}><Input.Password className="auth-input" autoComplete="new-password" prefix={<LockOutlined aria-hidden="true" />} /></Form.Item>
+            <Form.Item name="confirmPassword" label={t.auth.confirmPassword} dependencies={['password']} rules={[{ required: true, message: t.auth.passwordsDoNotMatch }, ({ getFieldValue }) => ({ validator(_, value) { return !value || value === getFieldValue('password') ? Promise.resolve() : Promise.reject(new Error(t.auth.passwordsDoNotMatch)); } })]}><Input.Password className="auth-input" autoComplete="new-password" prefix={<LockOutlined aria-hidden="true" />} /></Form.Item>
+            <Button htmlType="submit" type="primary" block className="auth-btn" loading={submitting} disabled={!formValid || submitting}>{t.auth.updatePassword}</Button>
+          </Form>
+        </>}
+      </div></section></div>
+    </main>
   );
 };
-
 export default ResetPassword;

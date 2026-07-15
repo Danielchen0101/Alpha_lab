@@ -1,197 +1,55 @@
-import React from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Button, Typography } from 'antd';
-import {
-  SafetyOutlined, SecurityScanOutlined,
-  KeyOutlined, DashboardOutlined, CheckCircleOutlined,
-  ArrowRightOutlined,
-  HomeOutlined, LoginOutlined
-} from '@ant-design/icons';
+import React, { useEffect, useState } from 'react';
 import MarketingLayout from '../components/MarketingLayout';
+import { scrollPublicTarget } from '../components/public/PublicExperience';
+import { MetricStrip, MiniSparkline, PublicCta, PublicHero, SectionHeading } from '../components/public/PublicPrimitives';
 import { useLanguage } from '../contexts/LanguageContext';
-
-const { Title, Text } = Typography;
-
-const securityFeatures = [
-  { icon: <KeyOutlined />, titleKey: 'featureAuth', descKey: 'featureAuthDesc' },
-  { icon: <SafetyOutlined />, titleKey: 'featureEncryption', descKey: 'featureEncryptionDesc' },
-  { icon: <SecurityScanOutlined />, titleKey: 'featureCsp', descKey: 'featureCspDesc' },
-  { icon: <SafetyOutlined />, titleKey: 'featureHeaders', descKey: 'featureHeadersDesc' },
-  { icon: <DashboardOutlined />, titleKey: 'featureRateLimit', descKey: 'featureRateLimitDesc' },
-  { icon: <CheckCircleOutlined />, titleKey: 'featureAudit', descKey: 'featureAuditDesc' },
-];
+import './PublicSite.css';
+import './PublicExperience.css';
 
 const Security: React.FC = () => {
-  const navigate = useNavigate();
-  const { t } = useLanguage();
-
+  const { language, t } = useLanguage();
+  const isZh = language === 'zh-CN';
+  const [activeControlIndex, setActiveControlIndex] = useState(0);
+  useEffect(() => { window.scrollTo(0, 0); }, []);
+  const controls = [
+    [t.security.featureAuth, t.security.featureAuthDesc, isZh ? '会话' : 'SESSION'],
+    [t.security.featureTurnstile, t.security.featureTurnstileDesc, isZh ? '防滥用' : 'ABUSE'],
+    [t.security.featureEncryption, t.security.featureEncryptionDesc, isZh ? '凭证' : 'SECRETS'],
+    [t.security.featureHeaders, t.security.featureHeadersDesc, isZh ? '传输' : 'TRANSPORT'],
+    [t.security.featureRateLimit, t.security.featureRateLimitDesc, isZh ? '限流' : 'LIMITS'],
+    [t.security.featureAudit, t.security.featureAuditDesc, isZh ? '审计' : 'AUDIT'],
+  ];
+  const activeControl = controls[activeControlIndex];
+  const never = [[t.security.never1, t.security.never1Desc], [t.security.never2, t.security.never2Desc], [t.security.never3, t.security.never3Desc], [t.security.never4, t.security.never4Desc]];
   return (
-    <MarketingLayout>
-      <style>{`
-        .page-hero {
-          padding: 80px 24px 60px;
-          text-align: center;
-          background: radial-gradient(circle at 50% 0%, rgba(52, 211, 153, 0.05) 0%, transparent 70%);
-        }
-        .page-title {
-          font-size: clamp(2.5rem, 5vw, 3.5rem);
-          font-weight: 800;
-          color: #fff;
-          margin-bottom: 20px;
-          letter-spacing: -0.02em;
-        }
-        .page-subtitle {
-          font-size: clamp(1.1rem, 1.5vw, 1.25rem);
-          color: #94a3b8;
-          max-width: 700px;
-          margin: 0 auto;
-          line-height: 1.6;
-        }
-        .security-feature-card {
-          background: rgba(255, 255, 255, 0.02);
-          border: 1px solid rgba(255, 255, 255, 0.05);
-          border-radius: 24px;
-          padding: 32px;
-          transition: all 0.3s ease;
-          height: 100%;
-        }
-        .security-feature-card:hover {
-          background: rgba(255, 255, 255, 0.04);
-          border-color: rgba(52, 211, 153, 0.3);
-          transform: translateY(-4px);
-        }
-        .feature-icon {
-          font-size: 32px;
-          color: #34d399;
-          margin-bottom: 24px;
-          display: inline-flex;
-          padding: 12px;
-          background: rgba(52, 211, 153, 0.1);
-          border-radius: 12px;
-        }
-        .security-shield {
-          width: 80px;
-          height: 80px;
-          border-radius: 50%;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          margin: 0 auto 24px;
-          background: linear-gradient(135deg, rgba(16,185,129,0.15), rgba(16,185,129,0.05));
-          border: 2px solid rgba(16,185,129,0.3);
-          font-size: 36px;
-          color: #34d399;
-        }
-      `}</style>
-
-      {/* Hero */}
-      <section className="page-hero">
-        <div className="security-shield">
-          <SafetyOutlined aria-hidden="true" />
-        </div>
-        <h1 className="page-title">{t.security.title}</h1>
-        <p className="page-subtitle">{t.security.subtitle}</p>
-      </section>
-
-      {/* Features Grid */}
-      <section className="section-container" style={{ paddingTop: 20 }}>
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 280px), 1fr))',
-          gap: 24,
-        }}>
-          {securityFeatures.map((feat, idx) => (
-            <div key={idx} className="security-feature-card reveal-on-scroll visible">
-              <div className="feature-icon">{React.cloneElement(feat.icon as React.ReactElement, { "aria-hidden": "true", "focusable": "false" })}</div>
-              <Title level={4} style={{ color: '#fff', marginBottom: 10, fontSize: '1.1rem' }}>
-                {t.security[feat.titleKey as keyof typeof t.security]}
-              </Title>
-              <Text style={{ color: '#94a3b8', fontSize: '0.9rem', lineHeight: 1.7 }}>
-                {t.security[feat.descKey as keyof typeof t.security]}
-              </Text>
+    <MarketingLayout tone="paper">
+      <main className={`public-page public-security-page ${isZh ? 'is-zh' : 'is-en'}`}>
+        <PublicHero index="06" eyebrow={isZh ? '安全与用户控制' : 'SECURITY & USER CONTROL'} title={t.security.title} subtitle={t.security.subtitle} primaryLabel={isZh ? '创建账户' : 'Create an account'} secondaryLabel={isZh ? '查看控制边界' : 'Review control boundaries'} onSecondary={() => scrollPublicTarget(document.querySelector('#security-controls'))}>
+          <div className="public-instrument"><div className="public-instrument-header"><strong>{isZh ? '控制中心 / 公开摘要' : 'CONTROL PLANE / PUBLIC SUMMARY'}</strong><span>{isZh ? '产品边界' : 'PRODUCT BOUNDARIES'}</span></div><div className="public-instrument-body"><MiniSparkline values={[2,2,3,3,3,4,4,5,5,5,6,6]} color="moss" variant="step" showNodes label={isZh ? '六项安全控制的产品边界示意' : 'Product-boundary map for six security controls'} /></div><MetricStrip metrics={[{ label: isZh ? '认证' : 'Auth', value: isZh ? '必需' : 'REQ', tone: 'blue' }, { label: isZh ? '验证码' : 'Captcha', value: isZh ? '需配置' : 'CONFIG' }, { label: isZh ? '默认环境' : 'Default mode', value: isZh ? '模拟' : 'PAPER' }, { label: isZh ? '人工订单' : 'Manual orders', value: isZh ? '核对' : 'REVIEW', tone: 'moss' }]} /></div>
+        </PublicHero>
+        <section className="public-section security-control-section" id="security-controls">
+          <SectionHeading eyebrow={isZh ? '当前安全控制' : 'CURRENT CONTROLS'} title={isZh ? '具体说明边界，不使用空泛的安全口号。' : 'Specific boundaries, not generic security claims.'} description={isZh ? '以下说明基于当前产品设计。部署相关控制仍需要在每次生产发布后验证。' : 'The following describes the current product design. Deployment-level controls still require verification after every production release.'} />
+          <div className="security-control-layout">
+            <div className="security-control-map" aria-label={isZh ? '安全控制矩阵' : 'Security control matrix'}>
+              {controls.map(([title, , type], index) => (
+                <button key={title} type="button" className={`security-control-button ${activeControlIndex === index ? 'is-active' : ''}`} aria-pressed={activeControlIndex === index} onClick={() => setActiveControlIndex(index)}>
+                  <span>0{index + 1} · {type}</span><b>{title}</b>
+                </button>
+              ))}
+              <div className="security-control-core">{isZh ? '人工核对\n自动化需启用' : 'MANUAL REVIEW\nAUTO OPT-IN'}</div>
             </div>
-          ))}
-        </div>
-      </section>
-
-      {/* What AlphaLab will never do */}
-      <section className="section-container" style={{ paddingTop: 40, paddingBottom: 40 }}>
-        <div className="reveal-on-scroll visible" style={{ textAlign: 'center', marginBottom: 40 }}>
-          <h2 style={{ fontSize: '2rem', fontWeight: 800, color: '#fff', marginBottom: 16 }}>{t.security.neverTitle}</h2>
-          <p style={{ color: '#ef4444', fontSize: '1.05rem', maxWidth: 700, margin: '0 auto', lineHeight: 1.6 }}>{t.security.neverSubtitle}</p>
-        </div>
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 280px), 1fr))',
-          gap: 24,
-          maxWidth: 900,
-          margin: '0 auto'
-        }}>
-          {[
-            { titleKey: 'never1', descKey: 'never1Desc' },
-            { titleKey: 'never2', descKey: 'never2Desc' },
-            { titleKey: 'never3', descKey: 'never3Desc' },
-            { titleKey: 'never4', descKey: 'never4Desc' },
-          ].map((feat, idx) => (
-            <div key={idx} className="reveal-on-scroll visible" style={{
-              background: 'rgba(239, 68, 68, 0.05)',
-              border: '1px solid rgba(239, 68, 68, 0.1)',
-              borderRadius: 16,
-              padding: 24,
-            }}>
-              <Title level={4} style={{ color: '#f8fafc', marginBottom: 10, fontSize: '1.1rem' }}>
-                {t.security[feat.titleKey as keyof typeof t.security]}
-              </Title>
-              <Text style={{ color: '#cbd5e1', fontSize: '0.9rem', lineHeight: 1.6 }}>
-                {t.security[feat.descKey as keyof typeof t.security]}
-              </Text>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* CTA */}
-      <section className="section-container" style={{ textAlign: 'center', paddingBottom: 100 }}>
-        <div style={{
-          background: 'linear-gradient(145deg, rgba(16,185,129,0.05) 0%, rgba(24,144,255,0.05) 100%)',
-          padding: '60px 40px', borderRadius: 32,
-          border: '1px solid rgba(255,255,255,0.05)',
-        }}>
-          <h2 style={{ fontSize: '2rem', fontWeight: 800, color: '#fff', marginBottom: 16 }}>
-            {t.security.ctaTitle}
-          </h2>
-          <p style={{ color: '#94a3b8', fontSize: '1.05rem', maxWidth: 600, margin: '0 auto 36px', lineHeight: 1.6 }}>
-            {t.security.ctaDesc}
-          </p>
-          <div style={{ display: 'flex', gap: 16, justifyContent: 'center', flexWrap: 'wrap' }}>
-            <Button
-              type="primary" size="large"
-              icon={<HomeOutlined aria-hidden="true" />}
-              onClick={() => navigate('/')}
-              style={{
-                height: 48, borderRadius: 12, fontWeight: 600, padding: '0 32px',
-                background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
-                border: 'none', boxShadow: '0 8px 24px rgba(24,144,255,0.3)',
-              }}
-            >
-              {t.landing.navHome}
-            </Button>
-            <Button
-              ghost size="large"
-              icon={<LoginOutlined aria-hidden="true" />}
-              onClick={() => navigate('/signup')}
-              style={{
-                height: 48, borderRadius: 12, fontWeight: 600, padding: '0 32px',
-                color: '#60a5fa', borderColor: 'rgba(24,144,255,0.5)',
-              }}
-            >
-              {t.landing.getStarted} <ArrowRightOutlined aria-hidden="true" />
-            </Button>
+            <aside key={activeControlIndex} className="security-control-dossier public-panel-swap" aria-live="polite">
+              <span>{isZh ? '控制边界' : 'CONTROL BOUNDARY'} · {activeControl[2]}</span>
+              <h3>{activeControl[0]}</h3>
+              <p>{activeControl[1]}</p>
+            </aside>
           </div>
-        </div>
-      </section>
+        </section>
+        <section className="public-section is-dark security-boundary-section"><SectionHeading eyebrow={isZh ? '安全问题' : 'SAFETY QUESTIONS'} title={t.security.neverTitle} description={t.security.neverSubtitle} /><div className="public-feature-list">{never.map(([title, desc], index) => <article className="public-feature-row" key={title} style={{ borderColor: 'rgba(255,255,255,.14)' }}><span style={{ color: '#9eb7dc' }}>0{index + 1}</span><div className="public-feature-copy"><h3 style={{ color: '#f5f1e8' }}>{title}</h3><p style={{ color: 'rgba(245,241,232,.62)' }}>{desc}</p></div><b>{isZh ? '用户控制' : 'USER CONTROL'}</b></article>)}</div></section>
+        <section className="public-section security-revoke-section"><SectionHeading eyebrow={isZh ? '用户可以做什么' : 'USER CONTROLS'} title={isZh ? '凭证、会话和执行权应当可以撤销。' : 'Credentials, sessions, and execution authority should be revocable.'} /><div className="public-card-grid">{[[isZh ? '轮换密钥' : 'Rotate keys', isZh ? '从提供商后台撤销并替换已有凭证。' : 'Revoke and replace provider credentials from the provider dashboard.'], [isZh ? '删除配置' : 'Delete configuration', isZh ? '移除保存的券商与 AI 提供商设置。' : 'Remove saved broker and AI-provider settings.'], [isZh ? '保持模拟模式' : 'Stay in paper mode', isZh ? '无需连接实盘券商即可完成研究和验证。' : 'Research and validation can run without connecting a live broker.']].map(([title, desc], index) => <article className="public-card" key={title}><span>0{index + 1}</span><h3>{title}</h3><p>{desc}</p></article>)}</div></section>
+        <PublicCta eyebrow={isZh ? '安全 · 透明 · 用户控制' : 'SECURITY · TRANSPARENCY · CONTROL'} title={t.security.ctaTitle} description={t.security.ctaDesc} primary={isZh ? '创建账户' : 'Create account'} secondary={isZh ? '阅读隐私政策' : 'Read privacy policy'} secondaryPath="/privacy" />
+      </main>
     </MarketingLayout>
   );
 };
-
 export default Security;

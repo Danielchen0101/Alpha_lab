@@ -11,19 +11,74 @@ interface OptimizationResultsTableProps {
   strategy?: string;
 }
 
+const toFiniteNumber = (value: unknown): number | null => {
+  if (typeof value !== 'number' && typeof value !== 'string') return null;
+  if (typeof value === 'string' && value.trim() === '') return null;
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : null;
+};
+
+const isSuccessfulResult = (result: OptimizationResult): boolean => {
+  if (!result || result.error) return false;
+  const status = String(result.status || '').toLowerCase();
+  return !['failed', 'error', 'invalid'].includes(status);
+};
+
+const isRankableResult = (result: OptimizationResult): boolean => (
+  isSuccessfulResult(result)
+  && ['totalReturn', 'sharpeRatio', 'maxDrawdown'].every(
+    (key) => toFiniteNumber(result[key]) !== null,
+  )
+);
+
+const compareFinite = (left: unknown, right: unknown): number => {
+  const leftValue = toFiniteNumber(left);
+  const rightValue = toFiniteNumber(right);
+  if (leftValue === null && rightValue === null) return 0;
+  if (leftValue === null) return 1;
+  if (rightValue === null) return -1;
+  return leftValue - rightValue;
+};
+
+const compareFiniteMagnitude = (left: unknown, right: unknown): number => {
+  const leftValue = toFiniteNumber(left);
+  const rightValue = toFiniteNumber(right);
+  if (leftValue === null && rightValue === null) return 0;
+  if (leftValue === null) return 1;
+  if (rightValue === null) return -1;
+  return Math.abs(leftValue) - Math.abs(rightValue);
+};
+
 const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ results, strategy = 'moving_average' }) => {
   const { t } = useLanguage();
-  // Safe formatting functions
-  const safeToFixed = (value: any, digits: number = 2): string => {
-    if (value === null || value === undefined || Number.isNaN(Number(value))) return 'N/A';
-    return Number(value).toFixed(digits);
+  const safeToFixed = (value: unknown, digits: number = 2): string => {
+    const numericValue = toFiniteNumber(value);
+    return numericValue === null ? 'N/A' : numericValue.toFixed(digits);
   };
 
-  const safePercent = (value: any): string => {
-    if (value === null || value === undefined || Number.isNaN(Number(value))) return "N/A";
-    const prefix = value > 0 ? "+" : "";
-    return `${prefix}${value.toFixed(2)}%`;
+  const safePercent = (value: unknown): string => {
+    const numericValue = toFiniteNumber(value);
+    if (numericValue === null) return 'N/A';
+    const prefix = numericValue > 0 ? '+' : '';
+    return `${prefix}${numericValue.toFixed(2)}%`;
   };
+
+  const safeDrawdown = (value: unknown, digits = 1): string => {
+    const numericValue = toFiniteNumber(value);
+    if (numericValue === null) return 'N/A';
+    const magnitude = Math.abs(numericValue).toFixed(digits);
+    return numericValue === 0 ? `${magnitude}%` : `-${magnitude}%`;
+  };
+
+  const renderParameter = (value: unknown, digits = 0) => safeToFixed(value, digits);
+
+  const rankedResults = results
+    .filter(isRankableResult)
+    .slice()
+    .sort((left, right) => compareFinite(right.sharpeRatio, left.sharpeRatio));
+  const displayRanks = new Map<OptimizationResult, number>(
+    rankedResults.map((result, index) => [result, index + 1]),
+  );
 
   // Get parameter columns based on strategy
   const getParameterColumns = () => {
@@ -31,29 +86,35 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
     switch (strategy) {
       case 'rsi':
         return [
-          { title: t.optimization.labelRsiPeriod, dataIndex: 'rsi_period', key: 'rsi_period', width: 110, align: 'center', render: (v: number) => <Tag color="blue" style={commonStyle}>{v}</Tag> },
-          { title: t.optimization.labelOversold, dataIndex: 'oversold', key: 'oversold', width: 100, align: 'center', render: (v: number) => <Tag color="orange" style={commonStyle}>{v}</Tag> },
-          { title: t.optimization.labelOverbought, dataIndex: 'overbought', key: 'overbought', width: 110, align: 'center', render: (v: number) => <Tag color="red" style={commonStyle}>{v}</Tag> }
+          { title: t.optimization.labelRsiPeriod, dataIndex: 'rsi_period', key: 'rsi_period', width: 110, align: 'center', render: (v: unknown) => <Tag color="blue" style={commonStyle}>{renderParameter(v)}</Tag> },
+          { title: t.optimization.labelOversold, dataIndex: 'oversold', key: 'oversold', width: 100, align: 'center', render: (v: unknown) => <Tag color="orange" style={commonStyle}>{renderParameter(v)}</Tag> },
+          { title: t.optimization.labelOverbought, dataIndex: 'overbought', key: 'overbought', width: 110, align: 'center', render: (v: unknown) => <Tag color="red" style={commonStyle}>{renderParameter(v)}</Tag> }
         ];
       case 'macd':
         return [
-          { title: t.optimization.labelFastMa, dataIndex: 'fast', key: 'fast', width: 100, align: 'center', render: (v: number) => <Tag color="blue" style={commonStyle}>{v}</Tag> },
-          { title: t.optimization.labelSlowMa, dataIndex: 'slow', key: 'slow', width: 100, align: 'center', render: (v: number) => <Tag color="green" style={commonStyle}>{v}</Tag> },
-          { title: t.optimization.labelSignalMa, dataIndex: 'signal', key: 'signal', width: 90, align: 'center', render: (v: number) => <Tag color="purple" style={commonStyle}>{v}</Tag> }
+          { title: t.optimization.labelFastMa, dataIndex: 'fast', key: 'fast', width: 100, align: 'center', render: (v: unknown) => <Tag color="blue" style={commonStyle}>{renderParameter(v)}</Tag> },
+          { title: t.optimization.labelSlowMa, dataIndex: 'slow', key: 'slow', width: 100, align: 'center', render: (v: unknown) => <Tag color="green" style={commonStyle}>{renderParameter(v)}</Tag> },
+          { title: t.optimization.labelSignalMa, dataIndex: 'signal', key: 'signal', width: 90, align: 'center', render: (v: unknown) => <Tag color="purple" style={commonStyle}>{renderParameter(v)}</Tag> }
         ];
       case 'bollinger':
         return [
-          { title: t.optimization.labelPeriod, dataIndex: 'period', key: 'period', width: 90, align: 'center', render: (v: number) => <Tag color="blue" style={commonStyle}>{v}</Tag> },
-          { title: t.optimization.labelStdDev, dataIndex: 'std_dev', key: 'std_dev', width: 90, align: 'center', render: (v: number) => <Tag color="cyan" style={commonStyle}>{safeToFixed(v, 1)}</Tag> }
+          { title: t.optimization.labelPeriod, dataIndex: 'period', key: 'period', width: 90, align: 'center', render: (v: unknown) => <Tag color="blue" style={commonStyle}>{renderParameter(v)}</Tag> },
+          { title: t.optimization.labelStdDev, dataIndex: 'std_dev', key: 'std_dev', width: 90, align: 'center', render: (v: unknown) => <Tag color="cyan" style={commonStyle}>{renderParameter(v, 1)}</Tag> }
         ];
       case 'momentum':
         return [
-          { title: t.optimization.labelMomentumPeriod, dataIndex: 'momentum_period', key: 'momentum_period', width: 130, align: 'center', render: (v: number) => <Tag color="blue" style={commonStyle}>{v}</Tag> }
+          { title: t.optimization.labelMomentumPeriod, dataIndex: 'momentum_period', key: 'momentum_period', width: 130, align: 'center', render: (v: unknown) => <Tag color="blue" style={commonStyle}>{renderParameter(v)}</Tag> }
+        ];
+      case 'mean_reversion':
+        return [
+          { title: t.optimization.lookbackBlock, dataIndex: 'lookback', key: 'lookback', width: 120, align: 'center', render: (v: unknown) => <Tag color="blue" style={commonStyle}>{renderParameter(v)}</Tag> },
+          { title: t.optimization.entryZScoreBlock, dataIndex: 'entry_z', key: 'entry_z', width: 120, align: 'center', render: (v: unknown) => <Tag color="orange" style={commonStyle}>{renderParameter(v, 2)}</Tag> },
+          { title: t.optimization.exitZScoreBlock, dataIndex: 'exit_z', key: 'exit_z', width: 120, align: 'center', render: (v: unknown) => <Tag color="green" style={commonStyle}>{renderParameter(v, 2)}</Tag> }
         ];
       default:
         return [
-          { title: t.optimization.labelShortMa, dataIndex: 'short_ma', key: 'short_ma', width: 100, align: 'center', render: (v: number) => <Tag color="blue" style={commonStyle}>{v}</Tag> },
-          { title: t.optimization.labelLongMa, dataIndex: 'long_ma', key: 'long_ma', width: 100, align: 'center', render: (v: number) => <Tag color="green" style={commonStyle}>{v}</Tag> }
+          { title: t.optimization.labelShortMa, dataIndex: 'short_ma', key: 'short_ma', width: 100, align: 'center', render: (v: unknown) => <Tag color="blue" style={commonStyle}>{renderParameter(v)}</Tag> },
+          { title: t.optimization.labelLongMa, dataIndex: 'long_ma', key: 'long_ma', width: 100, align: 'center', render: (v: unknown) => <Tag color="green" style={commonStyle}>{renderParameter(v)}</Tag> }
         ];
     }
   };
@@ -65,13 +126,33 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
       key: 'rank',
       width: 90,
       align: 'center',
-      sorter: (a: OptimizationResult, b: OptimizationResult) => a.rank - b.rank,
-      render: (rank: number) => (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
-          {rank === 1 ? <CrownOutlined style={{ color: '#faad14' }} /> : rank <= 3 ? <TrophyOutlined style={{ color: rank === 2 ? '#bfbfbf' : '#d48011', fontSize: '12px' }} /> : null}
-          <Text strong style={{ fontSize: rank === 1 ? '16px' : '14px', color: rank === 1 ? '#faad14' : '#595959' }}>{rank}</Text>
-        </div>
+      sorter: (a: OptimizationResult, b: OptimizationResult) => (
+        (displayRanks.get(a) ?? Number.MAX_SAFE_INTEGER)
+        - (displayRanks.get(b) ?? Number.MAX_SAFE_INTEGER)
       ),
+      render: (_rank: number, record: OptimizationResult) => {
+        const rank = displayRanks.get(record);
+        return (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+            {rank === 1
+              ? <CrownOutlined style={{ color: 'var(--op-gold, var(--op-blue, var(--app-blue-text)))' }} />
+              : rank && rank <= 3
+                ? <TrophyOutlined style={{ color: rank === 2 ? 'var(--app-text-muted)' : 'var(--op-red, #d48011)', fontSize: '12px' }} />
+                : null}
+            <Text
+              strong
+              style={{
+                fontSize: rank === 1 ? '16px' : '14px',
+                color: rank === 1
+                  ? 'var(--op-gold, var(--op-blue, var(--app-blue-text)))'
+                  : 'var(--app-text-strong)',
+              }}
+            >
+              {rank ?? '—'}
+            </Text>
+          </div>
+        );
+      },
     },
     ...getParameterColumns(),
     {
@@ -80,8 +161,14 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
       key: 'totalReturn',
       width: 140,
       align: 'right',
-      sorter: (a: OptimizationResult, b: OptimizationResult) => a.totalReturn - b.totalReturn,
-      render: (v: number) => <Text strong style={{ color: v >= 0 ? '#3f8600' : '#cf1322', fontSize: '14px' }}>{safePercent(v)}</Text>,
+      sorter: (a: OptimizationResult, b: OptimizationResult) => compareFinite(
+        isSuccessfulResult(a) ? a.totalReturn : null,
+        isSuccessfulResult(b) ? b.totalReturn : null,
+      ),
+      render: (v: unknown, record: OptimizationResult) => {
+        const value = toFiniteNumber(isSuccessfulResult(record) ? v : null);
+        return <Text strong style={{ color: value === null ? 'var(--app-text-muted)' : value >= 0 ? 'var(--op-green, #3f8600)' : 'var(--op-red, #cf1322)', fontSize: '14px' }}>{safePercent(value)}</Text>;
+      },
     },
     {
       title: t.optimization.colSharpe,
@@ -89,8 +176,14 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
       key: 'sharpeRatio',
       width: 100,
       align: 'right',
-      sorter: (a: OptimizationResult, b: OptimizationResult) => a.sharpeRatio - b.sharpeRatio,
-      render: (v: number) => <Text strong style={{ color: v >= 1 ? '#3f8600' : v >= 0 ? '#fa8c16' : '#cf1322' }}>{safeToFixed(v, 2)}</Text>,
+      sorter: (a: OptimizationResult, b: OptimizationResult) => compareFinite(
+        isSuccessfulResult(a) ? a.sharpeRatio : null,
+        isSuccessfulResult(b) ? b.sharpeRatio : null,
+      ),
+      render: (v: unknown, record: OptimizationResult) => {
+        const value = toFiniteNumber(isSuccessfulResult(record) ? v : null);
+        return <Text strong style={{ color: value === null ? 'var(--app-text-muted)' : value >= 1 ? 'var(--op-green, #3f8600)' : value >= 0 ? 'var(--op-gold, var(--op-blue, var(--app-blue-text)))' : 'var(--op-red, #cf1322)' }}>{safeToFixed(value, 2)}</Text>;
+      },
     },
     {
       title: t.optimization.colMaxDD,
@@ -98,8 +191,15 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
       key: 'maxDrawdown',
       width: 110,
       align: 'right',
-      sorter: (a: OptimizationResult, b: OptimizationResult) => a.maxDrawdown - b.maxDrawdown,
-      render: (v: number) => <Text strong style={{ color: v > -15 ? '#3f8600' : v > -30 ? '#fa8c16' : '#cf1322' }}>{safeToFixed(v, 1)}%</Text>,
+      sorter: (a: OptimizationResult, b: OptimizationResult) => compareFiniteMagnitude(
+        isSuccessfulResult(a) ? a.maxDrawdown : null,
+        isSuccessfulResult(b) ? b.maxDrawdown : null,
+      ),
+      render: (v: unknown, record: OptimizationResult) => {
+        const value = toFiniteNumber(isSuccessfulResult(record) ? v : null);
+        const magnitude = value === null ? null : Math.abs(value);
+        return <Text strong style={{ color: magnitude === null ? 'var(--app-text-muted)' : magnitude < 15 ? 'var(--op-green, #3f8600)' : magnitude < 30 ? 'var(--op-gold, var(--op-blue, var(--app-blue-text)))' : 'var(--op-red, #cf1322)' }}>{safeDrawdown(value)}</Text>;
+      },
     },
     {
       title: t.optimization.colWinRate,
@@ -107,8 +207,14 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
       key: 'winRate',
       width: 110,
       align: 'right',
-      sorter: (a: OptimizationResult, b: OptimizationResult) => (a.winRate || 0) - (b.winRate || 0),
-      render: (v: number) => <Text strong>{v ? `${v.toFixed(1)}%` : '—'}</Text>,
+      sorter: (a: OptimizationResult, b: OptimizationResult) => compareFinite(
+        isSuccessfulResult(a) ? a.winRate : null,
+        isSuccessfulResult(b) ? b.winRate : null,
+      ),
+      render: (v: unknown, record: OptimizationResult) => {
+        const value = toFiniteNumber(isSuccessfulResult(record) ? v : null);
+        return <Text strong style={{ color: value === null ? 'var(--app-text-muted)' : 'var(--app-text-strong)' }}>{value === null ? 'N/A' : `${value.toFixed(1)}%`}</Text>;
+      },
     },
     {
       title: t.optimization.colTrades,
@@ -116,8 +222,14 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
       key: 'trades',
       width: 100,
       align: 'right',
-      sorter: (a: OptimizationResult, b: OptimizationResult) => a.trades - b.trades,
-      render: (v: number) => <Text style={{ color: '#8c8c8c' }}>{Math.round(v)}</Text>,
+      sorter: (a: OptimizationResult, b: OptimizationResult) => compareFinite(
+        isSuccessfulResult(a) ? a.trades : null,
+        isSuccessfulResult(b) ? b.trades : null,
+      ),
+      render: (v: unknown, record: OptimizationResult) => {
+        const value = toFiniteNumber(isSuccessfulResult(record) ? v : null);
+        return <Text style={{ color: value === null ? 'var(--app-text-muted)' : 'var(--app-text)' }}>{value === null ? 'N/A' : Math.round(value)}</Text>;
+      },
     },
   ];
 
@@ -127,13 +239,13 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
         .optimization-table-container .ant-table {
           background: transparent !important;
         }
-        .optimization-table-container .ant-table-thead > tr > th { 
-          background: var(--app-table-header-bg) !important; 
-          font-weight: 800 !important; 
-          text-transform: uppercase !important; 
-          font-size: 10.5px !important; 
-          letter-spacing: 0.8px !important; 
-          color: var(--app-text-muted) !important; 
+        .optimization-table-container .ant-table-thead > tr > th {
+          background: var(--app-table-header-bg) !important;
+          font-weight: 800 !important;
+          text-transform: uppercase !important;
+          font-size: 10.5px !important;
+          letter-spacing: 0.8px !important;
+          color: var(--app-text-muted) !important;
           border-bottom: 1px solid var(--app-border-soft) !important;
           padding: 16px 8px !important;
         }
@@ -142,14 +254,14 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
           border-bottom: 1px solid var(--app-border-soft) !important;
           color: var(--app-text) !important;
         }
-        .optimization-table-container .ant-table-tbody > tr:hover > td { 
-          background: var(--app-card-bg-soft) !important; 
+        .optimization-table-container .ant-table-tbody > tr:hover > td {
+          background: var(--app-card-bg-soft) !important;
         }
-        .top-rank-row { 
-          background: rgba(250, 173, 20, 0.02); 
+        .top-rank-row {
+          background: color-mix(in srgb, var(--op-gold, var(--op-blue, var(--app-blue-text))) 5%, transparent);
         }
-        .top-rank-row td { 
-          border-bottom: 1px solid rgba(250, 173, 20, 0.1) !important; 
+        .top-rank-row td {
+          border-bottom: 1px solid color-mix(in srgb, var(--op-gold, var(--op-blue, var(--app-blue-text))) 18%, transparent) !important;
         }
         .optimization-table-container .ant-pagination {
           padding: 16px 24px !important;
@@ -165,14 +277,14 @@ const OptimizationResultsTable: React.FC<OptimizationResultsTableProps> = ({ res
           pageSize: 10,
           showSizeChanger: true,
           showTotal: (total: number, range: [number, number]) => (
-            <Text style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 600 }}>
+            <Text style={{ fontSize: '12px', color: 'var(--app-text-muted)', fontWeight: 600 }}>
               {t.optimization.resultsRange.replace('{from}', String(range[0])).replace('{to}', String(range[1])).replace('{total}', String(total)).toUpperCase()}
             </Text>
           ),
         }}
         size="small"
         scroll={{ x: 1000 }}
-        rowClassName={(record: OptimizationResult) => record.rank === 1 ? 'top-rank-row' : ''}
+        rowClassName={(record: OptimizationResult) => displayRanks.get(record) === 1 ? 'top-rank-row' : ''}
       />
     </div>
   );

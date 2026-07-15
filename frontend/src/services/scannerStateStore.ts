@@ -10,6 +10,7 @@ export type ScannerStatus = 'idle' | 'running' | 'completed' | 'failed' | 'stopp
 export type ContinueScanStatus = 'idle' | 'processing' | 'completed' | 'error';
 export type FineScanStatus = 'idle' | 'running' | 'completed' | 'failed' | 'stopped' | 'error';
 export type DeeperValidationStatus = 'idle' | 'loading' | 'completed' | 'error' | 'stopped';
+export type AdmissionStatus = 'idle' | 'loading' | 'completed' | 'error' | 'stopped';
 export type EntryPlanStatus = 'idle' | 'loading' | 'completed' | 'error' | 'stopped';
 export type ExitScanStatus = 'idle' | 'scanning' | 'completed' | 'failed' | 'stopped' | 'skipped';
 
@@ -20,15 +21,24 @@ export interface ExitScanResult {
   currentPrice: number;
   pl: number;
   plPct: number;
-  positionSource: 'ai_managed' | 'user_marked' | 'manual' | 'unknown';
+  positionSource: string;
   entryPlanTarget?: number;
   entryPlanStop?: number;
   exitDecision: 'sell_now' | 'place_target_limit' | 'hold' | 'manual_review' | 'blocked';
-  exitOrderType?: 'market' | 'limit';
+  exitOrderType?: string;
   exitPrice?: number;
   reason: string;
-  exitPlanSource?: 'entry_plan' | 'generated';
-  status: 'pending' | 'submitted' | 'filled' | 'failed' | 'hold' | 'manual_review' | 'blocked';
+  exitPlanSource?: string;
+  status: string;
+  triggerAction?: string;
+  action?: string;
+  protection?: any;
+  exitPlan?: any;
+  indicators?: any;
+  dataQuality?: string;
+  dataFreshness?: any;
+  accountContext?: any;
+  marketRegime?: string;
   alpacaOrderId?: string;
   error?: string;
 }
@@ -39,6 +49,7 @@ export interface ExitScanState {
   submittedExitOrders: { symbol: string; orderId: string; orderType: string; exitPrice?: number; submittedAt: string; }[];
   runId: string | null;
   lastUpdated: string | null;
+  summary?: any;
 }
 
 export interface MarketScannerState {
@@ -58,6 +69,13 @@ export interface MarketScannerState {
   outputLogs: string[];
   detailedScanStatus: {
     currentStatus: 'idle' | 'scanning' | 'stopping' | 'stopped' | 'completed' | 'error';
+    currentStage?: string;
+    stageLabel?: string;
+    stageDetail?: string;
+    stageIndex?: number;
+    stageCount?: number;
+    startedAt?: number | null;
+    estimatedSecondsRemaining?: number | null;
     processedCount: number;
     totalCount: number;
     percent: number;
@@ -114,6 +132,14 @@ export interface EntryPlanState {
   lastUpdated: string | null;
 }
 
+export interface AdmissionState {
+  status: AdmissionStatus;
+  results: any[] | null;
+  summary: any | null;
+  runId: string | null;
+  lastUpdated: string | null;
+}
+
 export interface AiExecutionCandidate {
   symbol: string;
   // Entry plan data
@@ -157,6 +183,7 @@ export interface ScannerStoreState {
   continueScan: ContinueScanState;
   fineScan: FineScanState;
   deeperValidation: DeeperValidationState;
+  admission: AdmissionState;
   entryPlan: EntryPlanState;
   exitScan: ExitScanState;
   aiExecutionCandidates: AiExecutionCandidate[];
@@ -191,6 +218,13 @@ const DEFAULT_STATE: ScannerStoreState = {
     outputLogs: [],
     detailedScanStatus: {
       currentStatus: 'idle',
+      currentStage: 'idle',
+      stageLabel: '',
+      stageDetail: '',
+      stageIndex: 0,
+      stageCount: 0,
+      startedAt: null,
+      estimatedSecondsRemaining: null,
       processedCount: 0,
       totalCount: 0,
       percent: 0,
@@ -236,6 +270,13 @@ const DEFAULT_STATE: ScannerStoreState = {
     runId: null,
     lastUpdated: null,
   },
+  admission: {
+    status: 'idle',
+    results: null,
+    summary: null,
+    runId: null,
+    lastUpdated: null,
+  },
   entryPlan: {
     status: 'idle',
     results: null,
@@ -248,6 +289,7 @@ const DEFAULT_STATE: ScannerStoreState = {
     submittedExitOrders: [],
     runId: null,
     lastUpdated: null,
+    summary: null,
   },
   aiExecutionCandidates: [],
   removedExecutionSymbols: [],
@@ -276,16 +318,32 @@ class ScannerStateStore {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && parsed.version === 1) {
+          const persistedExitScan = { ...DEFAULT_STATE.exitScan, ...(parsed.exitScan || {}) };
+          const persistedExitRows = Array.isArray(persistedExitScan.results) ? persistedExitScan.results : [];
+          const isLifecycleV2 = persistedExitRows.length === 0
+            || persistedExitScan.summary?.scanPolicy?.engine === 'position_lifecycle_v2'
+            || persistedExitRows.every((row: any) => row?.exitPlan?.version === 2 || row?.triggerAction === 'unsupported_short_position');
+          const migratedExitScan = isLifecycleV2
+            ? { ...persistedExitScan, results: persistedExitRows }
+            : { ...DEFAULT_STATE.exitScan };
           // Merge with defaults to handle new fields
           return {
             ...DEFAULT_STATE,
             ...parsed,
-            marketScanner: { ...DEFAULT_STATE.marketScanner, ...parsed.marketScanner },
+            marketScanner: {
+              ...DEFAULT_STATE.marketScanner,
+              ...parsed.marketScanner,
+              detailedScanStatus: {
+                ...DEFAULT_STATE.marketScanner.detailedScanStatus,
+                ...(parsed.marketScanner?.detailedScanStatus || {}),
+              },
+            },
             continueScan: { ...DEFAULT_STATE.continueScan, ...parsed.continueScan },
             fineScan: { ...DEFAULT_STATE.fineScan, ...parsed.fineScan },
             deeperValidation: { ...DEFAULT_STATE.deeperValidation, ...parsed.deeperValidation },
+            admission: { ...DEFAULT_STATE.admission, ...parsed.admission },
             entryPlan: { ...DEFAULT_STATE.entryPlan, ...parsed.entryPlan },
-            exitScan: { ...DEFAULT_STATE.exitScan, ...parsed.exitScan },
+            exitScan: migratedExitScan,
             aiExecutionCandidates: Array.isArray(parsed.aiExecutionCandidates) ? parsed.aiExecutionCandidates : [],
             removedExecutionSymbols: Array.isArray(parsed.removedExecutionSymbols) ? parsed.removedExecutionSymbols : [],
             pipelineSchedule: { ...DEFAULT_STATE.pipelineSchedule, ...parsed.pipelineSchedule },
@@ -431,6 +489,27 @@ class ScannerStateStore {
 
   resetDeeperValidation(): void {
     this.state.deeperValidation = { ...DEFAULT_STATE.deeperValidation };
+    this.scheduleSave();
+    this.notify();
+  }
+
+  // ── Portfolio Admission ──
+
+  updateAdmission(partial: Partial<AdmissionState>): void {
+    this.state.admission = { ...this.state.admission, ...partial };
+    this.scheduleSave();
+    this.notify();
+  }
+
+  setAdmissionResults(results: any[] | null, summary: any | null = null): void {
+    this.state.admission.results = results;
+    this.state.admission.summary = summary;
+    this.scheduleSave();
+    this.notify();
+  }
+
+  resetAdmission(): void {
+    this.state.admission = { ...DEFAULT_STATE.admission };
     this.scheduleSave();
     this.notify();
   }

@@ -5,6 +5,14 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test-frontend:
@@ -28,12 +36,12 @@ jobs:
     - name: Run frontend tests
       run: |
         cd frontend
-        npm test -- --watchAll=false --passWithNoTests
+        npm test -- --watchAll=false
     
     - name: Build frontend
       run: |
         cd frontend
-        CI=false npm run build
+        npm run build
 
   test-backend:
     runs-on: ubuntu-latest
@@ -42,7 +50,7 @@ jobs:
     - uses: actions/checkout@v4
     
     - name: Setup Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
         cache: 'pip'
@@ -55,18 +63,14 @@ jobs:
     - name: Run backend tests
       run: |
         cd backend
-        set +e
         python -m pytest -v
-        exit_code=$?
-        set -e
-        if [ "$exit_code" -eq 5 ]; then echo "No tests collected (exit 5) - OK"; elif [ "$exit_code" -ne 0 ]; then exit $exit_code; fi
     
     - name: Lint Python code
       run: |
         pip install flake8 black
         cd backend
         flake8 start_quant_backend.py config.py technical_indicators.py --count --select=E9,F63,F7,F82 --show-source --statistics
-        black --check start_quant_backend.py config.py technical_indicators.py || echo "Black check failed or no Python files to format"
+        black --check start_quant_backend.py config.py technical_indicators.py || echo "Black formatting report is advisory for legacy files"
 
   lint-frontend:
     runs-on: ubuntu-latest
@@ -99,20 +103,53 @@ jobs:
     
     steps:
     - uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
     
-    - name: Run dependency audit
+    - name: Report frontend dependency audit
       run: |
         cd frontend
-        npm audit --audit-level=high || true
+        npm audit --package-lock-only --audit-level=high || true
     
-    - name: Security scan Python dependencies
+    - name: Audit backend dependencies
       run: |
-        pip install safety
-        safety check --full-report || true
+        pip install pip-audit
+        pip-audit -r backend/requirements.txt
+
+  validate-docker:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build production image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: ./Dockerfile
+        push: false
+        tags: alphalab:ci
+        build-args: |
+          REACT_APP_API_BASE_URL=/api
+          REACT_APP_SUPABASE_URL=https://example.supabase.co
+          REACT_APP_SUPABASE_ANON_KEY=ci-public-placeholder
+          REACT_APP_TURNSTILE_SITE_KEY=ci-public-placeholder
 
   build-docker:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test-frontend, test-backend, lint-frontend, validate-docker]
     env:
       DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
@@ -122,7 +159,7 @@ jobs:
     
     - name: Set up Docker Buildx
       if: env.DOCKER_USERNAME != '' && env.DOCKER_PASSWORD != ''
-      uses: docker/setup-buildx-action@v2
+      uses: docker/setup-buildx-action@v3
     
     - name: Login to DockerHub
       if: env.DOCKER_USERNAME != '' && env.DOCKER_PASSWORD != ''
@@ -133,7 +170,7 @@ jobs:
     
     - name: Build and push
       if: env.DOCKER_USERNAME != '' && env.DOCKER_PASSWORD != ''
-      uses: docker/build-push-action@v4
+      uses: docker/build-push-action@v6
       with:
         context: .
         file: ./Dockerfile
@@ -145,22 +182,3 @@ jobs:
     - name: Skip Docker build when secrets are missing
       if: env.DOCKER_USERNAME == '' || env.DOCKER_PASSWORD == ''
       run: echo "Skipping Docker build because DOCKER_USERNAME or DOCKER_PASSWORD is not set."
-
-  deploy-docs:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    permissions:
-      contents: write
-      pages: write
-      id-token: write
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Deploy to GitHub Pages
-      uses: peaceiris/actions-gh-pages@v4
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_dir: ./docs
-        destination_dir: ./docs
-        keep_files: true

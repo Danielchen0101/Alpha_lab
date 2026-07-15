@@ -1,6 +1,5 @@
 import React from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { ArrowLeftOutlined } from '@ant-design/icons';
+import PublicLegalDocument from '../components/public/PublicLegalDocument';
 import { useLanguage } from '../contexts/LanguageContext';
 
 const privacyContentEN = [
@@ -138,214 +137,19 @@ const privacyContentZH: typeof privacyContentEN = [
 ];
 
 const Privacy: React.FC = () => {
-  const navigate = useNavigate();
   const { t, language } = useLanguage();
   const isCN = language === 'zh-CN';
   const content = isCN ? privacyContentZH : privacyContentEN;
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        backgroundColor: '#020611',
-        color: '#e2e8f0',
-        fontFamily:
-          "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
-        position: 'relative',
-        overflow: 'hidden',
-      }}
-    >
-      {/* Background glow */}
-      <div
-        style={{
-          position: 'absolute',
-          top: '10%',
-          left: '15%',
-          width: '60vw',
-          height: '60vw',
-          maxWidth: 800,
-          maxHeight: 800,
-          background:
-            'radial-gradient(circle, rgba(24,144,255,0.1) 0%, rgba(3,8,22,0) 70%)',
-          filter: 'blur(80px)',
-          zIndex: 0,
-          pointerEvents: 'none',
-        }}
-      />
-      <div
-        style={{
-          position: 'absolute',
-          bottom: '10%',
-          right: '15%',
-          width: '50vw',
-          height: '50vw',
-          maxWidth: 700,
-          maxHeight: 700,
-          background:
-            'radial-gradient(circle, rgba(114,46,209,0.08) 0%, rgba(3,8,22,0) 70%)',
-          filter: 'blur(80px)',
-          zIndex: 0,
-          pointerEvents: 'none',
-        }}
-      />
-
-      {/* Content */}
-      <div style={{ position: 'relative', zIndex: 1, padding: '40px 24px 80px' }}>
-        {/* Top bar */}
-        <div
-          style={{
-            maxWidth: 900,
-            margin: '0 auto 40px',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            flexWrap: 'wrap',
-            gap: 16,
-          }}
-        >
-          <img
-            src="/brand/alphalab-logo.png"
-            alt="AlphaLab"
-            style={{
-              height: 40,
-              width: 'auto',
-              objectFit: 'contain',
-              cursor: 'pointer',
-            }}
-            onClick={() => navigate('/')}
-          />
-          <div style={{ display: 'flex', gap: 24 }}>
-            <Link
-              to="/signup"
-              style={{
-                color: '#94a3b8',
-                fontSize: '0.9rem',
-                fontWeight: 500,
-                textDecoration: 'none',
-                transition: 'color 0.2s',
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = '#e2e8f0'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = '#94a3b8'; }}
-            >
-              <ArrowLeftOutlined style={{ marginRight: 4 }} />
-              {t.legal.backToSignUp}
-            </Link>
-            <Link
-              to="/"
-              style={{
-                color: '#94a3b8',
-                fontSize: '0.9rem',
-                fontWeight: 500,
-                textDecoration: 'none',
-                transition: 'color 0.2s',
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = '#e2e8f0'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = '#94a3b8'; }}
-            >
-              {t.legal.backToHome}
-            </Link>
-          </div>
-        </div>
-
-        {/* Content card */}
-        <div
-          style={{
-            maxWidth: 900,
-            margin: '0 auto',
-            background: 'rgba(17,25,40,0.65)',
-            border: '1px solid rgba(255,255,255,0.08)',
-            borderRadius: 24,
-            backdropFilter: 'blur(24px)',
-            boxShadow: '0 30px 60px -12px rgba(0,0,0,0.8), 0 0 40px rgba(24,144,255,0.05)',
-            padding: '48px 48px',
-          }}
-        >
-          {/* Disclaimer */}
-          <div
-            style={{
-              padding: '12px 16px',
-              background: 'rgba(255, 193, 7, 0.12)',
-              border: '1px solid rgba(255, 193, 7, 0.3)',
-              borderRadius: 8,
-              color: '#fbbf24',
-              fontSize: 13,
-              marginBottom: 32,
-              textAlign: 'center',
-            }}
-          >
-            {t.legal.disclaimer}
-          </div>
-
-          {/* Title */}
-          <h1
-            style={{
-              color: '#fff',
-              fontSize: '2rem',
-              fontWeight: 700,
-              marginBottom: 8,
-              letterSpacing: '-0.02em',
-            }}
-          >
-            {t.legal.privacyTitle}
-          </h1>
-          <p style={{ color: '#64748b', fontSize: '0.9rem', marginBottom: 40 }}>
-            {t.legal.privacyLastUpdated}
-          </p>
-
-          {/* Sections */}
-          {content.map((section, i) => (
-            <div key={i} style={{ marginBottom: 32 }}>
-              <h2
-                style={{
-                  color: '#fff',
-                  fontSize: '1.15rem',
-                  fontWeight: 600,
-                  marginBottom: 10,
-                }}
-              >
-                {section.title}
-              </h2>
-              {section.body.split('\n\n').map((paragraph, j) => (
-                <p
-                  key={j}
-                  style={{
-                    color: '#cbd5e1',
-                    fontSize: '0.95rem',
-                    lineHeight: 1.7,
-                    marginBottom: 8,
-                    marginTop: 0,
-                  }}
-                >
-                  {paragraph.split('\n').map((line, k) => (
-                    <React.Fragment key={k}>
-                      {k > 0 && <br />}
-                      {line}
-                    </React.Fragment>
-                  ))}
-                </p>
-              ))}
-            </div>
-          ))}
-
-          {/* Important notice */}
-          <div
-            style={{
-              marginTop: 40,
-              padding: '14px 18px',
-              background: 'rgba(255, 77, 79, 0.1)',
-              border: '1px solid rgba(255, 77, 79, 0.25)',
-              borderRadius: 8,
-              color: '#ff7875',
-              fontSize: 13,
-              lineHeight: 1.6,
-            }}
-          >
-            <strong>{isCN ? '重要提示：' : 'Important: '}</strong>
-            {t.legal.importantNotice}
-          </div>
-        </div>
-      </div>
-    </div>
+    <PublicLegalDocument
+      kind="privacy"
+      title={t.legal.privacyTitle}
+      updated={t.legal.privacyLastUpdated}
+      sections={content}
+      disclaimer={t.legal.disclaimer}
+      importantNotice={t.legal.importantNotice}
+    />
   );
 };
 

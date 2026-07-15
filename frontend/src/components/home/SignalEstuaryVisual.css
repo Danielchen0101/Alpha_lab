@@ -1,0 +1,366 @@
+.signal-estuary {
+  --se-ink: #292c29;
+  --se-muted: #6f716b;
+  --se-rule: rgba(49, 52, 46, 0.2);
+  --se-blue: #155db1;
+  position: relative;
+  isolation: isolate;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: clamp(15px, 2vw, 26px) clamp(16px, 2.6vw, 34px) clamp(14px, 2vw, 24px);
+  overflow: hidden;
+  color: var(--se-ink);
+  border: 1px solid rgba(70, 67, 58, 0.2);
+  border-radius: 2px;
+  background:
+    radial-gradient(circle at 15% 8%, rgba(255, 255, 255, 0.74), transparent 32%),
+    radial-gradient(circle at 82% 74%, rgba(205, 197, 176, 0.14), transparent 39%),
+    linear-gradient(112deg, rgba(111, 99, 73, 0.035) 0 1px, transparent 1px 7px),
+    #f5f0e5;
+  box-shadow:
+    0 20px 70px rgba(71, 64, 48, 0.08),
+    inset 0 0 90px rgba(111, 96, 68, 0.035);
+}
+
+.signal-estuary::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  pointer-events: none;
+  content: '';
+  opacity: 0.18;
+  background-image:
+    repeating-radial-gradient(circle at 22% 38%, rgba(77, 67, 49, 0.2) 0 0.45px, transparent 0.55px 3.4px),
+    repeating-radial-gradient(circle at 71% 64%, rgba(255, 255, 255, 0.68) 0 0.5px, transparent 0.65px 4px);
+  background-size: 13px 11px, 17px 15px;
+  mix-blend-mode: multiply;
+}
+
+.signal-estuary *,
+.signal-estuary *::before,
+.signal-estuary *::after {
+  box-sizing: border-box;
+}
+
+.signal-estuary__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.signal-estuary__header {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 38px;
+  color: var(--se-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.4;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.signal-estuary__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 17px;
+}
+
+.signal-estuary__legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.signal-estuary__key {
+  display: inline-block;
+  width: 25px;
+  height: 1px;
+  background: currentColor;
+}
+
+.signal-estuary__key--volatility {
+  background: repeating-linear-gradient(90deg, currentColor 0 5px, transparent 5px 9px);
+}
+
+.signal-estuary__key--volume {
+  background: repeating-linear-gradient(90deg, currentColor 0 2px, transparent 2px 6px);
+}
+
+.signal-estuary__mode {
+  flex: 0 0 auto;
+  padding: 3px 7px 2px;
+  color: #345d52;
+  border: 1px solid rgba(52, 93, 82, 0.25);
+}
+
+.signal-estuary__chart {
+  position: relative;
+  width: 100%;
+  margin-top: -10px;
+}
+
+.signal-estuary__svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.signal-estuary__guides line {
+  stroke: rgba(66, 69, 62, 0.13);
+  stroke-width: 0.65;
+  stroke-dasharray: 1 5;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-estuary__contour {
+  fill: none;
+  stroke: rgba(77, 100, 85, 0.34);
+  stroke-width: 0.75;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-estuary__contour--2 {
+  stroke: rgba(55, 105, 104, 0.4);
+}
+
+.signal-estuary__contour--3 {
+  stroke: rgba(43, 100, 125, 0.47);
+}
+
+.signal-estuary__contour--4 {
+  stroke: rgba(25, 93, 155, 0.62);
+}
+
+.signal-estuary__flow-lines path {
+  pointer-events: stroke;
+  transition: stroke-opacity 180ms ease, stroke-width 180ms ease;
+}
+
+.signal-estuary__mouth path,
+.signal-estuary__annotation path {
+  fill: none;
+  stroke: rgba(39, 45, 41, 0.46);
+  stroke-width: 0.75;
+  stroke-dasharray: 2 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-estuary__mouth circle:first-child {
+  fill: var(--se-blue);
+}
+
+.signal-estuary__mouth circle:nth-child(2) {
+  fill: none;
+  stroke: rgba(21, 93, 177, 0.3);
+  stroke-width: 0.8;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-estuary__ticker-labels line {
+  stroke-width: 0.8;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-estuary__ticker-labels text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.signal-estuary__axis text,
+.signal-estuary__annotation text {
+  fill: rgba(67, 69, 64, 0.66);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+}
+
+.signal-estuary__stages {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  width: min(680px, 76%);
+  margin: -3px auto 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--se-rule);
+}
+
+.signal-estuary__stages li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  padding: 11px 12px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  text-align: center;
+}
+
+.signal-estuary__stages li::before {
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  content: '';
+  border: 1px solid rgba(48, 52, 46, 0.55);
+  border-radius: 50%;
+  background: #f5f0e5;
+  transform: translateX(-50%);
+}
+
+.signal-estuary__stages li.is-final::before {
+  border-color: var(--se-blue);
+  background: var(--se-blue);
+  box-shadow: 0 0 0 3px rgba(21, 93, 177, 0.1);
+}
+
+.signal-estuary__stage-value {
+  color: #224b75;
+  font-size: clamp(13px, 1.5vw, 18px);
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: 0.04em;
+}
+
+.signal-estuary__stage-label {
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--se-muted);
+  font-size: 10.5px;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.signal-estuary__stages li.is-final .signal-estuary__stage-value,
+.signal-estuary__stages li.is-final .signal-estuary__stage-label {
+  color: var(--se-blue);
+}
+
+.signal-estuary__stage-arrow {
+  position: absolute;
+  top: 17px;
+  right: -10px;
+  width: 20px;
+  height: 1px;
+  background: rgba(40, 43, 39, 0.48);
+}
+
+.signal-estuary__stage-arrow::after {
+  position: absolute;
+  top: -2.5px;
+  right: 0;
+  width: 5px;
+  height: 5px;
+  content: '';
+  border-top: 1px solid rgba(40, 43, 39, 0.58);
+  border-right: 1px solid rgba(40, 43, 39, 0.58);
+  transform: rotate(45deg);
+}
+
+.signal-estuary--compact {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.signal-estuary--compact .signal-estuary__header {
+  min-height: 25px;
+}
+
+.signal-estuary--compact .signal-estuary__chart {
+  max-height: 310px;
+  margin-top: -24px;
+  overflow: hidden;
+}
+
+.signal-estuary--compact .signal-estuary__stages {
+  margin-top: -8px;
+}
+
+@media (max-width: 760px) {
+  .signal-estuary {
+    padding: 13px 12px 14px;
+    border-right: 0;
+    border-left: 0;
+  }
+
+  .signal-estuary__header {
+    min-height: 29px;
+  }
+
+  .signal-estuary__legend {
+    gap: 6px 10px;
+  }
+
+  .signal-estuary__legend span:nth-child(3) {
+    display: none;
+  }
+
+  .signal-estuary__mode {
+    display: none;
+  }
+
+  .signal-estuary__chart {
+    width: 100%;
+    margin-top: -4px;
+    margin-left: 0;
+  }
+
+  .signal-estuary__annotation {
+    display: none;
+  }
+
+  .signal-estuary__ticker-labels text {
+    font-size: 13px;
+  }
+
+  .signal-estuary__stages {
+    width: 100%;
+    margin-top: 2px;
+  }
+
+  .signal-estuary__stages li {
+    padding-right: 5px;
+    padding-left: 5px;
+  }
+
+  .signal-estuary__stage-arrow {
+    right: -7px;
+    width: 14px;
+  }
+}
+
+@media (max-width: 430px) {
+  .signal-estuary__key {
+    width: 18px;
+  }
+
+  .signal-estuary__stage-label {
+    letter-spacing: 0.02em;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .signal-estuary__flow-lines path {
+    transition: none;
+  }
+}

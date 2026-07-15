@@ -1,267 +1,115 @@
-# Contributing to Professional Quantitative Trading Platform
+# Contributing to AlphaLab
 
-Thank you for your interest in contributing to the Professional Quantitative Trading Platform! This document provides guidelines and instructions for contributors.
+AlphaLab combines market data, research workflows, risk controls, and order execution. Changes can affect both presentation and trading behavior, so contributions should be easy to review, reproducible, and explicit about their operational impact.
 
-## 🎯 Code of Conduct
+## Before opening a change
 
-Please be respectful and considerate of others when contributing to this project. We aim to foster an inclusive and welcoming community.
+- Search existing issues and pull requests.
+- Use an issue for broad product changes, new data providers, or changes to execution behavior.
+- Never commit API keys, account data, generated pipeline state, debug exports, or `.env` files.
+- Keep deterministic screening and risk checks separate from optional AI review.
 
-## 📋 How to Contribute
+## Local setup
 
-### Reporting Bugs
-1. **Check existing issues** to avoid duplicates
-2. **Use the bug report template** when creating a new issue
-3. **Provide detailed information**:
-   - Steps to reproduce
-   - Expected vs actual behavior
-   - Screenshots if applicable
-   - Environment details (OS, browser, Python/Node versions)
+Requirements:
 
-### Requesting Features
-1. **Check existing feature requests**
-2. **Explain the problem** the feature would solve
-3. **Describe your proposed solution**
-4. **Provide examples or mockups** if possible
+- Node.js 20 or newer
+- Python 3.11 or newer
+- npm and pip
+- A Supabase project for authenticated flows
 
-### Submitting Code Changes
-1. **Fork the repository**
-2. **Create a feature branch** (`git checkout -b feature/your-feature`)
-3. **Make your changes**
-4. **Add or update tests** if applicable
-5. **Ensure code quality** (linting, formatting)
-6. **Commit your changes** using conventional commits
-7. **Push to your branch** (`git push origin feature/your-feature`)
-8. **Open a Pull Request**
-
-## 🔧 Development Setup
-
-### Prerequisites
-- Node.js 16+ and npm
-- Python 3.8+ and pip
-- Git
-
-### Local Development
 ```bash
-# 1. Clone your fork
-git clone https://github.com/yourusername/quant-trading-platform.git
-cd quant-trading-platform
+git clone https://github.com/Danielchen0101/quant_platform.git
+cd quant_platform
 
-# 2. Add upstream remote
-git remote add upstream https://github.com/originalowner/quant-trading-platform.git
+cp frontend/.env.example frontend/.env
+cp backend/.env.example backend/.env
 
-# 3. Install backend dependencies
-cd backend
-pip install -r requirements.txt  # If requirements.txt exists
-# Or install manually:
-pip install flask flask-cors requests pandas numpy yfinance pytz
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
 
-# 4. Install frontend dependencies
-cd ../frontend
-npm install
+cd frontend
+npm ci
+```
 
-# 5. Start development servers
-# Terminal 1: Backend
-cd backend
-python start_quant_backend.py
+Start the backend and frontend in separate terminals:
 
-# Terminal 2: Frontend
+```bash
+source .venv/bin/activate
+python backend/start_quant_backend.py
+```
+
+```bash
 cd frontend
 npm start
 ```
 
-## 📝 Code Style Guidelines
+The web application runs at `http://localhost:3000`. The backend defaults to `http://localhost:8889`.
 
-### Frontend (TypeScript/React)
-- Use TypeScript strict mode
-- Follow React hooks rules
-- Use functional components with hooks
-- Use meaningful variable and function names
-- Add PropTypes or TypeScript interfaces
-- Use destructuring for props
+## Branches and commits
 
-### Backend (Python)
-- Follow PEP 8 style guide
-- Use meaningful variable and function names
-- Add docstrings for functions and classes
-- Use type hints (Python 3.8+)
-- Handle exceptions appropriately
-- Use logging instead of print statements for production code
+Create a focused branch from the latest `main`:
 
-### Git Commit Messages
-We follow [Conventional Commits](https://www.conventionalcommits.org/):
+```bash
+git switch main
+git pull --ff-only
+git switch -c feature/short-description
+```
 
-**Format**: `type(scope?): subject`
+Use concise Conventional Commit titles, for example:
 
-**Types**:
-- `feat`: New feature
-- `fix`: Bug fix
-- `docs`: Documentation changes
-- `style`: Code style changes (formatting, missing semi-colons, etc.)
-- `refactor`: Code refactoring (no functional changes)
-- `test`: Adding or updating tests
-- `chore`: Maintenance tasks, dependencies, tooling
+- `feat(scanner): add liquidity eligibility gate`
+- `fix(portfolio): align position action controls`
+- `docs: document production scheduler constraint`
+- `test(pipeline): cover admission rejection state`
 
-**Examples**:
-- `feat: add AI trading signals module`
-- `fix(market): resolve 1D chart data issue on non-trading days`
-- `docs: update API documentation`
-- `style: format Python code with black`
-- `refactor: optimize batch request logic`
-- `test: add unit tests for backtest engine`
-- `chore: update dependencies`
+Do not combine unrelated cleanup with a product change.
 
-**Subject Guidelines**:
-- Use imperative mood ("add" not "added" or "adds")
-- First letter lowercase
-- No period at the end
-- Maximum 72 characters
+## Validation
 
-### Pull Request Guidelines
-1. **Title**: Clear and descriptive
-2. **Description**: 
-   - What changes were made
-   - Why they were made
-   - How they were tested
-   - Screenshots for UI changes
-3. **Linked Issues**: Reference related issues
-4. **Review Requests**: Tag relevant reviewers
+Run the checks relevant to the changed area before opening a pull request.
 
-## 🧪 Testing
-
-### Frontend Testing
 ```bash
 cd frontend
-npm test
+npm test -- --watchAll=false
+npx eslint src --ext .js,.jsx,.ts,.tsx
+npx tsc --noEmit
+npm run build
 ```
 
-### Backend Testing
 ```bash
-cd backend
-# Create test files with pytest
-python -m pytest
+source .venv/bin/activate
+python -m pytest backend/tests -q
+python -m py_compile backend/start_quant_backend.py
 ```
 
-### Manual Testing Checklist
-- [ ] Test all major user flows
-- [ ] Verify API endpoints work correctly
-- [ ] Check error handling
-- [ ] Test on different browsers (Chrome, Firefox, Safari)
-- [ ] Verify responsive design on mobile/tablet
+For UI work, verify at least one desktop and one mobile viewport. For pipeline or trading changes, include the decision states tested and confirm that paper/live mode boundaries remain explicit.
 
-## 📁 Project Structure
+## Pull requests
 
-```
-professional_quant_platform/
-├── frontend/                 # React TypeScript Frontend
-│   ├── src/pages/           # Page components
-│   ├── src/services/        # API services
-│   ├── src/components/      # Reusable components
-│   └── src/utils/           # Utility functions
-├── backend/                 # Python Flask Backend
-│   ├── start_quant_backend.py # Main application
-│   ├── config.py           # Configuration
-│   ├── api/               # API modules
-│   │   ├── market/        # Market data endpoints
-│   │   ├── backtest/      # Backtest endpoints
-│   │   └── ai/           # AI trading endpoints
-│   └── utils/             # Utility functions
-├── docs/                   # Documentation
-├── scripts/               # Startup scripts
-└── tests/                 # Test files
-```
+A useful pull request explains:
 
-## 🔍 Code Review Process
+1. the user or operational problem;
+2. the behavior that changed;
+3. the validation performed;
+4. configuration, schema, or migration requirements;
+5. trading, security, and rollback risk;
+6. screenshots for visual changes.
 
-1. **Automated Checks**: CI runs tests and linting
-2. **Maintainer Review**: At least one maintainer reviews
-3. **Feedback**: Reviewers provide feedback
-4. **Revisions**: Contributor addresses feedback
-5. **Approval**: Reviewer approves changes
-6. **Merge**: PR is merged to main branch
+Breaking changes must carry the `breaking-change` and appropriate semantic-version label. A maintainer may request that large changes be split when independent review is possible.
 
-### Review Checklist
-- [ ] Code follows project standards
-- [ ] Tests are included and pass
-- [ ] Documentation is updated
-- [ ] No breaking changes (or documented if necessary)
-- [ ] Performance considerations addressed
-- [ ] Security considerations addressed
+## Product invariants
 
-## 📊 Performance Guidelines
+- AI output is advisory; deterministic gates and human approval remain authoritative.
+- A configured credential is not presented as a verified live connection.
+- Zero values must render as zero, not as positive progress or unavailable state.
+- Runtime evidence and rejection reasons remain inspectable.
+- Production scheduling uses one application process unless the scheduler is moved to a separate worker.
+- User-facing copy must remain consistent in English and Simplified Chinese.
 
-### Frontend Performance
-- Use React.memo() for expensive components
-- Implement virtual scrolling for large lists
-- Optimize re-renders with useMemo/useCallback
-- Lazy load components with React.lazy()
-- Compress images and assets
+## Reporting security issues
 
-### Backend Performance
-- Implement caching for expensive operations
-- Use database indexes appropriately
-- Optimize database queries
-- Implement pagination for large datasets
-- Use connection pooling
+Do not open a public issue for a vulnerability or exposed credential. Follow [SECURITY.md](SECURITY.md) and use GitHub's private vulnerability reporting when available.
 
-### API Design
-- Use RESTful principles
-- Version APIs (e.g., /api/v1/)
-- Implement rate limiting
-- Use proper HTTP status codes
-- Provide meaningful error messages
-
-## 🔐 Security Guidelines
-
-### Frontend Security
-- Sanitize user inputs
-- Implement CSRF protection
-- Use HTTPS in production
-- Secure authentication tokens
-- Implement content security policy
-
-### Backend Security
-- Validate all inputs
-- Use parameterized queries
-- Implement proper authentication/authorization
-- Encrypt sensitive data
-- Keep dependencies updated
-- Implement security headers
-
-## 📚 Documentation
-
-### Code Documentation
-- Add JSDoc comments for TypeScript/JavaScript
-- Add docstrings for Python functions/classes
-- Document complex algorithms
-- Update README for significant changes
-
-### API Documentation
-- Document all endpoints
-- Include request/response examples
-- Document error responses
-- Keep documentation up to date
-
-## 🚀 Release Process
-
-1. **Version Bump**: Update version in package.json
-2. **Changelog**: Update CHANGELOG.md
-3. **Testing**: Run full test suite
-4. **Documentation**: Update documentation
-5. **Tag Release**: Create git tag
-6. **Build**: Create production builds
-7. **Deploy**: Deploy to production
-
-## ❓ Getting Help
-
-- **Documentation**: Check the docs/ directory
-- **Issues**: Search existing issues
-- **Discussions**: Use GitHub discussions if enabled
-- **Contact**: Reach out to maintainers
-
-## 📄 License
-
-By contributing, you agree that your contributions will be licensed under the project's MIT License.
-
----
-
-Thank you for contributing to make this project better! 🙏
+By contributing, you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md) and license your contribution under the repository's [MIT License](LICENSE).

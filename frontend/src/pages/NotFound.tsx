@@ -1,109 +1,13 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Button, Typography } from 'antd';
-import { HomeOutlined, LoginOutlined } from '@ant-design/icons';
+import MarketingLayout from '../components/MarketingLayout';
 import { useLanguage } from '../contexts/LanguageContext';
-
-const { Title, Text } = Typography;
+import './PublicSite.css';
 
 const NotFound: React.FC = () => {
   const navigate = useNavigate();
-  const { t } = useLanguage();
-
-  return (
-    <div
-      style={{
-        minHeight: '100vh',
-        backgroundColor: '#020611',
-        color: '#e2e8f0',
-        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 24,
-        position: 'relative',
-        overflow: 'hidden',
-      }}
-    >
-      {/* Background glow */}
-      <div style={{
-        position: 'absolute', top: '10%', left: '15%', width: '60vw', height: '60vw',
-        maxWidth: 800, maxHeight: 800,
-        background: 'radial-gradient(circle, rgba(24,144,255,0.1) 0%, rgba(3,8,22,0) 70%)',
-        filter: 'blur(80px)', zIndex: 0, pointerEvents: 'none',
-      }} />
-      <div style={{
-        position: 'absolute', bottom: '10%', right: '15%', width: '50vw', height: '50vw',
-        maxWidth: 700, maxHeight: 700,
-        background: 'radial-gradient(circle, rgba(114,46,209,0.08) 0%, rgba(3,8,22,0) 70%)',
-        filter: 'blur(80px)', zIndex: 0, pointerEvents: 'none',
-      }} />
-
-      <div style={{
-        position: 'relative', zIndex: 1, width: '100%', boxSizing: 'border-box', maxWidth: 460,
-        background: 'rgba(17,25,40,0.65)',
-        border: '1px solid rgba(255,255,255,0.08)', borderRadius: 24,
-        backdropFilter: 'blur(24px)',
-        boxShadow: '0 30px 60px -12px rgba(0,0,0,0.8), 0 0 40px rgba(24,144,255,0.05)',
-        padding: 'clamp(40px, 8vw, 56px) clamp(24px, 5vw, 40px)', textAlign: 'center',
-      }}>
-        {/* Brand Logo */}
-        <div style={{ marginBottom: 40 }}>
-          <img 
-            src="/brand/alphalab-logo.png" 
-            alt="AlphaLab" 
-            style={{ height: 40, cursor: 'pointer' }} 
-            onClick={() => navigate('/')}
-          />
-        </div>
-
-        <Title level={1} style={{ 
-          color: '#60a5fa', 
-          marginBottom: 8, 
-          fontSize: '5rem', 
-          fontWeight: 800,
-          lineHeight: 1,
-          letterSpacing: '-0.05em'
-        }}>
-          {t.notFound.title}
-        </Title>
-        <Title level={3} style={{ color: '#fff', marginBottom: 12, fontWeight: 600 }}>
-          {t.notFound.subtitle}
-        </Title>
-        <Text style={{ color: '#94a3b8', fontSize: '0.95rem', display: 'block', marginBottom: 40, lineHeight: 1.6 }}>
-          {t.notFound.description}
-        </Text>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <Button
-            type="primary" size="large"
-            icon={<HomeOutlined aria-hidden="true" />}
-            onClick={() => navigate('/')}
-            style={{
-              height: 48, borderRadius: 12, fontSize: '1rem', fontWeight: 600,
-              background: 'linear-gradient(135deg, #1890ff 0%, #2f54eb 100%)',
-              border: 'none', boxShadow: '0 8px 24px rgba(24,144,255,0.3)',
-            }}
-          >
-            {t.notFound.backToHome}
-          </Button>
-          <Button
-            ghost size="large"
-            icon={<LoginOutlined aria-hidden="true" />}
-            onClick={() => navigate('/signin')}
-            style={{ 
-              height: 48, 
-              borderRadius: 12, 
-              color: '#60a5fa', 
-              borderColor: 'rgba(24,144,255,0.5)' 
-            }}
-          >
-            {t.notFound.signIn}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
+  const { language, t } = useLanguage();
+  const isZh = language === 'zh-CN';
+  return <MarketingLayout tone="paper"><main className={`public-page ${isZh ? 'is-zh' : 'is-en'}`}><section className="public-section" style={{ minHeight: '80svh', paddingTop: 'clamp(150px,18vw,220px)' }}><div className="public-split"><div className="public-sticky-copy"><p>{isZh ? '错误 / 404' : 'ERROR / 404'}</p><h1>{t.notFound.title}</h1><span>{t.notFound.description}</span><div className="public-actions"><button type="button" className="public-primary" onClick={() => navigate('/')}>{t.notFound.backToHome}</button><button type="button" className="public-secondary" onClick={() => navigate('/signin')}>{t.notFound.signIn}<span aria-hidden="true">↗</span></button></div></div><div className="public-instrument"><div className="public-instrument-header"><strong>{isZh ? '路由查询 / 无匹配结果' : 'ROUTE LOOKUP / NO MATCH'}</strong><span>{isZh ? '页面未找到' : 'PAGE NOT FOUND'}</span></div><div className="public-instrument-body" style={{ minHeight: 320, display: 'grid', placeItems: 'center' }}><div style={{ textAlign: 'center' }}><span style={{ display: 'block', color: '#2b5fae', font: '700 .65rem ui-monospace, monospace', letterSpacing: '.12em' }}>{isZh ? '请求已终止' : 'REQUEST TERMINATED'}</span><strong style={{ display: 'block', marginTop: 20, font: '650 clamp(4rem,10vw,9rem) var(--public-display-en)', letterSpacing: '-.07em' }}>404</strong><p style={{ color: '#626760' }}>{t.notFound.subtitle}</p></div></div></div></div></section></main></MarketingLayout>;
 };
-
 export default NotFound;

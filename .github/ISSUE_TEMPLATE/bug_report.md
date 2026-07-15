@@ -1,40 +1,40 @@
 ---
-name: Bug Report
-about: Report a bug to help us improve
-title: '[BUG] '
+name: Bug report
+about: Report a reproducible AlphaLab defect
+title: "[Bug] "
 labels: bug
-assignees: ''
-
+assignees: ""
 ---
 
-## Bug Description
-A clear and concise description of what the bug is.
+## What happened?
 
-## To Reproduce
-Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '...'
-3. Scroll down to '...'
-4. See error
+Describe the observed behavior and why it is incorrect.
 
-## Expected Behavior
-A clear and concise description of what you expected to happen.
+## Reproduction
 
-## Screenshots
-If applicable, add screenshots to help explain your problem.
+1.
+2.
+3.
+
+Include the route, selected paper/live mode, and any relevant pipeline stage. Remove account identifiers and credentials from logs or screenshots.
+
+## Expected behavior
+
+Describe the expected result.
 
 ## Environment
-- **OS**: [e.g. Windows 10, macOS 12, Ubuntu 22.04]
-- **Browser**: [e.g. Chrome 120, Firefox 121, Safari 16]
-- **Node.js Version**: [e.g. 18.17.0]
-- **Python Version**: [e.g. 3.11.5]
-- **Platform Version**: [e.g. 1.0.0]
 
-## Console Errors
-If applicable, copy any console errors you see.
+- AlphaLab version: 3.0.0
+- Deployment: local / Docker / Cloudflare + Render / other
+- OS:
+- Browser and version:
+- Node.js version (development only):
+- Python version (development only):
 
-## Additional Context
-Add any other context about the problem here.
+## Evidence
 
-## Possible Solution
-If you have suggestions for how to fix the issue, please describe them here.
+Add screenshots, console output, or backend logs when safe. State whether the issue affects display only, research state, risk decisions, or order behavior.
+
+## Additional context
+
+List recent configuration, schema, provider, or deployment changes that may be related.

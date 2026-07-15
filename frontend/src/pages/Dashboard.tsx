@@ -1,18 +1,25 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Card, Button, Alert, Tag, Typography, Space, Divider } from 'antd';
-import { ReloadOutlined, DashboardOutlined, RiseOutlined, FallOutlined, LineChartOutlined, EyeOutlined, PieChartOutlined, BarChartOutlined, ClockCircleOutlined, DatabaseOutlined } from '@ant-design/icons';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Button, Typography } from 'antd';
+import { ReloadOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { StockData, safeNumber, safeToFixed, getDashboardStatus } from '../services/marketDataService';
+import {
+  StockData,
+  getDashboardStatus,
+  safeNumber,
+} from '../services/marketDataService';
 import { sharedDataService } from '../services/sharedDataService';
-import DataSourceBadge from '../components/DataSourceBadge';
-import { formatMarketCap } from '../utils/format';
+import { pipelineAutoAPI } from '../services/api';
 import { useLanguage } from '../contexts/LanguageContext';
-import { useTradeMode } from '../contexts/TradeModeContext';
+import { formatMarketCap } from '../utils/format';
+import { marketSymbolPath, rememberMarketSymbol } from '../routes/marketRoutes';
+import './DashboardEditorial.css';
 
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
+const { Text } = Typography;
 
-const { Title, Text } = Typography;
+const STORAGE_KEY = 'quant_watchlist_symbols';
 
+type MoversView = 'all' | 'gainers' | 'losers' | 'watchlist';
+type StatusTone = 'good' | 'warn' | 'bad' | 'neutral';
 
 interface SectorData {
   name: string;
@@ -20,1068 +27,790 @@ interface SectorData {
   percentage: number;
 }
 
-// 函数声明：提升到组件顶部，避免暂时性死区
+interface SectorBreadthData {
+  name: string;
+  total: number;
+  advancing: number;
+  declining: number;
+  unchanged: number;
+}
+
+interface HistogramBin {
+  label: string;
+  count: number;
+  tone: 'negative' | 'neutral' | 'positive';
+}
+
 function getChangePercent(stock: StockData): number | null {
-  // 如果股票数据无效，返回null
-  if (!stock || stock.price === null || stock.price === undefined) {
-    return null;
-  }
-  
-  // 优先使用changePercent
-  if (stock.changePercent !== null && stock.changePercent !== undefined) {
-    return stock.changePercent;
-  }
-  
-  // 如果有price和previousClose，计算changePercent
-  if (stock.price !== null && stock.previousClose !== null && stock.previousClose !== 0) {
+  if (!stock || typeof stock.price !== 'number' || !Number.isFinite(stock.price)) return null;
+  const directChange = stock.changePct ?? stock.changePercent;
+  if (typeof directChange === 'number' && Number.isFinite(directChange)) return directChange;
+  if (typeof stock.previousClose === 'number' && Number.isFinite(stock.previousClose) && stock.previousClose !== 0) {
     return ((stock.price - stock.previousClose) / stock.previousClose) * 100;
   }
-  
-  // 如果有change和previousClose，计算changePercent
-  if (stock.change !== null && stock.previousClose !== null && stock.previousClose !== 0) {
+  if (
+    typeof stock.change === 'number'
+    && Number.isFinite(stock.change)
+    && typeof stock.previousClose === 'number'
+    && Number.isFinite(stock.previousClose)
+    && stock.previousClose !== 0
+  ) {
     return (stock.change / stock.previousClose) * 100;
   }
-  
   return null;
 }
 
-const STORAGE_KEY = "quant_watchlist_symbols";
+const formatCompactNumber = (value: number | null | undefined): string => {
+  if (value === null || value === undefined) return '—';
+  const number = safeNumber(value);
+  if (!Number.isFinite(number)) return '—';
+  return new Intl.NumberFormat('en-US', {
+    notation: 'compact',
+    maximumFractionDigits: 2,
+  }).format(number);
+};
+
+const formatPrice = (value: number | null | undefined, currency = 'USD'): string => {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+  try {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: currency || 'USD',
+      currencyDisplay: 'narrowSymbol',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(value);
+  } catch {
+    return `$${new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(value)}`;
+  }
+};
+
+const formatSignedPercent = (value: number | null | undefined, digits = 2): string => {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+  const magnitude = new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(Math.abs(value));
+  const sign = value > 0 ? '+' : value < 0 ? '−' : '';
+  return `${sign}${magnitude}%`;
+};
+
+const normalizeStatus = (status?: string): string => {
+  if (!status) return 'UNKNOWN';
+  return status.replace(/_/g, ' ');
+};
+
+const getStatusTone = (status?: string): StatusTone => {
+  const value = (status || '').toUpperCase();
+  if (['ONLINE', 'HEALTHY', 'CONNECTED', 'LIVE', 'PAPER'].some(item => value.includes(item))) return 'good';
+  if (value.includes('CONFIG') || value.includes('AUTH') || value.includes('UNKNOWN')) return 'warn';
+  if (value.includes('OFFLINE') || value.includes('ERROR') || value.includes('DISCONNECTED')) return 'bad';
+  return 'neutral';
+};
 
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
-  const { t, translateSector } = useLanguage();
-  const { tradeMode } = useTradeMode();
+  const { t, translateSector, language } = useLanguage();
+  const fetchingRef = useRef(false);
+  const refreshRef = useRef<() => void>(() => undefined);
+
   const [marketData, setMarketData] = useState<StockData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [needsConfig, setNeedsConfig] = useState(false);
   const [needsAuth, setNeedsAuth] = useState(false);
   const [lastFetched, setLastFetched] = useState<number | null>(null);
-  const [, setWatchlist] = useState<any[]>([]);
-  // marketStats现在由useMemo计算，见下方
-  const [sectorData, setSectorData] = useState<SectorData[]>([]);
-  const [systemStatus, setSystemStatus] = useState<{
-    marketData: string;
-    quoteFeed: string;
-    brokerConnection: string;
-    environment: string;
-  }>({ marketData: 'CONFIG_REQUIRED', quoteFeed: 'CONFIG_REQUIRED', brokerConnection: 'CONFIG_REQUIRED', environment: 'Unknown' });
+  const [watchlistVersion, setWatchlistVersion] = useState(0);
+  const [moversView, setMoversView] = useState<MoversView>('all');
+  const [pipelineSummary, setPipelineSummary] = useState<any | null>(null);
+  const [systemStatus, setSystemStatus] = useState({
+    marketData: 'CONFIG_REQUIRED',
+    quoteFeed: 'CONFIG_REQUIRED',
+    brokerConnection: 'CONFIG_REQUIRED',
+    environment: 'Unknown',
+  });
 
-  // 添加请求锁，防止重复请求
-  const [isFetching, setIsFetching] = useState(false);
+  const isZh = language === 'zh-CN';
+  const ui = isZh ? {
+    overview: '市场概览', watchlist: '自选列表', signalStream: '信号流', systemStatus: '系统状态',
+    lastSync: '最后同步', refresh: '刷新', layout: '布局 02 · 宽幅编辑式', title: '今日市场结构',
+    subtitle: '基于当前市场快照与研究工作区的实时概览。', universe: '股票池', advancing: '上涨',
+    declining: '下跌', avgMove: '平均波动', marketCap: '总市值', largestMove: '最大波动', totalSymbols: '全部标的',
+    averageMove: '平均涨跌幅', strongestMove: '当前最大波动', marketRegime: '市场状态', asOf: '截至',
+    breadthSpectrum: '涨跌分布', advancingDeclining: '上涨 / 下跌', sectorParticipation: '板块参与度',
+    sector: '板块', ratio: '比例', noBreadth: '当前快照暂无可用涨跌数据。', sessionBrief: '盘面摘要',
+    leadingMove: '领先波动', concentration: '集中度', topTenMarketCap: '市值前十占比', unavailable: '暂无',
+    systemReadiness: '系统就绪状态', researchQueue: '研究队列', reviewQueue: '查看活动', observed: '已观察',
+    observedDescription: '最近一次管线扫描', shortlisted: '已入选', shortlistedDescription: '进入精筛的候选',
+    validated: '已验证', validatedDescription: '通过深度验证', riskPlan: '风险计划', riskPlanDescription: '已生成入场计划',
+    notLinked: '—', marketMovers: '市场异动', topMovers: '波动排行', gainers: '涨幅榜', losers: '跌幅榜',
+    company: '公司', price: '价格', change: '涨跌', volume: '成交量', noMovers: '当前筛选暂无可用标的。',
+    viewMarkets: '查看全部市场', sectorMap: '板块分布', viewSectors: '查看板块', shareOfUniverse: '占股票池',
+    manage: '管理', noWatchlist: '自选列表为空。', addSymbols: '添加标的', waiting: '等待市场数据同步…',
+    dataSource: '数据源', dataQuality: '数据质量', quoteFeed: '行情源', environment: '环境', broker: '券商状态',
+    lastUpdated: '最后更新', good: '良好', partial: '部分可用', issue: '异常', loading: '同步中',
+    paperMode: '模拟模式', realMode: '实盘模式', saved: '已收藏', marketData: '市场数据',
+  } : {
+    overview: 'Market overview', watchlist: 'Watchlist', signalStream: 'Signal stream', systemStatus: 'System status',
+    lastSync: 'Last sync', refresh: 'Refresh', layout: 'Layout 02 · Wide editorial', title: 'Today’s market structure',
+    subtitle: 'A live view of the current market snapshot and research workspace.', universe: 'Universe', advancing: 'Advancing',
+    declining: 'Declining', avgMove: 'Avg move', marketCap: 'Market cap', largestMove: 'Largest move', totalSymbols: 'Total symbols',
+    averageMove: 'Average move', strongestMove: 'Strongest move', marketRegime: 'Market regime', asOf: 'As of',
+    breadthSpectrum: 'Breadth spectrum', advancingDeclining: 'Advancing / declining', sectorParticipation: 'Sector participation',
+    sector: 'Sector', ratio: 'Ratio', noBreadth: 'No change data is available in the current snapshot.', sessionBrief: 'Session brief',
+    leadingMove: 'Leading move', concentration: 'Concentration', topTenMarketCap: 'Top 10 by market cap', unavailable: 'Unavailable',
+    systemReadiness: 'System readiness', researchQueue: 'Research queue', reviewQueue: 'View activity', observed: 'Observed',
+    observedDescription: 'Latest pipeline scan', shortlisted: 'Shortlisted', shortlistedDescription: 'Candidates sent to fine scan',
+    validated: 'Validated', validatedDescription: 'Passed deeper validation', riskPlan: 'Risk plan', riskPlanDescription: 'Entry plans generated',
+    notLinked: '—', marketMovers: 'Market movers', topMovers: 'Top movers', gainers: 'Gainers', losers: 'Losers',
+    company: 'Company', price: 'Price', change: 'Change', volume: 'Volume', noMovers: 'No instruments match this view.',
+    viewMarkets: 'View all markets', sectorMap: 'Sector map', viewSectors: 'View sectors', shareOfUniverse: 'Share of universe',
+    manage: 'Manage', noWatchlist: 'Your watchlist is empty.', addSymbols: 'Add symbols', waiting: 'Waiting for market data synchronization…',
+    dataSource: 'Data source', dataQuality: 'Data quality', quoteFeed: 'Quote feed', environment: 'Environment', broker: 'Broker status',
+    lastUpdated: 'Last updated', good: 'Good', partial: 'Partial', issue: 'Issue', loading: 'Syncing',
+    paperMode: 'Paper mode', realMode: 'Real mode', saved: 'Saved', marketData: 'Market data',
+  };
 
-  // 使用useMemo优化市场统计计算，只在marketData变化时重新计算
-  const marketStats = useMemo(() => {
-    if (marketData.length === 0) {
-      return {
-        totalSymbols: 0,
-        gainers: 0,
-        losers: 0,
-        avgChange: 0,
-        totalMarketCap: 0,
-        avgVolume: 0,
-        totalVolume: 0,
-        largestCapStock: null,
-        largestMoveStock: null,
-        sectorsCovered: 0
-      };
-    }
-
-    const totalSymbols = marketData.length;
-    const validChanges = marketData.map(s => getChangePercent(s)).filter(change => change !== null) as number[];
-    const gainers = validChanges.filter(change => change > 0).length;
-    const losers = validChanges.filter(change => change < 0).length;
-    const avgChange = validChanges.length > 0 ? validChanges.reduce((sum, change) => sum + change, 0) / validChanges.length : 0;
-
-    // 简化marketCap计算 - Alpaca可能不提供marketCap，使用价格作为替代
-    const validMarketCapStocks = marketData.filter(s => {
-      const marketCap = safeNumber(s.marketCap);
-      return marketCap !== null && marketCap !== undefined && marketCap > 0;
-    });
-
-    // If market cap is unavailable, keep it blank rather than showing estimated data.
-    let totalMarketCap = 0;
-    if (validMarketCapStocks.length > 0) {
-      totalMarketCap = validMarketCapStocks.reduce((sum, s) => sum + safeNumber(s.marketCap || 0), 0);
-    } else {
-      // 使用价格作为替代，假设每股市值约等于价格的1000倍（简化估算）
-      totalMarketCap = 0;
-    }
-
-    // 调试：输出market cap计算详情
-    if (process.env.NODE_ENV !== 'production') {
-      console.log('[Dashboard调试] Market Cap计算详情:');
-      console.log('[Dashboard调试] 有效股票数量:', validMarketCapStocks.length);
-      validMarketCapStocks.forEach((s, i) => {
-        const cap = safeNumber(s.marketCap || 0);
-        console.log(`[Dashboard调试] ${i+1}. ${s.symbol}: ${cap} (${cap/1e12}T)`);
-      });
-      console.log('[Dashboard调试] 计算的总市值:', totalMarketCap);
-      console.log('[Dashboard调试] 格式化显示:', `$${totalMarketCap/1e12}T`);
-    }
-
-    // 找到最大市值的股票
-    const largestCapStock = validMarketCapStocks.length > 0
-      ? validMarketCapStocks.reduce((max, s) =>
-          safeNumber(s.marketCap || 0) > safeNumber(max.marketCap || 0) ? s : max
-        )
-      : null;
-
-    // 找到最大涨跌幅的股票
-    const largestMoveStock = marketData.length > 0
-      ? marketData.reduce((max, s) => {
-          const change = getChangePercent(s);
-          const maxChange = getChangePercent(max);
-          return (change !== null && maxChange !== null && Math.abs(change) > Math.abs(maxChange)) ? s : max;
-        })
-      : null;
-
-    // 计算成交量
-    const validVolumeStocks = marketData.filter(s => safeNumber(s.volume) > 0);
-    const totalVolume = validVolumeStocks.reduce((sum, s) => sum + safeNumber(s.volume || 0), 0);
-    const avgVolume = validVolumeStocks.length > 0 ? totalVolume / validVolumeStocks.length : 0;
-
-    // 计算覆盖的行业数量 - Alpaca可能不提供sector/industry
-    const sectors = new Set(marketData.map(s => s.sector).filter(Boolean));
-    const sectorsCovered = sectors.size;
-
-    // 计算sector分布 - 对Alpaca数据更友好
-    const sectorMap: Record<string, number> = {};
-    marketData.forEach(stock => {
-      const sector = stock.sector || stock.industry || 'General';
-      if (sector && sector !== 'Unknown' && sector !== 'None' && sector !== 'N/A') {
-        sectorMap[sector] = (sectorMap[sector] || 0) + 1;
-      }
-    });
-
-    // 更新sectorData
-    if (Object.keys(sectorMap).length === 0) {
-      // 如果没有sector数据，显示通用分类
-      const total = marketData.length;
-      const sectorArray: SectorData[] = [
-        { name: 'Stocks', count: total, percentage: 100 }
-      ];
-      setSectorData(sectorArray);
-    } else {
-      const total = marketData.length;
-      const sectorArray: SectorData[] = Object.entries(sectorMap)
-        .map(([name, count]) => ({
-          name,
-          count,
-          percentage: total > 0 ? (count / total) * 100 : 0
-        }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 6);
-      setSectorData(sectorArray);
-    }
-
-    return {
-      totalSymbols,
-      gainers,
-      losers,
-      avgChange,
-      totalMarketCap,
-      avgVolume,
-      totalVolume,
-      largestCapStock: largestCapStock ? {
-        symbol: largestCapStock.symbol,
-        marketCap: safeNumber(largestCapStock.marketCap || 0)
-      } : null,
-      largestMoveStock: largestMoveStock ? {
-        symbol: largestMoveStock.symbol,
-        changePercent: getChangePercent(largestMoveStock) || 0
-      } : null,
-      sectorsCovered
+  const localizeSystemValue = (value?: string): string => {
+    const raw = String(value || '').trim();
+    if (!raw) return '—';
+    if (!isZh) return normalizeStatus(raw);
+    const normalized = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').toUpperCase();
+    const labels: Record<string, string> = {
+      ONLINE: '在线', HEALTHY: '健康', CONNECTED: '已连接', DISCONNECTED: '未连接',
+      'CONFIG REQUIRED': '需要配置', 'AUTH REQUIRED': '需要登录', UNKNOWN: '未知',
+      PAPER: '模拟', REAL: '实盘', LIVE: '实盘', OFFLINE: '离线', ERROR: '异常',
+      IEX: 'IEX 行情', SIP: 'SIP 全市场行情',
     };
-  }, [marketData]);
-
-  // 移除旧的marketStats状态，改用useMemo计算
-  // const [marketStats, setMarketStats] = useState<MarketStats>({ ... });
-
-  const fetchMarketData = async (forceRefresh = false) => {
-    // 如果已经在请求中，直接返回
-    if (isFetching && !forceRefresh) {
-      if (process.env.NODE_ENV !== 'production') console.log('[Dashboard优化] 请求已在进行中，跳过重复请求');
-      return;
-    }
-
-    try {
-      setIsFetching(true);
-      setLoading(true);
-      setError('');
-      setNeedsConfig(false);
-      setNeedsAuth(false);
-
-      if (process.env.NODE_ENV !== 'production') console.log('[Dashboard优化] 开始获取市场数据...');
-
-      // 使用共享数据服务，避免重复请求
-      const stocks = forceRefresh
-        ? await sharedDataService.refreshStocks()
-        : await sharedDataService.getStocks();
-
-      // 检查是否获取到有效数据
-      if (!stocks || stocks.length === 0) {
-        setError(t.dashboard.noMarketData);
-        setMarketData([]);
-        setSectorData([]);
-      } else {
-        // 成功获取数据
-        if (process.env.NODE_ENV !== 'production') console.log('[Dashboard优化] 成功获取数据:', {
-          股票数量: stocks.length,
-          数据源: stocks[0]?.dataSource || 'Alpaca',
-          缓存有效: sharedDataService.isCacheValid()
-        });
-        setMarketData(stocks);
-        setLastFetched(Date.now());
-      }
-    } catch (err: any) {
-      if (process.env.NODE_ENV !== 'production') console.error('[Dashboard优化] 获取市场数据失败:', err);
-      const errorMessage = err.message || t.dashboard.errorLoading;
-      const errorCode = err.code || '';
-      setError(errorMessage);
-      setNeedsAuth(false);
-      setNeedsConfig(false);
-      if (errorCode === 'AUTH_REQUIRED' || errorMessage.includes('Authentication required')) {
-        setNeedsAuth(true);
-      } else if (errorCode === 'CONFIG_REQUIRED' || errorMessage.includes('not configured') || errorMessage.includes('needsConfig') || errorMessage.includes('Configuration required')) {
-        setNeedsConfig(true);
-      }
-
-      // 清空数据，避免显示旧数据
-      setMarketData([]);
-      setSectorData([]);
-    } finally {
-      setIsFetching(false);
-      setLoading(false);
-    }
+    if (labels[normalized]) return labels[normalized];
+    if (/ALPACA SANDBOX.*PAPER/i.test(raw)) return 'Alpaca 沙盒（模拟） · 用户级';
+    return raw.replace(/per[- ]user/ig, '用户级');
   };
 
-  // getChangePercent函数已移动到组件顶部，见下方
-
-
-  // calculateMarketStats函数已由useMemo替代，见上方marketStats计算
-
-  const getTopGainers = () => {
-    if (process.env.NODE_ENV !== 'production') console.log(`[调试] getTopGainers: marketData长度=${marketData.length}`);
-    const gainers = [...marketData].filter(s => {
-      const change = getChangePercent(s);
-      const isGainer = change !== null && change > 0;
-      if (process.env.NODE_ENV !== 'production') console.log(`[调试] ${s.symbol}: change=${change}, isGainer=${isGainer}`);
-      return isGainer;
-    }).sort((a, b) => {
-      const changeA = getChangePercent(a) || 0;
-      const changeB = getChangePercent(b) || 0;
-      return changeB - changeA;
-    });
-    if (process.env.NODE_ENV !== 'production') console.log(`[调试] getTopGainers结果:`, gainers.map(g => ({symbol: g.symbol, changePercent: g.changePercent})));
-    return gainers;
-  };
-
-  const getTopLosers = () => {
-    if (process.env.NODE_ENV !== 'production') console.log(`[调试] getTopLosers: marketData长度=${marketData.length}`);
-    const losers = [...marketData].filter(s => {
-      const change = getChangePercent(s);
-      const isLoser = change !== null && change < 0;
-      if (process.env.NODE_ENV !== 'production') console.log(`[调试] ${s.symbol}: change=${change}, isLoser=${isLoser}`);
-      return isLoser;
-    }).sort((a, b) => {
-      const changeA = getChangePercent(a) || 0;
-      const changeB = getChangePercent(b) || 0;
-      return changeA - changeB;
-    });
-    if (process.env.NODE_ENV !== 'production') console.log(`[调试] getTopLosers结果:`, losers.map(l => ({symbol: l.symbol, changePercent: l.changePercent})));
-    return losers;
-  };
-  const getWatchlistSymbols = () => {
-    // 直接从localStorage读取symbol数组
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (!saved) return [];
-    
-    try {
-      const watchlistSymbols = JSON.parse(saved);
-      if (!Array.isArray(watchlistSymbols)) return [];
-      
-      // 标准化symbols（大写、去空格）
-      return watchlistSymbols.map(s => String(s).toUpperCase().trim());
-    } catch (err) {
-      if (process.env.NODE_ENV !== 'production') console.error('Failed to parse watchlist symbols:', err);
-      return [];
-    }
-  };
-
-  const getWatchlistData = () => {
-    // 用当前真实marketData过滤映射watchlist symbols
-    const watchlistSymbols = getWatchlistSymbols();
-    
-    // 用当前真实marketData过滤映射
-    return marketData
-      .filter(stock => watchlistSymbols.includes(stock.symbol.toUpperCase().trim()))
-      .slice(0, 8); // 最多显示8个
-  };
-
-  const refresh = () => {
-    fetchMarketData(true); // 强制刷新，忽略缓存
-    fetchSystemStatus();
-  };
-
-  // 获取系统状态（per-user config state）
   const fetchSystemStatus = async () => {
     try {
       const status = await getDashboardStatus();
       setSystemStatus(status);
     } catch {
-      // Keep default CONFIG_REQUIRED state
+      // The default status deliberately communicates that setup is still required.
     }
   };
 
-  useEffect(() => {
-    // 组件加载时清除所有错误状态
-    setError('');
+  const fetchPipelineSummary = async () => {
+    try {
+      const response = await pipelineAutoAPI.getStatus();
+      if (response.data?.success) {
+        const summary = response.data.lastSummary;
+        setPipelineSummary(summary && Object.keys(summary).length ? summary : null);
+      }
+    } catch {
+      // A user may not have run the research pipeline yet; the queue remains empty.
+      setPipelineSummary(null);
+    }
+  };
 
-    // 延迟加载数据，让用户先看到页面框架
-    const loadTimer = setTimeout(() => {
+  const fetchMarketData = async (forceRefresh = false) => {
+    if (fetchingRef.current && !forceRefresh) return;
+    try {
+      fetchingRef.current = true;
+      setLoading(true);
+      setError('');
+      setNeedsConfig(false);
+      setNeedsAuth(false);
+      const stocks = forceRefresh
+        ? await sharedDataService.refreshStocks()
+        : await sharedDataService.getStocks();
+
+      if (!stocks || stocks.length === 0) {
+        setError(t.dashboard.noMarketData);
+        setMarketData([]);
+      } else {
+        setMarketData(stocks);
+        setLastFetched(Date.now());
+      }
+    } catch (requestError: any) {
+      const rawMessage = requestError.message || t.dashboard.errorLoading;
+      const code = requestError.code || '';
+      setError(language === 'zh-CN' ? t.dashboard.errorLoading : rawMessage);
+      setNeedsAuth(code === 'AUTH_REQUIRED' || rawMessage.includes('Authentication required'));
+      setNeedsConfig(
+        code === 'CONFIG_REQUIRED'
+        || rawMessage.includes('not configured')
+        || rawMessage.includes('needsConfig')
+        || rawMessage.includes('Configuration required')
+      );
+      setMarketData([]);
+    } finally {
+      fetchingRef.current = false;
+      setLoading(false);
+    }
+  };
+
+  const refresh = () => {
+    fetchMarketData(true);
+    fetchSystemStatus();
+    fetchPipelineSummary();
+  };
+  refreshRef.current = refresh;
+
+  useEffect(() => {
+    setError('');
+    const loadTimer = window.setTimeout(() => {
       fetchMarketData();
       fetchSystemStatus();
-    }, 100); // 100ms延迟，足够渲染初始界面
-
-    // 从localStorage加载watchlist symbols（仅用于初始化状态）
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          // 只存储symbols用于状态跟踪，实际数据从getWatchlistData()获取
-          setWatchlist(parsed.map(s => ({ symbol: String(s).toUpperCase().trim() })));
-        }
-      } catch (err) {
-        if (process.env.NODE_ENV !== 'production') console.error('Failed to parse watchlist from localStorage:', err);
-        // watchlist解析失败不是关键错误，不设置全局error
-      }
-    }
-
-    // 清理定时器
-    return () => {
-      clearTimeout(loadTimer);
-    };
+      fetchPipelineSummary();
+    }, 100);
+    return () => window.clearTimeout(loadTimer);
+    // Initial data hydration intentionally runs once per authenticated session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 监听localStorage变化，实现页面间watchlist同步
   useEffect(() => {
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY) {
-        if (e.newValue) {
-          try {
-            const parsed = JSON.parse(e.newValue);
-            if (Array.isArray(parsed)) {
-              setWatchlist(parsed);
-            }
-          } catch (err) {
-            if (process.env.NODE_ENV !== 'production') console.error('Failed to parse watchlist from storage event:', err);
-          }
-        } else {
-          setWatchlist([]);
-        }
-      }
+    const handleStorageChange = (event: StorageEvent) => {
+      if (event.key === STORAGE_KEY) setWatchlistVersion(version => version + 1);
     };
-
     window.addEventListener('storage', handleStorageChange);
-    return () => {
-      window.removeEventListener('storage', handleStorageChange);
-    };
+    return () => window.removeEventListener('storage', handleStorageChange);
   }, []);
 
-  const handleSymbolClick = (symbol: string) => navigate(`/analysis/${symbol}`);
-  const handleManageWatchlist = () => navigate('/watchlist');
+  useEffect(() => {
+    const handleGlobalRefresh = () => refreshRef.current();
+    window.addEventListener('alphalab:refresh', handleGlobalRefresh);
+    return () => window.removeEventListener('alphalab:refresh', handleGlobalRefresh);
+  }, []);
 
-  // 专业金融面板sector颜色映射函数
-  // 每个sector都有独特且稳定的颜色，donut图和legend颜色一一对应
-  const getSectorColor = (sectorName: string): string => {
-    const lowerName = sectorName.toLowerCase();
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('alphalab:data-sync', {
+      detail: { loading, timestamp: lastFetched },
+    }));
+  }, [loading, lastFetched]);
 
-    // 1. 优先处理常见且重要的sector（根据你的要求）
-    // Technology - 蓝色，科技感
-    if (lowerName.includes('technology') || lowerName === 'tech') {
-      return '#1890ff';
+  const watchlistSymbols = useMemo(() => {
+    // The version counter invalidates this snapshot when another tab edits localStorage.
+    void watchlistVersion;
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) return [] as string[];
+    try {
+      const parsed = JSON.parse(saved);
+      if (!Array.isArray(parsed)) return [] as string[];
+      return parsed.map(symbol => String(symbol).toUpperCase().trim()).filter(Boolean);
+    } catch {
+      return [] as string[];
     }
-    // Semiconductors - 深蓝色，与Technology区分但相关
-    if (lowerName.includes('semiconductor')) {
-      return '#2f54eb';
-    }
-    // Banking - 绿色，金融稳定
-    if (lowerName.includes('banking') || lowerName === 'bank') {
-      return '#52c41a';
-    }
-    // Automobiles - 橙色，工业感
-    if (lowerName.includes('automobile') || lowerName.includes('auto')) {
-      return '#fa8c16';
-    }
-    // Financial Services - 青色，与Banking区分但相关
-    if (lowerName.includes('financial services') || lowerName.includes('financial')) {
-      return '#13c2c2';
-    }
+  }, [watchlistVersion]);
 
-    // 2. 其他常见sector
-    // Communications/Media - 紫色
-    if (lowerName.includes('communication') || lowerName.includes('media')) {
-      return '#722ed1';
-    }
-    // Retail/Consumer - 粉色
-    if (lowerName.includes('retail') || lowerName.includes('consumer')) {
-      return '#eb2f96';
-    }
-    // Healthcare - 亮粉色
-    if (lowerName.includes('health') || lowerName.includes('medical')) {
-      return '#f759ab';
-    }
-    // Energy - 红色橙色
-    if (lowerName.includes('energy') || lowerName.includes('oil') || lowerName.includes('gas')) {
-      return '#fa541c';
-    }
-    // Industrials - 中蓝色
-    if (lowerName.includes('industrial') || lowerName.includes('manufactur')) {
-      return '#597ef7';
-    }
-    // Real Estate - 亮紫色
-    if (lowerName.includes('real estate') || lowerName.includes('estate')) {
-      return '#9254de';
-    }
-    // Utilities - 亮绿色
-    if (lowerName.includes('utilit')) {
-      return '#a0d911';
-    }
-    // Materials - 深紫色
-    if (lowerName.includes('material')) {
-      return '#531dab';
-    }
-    // Information Technology - 天蓝色
-    if (lowerName.includes('information')) {
-      return '#69c0ff';
-    }
+  const marketStats = useMemo(() => {
+    const changes = marketData
+      .map(stock => getChangePercent(stock))
+      .filter((change): change is number => change !== null);
+    const validMarketCaps = marketData.filter(stock => safeNumber(stock.marketCap) > 0);
+    const totalMarketCap = validMarketCaps.reduce((sum, stock) => sum + safeNumber(stock.marketCap), 0);
+    const largestMoveStock = marketData.reduce<StockData | null>((largest, stock) => {
+      const change = getChangePercent(stock);
+      if (change === null) return largest;
+      if (!largest) return stock;
+      const largestChange = getChangePercent(largest);
+      return largestChange === null || Math.abs(change) > Math.abs(largestChange) ? stock : largest;
+    }, null);
 
-    // 3. 稳定颜色映射表 - 确保相同sector总是得到相同颜色
-    // 即使sector数量变化，颜色也不会随机重复
-    const stableColorMap: Record<string, string> = {
-      // 已定义的sector
-      'technology': '#1890ff',
-      'tech': '#1890ff',
-      'semiconductors': '#2f54eb',
-      'semiconductor': '#2f54eb',
-      'banking': '#52c41a',
-      'bank': '#52c41a',
-      'automobiles': '#fa8c16',
-      'automobile': '#fa8c16',
-      'auto': '#fa8c16',
-      'financial services': '#13c2c2',
-      'financial': '#13c2c2',
-      'communications': '#722ed1',
-      'communication': '#722ed1',
-      'media': '#722ed1',
-      'retail': '#eb2f96',
-      'consumer': '#eb2f96',
-      'healthcare': '#f759ab',
-      'health': '#f759ab',
-      'medical': '#f759ab',
-      'energy': '#fa541c',
-      'oil': '#fa541c',
-      'gas': '#fa541c',
-      'industrials': '#597ef7',
-      'industrial': '#597ef7',
-      'manufacturing': '#597ef7',
-      'real estate': '#9254de',
-      'estate': '#9254de',
-      'utilities': '#a0d911',
-      'utility': '#a0d911',
-      'materials': '#531dab',
-      'material': '#531dab',
-      'information technology': '#69c0ff',
-      'information': '#69c0ff',
-
-      // 其他可能出现的sector
-      'telecommunications': '#7cb305',
-      'insurance': '#08979c',
-      'pharmaceuticals': '#d4380d',
-      'biotechnology': '#d46b08',
-      'software': '#096dd9',
-      'hardware': '#1d39c4',
-      'internet': '#10239e',
-      'e-commerce': '#c41d7f',
-      'entertainment': '#9e1068',
-      'transportation': '#ad8b00',
-      'logistics': '#ad6800',
-      'construction': '#5c3811',
-      'agriculture': '#389e0d',
-      'defense': '#003a8c',
-      'aerospace': '#00474f',
+    return {
+      totalSymbols: marketData.length,
+      validChangeCount: changes.length,
+      gainers: changes.filter(change => change > 0).length,
+      losers: changes.filter(change => change < 0).length,
+      avgChange: changes.length ? changes.reduce((sum, change) => sum + change, 0) / changes.length : 0,
+      totalMarketCap,
+      largestMoveStock,
+      largestMovePercent: largestMoveStock ? getChangePercent(largestMoveStock) : null,
     };
+  }, [marketData]);
 
-    // 首先检查精确匹配
-    if (stableColorMap[lowerName]) {
-      return stableColorMap[lowerName];
+  const sectorData = useMemo<SectorData[]>(() => {
+    const counts = new Map<string, number>();
+    marketData.forEach(stock => {
+      const rawName = stock.sector || stock.industry;
+      if (!rawName || ['unknown', 'none', 'n/a'].includes(rawName.toLowerCase())) return;
+      counts.set(rawName, (counts.get(rawName) || 0) + 1);
+    });
+    if (!counts.size && marketData.length) {
+      return [{ name: 'Stocks', count: marketData.length, percentage: 100 }];
     }
+    return Array.from(counts.entries())
+      .map(([name, count]) => ({
+        name,
+        count,
+        percentage: marketData.length ? (count / marketData.length) * 100 : 0,
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 6);
+  }, [marketData]);
 
-    // 然后检查包含关系
-    for (const [key, color] of Object.entries(stableColorMap)) {
-      if (lowerName.includes(key)) {
-        return color;
-      }
-    }
+  const sectorBreadth = useMemo<SectorBreadthData[]>(() => {
+    const sectors = new Map<string, SectorBreadthData>();
+    marketData.forEach(stock => {
+      const rawName = stock.sector || stock.industry || 'General';
+      const name = ['unknown', 'none', 'n/a'].includes(rawName.toLowerCase()) ? 'General' : rawName;
+      const row = sectors.get(name) || { name, total: 0, advancing: 0, declining: 0, unchanged: 0 };
+      const change = getChangePercent(stock);
+      row.total += 1;
+      if (change === null || change === 0) row.unchanged += 1;
+      else if (change > 0) row.advancing += 1;
+      else row.declining += 1;
+      sectors.set(name, row);
+    });
+    return Array.from(sectors.values()).sort((a, b) => b.total - a.total).slice(0, 5);
+  }, [marketData]);
 
-    // 最后，使用稳定的哈希算法确保相同sector总是得到相同颜色
-    const stableColors = [
-      '#1890ff', '#2f54eb', '#52c41a', '#fa8c16', '#13c2c2', '#722ed1', '#eb2f96',
-      '#f759ab', '#fa541c', '#597ef7', '#9254de', '#a0d911', '#531dab', '#69c0ff',
-      '#7cb305', '#08979c', '#d4380d', '#d46b08', '#096dd9', '#1d39c4'
+  const histogram = useMemo<HistogramBin[]>(() => {
+    const ranges = [
+      { min: -Infinity, max: -5, label: '<−5', tone: 'negative' as const },
+      { min: -5, max: -3, label: '−5', tone: 'negative' as const },
+      { min: -3, max: -2, label: '−3', tone: 'negative' as const },
+      { min: -2, max: -1.5, label: '−2', tone: 'negative' as const },
+      { min: -1.5, max: -1, label: '−1.5', tone: 'negative' as const },
+      { min: -1, max: -0.75, label: '−1', tone: 'negative' as const },
+      { min: -0.75, max: -0.5, label: '−.75', tone: 'negative' as const },
+      { min: -0.5, max: -0.25, label: '−.5', tone: 'negative' as const },
+      { min: -0.25, max: 0, label: '−.25', tone: 'negative' as const },
+      { min: 0, max: 0.25, label: '0', tone: 'neutral' as const },
+      { min: 0.25, max: 0.5, label: '+.25', tone: 'positive' as const },
+      { min: 0.5, max: 0.75, label: '+.5', tone: 'positive' as const },
+      { min: 0.75, max: 1, label: '+.75', tone: 'positive' as const },
+      { min: 1, max: 1.5, label: '+1', tone: 'positive' as const },
+      { min: 1.5, max: 2, label: '+1.5', tone: 'positive' as const },
+      { min: 2, max: 3, label: '+2', tone: 'positive' as const },
+      { min: 3, max: 5, label: '+3', tone: 'positive' as const },
+      { min: 5, max: Infinity, label: '>+5', tone: 'positive' as const },
     ];
+    const bins = ranges.map(range => ({ label: range.label, count: 0, tone: range.tone }));
+    marketData.forEach(stock => {
+      const change = getChangePercent(stock);
+      if (change === null) return;
+      const index = ranges.findIndex((range, rangeIndex) => (
+        change >= range.min && (change < range.max || rangeIndex === ranges.length - 1)
+      ));
+      if (index >= 0) bins[index].count += 1;
+    });
+    return bins;
+  }, [marketData]);
 
-    // 稳定的哈希函数
-    let hash = 0;
-    for (let i = 0; i < sectorName.length; i++) {
-      hash = ((hash << 5) - hash) + sectorName.charCodeAt(i);
-      hash = hash & hash; // 转换为32位整数
-    }
-    hash = Math.abs(hash);
+  const concentration = useMemo(() => {
+    const marketCaps = marketData.map(stock => safeNumber(stock.marketCap)).filter(value => value > 0).sort((a, b) => b - a);
+    const total = marketCaps.reduce((sum, value) => sum + value, 0);
+    if (!total) return null;
+    return (marketCaps.slice(0, 10).reduce((sum, value) => sum + value, 0) / total) * 100;
+  }, [marketData]);
 
-    return stableColors[hash % stableColors.length];
+  const watchlistData = marketData
+    .filter(stock => watchlistSymbols.includes(stock.symbol.toUpperCase().trim()))
+    .slice(0, 5);
+
+  const moversData = useMemo(() => {
+    let stocks = marketData.filter(stock => getChangePercent(stock) !== null);
+    if (moversView === 'gainers') stocks = stocks.filter(stock => (getChangePercent(stock) || 0) > 0);
+    if (moversView === 'losers') stocks = stocks.filter(stock => (getChangePercent(stock) || 0) < 0);
+    if (moversView === 'watchlist') stocks = stocks.filter(stock => watchlistSymbols.includes(stock.symbol.toUpperCase().trim()));
+    return [...stocks]
+      .sort((a, b) => Math.abs(getChangePercent(b) || 0) - Math.abs(getChangePercent(a) || 0))
+      .slice(0, 6);
+  }, [marketData, moversView, watchlistSymbols]);
+
+  const advancingPercent = marketStats.validChangeCount ? (marketStats.gainers / marketStats.validChangeCount) * 100 : 0;
+  const decliningPercent = marketStats.validChangeCount ? (marketStats.losers / marketStats.validChangeCount) * 100 : 0;
+  const histogramMax = Math.max(...histogram.map(bin => bin.count), 1);
+  const lastUpdated = lastFetched
+    ? new Intl.DateTimeFormat(isZh ? 'zh-CN' : 'en-US', {
+        timeZone: 'America/New_York',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }).format(new Date(lastFetched))
+    : '—';
+  const dataSource = marketData[0]?.dataSource || '—';
+  const dataQuality = loading
+    ? ui.loading
+    : error
+      ? ui.issue
+      : marketData.length && marketData.some(stock => stock.price === null)
+        ? ui.partial
+        : marketData.length
+          ? ui.good
+          : '—';
+  const pipelineObserved = pipelineSummary
+    ? safeNumber(pipelineSummary.scannedTotal ?? pipelineSummary.scanned)
+    : null;
+  const pipelineShortlisted = pipelineSummary
+    ? safeNumber(pipelineSummary.fine_input_count ?? pipelineSummary.fine_count)
+    : null;
+  const pipelineVerdicts = pipelineSummary?.validation_stats?.verdicts;
+  const pipelineValidated = pipelineVerdicts
+    ? safeNumber(pipelineVerdicts.Confirmed) + safeNumber(pipelineVerdicts.Pass)
+    : null;
+  const pipelineRiskPlans = pipelineSummary
+    ? safeNumber(pipelineSummary.entry_plan_count)
+    : null;
+
+  const handleSymbolClick = (symbol: string) => {
+    rememberMarketSymbol(symbol);
+    navigate(marketSymbolPath(symbol));
   };
 
+  const renderStatus = (label: string, status: string) => (
+    <div className="ed-readiness-row" key={label}>
+      <span className={`ed-status-dot is-${getStatusTone(status)}`} aria-hidden="true" />
+      <span>{label}</span>
+      <strong>{localizeSystemValue(status)}</strong>
+    </div>
+  );
+
   return (
-    <div className="dashboard-page-shell">
-      <style>{`
-        .dashboard-page-shell {
-          animation: fadeIn 0.5s ease-out;
-        }
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(10px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        .premium-card {
-          border-radius: 18px !important;
-          border: 1px solid var(--app-border-soft) !important;
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.02) !important;
-          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
-          background: var(--app-card-bg) !important;
-          overflow: hidden;
-        }
-        .premium-card:hover {
-          box-shadow: 0 12px 28px rgba(0, 0, 0, 0.05) !important;
-          transform: translateY(-2px) !important;
-          border-color: rgba(24, 144, 255, 0.2) !important;
-        }
-        .metric-card {
-          padding: 24px !important;
-          display: flex;
-          flex-direction: column;
-          justify-content: center;
-          height: 100%;
-          position: relative;
-        }
-        .metric-label {
-          font-size: 11px;
-          text-transform: uppercase;
-          letter-spacing: 1px;
-          color: var(--app-text-muted);
-          font-weight: 700;
-          margin-bottom: 10px;
-        }
-        .metric-value {
-          font-size: clamp(20px, 1.8vw, 26px);
-          font-weight: 800;
-          color: var(--app-text-strong);
-          line-height: 1.1;
-          font-family: 'SF Pro Display', -apple-system, system-ui, sans-serif;
-        }
-        .metric-icon {
-          position: absolute;
-          right: 20px;
-          top: 24px;
-          font-size: 22px;
-          opacity: 0.12;
-          color: #1890ff;
-        }
-        .status-dot {
-          width: 8px;
-          height: 8px;
-          border-radius: 50%;
-          display: inline-block;
-          margin-right: 8px;
-        }
-        .empty-state-container {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          height: 100%;
-          padding: 40px 20px;
-          text-align: center;
-        }
-        .ant-table-thead > tr > th {
-          background: var(--app-table-header-bg) !important; color: var(--app-text-strong) !important; border-bottom: 1px solid var(--app-border-soft) !important;
-          font-size: 11px !important;
-          text-transform: uppercase !important;
-          letter-spacing: 0.5px !important;
-          font-weight: 700 !important;
-        }
-        .refresh-btn:hover {
-          transform: rotate(30deg);
-        }
-        .movers-grid {
-          display: grid;
-          grid-template-columns: repeat(2, 1fr);
-          gap: 24px;
-          margin-bottom: 32px;
-        }
-        .widgets-grid {
-          display: grid;
-          grid-template-columns: 1.1fr 0.95fr 0.95fr;
-          gap: 24px;
-          margin-bottom: 32px;
-        }
-        @media (max-width: 1200px) {
-          .widgets-grid {
-            grid-template-columns: repeat(2, 1fr);
-          }
-          .widgets-grid > div:first-child {
-            grid-column: span 2;
-          }
-        }
-        @media (max-width: 1100px) {
-          .movers-grid {
-            grid-template-columns: 1fr;
-          }
-        }
-        @media (max-width: 768px) {
-          .widgets-grid {
-            grid-template-columns: 1fr;
-          }
-          .widgets-grid > div:first-child {
-            grid-column: span 1;
-          }
-        }
-      `}</style>
-
-      {/* ── Dashboard Header ── */}
-      <div style={{ marginBottom: 36, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 20 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <div style={{ 
-            width: 48, height: 48, borderRadius: '14px', background: 'linear-gradient(135deg, #1890ff 0%, #003a8c 100%)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 24,
-            boxShadow: '0 6px 16px rgba(24, 144, 255, 0.25)'
-          }}>
-            <DashboardOutlined />
-          </div>
+    <div className="dashboard-page-shell editorial-dashboard" aria-busy={loading}>
+      <div className="ed-canvas">
+        <header className="ed-page-heading">
           <div>
-            <Title level={1} style={{ margin: 0, fontSize: 'clamp(24px, 2.2vw, 30px)', fontWeight: 800, letterSpacing: '-0.02em', color: "var(--app-text-strong)" }}>{t.dashboard.title}</Title>
-            <Text style={{ fontSize: 15, color: "var(--app-text-muted)" }}>{t.dashboard.subtitle}</Text>
-            <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-              <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 10, fontWeight: 700, borderRadius: 4, margin: 0 }}>
-                {tradeMode === 'paper' ? 'PAPER MODE' : 'REAL MODE'}
-              </Tag>
-              {marketData.length > 0 && (
-                <Tag color="green" bordered={false} style={{ fontSize: 10, fontWeight: 700, borderRadius: 4, margin: 0 }}>
-                  Data: {marketData[0]?.dataSource || 'Alpaca'}
-                </Tag>
-              )}
-            </div>
+            <p className="ed-kicker">{ui.layout}</p>
+            <h1>{ui.title}</h1>
+            <p>{ui.subtitle}</p>
           </div>
-        </div>
-        
-        <div style={{ display: 'flex', alignItems: 'center', gap: 20, background: "var(--app-card-bg)", padding: "10px 20px", borderRadius: "16px", border: "1px solid var(--app-border-soft)", boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
-          <div style={{ textAlign: 'right', borderRight: "1px solid var(--app-border-soft)", paddingRight: 20 }}>
-            <div style={{ fontSize: 11, color: "var(--app-text-muted)", fontWeight: 700, textTransform: 'uppercase', marginBottom: 2 }}>{t.dashboard.lastUpdated}</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--app-text-strong)", display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
-              <ClockCircleOutlined style={{ fontSize: 13, color: '#1890ff' }} />
-              {lastFetched ? new Date(lastFetched).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'N/A'}
-            </div>
-          </div>
-          <Space size={12}>
-            <Button 
-              type="primary" 
-              icon={<ReloadOutlined className={loading ? 'anticon-spin' : ''} />} 
-              onClick={refresh} 
-              loading={loading}
-              style={{ borderRadius: '10px', fontWeight: 600, height: 44, padding: '0 24px', boxShadow: '0 4px 12px rgba(24, 144, 255, 0.2)' }}
-            >
-              {t.dashboard.refreshData}
-            </Button>
-            {marketData.length > 0 && marketData[0]?.dataSource && (
-              <DataSourceBadge source={marketData[0].dataSource} />
+        </header>
+
+        {(needsAuth || needsConfig || error || (marketData.length > 0 && marketData.every(stock => stock.price === null))) && (
+          <div className="ed-alerts">
+            {needsAuth && (
+              <Alert message={<Text strong>{t.dashboard.authRequired}</Text>} description={t.dashboard.authRequiredDesc} type="warning" showIcon />
             )}
-          </Space>
-        </div>
-      </div>
+            {needsConfig && !needsAuth && (
+              <Alert
+                message={<Text strong>{t.dashboard.apiConfigRequired}</Text>}
+                description={t.dashboard.apiConfigRequiredDesc}
+                type="warning"
+                showIcon
+                action={<Button size="middle" type="primary" onClick={() => navigate('/settings/configuration')}>{t.dashboard.configure}</Button>}
+              />
+            )}
+            {error && !needsAuth && !needsConfig && (
+              <Alert
+                message={<Text strong>{error.includes('Network Error') || error.includes('ECONNREFUSED') ? t.dashboard.backendConnectionError : t.dashboard.apiError}</Text>}
+                description={error.includes('Network Error') || error.includes('ECONNREFUSED') ? t.dashboard.backendConnectionErrorDesc : error}
+                type="error"
+                showIcon
+              />
+            )}
+            {!loading && !error && !needsAuth && !needsConfig && marketData.length > 0 && marketData.every(stock => stock.price === null) && (
+              <Alert
+                message={<Text strong>{t.dashboard.apiError}</Text>}
+                description={t.dashboard.apiNoPricesDesc}
+                type="warning"
+                showIcon
+                action={<Button size="middle" onClick={() => navigate('/settings/configuration')}>{t.dashboard.checkConfig}</Button>}
+              />
+            )}
+          </div>
+        )}
 
-      {/* ── Warnings & Alerts ── */}
-      {(needsAuth || needsConfig || error || (marketData.length > 0 && marketData.every(stock => stock.price === null))) && (
-        <div style={{ marginBottom: 28 }}>
-          {needsAuth && (
-            <Alert
-              message={<Text strong>{t.dashboard.authRequired}</Text>}
-              description={t.dashboard.authRequiredDesc}
-              type="warning"
-              showIcon
-              className="dashboard-alert dashboard-alert-warning"
-            />
-          )}
-          {needsConfig && !needsAuth && (
-            <Alert
-              message={<Text strong>{t.dashboard.apiConfigRequired}</Text>}
-              description={t.dashboard.apiConfigRequiredDesc}
-              type="warning"
-              showIcon
-              action={<Button size="middle" type="primary" onClick={() => navigate('/settings/configuration')} style={{ borderRadius: 8 }}>{t.dashboard.configure}</Button>}
-              className="dashboard-alert dashboard-alert-warning"
-            />
-          )}
-          {error && !needsAuth && !needsConfig && (
-            <Alert
-              message={<Text strong>{error.includes('Network Error') || error.includes('ECONNREFUSED') ? t.dashboard.backendConnectionError : t.dashboard.apiError}</Text>}
-              description={error.includes('Network Error') || error.includes('ECONNREFUSED') ? t.dashboard.backendConnectionErrorDesc : error}
-              type="error"
-              showIcon
-              className="dashboard-alert dashboard-alert-error" style={{ marginTop: 12 }}
-            />
-          )}
-          {!loading && !error && !needsAuth && !needsConfig && marketData.length > 0 && marketData.every(stock => stock.price === null) && (
-            <Alert
-              message={<Text strong>{t.dashboard.apiError}</Text>}
-              description={t.dashboard.apiNoPricesDesc}
-              type="warning"
-              showIcon
-              action={<Button size="middle" onClick={() => navigate('/settings/configuration')} style={{ borderRadius: 8 }}>{t.dashboard.checkConfig}</Button>}
-              className="dashboard-alert dashboard-alert-warning" style={{ marginTop: 12 }}
-            />
-          )}
-        </div>
-      )}
-
-      {/* ── Summary Metrics Grid ── */}
-      <div style={{ 
-        display: 'grid', 
-        gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', 
-        gap: 16, 
-        marginBottom: 32 
-      }}>
-        <Card className="premium-card" bodyStyle={{ padding: 0 }}>
-          <div className="metric-card">
-            <span className="metric-label">{t.dashboard.totalSymbols}</span>
-            <span className="metric-value">{marketStats.totalSymbols || '—'}</span>
-            <DatabaseOutlined className="metric-icon" />
-          </div>
-        </Card>
-        <Card className="premium-card" bodyStyle={{ padding: 0 }}>
-          <div className="metric-card">
-            <span className="metric-label">{t.dashboard.gainers}</span>
-            <span className="metric-value" style={{ color: '#10b981' }}>{marketStats.gainers || '0'}</span>
-            <RiseOutlined className="metric-icon" style={{ color: '#10b981' }} />
-          </div>
-        </Card>
-        <Card className="premium-card" bodyStyle={{ padding: 0 }}>
-          <div className="metric-card">
-            <span className="metric-label">{t.dashboard.losers}</span>
-            <span className="metric-value" style={{ color: '#ef4444' }}>{marketStats.losers || '0'}</span>
-            <FallOutlined className="metric-icon" style={{ color: '#ef4444' }} />
-          </div>
-        </Card>
-        <Card className="premium-card" bodyStyle={{ padding: 0 }}>
-          <div className="metric-card">
-            <span className="metric-label">{t.dashboard.avgChange}</span>
-            <span className="metric-value" style={{ color: marketStats.avgChange > 0 ? '#10b981' : marketStats.avgChange < 0 ? '#ef4444' : "var(--app-text-strong)" }}>
-              {marketStats.avgChange !== 0 ? (marketStats.avgChange > 0 ? '+' : '') + marketStats.avgChange.toFixed(2) + '%' : '0.00%'}
-            </span>
-            <LineChartOutlined className="metric-icon" />
-          </div>
-        </Card>
-        <Card className="premium-card" bodyStyle={{ padding: 0 }}>
-          <div className="metric-card">
-            <span className="metric-label">{t.dashboard.mktCap}</span>
-            <span className="metric-value">{marketStats.totalMarketCap > 0 ? formatMarketCap(marketStats.totalMarketCap) : '-'}</span>
-            <BarChartOutlined className="metric-icon" style={{ color: '#2f54eb' }} />
-          </div>
-        </Card>
-        <Card className="premium-card" bodyStyle={{ padding: 0 }}>
-          <div className="metric-card">
-            <span className="metric-label">{t.dashboard.largestMove}</span>
-            <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap' }}>
-              <span className="metric-value">{marketStats.largestMoveStock ? marketStats.largestMoveStock.symbol : '—'}</span>
-              {marketStats.largestMoveStock && (
-                <span style={{ fontSize: 13, marginLeft: 6, fontWeight: 700, color: marketStats.largestMoveStock.changePercent > 0 ? '#10b981' : '#ef4444' }}>
-                  ({marketStats.largestMoveStock.changePercent > 0 ? '+' : ''}{marketStats.largestMoveStock.changePercent.toFixed(1)}%)
-                </span>
+        <section className="ed-metric-ledger" aria-label={t.dashboard.marketOverview}>
+          <article>
+            <span>{ui.universe}</span>
+            <strong className="is-blue">{marketStats.totalSymbols ? marketStats.totalSymbols.toLocaleString() : '—'}</strong>
+            <small>{ui.totalSymbols}</small>
+          </article>
+          <article>
+            <span>{ui.advancing}</span>
+            <strong className="is-positive">{marketStats.gainers.toLocaleString()}</strong>
+            <small>{advancingPercent.toFixed(1)}%</small>
+          </article>
+          <article>
+            <span>{ui.declining}</span>
+            <strong className="is-negative">{marketStats.losers.toLocaleString()}</strong>
+            <small>{decliningPercent.toFixed(1)}%</small>
+          </article>
+          <article>
+            <span>{ui.avgMove}</span>
+            <strong className={marketStats.avgChange >= 0 ? 'is-positive' : 'is-negative'}>
+              {marketStats.validChangeCount ? formatSignedPercent(marketStats.avgChange) : '—'}
+            </strong>
+            <small>{ui.averageMove}</small>
+          </article>
+          <article>
+            <span>{ui.marketCap}</span>
+            <strong className="is-blue">{marketStats.totalMarketCap ? formatMarketCap(marketStats.totalMarketCap) : '—'}</strong>
+            <small>{ui.marketCap}</small>
+          </article>
+          <article>
+            <span>{ui.largestMove}</span>
+            <div className="ed-largest-move">
+              <strong>{marketStats.largestMoveStock?.symbol || '—'}</strong>
+              {marketStats.largestMovePercent !== null && (
+                <b className={marketStats.largestMovePercent >= 0 ? 'is-positive' : 'is-negative'}>
+                  {formatSignedPercent(marketStats.largestMovePercent)}
+                </b>
               )}
             </div>
-            <RiseOutlined className="metric-icon" />
-          </div>
-        </Card>
-      </div>
+            <small>{ui.strongestMove}</small>
+          </article>
+        </section>
 
-      {/* ── Market Movers ── */}
-      <div className="movers-grid">
-        <Card 
-          className="premium-card" 
-          title={<span style={{ fontWeight: 800, fontSize: 16, color: "var(--app-text-strong)" }}><RiseOutlined style={{ color: '#10b981', marginRight: 10 }} />{t.dashboard.topGainers}</span>}
-          extra={<Tag color="green" style={{ borderRadius: 6, fontWeight: 700 }}>TOP 5</Tag>}
-          bodyStyle={{ padding: '8px 0', minHeight: 360 }}
-        >
-          {getTopGainers().length === 0 ? (
-            <div className="empty-state-container">
-              <RiseOutlined style={{ fontSize: 32, color: '#f1f5f9', marginBottom: 12 }} />
-              <Text strong style={{ color: "var(--app-text-muted)" }}>{t.dashboard.noGainersFound}</Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>{t.dashboard.configureMarketData}</Text>
+        <div className="ed-primary-grid">
+          <section className="ed-market-regime" aria-labelledby="market-regime-title">
+            <div className="ed-panel-heading ed-panel-heading-dark">
+              <h2 id="market-regime-title">{ui.marketRegime}</h2>
+              <span>{ui.asOf} {lastUpdated}</span>
             </div>
-          ) : (
-            <div style={{ padding: '0 20px' }}>
-              {getTopGainers().slice(0, 5).map((stock, i) => (
-                <div key={stock.symbol} onClick={() => handleSymbolClick(stock.symbol)} style={{ 
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 0',
-                  borderBottom: i === 4 ? 'none' : "1px solid var(--app-border-soft)", cursor: 'pointer', transition: 'padding 0.2s'
-                }} className="hover-row">
-                  <Space size={14}>
-                    <div style={{ width: 42, height: 42, borderRadius: 10, background: 'var(--app-card-bg-soft)', border: "1px solid var(--app-border-soft)", display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, color: "var(--app-text-strong)" }}>
-                      {stock.symbol[0]}
-                    </div>
-                    <Space direction="vertical" size={0}>
-                      <Text strong style={{ fontSize: 15, color: "var(--app-text-strong)" }}>{stock.symbol}</Text>
-                      <Text style={{ fontSize: 12, color: "var(--app-text-muted)" }} ellipsis>{stock.name || 'N/A'}</Text>
-                    </Space>
-                  </Space>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontWeight: 800, fontSize: 15, color: "var(--app-text-strong)", marginBottom: 2 }}>${safeToFixed(stock.price, 2)}</div>
-                    <div style={{ 
-                      background: 'rgba(16, 185, 129, 0.1)', color: '#10b981', padding: '2px 10px', 
-                      borderRadius: 8, fontSize: 12, fontWeight: 800, display: 'inline-block' 
-                    }}>
-                      +{getChangePercent(stock)?.toFixed(2)}%
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </Card>
 
-        <Card 
-          className="premium-card" 
-          title={<span style={{ fontWeight: 800, fontSize: 16, color: "var(--app-text-strong)" }}><FallOutlined style={{ color: '#ef4444', marginRight: 10 }} />{t.dashboard.topLosers}</span>}
-          extra={<Tag color="red" style={{ borderRadius: 6, fontWeight: 700 }}>TOP 5</Tag>}
-          bodyStyle={{ padding: '8px 0', minHeight: 360 }}
-        >
-          {getTopLosers().length === 0 ? (
-            <div className="empty-state-container">
-              <FallOutlined style={{ fontSize: 32, color: '#f1f5f9', marginBottom: 12 }} />
-              <Text strong style={{ color: "var(--app-text-muted)" }}>{t.dashboard.noLosersFound}</Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>{t.dashboard.configureMarketData}</Text>
-            </div>
-          ) : (
-            <div style={{ padding: '0 20px' }}>
-              {getTopLosers().slice(0, 5).map((stock, i) => (
-                <div key={stock.symbol} onClick={() => handleSymbolClick(stock.symbol)} style={{ 
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 0',
-                  borderBottom: i === 4 ? 'none' : "1px solid var(--app-border-soft)", cursor: 'pointer'
-                }} className="hover-row">
-                  <Space size={14}>
-                    <div style={{ width: 42, height: 42, borderRadius: 10, background: 'var(--app-card-bg-soft)', border: "1px solid var(--app-border-soft)", display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, color: "var(--app-text-strong)" }}>
-                      {stock.symbol[0]}
-                    </div>
-                    <Space direction="vertical" size={0}>
-                      <Text strong style={{ fontSize: 15, color: "var(--app-text-strong)" }}>{stock.symbol}</Text>
-                      <Text style={{ fontSize: 12, color: "var(--app-text-muted)" }} ellipsis>{stock.name || 'N/A'}</Text>
-                    </Space>
-                  </Space>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontWeight: 800, fontSize: 15, color: "var(--app-text-strong)", marginBottom: 2 }}>${safeToFixed(stock.price, 2)}</div>
-                    <div style={{ 
-                      background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', padding: '2px 10px', 
-                      borderRadius: 8, fontSize: 12, fontWeight: 800, display: 'inline-block' 
-                    }}>
-                      {getChangePercent(stock)?.toFixed(2)}%
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </Card>
-      </div>
-
-      {/* ── Mid-level Analytics ── */}
-      <div className="widgets-grid">
-        <Card 
-          className="premium-card" 
-          title={<span style={{ fontWeight: 800, fontSize: 16, color: "var(--app-text-strong)" }}><PieChartOutlined style={{ marginRight: 10, color: '#6366f1' }} />{t.dashboard.sectorDistribution}</span>}
-          bodyStyle={{ height: 340, padding: '24px 30px' }}
-        >
-          {sectorData.length === 0 ? (
-            <div className="empty-state-container">
-              <PieChartOutlined style={{ fontSize: 32, color: '#f1f5f9', marginBottom: 12 }} />
-              <Text type="secondary">{t.dashboard.sectorDataUnavailable}</Text>
-            </div>
-          ) : (
-            <div style={{ display: 'flex', height: '100%', alignItems: 'center', gap: 30 }}>
-              <div style={{ flex: 1.2, height: '100%' }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={sectorData}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={70}
-                      outerRadius={95}
-                      paddingAngle={4}
-                      dataKey="percentage"
-                      stroke="none"
-                    >
-                      {sectorData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={getSectorColor(entry.name)} />
-                      ))}
-                    </Pie>
-                    <Tooltip 
-                      contentStyle={{ borderRadius: 12, border: 'none', boxShadow: '0 8px 24px rgba(0,0,0,0.1)' }}
-                      formatter={(value: number, name: string) => [`${value.toFixed(1)}%`, translateSector(name)]} 
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
+            <div className="ed-breadth-summary">
+              <div>
+                <span>{ui.advancing}</span>
+                <strong className="is-moss">{marketStats.gainers.toLocaleString()}</strong>
+                <small>{advancingPercent.toFixed(1)}%</small>
               </div>
-              <div style={{ flex: 1, maxHeight: '240px', overflowY: 'auto', paddingRight: 10 }}>
-                {sectorData.slice(0, 6).map(sector => (
-                  <div key={sector.name} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14 }}>
-                    <Space size={10}>
-                      <div style={{ width: 10, height: 10, borderRadius: 3, background: getSectorColor(sector.name) }} />
-                      <Text style={{ fontSize: 13, fontWeight: 600, color: "var(--app-text-strong)" }}>{translateSector(sector.name)}</Text>
-                    </Space>
-                    <Text strong style={{ fontSize: 13, color: "var(--app-text-strong)" }}>{sector.percentage.toFixed(1)}%</Text>
+              <div className="ed-breadth-ratio">
+                <strong><span>{advancingPercent.toFixed(1)}</span> / <b>{decliningPercent.toFixed(1)}</b></strong>
+                <small>{ui.advancingDeclining}</small>
+              </div>
+              <div className="ed-align-right">
+                <span>{ui.declining}</span>
+                <strong className="is-copper">{marketStats.losers.toLocaleString()}</strong>
+                <small>{decliningPercent.toFixed(1)}%</small>
+              </div>
+            </div>
+
+            <div className="ed-histogram-block">
+              <span className="ed-dark-label">{ui.breadthSpectrum}</span>
+              {marketStats.validChangeCount ? (
+                <div
+                  className="ed-histogram"
+                  role="img"
+                  aria-label={`${ui.breadthSpectrum}: ${marketStats.validChangeCount} ${ui.totalSymbols}`}
+                >
+                  {histogram.map(bin => (
+                    <div className="ed-histogram-column" key={bin.label} title={`${bin.label}%: ${bin.count}`}>
+                      <span>{bin.count || ''}</span>
+                      <i className={`is-${bin.tone}`} style={{ height: `${bin.count === 0 ? 0 : Math.max(8, (bin.count / histogramMax) * 100)}%` }} />
+                    </div>
+                  ))}
+                </div>
+              ) : <div className="ed-dark-empty">{ui.noBreadth}</div>}
+              <div className="ed-axis-labels" aria-hidden="true"><span>−5%</span><span>0%</span><span>+5%</span></div>
+            </div>
+
+            <div className="ed-sector-breadth">
+              <div className="ed-sector-head">
+                <span>{ui.sectorParticipation}</span>
+                <span>{sectorBreadth.length ? `${sectorBreadth.length} ${ui.sector.toLowerCase()}` : '—'}</span>
+              </div>
+              {sectorBreadth.length ? sectorBreadth.map(sector => {
+                const advancingWidth = sector.total ? (sector.advancing / sector.total) * 100 : 0;
+                const decliningWidth = sector.total ? (sector.declining / sector.total) * 100 : 0;
+                return (
+                  <div className="ed-sector-breadth-row" key={sector.name}>
+                    <span>{translateSector(sector.name)}</span>
+                    <div className="ed-sector-stack" aria-label={`${sector.advancing} ${ui.advancing}, ${sector.declining} ${ui.declining}`}>
+                      <i className="is-advancing" style={{ width: `${advancingWidth}%` }} />
+                      <i className="is-declining" style={{ width: `${decliningWidth}%` }} />
+                    </div>
+                    <b>{sector.advancing}</b>
+                    <b>{sector.declining}</b>
+                    <strong>{advancingWidth.toFixed(0)} / {decliningWidth.toFixed(0)}</strong>
+                  </div>
+                );
+              }) : <div className="ed-dark-empty is-compact">{t.dashboard.sectorDataUnavailable}</div>}
+            </div>
+          </section>
+
+          <section className="ed-paper-panel ed-session-panel" aria-labelledby="session-brief-title">
+            <div className="ed-panel-heading">
+              <h2 id="session-brief-title">{ui.sessionBrief}</h2>
+            </div>
+            <div className="ed-session-grid">
+              <div className="ed-session-facts">
+                <div className="ed-fact-block">
+                  <span>{ui.leadingMove}</span>
+                  <div>
+                    <strong>{marketStats.largestMoveStock?.symbol || '—'}</strong>
+                    {marketStats.largestMovePercent !== null && (
+                      <b className={marketStats.largestMovePercent >= 0 ? 'is-positive' : 'is-negative'}>
+                        {formatSignedPercent(marketStats.largestMovePercent)}
+                      </b>
+                    )}
+                  </div>
+                  <small>{ui.strongestMove}</small>
+                </div>
+                <div className="ed-fact-block">
+                  <span>{ui.concentration}</span>
+                  <small>{ui.topTenMarketCap}</small>
+                  <div className="ed-concentration-bar" aria-label={`${ui.concentration}: ${concentration?.toFixed(1) || ui.unavailable}`}>
+                    <i style={{ width: `${concentration || 0}%` }} />
+                  </div>
+                  <strong className="ed-concentration-value">{concentration === null ? '—' : `${concentration.toFixed(1)}%`}</strong>
+                </div>
+                <div className="ed-fact-block" id="dashboard-system-status">
+                  <span>{ui.systemReadiness}</span>
+                  {renderStatus(ui.marketData, systemStatus.marketData)}
+                  {renderStatus(ui.quoteFeed, systemStatus.quoteFeed)}
+                  {renderStatus(ui.broker, systemStatus.brokerConnection)}
+                </div>
+              </div>
+
+              <div className="ed-research-queue">
+                <div className="ed-queue-heading">
+                  <span>{ui.researchQueue}</span>
+                  <button type="button" onClick={() => navigate('/activity')}>{ui.reviewQueue} <b>→</b></button>
+                </div>
+                {[
+                  { label: ui.observed, value: pipelineObserved === null ? ui.notLinked : pipelineObserved.toLocaleString(), description: ui.observedDescription, tone: 'blue' },
+                  { label: ui.shortlisted, value: pipelineShortlisted === null ? ui.notLinked : pipelineShortlisted.toLocaleString(), description: ui.shortlistedDescription, tone: 'moss' },
+                  { label: ui.validated, value: pipelineValidated === null ? ui.notLinked : pipelineValidated.toLocaleString(), description: ui.validatedDescription, tone: 'muted' },
+                  { label: ui.riskPlan, value: pipelineRiskPlans === null ? ui.notLinked : pipelineRiskPlans.toLocaleString(), description: ui.riskPlanDescription, tone: 'copper' },
+                ].map((item, index) => (
+                  <div className="ed-queue-item" key={item.label}>
+                    <div className="ed-queue-track" aria-hidden="true">
+                      <i className={`is-${item.tone}`} />
+                      {index < 3 && <span />}
+                    </div>
+                    <div>
+                      <span>{item.label}</span>
+                      <strong>{item.value}</strong>
+                    </div>
+                    <p>{item.description}</p>
                   </div>
                 ))}
               </div>
             </div>
-          )}
-        </Card>
+          </section>
+        </div>
 
-        <Card 
-          className="premium-card" 
-          title={<span style={{ fontWeight: 800, fontSize: 16, color: "var(--app-text-strong)" }}><BarChartOutlined style={{ marginRight: 10, color: '#f59e0b' }} />{t.dashboard.marketBreadth}</span>}
-          bodyStyle={{ height: 340, padding: 30, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}
-        >
-          <div style={{ textAlign: 'center', marginBottom: 36 }}>
-            <div style={{ fontSize: 12, color: "var(--app-text-muted)", fontWeight: 800, textTransform: 'uppercase', marginBottom: 12, letterSpacing: 0.5 }}>{t.dashboard.advancingVsDeclining}</div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 24 }}>
-              <div>
-                <div style={{ fontSize: 36, fontWeight: 900, color: '#10b981', lineHeight: 1 }}>{marketStats.gainers}</div>
-                <Text style={{ fontSize: 11, fontWeight: 800, color: '#10b981', textTransform: 'uppercase' }}>{t.dashboard.up}</Text>
+        <div className="ed-lower-grid">
+          <section className="ed-paper-panel ed-movers-panel" aria-labelledby="market-movers-title">
+            <div className="ed-panel-heading ed-tabbed-heading">
+              <h2 id="market-movers-title">{ui.marketMovers}</h2>
+              <div className="ed-tabs" role="tablist" aria-label={ui.marketMovers}>
+                {([
+                  ['all', ui.topMovers],
+                  ['gainers', ui.gainers],
+                  ['losers', ui.losers],
+                  ['watchlist', ui.watchlist],
+                ] as [MoversView, string][]).map(([key, label]) => (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={moversView === key}
+                    className={moversView === key ? 'is-active' : ''}
+                    onClick={() => setMoversView(key)}
+                    key={key}
+                  >{label}</button>
+                ))}
               </div>
-              <div style={{ height: 44, width: 2, background: "var(--app-border-soft)" }} />
-              <div>
-                <div style={{ fontSize: 36, fontWeight: 900, color: '#ef4444', lineHeight: 1 }}>{marketStats.losers}</div>
-                <Text style={{ fontSize: 11, fontWeight: 800, color: '#ef4444', textTransform: 'uppercase' }}>{t.dashboard.down}</Text>
-              </div>
             </div>
-          </div>
-          <div style={{ background: 'var(--app-card-bg-soft)', borderRadius: 16, padding: 20, border: "1px solid var(--app-border-soft)" }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
-              <Text style={{ fontSize: 13, fontWeight: 600, color: "var(--app-text-muted)" }}>{t.dashboard.overallStatus}</Text>
-              <Tag color={marketStats.avgChange > 0 ? 'green' : marketStats.avgChange < 0 ? 'red' : 'default'} style={{ margin: 0, fontWeight: 800, borderRadius: 6, padding: '0 8px' }}>
-                {marketStats.avgChange > 0.5 ? t.dashboard.bullish : marketStats.avgChange < -0.5 ? t.dashboard.bearish : t.dashboard.neutral}
-              </Tag>
+            <div className="ed-table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">{t.dashboard.symbol}</th>
+                    <th scope="col">{ui.company}</th>
+                    <th scope="col">{ui.price}</th>
+                    <th scope="col">{ui.change}</th>
+                    <th scope="col">{ui.volume}</th>
+                    <th scope="col">{ui.marketCap}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {moversData.map(stock => {
+                    const change = getChangePercent(stock);
+                    return (
+                      <tr key={stock.symbol}>
+                        <td>
+                          <span className={`ed-direction is-${(change || 0) >= 0 ? 'up' : 'down'}`} aria-hidden="true" />
+                          <button type="button" className="ed-symbol-button" onClick={() => handleSymbolClick(stock.symbol)}>{stock.symbol}</button>
+                        </td>
+                        <td title={stock.name || undefined}>{stock.name || '—'}</td>
+                        <td>{formatPrice(stock.price, stock.currency)}</td>
+                        <td className={(change || 0) >= 0 ? 'is-positive' : 'is-negative'}>
+                          {formatSignedPercent(change)}
+                        </td>
+                        <td>{formatCompactNumber(stock.volume)}</td>
+                        <td>{safeNumber(stock.marketCap) ? formatMarketCap(stock.marketCap) : '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {!moversData.length && <div className="ed-table-empty">{loading ? ui.waiting : ui.noMovers}</div>}
             </div>
-            <div style={{ height: 10, background: 'var(--app-border)', borderRadius: 5, overflow: 'hidden', display: 'flex' }}>
-              <div style={{ height: '100%', background: '#10b981', width: `${marketStats.totalSymbols > 0 ? (marketStats.gainers / marketStats.totalSymbols) * 100 : 0}%` }} />
-              <div style={{ height: '100%', background: '#ef4444', width: `${marketStats.totalSymbols > 0 ? (marketStats.losers / marketStats.totalSymbols) * 100 : 0}%` }} />
-            </div>
-          </div>
-        </Card>
+            <button type="button" className="ed-panel-link" onClick={() => navigate('/market')}>{ui.viewMarkets} <span>→</span></button>
+          </section>
 
-        <Card 
-          className="premium-card" 
-          title={<span style={{ fontWeight: 800, fontSize: 16, color: "var(--app-text-strong)" }}><DatabaseOutlined style={{ marginRight: 10, color: '#3b82f6' }} />{t.dashboard.systemStatus}</span>}
-          bodyStyle={{ height: 340, padding: '24px 26px' }}
-        >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 18, marginTop: 4 }}>
-            {[
-              { label: t.dashboard.marketData, status: systemStatus.marketData },
-              { label: t.dashboard.quoteFeed, status: systemStatus.quoteFeed },
-              { label: t.dashboard.brokerConnection, status: systemStatus.brokerConnection },
-              { label: t.dashboard.symbols, status: marketStats.totalSymbols.toString(), isTag: false }
-            ].map(item => (
-              <div key={item.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text style={{ fontSize: 13, color: "var(--app-text-muted)", fontWeight: 600 }}>{item.label}</Text>
-                {item.isTag === false ? (
-                  <Text strong style={{ fontSize: 14, color: "var(--app-text-strong)" }}>{item.status}</Text>
-                ) : (
-                  <Tag color={item.status === 'ONLINE' || item.status === 'HEALTHY' ? 'success' : item.status === 'PAPER' || item.status === 'LIVE' ? 'blue' : item.status === 'CONFIG_REQUIRED' || item.status === 'AUTH_REQUIRED' ? 'warning' : 'error'}
-                       style={{ margin: 0, fontWeight: 800, borderRadius: 6, fontSize: 11, padding: '1px 10px' }}>
-                    {item.status === 'CONFIG_REQUIRED' ? t.dashboard.configRequired : item.status === 'AUTH_REQUIRED' ? t.dashboard.signIn : item.status}
-                  </Tag>
-                )}
+          <aside className="ed-side-stack">
+            <section className="ed-paper-panel ed-sector-map" aria-labelledby="sector-map-title">
+              <div className="ed-panel-heading">
+                <h2 id="sector-map-title">{ui.sectorMap}</h2>
+                <button type="button" onClick={() => navigate('/market')}>{ui.viewSectors} <b>→</b></button>
               </div>
-            ))}
-            <Divider style={{ margin: '8px 0' }} />
-            <div style={{ background: 'var(--app-card-bg-soft)', padding: '14px 16px', borderRadius: 12, border: "1px solid var(--app-border-soft)" }}>
-              <div style={{ fontSize: 10, color: "var(--app-text-muted)", fontWeight: 800, textTransform: 'uppercase', marginBottom: 6, letterSpacing: 0.5 }}>{t.dashboard.environment}</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div style={{ width: 8, height: 8, borderRadius: '50%', background: systemStatus.marketData === 'CONFIG_REQUIRED' || systemStatus.marketData === 'AUTH_REQUIRED' ? '#f59e0b' : '#3b82f6', boxShadow: '0 0 8px rgba(59, 130, 246, 0.4)' }} />
-                <Text strong style={{ fontSize: 13, color: "var(--app-text-strong)" }}>{systemStatus.environment || 'Unknown'}</Text>
+              {sectorData.length ? sectorData.slice(0, 5).map(sector => (
+                <div className="ed-sector-map-row" key={sector.name}>
+                  <span>{translateSector(sector.name)}</span>
+                  <div><i style={{ width: `${sector.percentage}%` }} /></div>
+                  <strong>{sector.percentage.toFixed(1)}%</strong>
+                </div>
+              )) : <div className="ed-inline-empty">{t.dashboard.sectorDataUnavailable}</div>}
+              <small>{ui.shareOfUniverse}</small>
+            </section>
+
+            <section className="ed-paper-panel ed-watchlist-panel" aria-labelledby="watchlist-title">
+              <div className="ed-panel-heading">
+                <h2 id="watchlist-title">{ui.watchlist}</h2>
+                <button type="button" onClick={() => navigate('/watchlist')}>{ui.manage} <b>→</b></button>
               </div>
+              {watchlistSymbols.length === 0 ? (
+                <div className="ed-watchlist-empty">
+                  <span>{ui.noWatchlist}</span>
+                  <button type="button" onClick={() => navigate('/market')}>{ui.addSymbols}</button>
+                </div>
+              ) : watchlistData.length === 0 ? (
+                <div className="ed-inline-empty">{ui.waiting}</div>
+              ) : (
+                <div className="ed-watchlist-list">
+                  {watchlistData.slice(0, 3).map(stock => {
+                    const change = getChangePercent(stock);
+                    return (
+                      <button type="button" onClick={() => handleSymbolClick(stock.symbol)} key={stock.symbol}>
+                        <strong>{stock.symbol}</strong>
+                        <span>{stock.name || '—'}</span>
+                        <b>{formatPrice(stock.price, stock.currency)}</b>
+                        <em className={(change || 0) >= 0 ? 'is-positive' : 'is-negative'}>
+                          {formatSignedPercent(change)}
+                        </em>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </aside>
+        </div>
+
+        <footer className="ed-status-ledger" aria-label={ui.systemStatus}>
+          {[
+            { label: ui.dataSource, value: dataSource, tone: dataSource === '—' ? 'neutral' : 'good' as StatusTone },
+            { label: ui.dataQuality, value: dataQuality, tone: error ? 'bad' : marketData.length ? 'good' : 'neutral' as StatusTone },
+            { label: ui.quoteFeed, value: localizeSystemValue(systemStatus.quoteFeed), tone: getStatusTone(systemStatus.quoteFeed) },
+            { label: ui.environment, value: localizeSystemValue(systemStatus.environment), tone: getStatusTone(systemStatus.environment) },
+            { label: ui.broker, value: localizeSystemValue(systemStatus.brokerConnection), tone: getStatusTone(systemStatus.brokerConnection) },
+            { label: ui.lastUpdated, value: lastUpdated, tone: lastFetched ? 'good' : 'neutral' as StatusTone },
+          ].map(item => (
+            <div key={item.label}>
+              <span>{item.label}</span>
+              <p><i className={`ed-status-dot is-${item.tone}`} aria-hidden="true" />{item.value}</p>
             </div>
-          </div>
-        </Card>
+          ))}
+          <button type="button" onClick={refresh} disabled={loading}>
+            <ReloadOutlined className={loading ? 'is-spinning' : ''} /> {t.dashboard.refreshData}
+          </button>
+        </footer>
       </div>
-
-      {/* ── Watchlist Snapshot ── */}
-      <Card 
-        className="premium-card" 
-        title={<span style={{ fontWeight: 800, fontSize: 18, color: "var(--app-text-strong)" }}><EyeOutlined style={{ color: '#3b82f6', marginRight: 12 }} />{t.dashboard.watchlistSnapshot}</span>}
-        extra={<Button type="link" onClick={handleManageWatchlist} style={{ fontWeight: 700, fontSize: 14 }}>{t.dashboard.manageAll}</Button>}
-        bodyStyle={{ padding: 24 }}
-      >
-        {getWatchlistSymbols().length === 0 ? (
-          <div className="empty-state-container">
-            <EyeOutlined style={{ fontSize: 40, color: '#f1f5f9', marginBottom: 16 }} />
-            <Text strong style={{ color: "var(--app-text-muted)", fontSize: 16 }}>{t.dashboard.watchlistEmpty}</Text>
-            <Button type="primary" onClick={() => navigate('/market')} style={{ marginTop: 16, borderRadius: 8, fontWeight: 600 }}>{t.dashboard.exploreMarket}</Button>
-          </div>
-        ) : getWatchlistData().length === 0 ? (
-          <div className="empty-state-container">
-            <ReloadOutlined className="anticon-spin" style={{ fontSize: 40, color: '#3b82f6', marginBottom: 16 }} />
-            <Text strong style={{ color: "var(--app-text-muted)" }}>{t.dashboard.waitingForData}</Text>
-          </div>
-        ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 16 }}>
-            {getWatchlistData().map((stock) => {
-              const change = getChangePercent(stock);
-              const isUp = change && change > 0;
-              const isDown = change && change < 0;
-              return (
-                <Card 
-                  key={stock.symbol}
-                  hoverable 
-                  onClick={() => handleSymbolClick(stock.symbol)}
-                  bodyStyle={{ padding: '20px' }}
-                  style={{ borderRadius: 16, border: "1px solid var(--app-border-soft)", background: 'var(--app-card-bg-soft)', overflow: 'hidden' }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
-                    <div style={{ width: 36, height: 36, borderRadius: 8, background: "var(--app-card-bg)", border: "1px solid var(--app-border-soft)", display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, color: "var(--app-text-strong)" }}>
-                      {stock.symbol[0]}
-                    </div>
-                    <div style={{ 
-                      background: isUp ? 'rgba(16, 185, 129, 0.1)' : isDown ? 'rgba(239, 68, 68, 0.1)' : '#f1f5f9',
-                      color: isUp ? '#10b981' : isDown ? '#ef4444' : "var(--app-text-muted)",
-                      padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 800
-                    }}>
-                      {change !== null ? (change > 0 ? '+' : '') + change.toFixed(1) + '%' : '—'}
-                    </div>
-                  </div>
-                  <div style={{ marginBottom: 4 }}>
-                    <Text strong style={{ fontSize: 17, color: "var(--app-text-strong)" }}>{stock.symbol}</Text>
-                  </div>
-                  <div style={{ fontSize: 20, fontWeight: 900, color: "var(--app-text-strong)", marginBottom: 4 }}>
-                    ${safeToFixed(stock.price, 2)}
-                  </div>
-                  <Text style={{ fontSize: 12, color: "var(--app-text-muted)" }} ellipsis>{stock.name || 'N/A'}</Text>
-                </Card>
-              );
-            })}
-          </div>
-        )}
-      </Card>
     </div>
   );
 };

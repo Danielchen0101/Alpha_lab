@@ -86,6 +86,7 @@ api.interceptors.request.use(attachSupabaseToken);
 // Global 401 interceptor: clear session and redirect to signin
 const handle401 = async (error: any) => {
   if (error.response?.status === 401) {
+    window.dispatchEvent(new Event('alphalab:auth-lost'));
     try {
       const { supabase } = await import('../lib/supabaseClient');
       await supabase.auth.signOut();
@@ -352,8 +353,13 @@ export const fineScanSelectAPI = {
 };
 
 export const deeperValidationAPI = {
-  validate: (candidates: any[], period = '1y', initialCapital = 100000) => {
-    return scannerApi.post('/ai/deeper-validation', { candidates, period, initialCapital });
+  validate: (candidates: any[], period = '2y', initialCapital = 100000, options: any = {}) => {
+    return scannerApi.post('/ai/deeper-validation', {
+      candidates,
+      period,
+      initialCapital,
+      ...options,
+    }, { timeout: 600000 });
   },
 };
 
@@ -634,12 +640,17 @@ export const pipelineAutoAPI = {
   getPipelineResult: (runId?: string, kind?: 'manual' | 'auto') =>
     api.get('/ai-agent/pipeline/result', { params: { runId, kind } }),
   stopPipeline: () => api.post('/ai-agent/pipeline/stop'),
-  // Shared Continue Scan + Fine Scan — delegates to backend shared helpers
+  // Shared Continue Scan + Fine Scan — delegates to backend shared helpers.
+  // Fine Scan can run AI trader review across 30 symbols, so it needs a longer timeout than normal UI calls.
   runContinueScan: (data: { scannerResults: any[]; riskProfile?: string; timeHorizon?: string; pipelineMode?: string; tradeMode?: string }) =>
     api.post('/ai-agent/continue-scan', data),
   runFineScan: (data: { candidates: any[]; riskProfile?: string; timeHorizon?: string; pipelineMode?: string; tradeMode?: string }) =>
-    api.post('/ai-agent/fine-scan', data),
-  // Lazy-fetch Finnhub news for a single symbol (on-demand when user expands a detail row)
+    scannerApi.post('/ai-agent/fine-scan', data, { timeout: 240000 }),
+  runAdmission: (data: { candidates: any[]; fineResults?: any[]; marketResults?: any[]; accountState?: any; riskProfile?: string; timeHorizon?: string; pipelineMode?: string; aiEnabled?: boolean }) =>
+    scannerApi.post('/ai-agent/admission', data, { timeout: 90000 }),
+  runExitScan: (data: { entryPlans?: any[]; riskProfile?: string; timeHorizon?: string; pipelineMode?: string; tradeMode?: string; autoSubmit?: boolean; aiReview?: boolean; suppressDiscord?: boolean }) =>
+    scannerApi.post('/ai-agent/exit-scan', data, { timeout: 120000 }),
+  // Lazy-fetch Alpaca News for a single symbol (on-demand when user expands a detail row)
   fetchScannerNews: (symbol: string) =>
     api.get(`/ai-agent/scanner-news/${symbol}`),
   // DEPRECATED: Auto-run is now fully headless. No frontend claim needed.
@@ -652,7 +663,7 @@ export const notificationAPI = {
   saveDiscordConfig: (data: any) => api.post('/notifications/discord/config', data),
   testDiscord: (data?: any) => api.post('/notifications/discord/test', data || {}),
   sendDiscordEvent: (
-    eventType: 'scan_summary' | 'entry_plan' | 'order' | 'exit_scan' | 'error',
+    eventType: 'cycle_digest' | 'risk_alert' | 'order' | 'scan_summary' | 'entry_plan' | 'exit_scan' | 'error',
     payload: any
   ) => api.post('/notifications/discord/event', { eventType, payload }),
 };
