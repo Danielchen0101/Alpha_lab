@@ -32,7 +32,7 @@ ENV REACT_APP_ENV=$REACT_APP_ENV
 RUN npm run build
 
 # Stage 2: Build backend
-FROM python:3.11-slim AS backend-builder
+FROM python:3.14-slim AS backend-builder
 
 WORKDIR /app/backend
 
@@ -53,7 +53,7 @@ RUN pip install --no-cache-dir -r requirements.txt || \
 COPY backend/ ./
 
 # Stage 3: Production image
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 
