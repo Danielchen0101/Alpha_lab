@@ -20,7 +20,7 @@
     "@ant-design/plots": "^2.6.8",
     "@ant-design/pro-components": "^2.6.43",
     "@reduxjs/toolkit": "^1.9.7",
-    "@supabase/supabase-js": "^2.105.1",
+    "@supabase/supabase-js": "2.105.3",
     "@tanstack/react-table": "^8.21.3",
     "antd": "^5.12.8",
     "autoprefixer": "^10.5.0",
