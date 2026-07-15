@@ -305,7 +305,7 @@ AlphaLab supports a split web/API deployment and an all-in-one container.
 | Cloudflare Pages | Output directory | <code>build</code> |
 | Render | Root directory | <code>backend</code> |
 | Render | Build command | <code>pip install -r requirements.txt</code> |
-| Render | Start command | <code>gunicorn start_quant_backend:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 180</code> |
+| Render | Start command | <code>MALLOC_ARENA_MAX=2 gunicorn start_quant_backend:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 900</code> |
 
 Set the four frontend build variables in Cloudflare Pages and the backend runtime variables in Render. Point <code>REACT_APP_API_BASE_URL</code> to the Render service with the <code>/api</code> suffix, and set <code>FRONTEND_ORIGIN</code> to the exact deployed frontend origin.
 
