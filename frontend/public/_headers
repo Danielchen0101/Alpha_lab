@@ -6,14 +6,4 @@
   Referrer-Policy: strict-origin-when-cross-origin
   Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
   Permissions-Policy: camera=(), microphone=(), geolocation=(), interest-cohort=()
-  Content-Security-Policy:
-    default-src 'self';
-    script-src 'self' https://challenges.cloudflare.com https://*.supabase.co;
-    style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
-    img-src 'self' data: blob: https:;
-    font-src 'self' data: https://fonts.gstatic.com;
-    connect-src 'self' https://*.supabase.co https://challenges.cloudflare.com https://api.alphalabquant.com https://*.onrender.com;
-    frame-src 'self' https://challenges.cloudflare.com https://*.supabase.co https://*.cloudflare.com;
-    frame-ancestors 'none';
-    base-uri 'self';
-    form-action 'self';
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://challenges.cloudflare.com https://*.supabase.co; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://*.supabase.co https://challenges.cloudflare.com https://api.alphalabquant.com https://*.onrender.com; frame-src 'self' https://challenges.cloudflare.com https://*.supabase.co https://*.cloudflare.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self';
