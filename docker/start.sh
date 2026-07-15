@@ -20,6 +20,7 @@ fi
 # Start backend with gunicorn
 echo "Starting backend server..."
 cd /app/backend
+export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
 
 # The scheduler is in-process. Production must use exactly one worker so there
 # is exactly one scan/order scheduler; threads provide concurrent API handling.
@@ -32,8 +33,8 @@ if [ "$FLASK_ENV" = "production" ]; then
     gunicorn \
         --bind 127.0.0.1:5000 \
         --workers 1 \
-        --threads 8 \
-        --timeout 180 \
+        --threads 4 \
+        --timeout 900 \
         --access-logfile - \
         --error-logfile - \
         --log-level info \

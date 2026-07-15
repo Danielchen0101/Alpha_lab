@@ -87,6 +87,7 @@ ENV PYTHONPATH=/app/backend
 ENV FLASK_APP=start_quant_backend.py
 ENV FLASK_ENV=production
 ENV PORT=8080
+ENV MALLOC_ARENA_MAX=2
 
 # Expose port
 EXPOSE 8080

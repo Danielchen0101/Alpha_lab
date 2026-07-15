@@ -12,14 +12,14 @@ Both layouts use Supabase for authentication, user configuration, and durable pi
 The background research scheduler runs inside the Flask application. Run exactly one Gunicorn worker so there is only one scheduler that can scan, submit an eligible order, or reconcile a managed position. The supported command is:
 
 ```bash
-gunicorn start_quant_backend:app \
+MALLOC_ARENA_MAX=2 gunicorn start_quant_backend:app \
   --bind 0.0.0.0:$PORT \
   --workers 1 \
-  --threads 8 \
-  --timeout 180
+  --threads 4 \
+  --timeout 900
 ```
 
-Threads can absorb concurrent HTTP requests. Do not add web workers unless the scheduler is first moved to a dedicated service with distributed ownership.
+Four request threads fit the Render Pro 2-CPU profile while leaving room for two admitted heavy scans. Do not add web workers unless the scheduler is first moved to a dedicated service with distributed ownership.
 
 ## Supabase
 
@@ -41,8 +41,9 @@ Configure a Python web service:
 | --- | --- |
 | Root directory | `backend` |
 | Build command | `pip install -r requirements.txt` |
-| Start command | `gunicorn start_quant_backend:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 180` |
+| Start command | `MALLOC_ARENA_MAX=2 gunicorn start_quant_backend:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 900` |
 | Health path | `/api/health` |
+| Instance count | `1` (the in-process scheduler must have one owner) |
 
 Required backend variables:
 
@@ -53,6 +54,17 @@ Required backend variables:
 | `FERNET_KEY` | Encryption for saved provider credentials |
 | `APP_SECRET_KEY` | Flask session and application signing secret |
 | `FRONTEND_ORIGIN` | Exact deployed frontend origin allowed by CORS |
+
+For the Render Pro 4 GB / 2 CPU plan, use these runtime guards:
+
+| Variable | Recommended value | Purpose |
+| --- | ---: | --- |
+| `BACKEND_PLAN_MEMORY_MB` | `4096` | Declares the service memory budget |
+| `BACKEND_MEMORY_SOFT_LIMIT_MB` | `3200` | Starts collection and heap trimming before pressure becomes critical |
+| `BACKEND_MEMORY_ABORT_LIMIT_MB` | `3700` | Stops a scan cleanly before Render hard-kills the process |
+| `MARKET_SCAN_MAX_CONCURRENT` | `2` | Caps direct scans and holds the same slots for each full research pipeline |
+| `MARKET_SCAN_HEADLESS_WAIT_SECONDS` | `600` | Bounds direct headless scanner waits; scheduled pipelines defer before spawning when capacity is full |
+| `MALLOC_ARENA_MAX` | `2` | Reduces glibc heap fragmentation in the threaded worker |
 
 Optional bootstrap variables are `ALPHALAB_ADMIN_EMAIL` and `ALPHALAB_ADMIN_PASSWORD`. Provider credentials are normally entered per user under **Settings → Connections**. Environment-level Alpaca, Finnhub, and AI values remain useful only for controlled server fallback or migration scenarios.
 

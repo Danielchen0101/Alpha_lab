@@ -171,6 +171,10 @@ def test_auto_run_now_executes_backend_chain_without_frontend_claim(monkeypatch)
             "trigger": trigger,
             **kwargs,
         })
+        # The real executor owns and releases the shared heavy-work slot.
+        # Keeping that ownership in this test also proves the endpoint wrapper
+        # does not perform a second, racy release after execution returns.
+        backend._pa_release_user_run(uid)
         return {
             "errors": 0,
             "startedAt": "2026-07-13T10:00:00Z",

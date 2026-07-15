@@ -4,7 +4,6 @@
 为AI分析提供真实的技术指标数据
 """
 
-import numpy as np
 from typing import Dict, List, Optional, Tuple
 
 def calculate_simple_technical_indicators(price_data: Dict) -> Dict:

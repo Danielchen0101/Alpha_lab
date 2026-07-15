@@ -308,6 +308,10 @@ import threading
 
 SUPABASE_AUTH_CACHE_TTL_SECONDS = 300   # 5 minutes
 SUPABASE_CONFIG_CACHE_TTL_SECONDS = 60  # 1 minute
+SUPABASE_AUTH_CACHE_MAX_ENTRIES = 512
+SUPABASE_CONFIG_CACHE_MAX_ENTRIES = 256
+PIPELINE_AI_CACHE_TTL_SECONDS = 30 * 60
+PIPELINE_AI_CACHE_MAX_ENTRIES = 256
 
 _auth_cache = {}    # token_hash -> (user_dict, timestamp)
 _config_cache = {}  # (user_id, config_type) -> (config_dict, timestamp)
@@ -344,10 +348,35 @@ def _cache_get(cache, key, ttl_seconds):
             del cache[key]
     return None
 
-def _cache_set(cache, key, value):
+def _prune_timed_tuple_cache_locked(cache, ttl_seconds, max_entries, now=None):
+    """Prune ``{key: (value, timestamp)}`` caches while ``_cache_lock`` is held."""
+    now = time.time() if now is None else now
+    expired = [
+        cache_key for cache_key, entry in cache.items()
+        if not isinstance(entry, tuple) or len(entry) != 2 or now - entry[1] >= ttl_seconds
+    ]
+    for cache_key in expired:
+        cache.pop(cache_key, None)
+    if max_entries and len(cache) > max_entries:
+        oldest = sorted(cache, key=lambda cache_key: cache[cache_key][1])
+        for cache_key in oldest[:len(cache) - max_entries]:
+            cache.pop(cache_key, None)
+
+
+def _cache_set(cache, key, value, ttl_seconds=None, max_entries=512):
     """Store value in cache with current timestamp."""
     with _cache_lock:
-        cache[key] = (value, time.time())
+        now = time.time()
+        if ttl_seconds:
+            _prune_timed_tuple_cache_locked(cache, ttl_seconds, max_entries, now=now)
+        cache[key] = (value, now)
+        if max_entries and len(cache) > max_entries:
+            _prune_timed_tuple_cache_locked(
+                cache,
+                ttl_seconds or float('inf'),
+                max_entries,
+                now=now,
+            )
 
 def _cache_invalidate(cache, key):
     """Remove a specific key from cache."""
@@ -376,7 +405,13 @@ def get_supabase_user_from_token(token):
         resp = supabase_admin.auth.get_user(token)
         if resp and resp.user:
             user = {'id': resp.user.id, 'email': resp.user.email}
-            _cache_set(_auth_cache, token_hash, user)
+            _cache_set(
+                _auth_cache,
+                token_hash,
+                user,
+                SUPABASE_AUTH_CACHE_TTL_SECONDS,
+                SUPABASE_AUTH_CACHE_MAX_ENTRIES,
+            )
             return user
     except Exception as e:
         safe_print(f'[Auth] Supabase token verification failed: {type(e).__name__}: {e}')
@@ -395,15 +430,35 @@ def _pipeline_ai_cache_key(namespace, payload):
 def _pipeline_ai_cache_get(namespace, payload):
     key = _pipeline_ai_cache_key(namespace, payload)
     with _cache_lock:
-        return _pipeline_ai_result_cache.get(key)
+        cached = _pipeline_ai_result_cache.get(key)
+        if not isinstance(cached, tuple) or len(cached) != 2:
+            _pipeline_ai_result_cache.pop(key, None)
+            return None
+        value, cached_at = cached
+        if time.time() - cached_at >= PIPELINE_AI_CACHE_TTL_SECONDS:
+            _pipeline_ai_result_cache.pop(key, None)
+            return None
+        return value
 
 
 def _pipeline_ai_cache_set(namespace, payload, value):
     key = _pipeline_ai_cache_key(namespace, payload)
     with _cache_lock:
-        if len(_pipeline_ai_result_cache) > 1000:
-            _pipeline_ai_result_cache.clear()
-        _pipeline_ai_result_cache[key] = value
+        now = time.time()
+        _prune_timed_tuple_cache_locked(
+            _pipeline_ai_result_cache,
+            PIPELINE_AI_CACHE_TTL_SECONDS,
+            PIPELINE_AI_CACHE_MAX_ENTRIES,
+            now=now,
+        )
+        _pipeline_ai_result_cache[key] = (value, now)
+        if len(_pipeline_ai_result_cache) > PIPELINE_AI_CACHE_MAX_ENTRIES:
+            _prune_timed_tuple_cache_locked(
+                _pipeline_ai_result_cache,
+                PIPELINE_AI_CACHE_TTL_SECONDS,
+                PIPELINE_AI_CACHE_MAX_ENTRIES,
+                now=now,
+            )
 
 def get_supabase_user():
     """Verify Supabase access token from Authorization header. Returns user dict or None.
@@ -492,7 +547,13 @@ def get_user_config(user_id, config_type):
                     # Detect stale encryption: value was encrypted but couldn't be decrypted
                     if original.startswith('enc:') and config[field] == original:
                         safe_print(f'[Supabase] get_user_config WARNING: field "{field}" still encrypted after decrypt — FERNET_KEY may have changed')
-            _cache_set(_config_cache, cache_key, config)
+            _cache_set(
+                _config_cache,
+                cache_key,
+                config,
+                SUPABASE_CONFIG_CACHE_TTL_SECONDS,
+                SUPABASE_CONFIG_CACHE_MAX_ENTRIES,
+            )
             return config
         else:
             safe_print(f'[Supabase] get_user_config: no row found for user={user_id[:8]}... type={config_type}')
@@ -1290,7 +1351,9 @@ backtest_history = []
 
 backtest_history_lock = threading.Lock()
 
-MAX_HISTORY_SIZE = 100  # 最多保存100个backtest记录
+MAX_HISTORY_SIZE = 20  # Keep only the most recent in-memory backtest records.
+
+SIMPLE_CACHE_MAX_ENTRIES = 512
 
 
 
@@ -1302,31 +1365,64 @@ class SimpleCache:
 
     """简单内存缓存"""
 
-    def __init__(self):
+    def __init__(self, ttl_seconds=CACHE_TTL, max_entries=SIMPLE_CACHE_MAX_ENTRIES):
 
         self.cache = {}
 
         self.timestamps = {}
 
+        self.ttl_seconds = ttl_seconds
+
+        self.max_entries = max_entries
+
+        self.lock = threading.Lock()
+
+
+    def _prune_locked(self, now):
+
+        expired = [
+
+            key for key, timestamp in self.timestamps.items()
+
+            if now - timestamp >= self.ttl_seconds
+
+        ]
+
+        for key in expired:
+
+            self.cache.pop(key, None)
+
+            self.timestamps.pop(key, None)
+
+        if self.max_entries and len(self.cache) > self.max_entries:
+
+            oldest = sorted(self.timestamps, key=self.timestamps.get)
+
+            for key in oldest[:len(self.cache) - self.max_entries]:
+
+                self.cache.pop(key, None)
+
+                self.timestamps.pop(key, None)
+
 
 
     def get(self, key):
 
-        if key in self.cache:
+        with self.lock:
 
-            timestamp = self.timestamps.get(key, 0)
+            if key in self.cache:
 
-            if time.time() - timestamp < CACHE_TTL:
+                timestamp = self.timestamps.get(key, 0)
 
-                return self.cache[key]
+                if time.time() - timestamp < self.ttl_seconds:
 
-            else:
+                    return self.cache[key]
 
                 # 缓存过期，删除
 
-                del self.cache[key]
+                self.cache.pop(key, None)
 
-                del self.timestamps[key]
+                self.timestamps.pop(key, None)
 
         return None
 
@@ -1334,17 +1430,27 @@ class SimpleCache:
 
     def set(self, key, value):
 
-        self.cache[key] = value
+        with self.lock:
 
-        self.timestamps[key] = time.time()
+            now = time.time()
+
+            self._prune_locked(now)
+
+            self.cache[key] = value
+
+            self.timestamps[key] = now
+
+            self._prune_locked(now)
 
 
 
     def clear(self):
 
-        self.cache.clear()
+        with self.lock:
 
-        self.timestamps.clear()
+            self.cache.clear()
+
+            self.timestamps.clear()
 
 
 
@@ -5693,7 +5799,26 @@ def get_mock_response(message):
 
 @app.route("/api/health", methods=["GET"])
 def health_check():
-    return {"status": "ok"}
+    payload = {"status": "ok"}
+    rss_reader = globals().get('_backend_current_rss_mb')
+    limiter = globals().get('_INST_SCANNER_CAPACITY')
+    if callable(rss_reader):
+        rss_mb = rss_reader()
+        payload['memory'] = {
+            'rssMb': round(rss_mb, 1) if rss_mb is not None else None,
+            'planMb': globals().get('_BACKEND_PLAN_MEMORY_MB'),
+            'softLimitMb': globals().get('_BACKEND_MEMORY_SOFT_LIMIT_MB'),
+            'abortLimitMb': globals().get('_BACKEND_MEMORY_ABORT_LIMIT_MB'),
+            'pressure': bool(
+                rss_mb is not None
+                and rss_mb >= (globals().get('_BACKEND_MEMORY_SOFT_LIMIT_MB') or float('inf'))
+            ),
+        }
+    if limiter is not None and callable(getattr(limiter, 'snapshot', None)):
+        capacity = limiter.snapshot()
+        payload['scannerCapacity'] = capacity
+        payload['heavyWorkCapacity'] = capacity
+    return payload
 
 
 @app.route('/api/ai/provider/config', methods=['GET', 'POST'])
@@ -11809,6 +11934,24 @@ _INST_SCANNER_AI_MAX_ATTEMPTS = 2
 _INST_SCANNER_AI_TIMEOUT_SECONDS = 60
 _INST_SCANNER_OPTION_REVIEW_TOP_N = 25
 _INST_SCANNER_EARNINGS_LOOKAHEAD_DAYS = 30
+_INST_SCANNER_MAX_CONCURRENT = max(1, min(int(os.getenv('MARKET_SCAN_MAX_CONCURRENT', '2') or 2), 4))
+_INST_SCANNER_INTERACTIVE_WAIT_SECONDS = max(
+    0.0,
+    min(float(os.getenv('MARKET_SCAN_INTERACTIVE_WAIT_SECONDS', '2') or 2), 30.0),
+)
+_INST_SCANNER_HEADLESS_WAIT_SECONDS = max(
+    1.0,
+    min(float(os.getenv('MARKET_SCAN_HEADLESS_WAIT_SECONDS', '600') or 600), 900.0),
+)
+_BACKEND_PLAN_MEMORY_MB = max(1024, int(os.getenv('BACKEND_PLAN_MEMORY_MB', '4096') or 4096))
+_BACKEND_MEMORY_SOFT_LIMIT_MB = max(
+    768,
+    min(int(os.getenv('BACKEND_MEMORY_SOFT_LIMIT_MB', '3200') or 3200), _BACKEND_PLAN_MEMORY_MB - 256),
+)
+_BACKEND_MEMORY_ABORT_LIMIT_MB = max(
+    _BACKEND_MEMORY_SOFT_LIMIT_MB + 128,
+    min(int(os.getenv('BACKEND_MEMORY_ABORT_LIMIT_MB', '3700') or 3700), _BACKEND_PLAN_MEMORY_MB - 64),
+)
 _INST_BENCHMARK_SYMBOLS = ('SPY', 'QQQ', 'IWM')
 _INST_SECTOR_ETF_SYMBOLS = ('XLK', 'XLF', 'XLV', 'XLY', 'XLP', 'XLI', 'XLE', 'XLB', 'XLU', 'XLRE', 'XLC')
 _INST_FINNHUB_TIMEOUT_SECONDS = 12
@@ -11845,6 +11988,152 @@ _INST_NEWS_EVENT_TERMS = (
     'investigation', 'fda', 'merger', 'acquisition', 'buyback', 'recall',
     'bankruptcy', 'contract', 'approval'
 )
+
+
+class _BackendMemoryPressure(RuntimeError):
+    def __init__(self, stage, rss_mb, limit_mb=None):
+        self.stage = stage
+        self.rss_mb = rss_mb
+        self.limit_mb = float(limit_mb or _BACKEND_MEMORY_ABORT_LIMIT_MB)
+        super().__init__(
+            'Backend memory pressure at %s (%.0f MB used; %.0f MB safety limit)'
+            % (stage, rss_mb, self.limit_mb)
+        )
+
+
+class _BackendScanCancelled(RuntimeError):
+    pass
+
+
+class _InstitutionalScanCapacity:
+    """Process-local admission control for the one supported Gunicorn worker."""
+
+    def __init__(self, capacity):
+        self.capacity = max(1, int(capacity))
+        self._semaphore = threading.BoundedSemaphore(self.capacity)
+        self._lock = threading.Lock()
+        self._active = 0
+
+    def acquire(self, timeout_seconds=0):
+        timeout_seconds = max(0.0, float(timeout_seconds or 0))
+        if timeout_seconds:
+            acquired = self._semaphore.acquire(timeout=timeout_seconds)
+        else:
+            acquired = self._semaphore.acquire(blocking=False)
+        if acquired:
+            with self._lock:
+                self._active += 1
+        return acquired
+
+    def release(self):
+        with self._lock:
+            if self._active <= 0:
+                return False
+            self._active -= 1
+        self._semaphore.release()
+        return True
+
+    def snapshot(self):
+        with self._lock:
+            active = self._active
+        return {
+            'active': active,
+            'capacity': self.capacity,
+            'available': max(0, self.capacity - active),
+        }
+
+
+_INST_SCANNER_CAPACITY = _InstitutionalScanCapacity(_INST_SCANNER_MAX_CONCURRENT)
+
+
+def _backend_current_rss_mb():
+    """Return current resident memory on Linux; use peak RSS as a safe fallback."""
+    try:
+        with open('/proc/self/statm', 'r', encoding='ascii') as handle:
+            fields = handle.read().split()
+        resident_pages = int(fields[1])
+        return resident_pages * os.sysconf('SC_PAGE_SIZE') / (1024 * 1024)
+    except Exception:
+        try:
+            import resource
+            rss = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+            if sys.platform == 'darwin':
+                return rss / (1024 * 1024)
+            return rss / 1024
+        except Exception:
+            return None
+
+
+def _backend_try_malloc_trim():
+    """Return free glibc heap pages to Render after a completed heavy scan."""
+    if not sys.platform.startswith('linux'):
+        return False
+    try:
+        import ctypes
+        libc = ctypes.CDLL('libc.so.6')
+        trim = getattr(libc, 'malloc_trim', None)
+        return bool(trim and trim(0))
+    except Exception:
+        return False
+
+
+def _backend_release_unused_memory(trim=False):
+    import gc
+    collected = gc.collect()
+    trimmed = _backend_try_malloc_trim() if trim else False
+    return {'collected': collected, 'trimmed': trimmed, 'rssMb': _backend_current_rss_mb()}
+
+
+def _backend_enforce_memory_budget(stage):
+    """Collect under pressure and fail cleanly before Render's hard OOM kill."""
+    rss_mb = _backend_current_rss_mb()
+    if rss_mb is None or rss_mb < _BACKEND_MEMORY_SOFT_LIMIT_MB:
+        return rss_mb
+    safe_print(
+        '[MemoryGuard] pressure stage=%s rss=%.0fMB soft=%dMB; collecting'
+        % (stage, rss_mb, _BACKEND_MEMORY_SOFT_LIMIT_MB)
+    )
+    released = _backend_release_unused_memory(trim=True)
+    rss_mb = released.get('rssMb') or rss_mb
+    if rss_mb >= _BACKEND_MEMORY_ABORT_LIMIT_MB:
+        raise _BackendMemoryPressure(stage, rss_mb)
+    return rss_mb
+
+
+def _inst_update_headless_capacity_state(uid, status, message):
+    updater = globals().get('_pa_update_active_run')
+    if not uid or not callable(updater):
+        return
+    try:
+        updater(
+            uid,
+            status=status,
+            currentStep='market_scanner',
+            message=message,
+        )
+    except Exception as exc:
+        safe_print('[InstitutionalScanner] capacity status update failed: %s' % type(exc).__name__)
+
+
+def _inst_acquire_scanner_capacity(headless_uid=None):
+    if _INST_SCANNER_CAPACITY.acquire(0):
+        return True
+    if headless_uid:
+        _inst_update_headless_capacity_state(
+            headless_uid,
+            'queued',
+            'Waiting for Pro scan capacity (maximum %d concurrent scans)'
+            % _INST_SCANNER_MAX_CONCURRENT,
+        )
+        acquired = _INST_SCANNER_CAPACITY.acquire(_INST_SCANNER_HEADLESS_WAIT_SECONDS)
+        if acquired:
+            _inst_update_headless_capacity_state(
+                headless_uid,
+                'running',
+                'Market scanner is running',
+            )
+        return acquired
+    return _INST_SCANNER_CAPACITY.acquire(_INST_SCANNER_INTERACTIVE_WAIT_SECONDS)
 _INST_SECTOR_ETF_KEYWORDS = (
     ('XLK', ('technology', 'software', 'semiconductor', 'hardware', 'electronic', 'computer', 'information technology')),
     ('XLF', ('bank', 'financial', 'insurance', 'capital markets', 'credit', 'asset management', 'broker')),
@@ -12250,10 +12539,10 @@ def _inst_period_to_start(period):
     return start.strftime('%Y-%m-%d')
 
 
-def _inst_fetch_alpaca_bars(symbols, market_cfg, period='18mo', feed=None, batch_size=25):
-    history = {}
-    errors = {}
+def _inst_iter_alpaca_bar_batches(symbols, market_cfg, period='18mo', feed=None, batch_size=25):
+    """Yield one bounded batch of Alpaca daily-bar history at a time."""
     symbols = [_inst_clean_symbol(s) for s in symbols if _inst_clean_symbol(s)]
+    batch_size = max(1, int(batch_size or 25))
     headers = _inst_alpaca_headers(market_cfg)
     start_date = _inst_period_to_start(period)
     end_date = datetime.utcnow().strftime('%Y-%m-%d')
@@ -12261,6 +12550,8 @@ def _inst_fetch_alpaca_bars(symbols, market_cfg, period='18mo', feed=None, batch
 
     for start in range(0, len(symbols), batch_size):
         batch = symbols[start:start + batch_size]
+        batch_history = {}
+        batch_errors = {}
         page_token = None
         pages = 0
         while True:
@@ -12288,7 +12579,7 @@ def _inst_fetch_alpaca_bars(symbols, market_cfg, period='18mo', feed=None, batch
                     err = f'bars status={resp.status_code}: {resp.text[:180]}'
                     print(f'[InstitutionalScanner] bars failed batch={start}-{start+len(batch)} {err}')
                     for symbol in batch:
-                        errors[symbol] = err
+                        batch_errors[symbol] = err
                     break
 
                 payload = resp.json()
@@ -12297,12 +12588,12 @@ def _inst_fetch_alpaca_bars(symbols, market_cfg, period='18mo', feed=None, batch
                     for symbol, bars in bars_payload.items():
                         clean = _inst_clean_symbol(symbol)
                         if clean and isinstance(bars, list):
-                            history.setdefault(clean, []).extend(bars)
+                            batch_history.setdefault(clean, []).extend(bars)
                 elif isinstance(bars_payload, list):
                     for bar in bars_payload:
                         clean = _inst_clean_symbol(bar.get('S') or bar.get('symbol')) if isinstance(bar, dict) else ''
                         if clean:
-                            history.setdefault(clean, []).append(bar)
+                            batch_history.setdefault(clean, []).append(bar)
 
                 page_token = payload.get('next_page_token') if isinstance(payload, dict) else None
                 pages += 1
@@ -12312,11 +12603,45 @@ def _inst_fetch_alpaca_bars(symbols, market_cfg, period='18mo', feed=None, batch
                 err = str(e)
                 print(f'[InstitutionalScanner] bars exception batch={start}-{start+len(batch)} {err}')
                 for symbol in batch:
-                    errors[symbol] = err
+                    batch_errors[symbol] = err
                 break
 
+        for symbol in list(batch_history.keys()):
+            batch_history[symbol] = sorted(
+                batch_history[symbol],
+                key=lambda bar: str(bar.get('t') or bar.get('timestamp') or ''),
+            )
+        # A generator retains its entire local frame while paused at ``yield``.
+        # Drop response/payload loop locals so the consumer holds only this
+        # batch's normalized history, not an extra raw response copy.
+        resp = None
+        payload = None
+        bars_payload = None
+        bars = None
+        bar = None
+        yield batch, batch_history, batch_errors
+
+
+def _inst_fetch_alpaca_bars(symbols, market_cfg, period='18mo', feed=None, batch_size=25):
+    """Fetch and combine Alpaca daily bars for callers that need full history."""
+    history = {}
+    errors = {}
+    for _batch, batch_history, batch_errors in _inst_iter_alpaca_bar_batches(
+        symbols,
+        market_cfg,
+        period=period,
+        feed=feed,
+        batch_size=batch_size,
+    ):
+        for symbol, bars in batch_history.items():
+            history.setdefault(symbol, []).extend(bars)
+        errors.update(batch_errors)
+
     for symbol in list(history.keys()):
-        history[symbol] = sorted(history[symbol], key=lambda bar: str(bar.get('t') or bar.get('timestamp') or ''))
+        history[symbol] = sorted(
+            history[symbol],
+            key=lambda bar: str(bar.get('t') or bar.get('timestamp') or ''),
+        )
     return history, errors
 
 
@@ -12797,6 +13122,89 @@ def _inst_compute_symbol_metrics(symbol, bars, meta, snapshot_meta=None):
         'dataSource': 'Alpaca',
         'universe': 'ALPACA_MARKET',
     }
+
+
+def _inst_stream_alpaca_symbol_metrics(
+    symbols,
+    market_cfg,
+    metadata,
+    snapshot_meta_by_symbol,
+    benchmark_context,
+    period='18mo',
+    feed=None,
+    batch_size=25,
+):
+    """Compute compact scanner rows while retaining only one raw-bar batch."""
+    rows = []
+    failed_count = 0
+    errors = {}
+    processed_count = 0
+    headless_uid = getattr(_headless_auth_context, 'user_id', None)
+    stop_checker = globals().get('_pa_check_stop_requested')
+    active_run_updater = globals().get('_pa_update_active_run')
+
+    for batch_symbols, batch_history, batch_errors in _inst_iter_alpaca_bar_batches(
+        symbols,
+        market_cfg,
+        period=period,
+        feed=feed,
+        batch_size=batch_size,
+    ):
+        if headless_uid and callable(stop_checker) and stop_checker(headless_uid):
+            batch_history.clear()
+            raise _BackendScanCancelled('Market scanner stopped by user')
+        errors.update(batch_errors)
+        symbol_bars = None
+        batch_failed = False
+        try:
+            for symbol in batch_symbols:
+                symbol_bars = batch_history.get(symbol)
+                row = _inst_compute_symbol_metrics(
+                    symbol,
+                    symbol_bars,
+                    metadata.get(symbol, {}),
+                    snapshot_meta_by_symbol.get(symbol, {}),
+                )
+                if row is None:
+                    failed_count += 1
+                    continue
+                _inst_apply_benchmark_metrics(row, symbol_bars, benchmark_context)
+                _inst_apply_trading_cost_metrics(row)
+                rows.append(row)
+            processed_count += len(batch_symbols)
+            if (
+                headless_uid
+                and callable(active_run_updater)
+                and (processed_count == len(symbols) or processed_count % 250 == 0)
+            ):
+                active_run_updater(
+                    headless_uid,
+                    message='Market scanner processed %d/%d symbols' % (processed_count, len(symbols)),
+                    steps={
+                        'market_scanner': {
+                            'status': 'running',
+                            'processed': processed_count,
+                            'processedSymbols': processed_count,
+                            'total': len(symbols),
+                            'totalSymbols': len(symbols),
+                        }
+                    },
+                )
+        except BaseException:
+            batch_failed = True
+            raise
+        finally:
+            # Release raw history before the iterator starts the next network batch.
+            symbol_bars = None
+            batch_history.clear()
+            if batch_failed:
+                # Preserve the original computation exception. The outer scanner
+                # wrapper still collects/trims after the implementation unwinds.
+                _backend_release_unused_memory(trim=False)
+            else:
+                _backend_enforce_memory_budget('market_scanner_batch')
+
+    return rows, failed_count, errors
 
 
 def _inst_apply_investability_filters(row, filters):
@@ -14651,8 +15059,7 @@ def _inst_default_filters(data):
     return merged
 
 
-@app.route('/api/market/scanner', methods=['POST'])
-def institutional_market_scanner():
+def _institutional_market_scanner_impl():
     """Alpaca-led whole-market scanner with optional enrichment overlays."""
     started = time.time()
     try:
@@ -14717,13 +15124,6 @@ def institutional_market_scanner():
         selected_symbols = [symbol for symbol, _snap in selected_pairs]
         snapshot_meta_by_symbol = {symbol: snap for symbol, snap in selected_pairs}
 
-        history, history_errors = _inst_fetch_alpaca_bars(
-            selected_symbols,
-            market_cfg,
-            period=history_period,
-            feed=feed,
-            batch_size=25,
-        )
         benchmark_symbols = list(dict.fromkeys(list(_INST_BENCHMARK_SYMBOLS) + list(_INST_SECTOR_ETF_SYMBOLS)))
         benchmark_history, benchmark_errors = _inst_fetch_alpaca_bars(
             benchmark_symbols,
@@ -14734,21 +15134,16 @@ def institutional_market_scanner():
         )
         benchmark_context = _inst_build_benchmark_context(benchmark_history)
 
-        raw_rows = []
-        failed_count = 0
-        for symbol in selected_symbols:
-            row = _inst_compute_symbol_metrics(
-                symbol,
-                history.get(symbol),
-                metadata.get(symbol, {}),
-                snapshot_meta_by_symbol.get(symbol, {}),
-            )
-            if row is None:
-                failed_count += 1
-                continue
-            _inst_apply_benchmark_metrics(row, history.get(symbol), benchmark_context)
-            _inst_apply_trading_cost_metrics(row)
-            raw_rows.append(row)
+        raw_rows, failed_count, history_errors = _inst_stream_alpaca_symbol_metrics(
+            selected_symbols,
+            market_cfg,
+            metadata,
+            snapshot_meta_by_symbol,
+            benchmark_context,
+            period=history_period,
+            feed=feed,
+            batch_size=25,
+        )
 
         passed_rows = []
         filtered_reasons = {}
@@ -14939,6 +15334,8 @@ def institutional_market_scanner():
                 'method': 'alpaca_whole_market_scan_v5_risk_adjusted_cross_section',
             }
         })
+    except (_BackendMemoryPressure, _BackendScanCancelled):
+        raise
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
@@ -14950,6 +15347,74 @@ def institutional_market_scanner():
             'message': 'Alpaca market scanner failed: %s' % str(e),
             'traceback': tb[:2000],
         }), 500
+
+
+@app.route('/api/market/scanner', methods=['POST'])
+def institutional_market_scanner():
+    """Admission-controlled scanner tuned for a Render Pro 4 GB / 2 CPU service."""
+    headless_uid = getattr(_headless_auth_context, 'user_id', None)
+    owns_pipeline_capacity = False
+    owns_checker = globals().get('_pa_user_owns_heavy_capacity')
+    if headless_uid and callable(owns_checker):
+        owns_pipeline_capacity = owns_checker(headless_uid)
+    acquired_here = False
+    if owns_pipeline_capacity:
+        acquired = True
+    else:
+        acquired = _inst_acquire_scanner_capacity(headless_uid=headless_uid)
+        acquired_here = acquired
+    if not acquired:
+        capacity = _INST_SCANNER_CAPACITY.snapshot()
+        if headless_uid:
+            _inst_update_headless_capacity_state(
+                headless_uid,
+                'failed',
+                'Market scanner capacity wait timed out; it is safe to retry',
+            )
+        return jsonify({
+            'success': False,
+            'error': 'scanner_capacity_busy',
+            'message': 'The scanner is at its Pro concurrency limit. Please retry shortly.',
+            'activeScans': capacity['active'],
+            'maxConcurrentScans': capacity['capacity'],
+            'retryAfterSeconds': 15,
+        }), 429, {'Retry-After': '15'}
+
+    try:
+        admission_rss = _backend_enforce_memory_budget('market_scanner_start')
+        if admission_rss is not None and admission_rss >= _BACKEND_MEMORY_SOFT_LIMIT_MB:
+            raise _BackendMemoryPressure(
+                'market_scanner_admission',
+                admission_rss,
+                limit_mb=_BACKEND_MEMORY_SOFT_LIMIT_MB,
+            )
+        return _institutional_market_scanner_impl()
+    except _BackendMemoryPressure as exc:
+        safe_print('[MemoryGuard] scanner stopped safely: %s' % exc)
+        return jsonify({
+            'success': False,
+            'error': 'backend_memory_pressure',
+            'message': 'The scan paused to protect service stability. Please retry shortly.',
+            'memoryMb': round(exc.rss_mb, 1),
+            'memoryLimitMb': round(exc.limit_mb, 1),
+            'memorySoftLimitMb': _BACKEND_MEMORY_SOFT_LIMIT_MB,
+            'memoryAbortLimitMb': _BACKEND_MEMORY_ABORT_LIMIT_MB,
+            'retryAfterSeconds': 30,
+        }), 503, {'Retry-After': '30'}
+    except _BackendScanCancelled:
+        return jsonify({
+            'success': True,
+            'cancelled': True,
+            'results': [],
+            'summary': {'cancelled': True, 'resultsCount': 0},
+            'scan_stats': {'results_count': 0},
+            'message': 'Market scanner stopped by user',
+        })
+    finally:
+        if acquired_here:
+            _INST_SCANNER_CAPACITY.release()
+        # The implementation frame (raw rows, snapshots, bars) is gone here.
+        _backend_release_unused_memory(trim=True)
 
 
 @app.route('/api/market/scanner/universes', methods=['GET'])
@@ -24130,6 +24595,41 @@ def run_parameter_optimization():
 # Portfolio history cache — avoid hammering Alpaca on repeated frontend requests
 _portfolio_history_cache = {}  # key: (user_id, mode, range) → {data, ts}
 PORTFOLIO_HISTORY_CACHE_TTL = 60  # seconds
+PORTFOLIO_HISTORY_CACHE_MAX_ENTRIES = 32
+_portfolio_history_cache_lock = threading.Lock()
+
+
+def _portfolio_history_cache_get(cache_key, now=None):
+    now = _time_mod.time() if now is None else now
+    with _portfolio_history_cache_lock:
+        expired = [
+            key for key, item in _portfolio_history_cache.items()
+            if not isinstance(item, dict)
+            or now - float(item.get('ts') or 0) >= PORTFOLIO_HISTORY_CACHE_TTL
+        ]
+        for key in expired:
+            _portfolio_history_cache.pop(key, None)
+        return _portfolio_history_cache.get(cache_key)
+
+
+def _portfolio_history_cache_set(cache_key, data, now=None):
+    now = _time_mod.time() if now is None else now
+    with _portfolio_history_cache_lock:
+        expired = [
+            key for key, item in _portfolio_history_cache.items()
+            if not isinstance(item, dict)
+            or now - float(item.get('ts') or 0) >= PORTFOLIO_HISTORY_CACHE_TTL
+        ]
+        for key in expired:
+            _portfolio_history_cache.pop(key, None)
+        _portfolio_history_cache[cache_key] = {'data': data, 'ts': now}
+        if len(_portfolio_history_cache) > PORTFOLIO_HISTORY_CACHE_MAX_ENTRIES:
+            oldest = sorted(
+                _portfolio_history_cache,
+                key=lambda key: float((_portfolio_history_cache.get(key) or {}).get('ts') or 0),
+            )
+            for key in oldest[:len(_portfolio_history_cache) - PORTFOLIO_HISTORY_CACHE_MAX_ENTRIES]:
+                _portfolio_history_cache.pop(key, None)
 
 @app.route('/api/ai/alpaca/portfolio/history', methods=['GET'])
 
@@ -24150,8 +24650,8 @@ def ai_alpaca_portfolio_history():
         _cache_uid = 'anon'
     _cache_key = (_cache_uid, mode, range_param)
     _now = _time_mod.time()
-    _cached = _portfolio_history_cache.get(_cache_key)
-    if _cached and (_now - _cached['ts']) < PORTFOLIO_HISTORY_CACHE_TTL:
+    _cached = _portfolio_history_cache_get(_cache_key, now=_now)
+    if _cached:
         safe_print(f'[Portfolio History] cache hit mode={mode} range={range_param} age={_now - _cached["ts"]:.1f}s')
         return jsonify(_cached['data'])
 
@@ -24459,7 +24959,7 @@ def ai_alpaca_portfolio_history():
                         'message': 'Portfolio history retrieved successfully'
 
                     }
-                    _portfolio_history_cache[_cache_key] = {'data': _result, 'ts': _time_mod.time()}
+                    _portfolio_history_cache_set(_cache_key, _result)
                     return jsonify(_result)
 
 
@@ -31684,6 +32184,41 @@ def _generate_risk_gate(verdict, metrics, stability, strategy, recent_vs_long=No
 # In-memory cache for AI overlay (keyed on symbol + metrics + context)
 _DV_AI_OVERLAY_CACHE = {}
 _DV_AI_OVERLAY_CACHE_TTL_SECONDS = 1800
+_DV_AI_OVERLAY_CACHE_MAX_ENTRIES = 256
+_DV_AI_OVERLAY_CACHE_LOCK = threading.Lock()
+
+
+def _dv_ai_overlay_cache_get(cache_key, now=None):
+    now = time.time() if now is None else now
+    with _DV_AI_OVERLAY_CACHE_LOCK:
+        expired = [
+            key for key, item in _DV_AI_OVERLAY_CACHE.items()
+            if not isinstance(item, dict)
+            or now - float(item.get('ts') or 0) >= _DV_AI_OVERLAY_CACHE_TTL_SECONDS
+        ]
+        for key in expired:
+            _DV_AI_OVERLAY_CACHE.pop(key, None)
+        return _DV_AI_OVERLAY_CACHE.get(cache_key)
+
+
+def _dv_ai_overlay_cache_set(cache_key, value, now=None):
+    now = time.time() if now is None else now
+    with _DV_AI_OVERLAY_CACHE_LOCK:
+        expired = [
+            key for key, item in _DV_AI_OVERLAY_CACHE.items()
+            if not isinstance(item, dict)
+            or now - float(item.get('ts') or 0) >= _DV_AI_OVERLAY_CACHE_TTL_SECONDS
+        ]
+        for key in expired:
+            _DV_AI_OVERLAY_CACHE.pop(key, None)
+        _DV_AI_OVERLAY_CACHE[cache_key] = value
+        if len(_DV_AI_OVERLAY_CACHE) > _DV_AI_OVERLAY_CACHE_MAX_ENTRIES:
+            oldest = sorted(
+                _DV_AI_OVERLAY_CACHE,
+                key=lambda key: float((_DV_AI_OVERLAY_CACHE.get(key) or {}).get('ts') or 0),
+            )
+            for key in oldest[:len(_DV_AI_OVERLAY_CACHE) - _DV_AI_OVERLAY_CACHE_MAX_ENTRIES]:
+                _DV_AI_OVERLAY_CACHE.pop(key, None)
 
 
 def _dv_sync_final_verdict(dv_result):
@@ -31759,18 +32294,14 @@ def _ai_deeper_validation_overlay_safe(dv_result, timeout_sec=30, ai_config=None
 
     # Check cache
     _cache_key = _build_ai_overlay_cache_key(dv_result, ai_config)
-    _cached = _DV_AI_OVERLAY_CACHE.get(_cache_key)
+    _cached = _dv_ai_overlay_cache_get(_cache_key, now=_time.time())
     if _cached:
-        _age = _time.time() - _cached['ts']
-        if _age < _DV_AI_OVERLAY_CACHE_TTL_SECONDS:
-            for _k, _v in _cached['fields'].items():
-                dv_result[_k] = _v
-            _dv_sync_final_verdict(dv_result)
-            dv_result['aiValidationCacheHit'] = True
-            dv_result['aiValidationElapsedMs'] = int((_time.time() - _start) * 1000)
-            return dv_result
-        else:
-            del _DV_AI_OVERLAY_CACHE[_cache_key]
+        for _k, _v in _cached['fields'].items():
+            dv_result[_k] = _v
+        _dv_sync_final_verdict(dv_result)
+        dv_result['aiValidationCacheHit'] = True
+        dv_result['aiValidationElapsedMs'] = int((_time.time() - _start) * 1000)
+        return dv_result
 
     dv_result['aiValidationCacheHit'] = False
 
@@ -31782,7 +32313,7 @@ def _ai_deeper_validation_overlay_safe(dv_result, timeout_sec=30, ai_config=None
 
         # Cache successful results
         if dv_result.get('aiValidationUsed'):
-            _DV_AI_OVERLAY_CACHE[_cache_key] = {
+            _dv_ai_overlay_cache_set(_cache_key, {
                 'ts': _time.time(),
                 'fields': {k: dv_result[k] for k in [
                     'aiValidationUsed', 'aiValidationVerdict', 'aiValidationConfidence',
@@ -31792,7 +32323,7 @@ def _ai_deeper_validation_overlay_safe(dv_result, timeout_sec=30, ai_config=None
                     'localVerdictBeforeAI', 'finalVerdict', 'finalVerdictSource',
                     'verdict', 'dvDecision',
                 ] if k in dv_result},
-            }
+            })
         return dv_result
     except Exception as _safe_e:
         dv_result['aiValidationUsed'] = False
@@ -35863,11 +36394,23 @@ _PA_MARKET_CACHE = {}
 _PA_MARKET_CACHE_LOCK = threading.Lock()
 _PA_EXIT_BARS_CACHE_TTL_SECONDS = 15 * 60
 _PA_EXIT_EVENTS_CACHE_TTL_SECONDS = 30 * 60
+_PA_MARKET_CLOCK_CACHE_TTL_SECONDS = 15 * 60
+_PA_MARKET_CACHE_MAX_ENTRIES = 128
 _PA_CURRENT_UID = None
 _PA_RUNNING_USERS = set()
 _PA_RUNNING_USERS_LOCK = threading.Lock()
+_PA_HEAVY_PIPELINE_USERS = set()
+_PA_HEAVY_PIPELINE_SOURCES = {
+    'scheduler',
+    'pipeline_endpoint',
+    'headless_test',
+    'auto_run_now',
+    'toggle_on',
+}
 _PA_ACTIVE_RUNS = {}
 _PA_ACTIVE_RUNS_LOCK = threading.Lock()
+_PA_ACTIVE_RUNS_MAX_ENTRIES = 256
+_PA_RUNTIME_STATE_WRITE_LOCK = threading.Lock()
 # Discord dedup: {(uid, run_id, event_type): sent_at}. Keep recent entries across
 # runs so overlapping pipeline threads cannot erase each other's guards.
 _PA_SENT_DISCORD_EVENTS = {}
@@ -35877,7 +36420,11 @@ _PA_DISCORD_DEDUP_LOCK = threading.Lock()
 _PA_PENDING_RUNS = {}
 _PA_PENDING_RUNS_LOCK = threading.Lock()
 _PA_LAST_PIPELINE_RESULTS = {}
+_PA_LAST_PIPELINE_RESULT_TIMESTAMPS = {}
 _PA_LAST_PIPELINE_RESULTS_LOCK = threading.Lock()
+_PA_LAST_PIPELINE_RESULTS_TTL_SECONDS = 6 * 60 * 60
+_PA_LAST_PIPELINE_RESULTS_MAX_ENTRIES = 24
+_PA_LAST_PIPELINE_RESULTS_MAX_RUNS_PER_USER = 2
 _PA_MANAGED_POSITIONS = {}
 _PA_MANAGED_POSITIONS_LOCK = threading.Lock()
 _PA_MANAGED_CONFIG_WRITE_LOCK = threading.Lock()
@@ -35885,6 +36432,47 @@ _PA_POSITION_GUARD_STATE = {}
 _PA_POSITION_GUARD_LOCK = threading.Lock()
 _PA_POSITION_GUARD_INTERVAL_SECONDS = 60
 _PA_PROCESS_STARTED_AT = datetime.now(timezone.utc)
+
+
+def _pa_market_cache_timestamp(key, item):
+    if not isinstance(item, dict):
+        return 0.0
+    if item.get('fetchedAt') is not None:
+        try:
+            return float(item.get('fetchedAt') or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    checked_at = item.get('checked_at')
+    if checked_at:
+        try:
+            return dateutil.parser.isoparse(str(checked_at)).timestamp()
+        except Exception:
+            return 0.0
+    return 0.0
+
+
+def _pa_prune_market_cache_locked(now_ts=None):
+    """Prune dynamic clock/bar/event entries while ``_PA_MARKET_CACHE_LOCK`` is held."""
+    now_ts = time.time() if now_ts is None else now_ts
+    dynamic = []
+    for key, item in list(_PA_MARKET_CACHE.items()):
+        if isinstance(key, str) and key.startswith('exit-bars:'):
+            ttl = _PA_EXIT_BARS_CACHE_TTL_SECONDS
+        elif isinstance(key, str) and key.startswith('exit-events:'):
+            ttl = _PA_EXIT_EVENTS_CACHE_TTL_SECONDS
+        elif isinstance(key, tuple):
+            ttl = _PA_MARKET_CLOCK_CACHE_TTL_SECONDS
+        else:
+            continue
+        cached_at = _pa_market_cache_timestamp(key, item)
+        if not cached_at or now_ts - cached_at >= ttl:
+            _PA_MARKET_CACHE.pop(key, None)
+            continue
+        dynamic.append((key, cached_at))
+    if len(dynamic) > _PA_MARKET_CACHE_MAX_ENTRIES:
+        dynamic.sort(key=lambda pair: pair[1])
+        for key, _cached_at in dynamic[:len(dynamic) - _PA_MARKET_CACHE_MAX_ENTRIES]:
+            _PA_MARKET_CACHE.pop(key, None)
 
 # Manual runs and background scheduled runs share this exact stage contract.
 # Admission is deliberately lightweight: it owns portfolio/cross-stage eligibility,
@@ -35960,16 +36548,73 @@ def _pa_initial_steps():
     }
 
 
+def _pa_compact_active_run_step(step_key, step):
+    """Keep polling/persisted run state small; full rows live in pipeline results."""
+    if not isinstance(step, dict):
+        return step
+    compact = dict(step)
+    if step_key != 'market_scanner':
+        return compact
+    rows = compact.pop('results', None)
+    scanner_rows = compact.pop('scannerResults', None)
+    if not isinstance(rows, list) and isinstance(scanner_rows, list):
+        rows = scanner_rows
+    if isinstance(rows, list):
+        compact.setdefault('resultCount', len(rows))
+        compact.setdefault(
+            'topSymbols',
+            [row.get('symbol') for row in rows[:10] if isinstance(row, dict) and row.get('symbol')],
+        )
+    return compact
+
+
+def _pa_compact_active_run_record(run):
+    if not isinstance(run, dict):
+        return run
+    compact = dict(run)
+    steps = run.get('steps')
+    if isinstance(steps, dict):
+        compact['steps'] = {
+            step_key: _pa_compact_active_run_step(step_key, step)
+            for step_key, step in steps.items()
+        }
+    return compact
+
+
+def _pa_prune_active_runs_locked():
+    """Keep current work plus the most recent compact run states."""
+    overflow = len(_PA_ACTIVE_RUNS) - _PA_ACTIVE_RUNS_MAX_ENTRIES
+    if overflow <= 0:
+        return
+
+    def updated_timestamp(item):
+        _uid, run = item
+        try:
+            return dateutil.parser.isoparse(str((run or {}).get('updatedAt') or '')).timestamp()
+        except Exception:
+            return 0.0
+
+    removable = [
+        item for item in _PA_ACTIVE_RUNS.items()
+        if str((item[1] or {}).get('status') or '') not in ('running', 'queued')
+    ]
+    removable.sort(key=updated_timestamp)
+    for uid, _run in removable[:overflow]:
+        _PA_ACTIVE_RUNS.pop(uid, None)
+
+
 def _pa_persist_runtime_state():
     """Persist non-secret live run state so a backend restart is observable."""
     try:
-        snapshot = {}
-        with _PA_ACTIVE_RUNS_LOCK:
-            snapshot = {uid: dict(run) for uid, run in _PA_ACTIVE_RUNS.items()}
-        tmp_path = _PA_RUNTIME_STATE_PATH + '.tmp'
-        with open(tmp_path, 'w', encoding='utf-8') as handle:
-            json.dump(snapshot, handle, indent=2, default=str)
-        os.replace(tmp_path, _PA_RUNTIME_STATE_PATH)
+        with _PA_RUNTIME_STATE_WRITE_LOCK:
+            snapshot = {}
+            with _PA_ACTIVE_RUNS_LOCK:
+                _pa_prune_active_runs_locked()
+                snapshot = {uid: _pa_compact_active_run_record(run) for uid, run in _PA_ACTIVE_RUNS.items()}
+            tmp_path = _PA_RUNTIME_STATE_PATH + '.tmp'
+            with open(tmp_path, 'w', encoding='utf-8') as handle:
+                json.dump(snapshot, handle, indent=2, default=str)
+            os.replace(tmp_path, _PA_RUNTIME_STATE_PATH)
     except Exception as exc:
         _pa_log_error('Runtime state persistence failed: %s' % type(exc).__name__)
 
@@ -35984,11 +36629,12 @@ def _pa_restore_runtime_state():
         if not isinstance(restored, dict):
             return
         now_iso = datetime.now(timezone.utc).isoformat()
+        restored_any = False
         with _PA_ACTIVE_RUNS_LOCK:
             for uid, run in restored.items():
                 if not isinstance(run, dict):
                     continue
-                if run.get('status') == 'running':
+                if run.get('status') in ('running', 'queued'):
                     run['status'] = 'interrupted'
                     run['message'] = 'Backend restarted while this pipeline was running'
                     run['lastError'] = 'backend_restart'
@@ -35996,7 +36642,10 @@ def _pa_restore_runtime_state():
                 run['updatedAt'] = now_iso
                 run['totalSteps'] = _PA_PIPELINE_TOTAL_STEPS
                 run.setdefault('steps', _pa_initial_steps())
-                _PA_ACTIVE_RUNS[uid] = run
+                _PA_ACTIVE_RUNS[uid] = _pa_compact_active_run_record(run)
+                restored_any = True
+        if restored_any:
+            _pa_persist_runtime_state()
     except Exception as exc:
         _pa_log_error('Runtime state restore failed: %s' % type(exc).__name__)
 
@@ -36451,8 +37100,11 @@ def _pa_update_active_run(uid, **kwargs):
                 if run.setdefault('steps', {}) is None:
                     run['steps'] = {}
                 for step_key, step_val in v.items():
+                    step_val = _pa_compact_active_run_step(step_key, step_val)
                     if step_key in run['steps'] and isinstance(step_val, dict) and isinstance(run['steps'][step_key], dict):
-                        run['steps'][step_key].update(step_val)
+                        existing = _pa_compact_active_run_step(step_key, run['steps'][step_key])
+                        existing.update(step_val)
+                        run['steps'][step_key] = _pa_compact_active_run_step(step_key, existing)
                     else:
                         run['steps'][step_key] = step_val
             else:
@@ -36465,7 +37117,7 @@ def _pa_get_active_run(uid):
     """Get a copy of the active run state. Returns None if no active run exists."""
     with _PA_ACTIVE_RUNS_LOCK:
         run = _PA_ACTIVE_RUNS.get(uid)
-        return dict(run) if run else None
+        return _pa_compact_active_run_record(run) if run else None
 
 
 def _pa_clear_active_run(uid):
@@ -36559,18 +37211,72 @@ def _pa_discord_send_once(uid, run_id, event_type, payload):
 
 
 def _pa_try_reserve_user_run(uid, source):
-    """Atomically reserve one pipeline slot per user before launching a worker."""
+    """Reserve per-user ownership and, for full pipelines, one global Pro slot."""
+    is_heavy_pipeline = source in _PA_HEAVY_PIPELINE_SOURCES
+    if is_heavy_pipeline:
+        try:
+            admission_rss = _backend_enforce_memory_budget('pipeline_admission')
+        except _BackendMemoryPressure as exc:
+            _pa_log(
+                '[PipelineRun] deferred launch user=%s source=%s reason=memory_abort rss=%.0fMB'
+                % (uid[:8], source, exc.rss_mb)
+            )
+            return False
+        if admission_rss is not None and admission_rss >= _BACKEND_MEMORY_SOFT_LIMIT_MB:
+            _pa_log(
+                '[PipelineRun] deferred launch user=%s source=%s reason=memory_soft_limit rss=%.0fMB'
+                % (uid[:8], source, admission_rss)
+            )
+            return False
     with _PA_RUNNING_USERS_LOCK:
         if uid in _PA_RUNNING_USERS:
             _pa_log('[PipelineRun] skipped duplicate launch user=%s source=%s reason=already_running' % (uid[:8], source))
             return False
+        if is_heavy_pipeline and not _INST_SCANNER_CAPACITY.acquire(0):
+            capacity = _INST_SCANNER_CAPACITY.snapshot()
+            _pa_log(
+                '[PipelineRun] deferred launch user=%s source=%s reason=pro_capacity active=%d capacity=%d'
+                % (uid[:8], source, capacity['active'], capacity['capacity'])
+            )
+            return False
         _PA_RUNNING_USERS.add(uid)
+        if is_heavy_pipeline:
+            _PA_HEAVY_PIPELINE_USERS.add(uid)
         return True
 
 
 def _pa_release_user_run(uid):
+    release_heavy_capacity = False
     with _PA_RUNNING_USERS_LOCK:
         _PA_RUNNING_USERS.discard(uid)
+        if uid in _PA_HEAVY_PIPELINE_USERS:
+            _PA_HEAVY_PIPELINE_USERS.discard(uid)
+            release_heavy_capacity = True
+    if release_heavy_capacity:
+        _INST_SCANNER_CAPACITY.release()
+
+
+def _pa_user_owns_heavy_capacity(uid):
+    with _PA_RUNNING_USERS_LOCK:
+        return uid in _PA_HEAVY_PIPELINE_USERS
+
+
+def _pa_user_run_is_reserved(uid):
+    with _PA_RUNNING_USERS_LOCK:
+        return uid in _PA_RUNNING_USERS
+
+
+def _pa_pipeline_capacity_response():
+    capacity = _INST_SCANNER_CAPACITY.snapshot()
+    return jsonify({
+        'success': False,
+        'error': 'pipeline_capacity_busy',
+        'status': 'capacity_busy',
+        'message': 'The Pro research capacity is busy. Your run was not started; retry shortly.',
+        'activeHeavyRuns': capacity['active'],
+        'maxConcurrentHeavyRuns': capacity['capacity'],
+        'retryAfterSeconds': 30,
+    }), 429, {'Retry-After': '30'}
 
 
 def _pa_check_stop_requested(uid):
@@ -37492,6 +38198,7 @@ def _pa_check_market_open(uid, trade_mode='paper'):
                             'next_open': next_open, 'next_close': next_close,
                             'checked_at': now_et.isoformat(),
                         }
+                        _pa_prune_market_cache_locked()
                     _pa_log('Alpaca clock: is_open=%s, next_open=%s, next_close=%s, stage=%s' % (is_open, next_open, next_close, market_stage))
                     return is_open, status, 'alpaca_user_clock', next_open or '', next_close or '', market_stage
                 else:
@@ -39855,6 +40562,7 @@ def _pa_fetch_exit_event_context(uid, symbols, market_cfg):
     events_by_symbol = {}
     missing = []
     with _PA_MARKET_CACHE_LOCK:
+        _pa_prune_market_cache_locked(now_ts)
         for symbol in symbols:
             cached = _PA_MARKET_CACHE.get('exit-events:%s:%s' % (uid, symbol))
             if isinstance(cached, dict) and now_ts - float(cached.get('fetchedAt') or 0) < _PA_EXIT_EVENTS_CACHE_TTL_SECONDS:
@@ -39904,6 +40612,7 @@ def _pa_fetch_exit_event_context(uid, symbols, market_cfg):
                     'events': normalized,
                 }
                 events_by_symbol[symbol] = normalized
+            _pa_prune_market_cache_locked(now_ts)
 
     return events_by_symbol, {
         'source': 'Alpaca News + Finnhub earnings calendar',
@@ -39927,6 +40636,7 @@ def _pa_fetch_exit_market_context(uid, symbols, trade_mode='paper'):
     bars_by_symbol = {}
     missing = []
     with _PA_MARKET_CACHE_LOCK:
+        _pa_prune_market_cache_locked(now_ts)
         for symbol in requested:
             cached = _PA_MARKET_CACHE.get('exit-bars:%s:%s' % (uid, symbol))
             if isinstance(cached, dict) and now_ts - float(cached.get('fetchedAt') or 0) < _PA_EXIT_BARS_CACHE_TTL_SECONDS:
@@ -39943,6 +40653,7 @@ def _pa_fetch_exit_market_context(uid, symbols, trade_mode='paper'):
                     'bars': list(bars or []),
                 }
                 bars_by_symbol[symbol] = list(bars or [])
+            _pa_prune_market_cache_locked(now_ts)
     events_by_symbol, event_meta = _pa_fetch_exit_event_context(uid, held_symbols, market_cfg)
     context = {}
     for symbol in requested:
@@ -41189,17 +41900,59 @@ def _pa_build_pipeline_debug_dump(uid, run_id, trigger, mode, risk_profile, time
     return dump
 
 
+def _pa_prune_pipeline_results_locked(now=None):
+    """Bound full debug dumps while ``_PA_LAST_PIPELINE_RESULTS_LOCK`` is held."""
+    now = time.time() if now is None else now
+    aliases = {'__last__', '__last_manual__', '__last_auto__'}
+    for key in list(_PA_LAST_PIPELINE_RESULT_TIMESTAMPS):
+        if key not in _PA_LAST_PIPELINE_RESULTS:
+            _PA_LAST_PIPELINE_RESULT_TIMESTAMPS.pop(key, None)
+    for key in list(_PA_LAST_PIPELINE_RESULTS):
+        cached_at = float(_PA_LAST_PIPELINE_RESULT_TIMESTAMPS.get(key) or 0)
+        if not cached_at or now - cached_at >= _PA_LAST_PIPELINE_RESULTS_TTL_SECONDS:
+            _PA_LAST_PIPELINE_RESULTS.pop(key, None)
+            _PA_LAST_PIPELINE_RESULT_TIMESTAMPS.pop(key, None)
+
+    runs_by_user = {}
+    for key in _PA_LAST_PIPELINE_RESULTS:
+        if not isinstance(key, tuple) or len(key) != 2 or key[1] in aliases:
+            continue
+        runs_by_user.setdefault(key[0], []).append(key)
+    for keys in runs_by_user.values():
+        keys.sort(key=lambda key: _PA_LAST_PIPELINE_RESULT_TIMESTAMPS.get(key, 0), reverse=True)
+        for key in keys[_PA_LAST_PIPELINE_RESULTS_MAX_RUNS_PER_USER:]:
+            _PA_LAST_PIPELINE_RESULTS.pop(key, None)
+            _PA_LAST_PIPELINE_RESULT_TIMESTAMPS.pop(key, None)
+
+    if len(_PA_LAST_PIPELINE_RESULTS) > _PA_LAST_PIPELINE_RESULTS_MAX_ENTRIES:
+        oldest = sorted(
+            _PA_LAST_PIPELINE_RESULTS,
+            key=lambda key: _PA_LAST_PIPELINE_RESULT_TIMESTAMPS.get(key, 0),
+        )
+        for key in oldest[:len(_PA_LAST_PIPELINE_RESULTS) - _PA_LAST_PIPELINE_RESULTS_MAX_ENTRIES]:
+            _PA_LAST_PIPELINE_RESULTS.pop(key, None)
+            _PA_LAST_PIPELINE_RESULT_TIMESTAMPS.pop(key, None)
+
+
+def _pa_cache_pipeline_debug_dump(uid, run_id, trigger, dump):
+    now = time.time()
+    entries = [
+        ((uid, run_id), dump),
+        ((uid, '__last__'), dump),
+        ((uid, '__last_manual__' if trigger == 'manual' else '__last_auto__'), dump),
+    ]
+    with _PA_LAST_PIPELINE_RESULTS_LOCK:
+        for key, value in entries:
+            _PA_LAST_PIPELINE_RESULTS[key] = value
+            _PA_LAST_PIPELINE_RESULT_TIMESTAMPS[key] = now
+        _pa_prune_pipeline_results_locked(now)
+
+
 def _pa_save_pipeline_debug_dump(uid, run_id, trigger, mode, risk_profile, time_horizon,
                                  trade_mode, summary, run_context):
     dump = _pa_build_pipeline_debug_dump(uid, run_id, trigger, mode, risk_profile,
                                          time_horizon, trade_mode, summary, run_context)
-    with _PA_LAST_PIPELINE_RESULTS_LOCK:
-        _PA_LAST_PIPELINE_RESULTS[(uid, run_id)] = dump
-        _PA_LAST_PIPELINE_RESULTS[(uid, '__last__')] = dump
-        if trigger == 'manual':
-            _PA_LAST_PIPELINE_RESULTS[(uid, '__last_manual__')] = dump
-        else:
-            _PA_LAST_PIPELINE_RESULTS[(uid, '__last_auto__')] = dump
+    _pa_cache_pipeline_debug_dump(uid, run_id, trigger, dump)
     try:
         filename = 'debug_manual_pipeline_result.json' if trigger == 'manual' else 'debug_auto_pipeline_result.json'
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
@@ -41263,6 +42016,8 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
 
     def _check_timeout(stage=None):
         """Raise _PipelineTimeout if the pipeline or current stage exceeds its time limit."""
+        if stage:
+            _backend_enforce_memory_budget('pipeline_%s' % stage)
         elapsed = time.time() - started
         if elapsed > PIPELINE_TIMEOUT:
             raise _PipelineTimeout(stage or 'unknown', elapsed, PIPELINE_TIMEOUT)
@@ -41437,7 +42192,11 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                 'universe': 'alpaca_market',
                 'universeSource': _universe_src,
                 'method': scanner_stage_stats.get('method') or scanner_stage_summary.get('scoreVersion'),
-                'results': scanner_results[:100],
+                'resultCount': _result_count,
+                'topSymbols': [
+                    row.get('symbol') for row in scanner_results[:10]
+                    if row.get('symbol')
+                ],
             },
         )
 
@@ -42218,8 +42977,15 @@ def _pa_execute_and_save(uid, config, interval, mode, trigger,
         if not success and int(config.get('consecutive_failures') or 0) >= 3 and not disabled_during_run:
             config['last_decision'] = 'circuit_breaker_open'
             config['next_run_at'] = config.get('circuit_breaker_until') or config.get('next_run_at')
-        _pa_save_config(uid, config)
-        _pa_release_user_run(uid)
+        # This function is the single owner of the reservation lifecycle for
+        # every caller that executes a full pipeline.  Always release here,
+        # even if persisting the final config fails; outer thread wrappers must
+        # not release again because a later run for the same user may already
+        # have acquired a new reservation by the time they unwind.
+        try:
+            _pa_save_config(uid, config)
+        finally:
+            _pa_release_user_run(uid)
     return summary or {'errors': 1}
 
 
@@ -42399,8 +43165,9 @@ def _pa_scheduler_loop():
                     if should_run:
                         # ── Immediate headless execution (no claim window) ──
                         if not _pa_try_reserve_user_run(uid, 'scheduler'):
+                            rejection = 'skipped_already_running' if _pa_user_run_is_reserved(uid) else 'deferred_pro_capacity'
                             with _PA_PER_USER_LAST_CHECK_LOCK:
-                                _PA_PER_USER_LAST_CHECK[uid] = {'time': now_iso, 'decision': 'skipped_already_running'}
+                                _PA_PER_USER_LAST_CHECK[uid] = {'time': now_iso, 'decision': rejection}
                             continue
                         decision = 'started_pipeline'
                         with _PA_PER_USER_LAST_CHECK_LOCK:
@@ -42434,7 +43201,6 @@ def _pa_scheduler_loop():
                                 import traceback
                                 _pa_log_error('[Scheduler] headless run error: %s' % traceback.format_exc())
                             finally:
-                                _pa_release_user_run(_uid)
                                 with _PA_PER_USER_LAST_CHECK_LOCK:
                                     _PA_PER_USER_LAST_CHECK[_uid]['decision'] = 'pipeline_success' if summary and summary.get('errors', 0) == 0 else 'pipeline_failed'
 
@@ -42925,6 +43691,8 @@ def pipeline_run():
             }), 409
 
     if not _pa_try_reserve_user_run(uid, 'pipeline_endpoint'):
+        if not _pa_user_run_is_reserved(uid):
+            return _pa_pipeline_capacity_response()
         # Check if it's a background auto-run vs manual run
         active_run = _pa_get_active_run(uid)
         is_auto = active_run and active_run.get('trigger', '') in ('market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_run_now')
@@ -42945,7 +43713,6 @@ def pipeline_run():
         except Exception:
             import traceback
             _pa_log_error('[PipelineRun] background error: %s' % traceback.format_exc())
-            _pa_release_user_run(uid)
 
     threading.Thread(target=_background_run, daemon=True).start()
     return jsonify({'success': True, 'runId': run_id, 'message': 'Pipeline started'})
@@ -42962,6 +43729,7 @@ def pipeline_result():
     kind = (request.args.get('kind') or '').strip().lower()
     key = (uid, run_id) if run_id else (uid, '__last_manual__' if kind == 'manual' else '__last_auto__' if kind == 'auto' else '__last__')
     with _PA_LAST_PIPELINE_RESULTS_LOCK:
+        _pa_prune_pipeline_results_locked()
         result = _PA_LAST_PIPELINE_RESULTS.get(key)
     if not result:
         filenames = []
@@ -43243,6 +44011,8 @@ def pipeline_auto_run_headless_test():
     if not dry_run and mode != 'ai':
         dry_run = True
     if not _pa_try_reserve_user_run(uid, 'headless_test'):
+        if not _pa_user_run_is_reserved(uid):
+            return _pa_pipeline_capacity_response()
         return jsonify({'success': False, 'message': 'Headless pipeline is already running', 'status': 'already_running'}), 409
     try:
         summary = _pa_run_pipeline(uid, interval, mode, trigger='headless_test', dry_run=dry_run)
@@ -43292,6 +44062,8 @@ def pipeline_auto_run_now():
         }), 409
 
     if not _pa_try_reserve_user_run(uid, 'auto_run_now'):
+        if not _pa_user_run_is_reserved(uid):
+            return _pa_pipeline_capacity_response()
         active_run = _pa_get_active_run(uid)
         is_auto = active_run and active_run.get('trigger', '') in ('market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_run_now')
         if is_auto:
@@ -43341,8 +44113,6 @@ def pipeline_auto_run_now():
         except Exception:
             import traceback
             _pa_log_error('[ManualPipeline] auto-run-now failed: %s' % traceback.format_exc())
-        finally:
-            _pa_release_user_run(uid)
 
     threading.Thread(target=_background_auto_now, daemon=True).start()
     return jsonify({'success': True, 'runId': run_id, 'status': 'running',
@@ -43501,8 +44271,6 @@ def pipeline_auto_config():
                     except Exception:
                         import traceback
                         _pa_log_error('[ToggleOn] headless run error: %s' % traceback.format_exc())
-                    finally:
-                        _pa_release_user_run(_uid)
                 if _pa_try_reserve_user_run(uid, 'toggle_on'):
                     threading.Thread(target=_toggle_run, args=(
                         uid, dict(config), _toggle_ctx['interval'], _toggle_ctx['mode'],

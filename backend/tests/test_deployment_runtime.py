@@ -10,7 +10,8 @@ def test_container_uses_single_scheduler_worker_and_real_health_route():
 
     assert "--workers 1" in start_script
     assert "--workers 4" not in start_script
-    assert "--threads 8" in start_script
+    assert "--threads 4" in start_script
+    assert 'MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"' in start_script
     assert "127.0.0.1:5000/api/health" in start_script
     assert "127.0.0.1:8080/api/health" in start_script
     assert "/api/system/status" not in start_script
@@ -35,6 +36,7 @@ def test_nginx_has_no_backend_port_collision_and_supports_supabase():
 
     assert "listen 5000" not in nginx
     assert "proxy_pass http://127.0.0.1:5000" in nginx
+    assert "proxy_read_timeout 900s" in nginx
     assert "pid /tmp/nginx.pid" in nginx
     assert "https://*.supabase.co" in nginx
     assert "wss://*.supabase.co" in nginx
@@ -43,7 +45,8 @@ def test_nginx_has_no_backend_port_collision_and_supports_supabase():
 def test_render_start_command_keeps_scheduler_singleton():
     deployment = (ROOT / "DEPLOYMENT.md").read_text(encoding="utf-8")
 
-    assert "--workers 1 --threads 8 --timeout 180" in deployment
+    assert "MALLOC_ARENA_MAX=2 gunicorn" in deployment
+    assert "--workers 1 --threads 4 --timeout 900" in deployment
     assert "only one scheduler" in deployment
     assert "always-on paid web-service instance" in deployment
     assert "SUPABASE_SERVICE_ROLE_KEY" in deployment

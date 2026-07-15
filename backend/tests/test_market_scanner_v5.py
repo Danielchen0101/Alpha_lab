@@ -174,6 +174,169 @@ def test_symbol_metrics_compare_completed_session_volume(monkeypatch):
     assert metrics["volumeRatioSource"] == "previous completed session"
 
 
+def test_alpaca_bar_iterator_yields_sorted_bounded_batches(monkeypatch):
+    calls = []
+    payloads = {
+        ("AAA,BBB", None): {
+            "bars": {
+                "AAA": [{"t": "2026-07-02T00:00:00Z", "c": 102}],
+                "BBB": [{"t": "2026-07-01T00:00:00Z", "c": 50}],
+            },
+            "next_page_token": "page-2",
+        },
+        ("AAA,BBB", "page-2"): {
+            "bars": {
+                "AAA": [{"t": "2026-07-01T00:00:00Z", "c": 101}],
+            },
+            "next_page_token": None,
+        },
+        ("CCC", None): {
+            "bars": {
+                "CCC": [{"t": "2026-07-03T00:00:00Z", "c": 75}],
+            },
+            "next_page_token": None,
+        },
+    }
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    def fake_get(_url, headers=None, params=None, timeout=None):
+        key = (params["symbols"], params.get("page_token"))
+        calls.append(key)
+        return FakeResponse(payloads[key])
+
+    monkeypatch.setattr(backend.requests, "get", fake_get)
+
+    batches = list(backend._inst_iter_alpaca_bar_batches(
+        ["aaa", "bbb", "ccc"],
+        {"api_key": "key", "api_secret": "secret"},
+        batch_size=2,
+    ))
+
+    assert calls == [("AAA,BBB", None), ("AAA,BBB", "page-2"), ("CCC", None)]
+    assert [batch_symbols for batch_symbols, _history, _errors in batches] == [
+        ["AAA", "BBB"],
+        ["CCC"],
+    ]
+    assert list(batches[0][1]) == ["AAA", "BBB"]
+    assert [bar["c"] for bar in batches[0][1]["AAA"]] == [101, 102]
+    assert list(batches[1][1]) == ["CCC"]
+    assert all(not errors for _batch_symbols, _history, errors in batches)
+
+    calls.clear()
+    history, errors = backend._inst_fetch_alpaca_bars(
+        ["aaa", "bbb", "ccc"],
+        {"api_key": "key", "api_secret": "secret"},
+        batch_size=2,
+    )
+
+    assert calls == [("AAA,BBB", None), ("AAA,BBB", "page-2"), ("CCC", None)]
+    assert list(history) == ["AAA", "BBB", "CCC"]
+    assert [bar["c"] for bar in history["AAA"]] == [101, 102]
+    assert errors == {}
+
+
+def test_streamed_symbol_metrics_releases_each_bar_batch(monkeypatch):
+    first_history = {
+        "AAA": [{"t": "2026-07-01T00:00:00Z", "c": 101}],
+        "BBB": [],
+    }
+    second_history = {
+        "CCC": [{"t": "2026-07-01T00:00:00Z", "c": 75}],
+    }
+    iterator_args = {}
+
+    def fake_batches(symbols, market_cfg, period="18mo", feed=None, batch_size=25):
+        iterator_args.update({
+            "symbols": symbols,
+            "market_cfg": market_cfg,
+            "period": period,
+            "feed": feed,
+            "batch_size": batch_size,
+        })
+        yield ["AAA", "BBB"], first_history, {"BBB": "bars unavailable"}
+        assert first_history == {}
+        yield ["CCC"], second_history, {}
+        assert second_history == {}
+
+    def fake_compute(symbol, bars, _meta, _snapshot):
+        if not bars:
+            return None
+        return {"symbol": symbol, "dataSources": {}, "provenance": {}}
+
+    def fake_benchmark(row, bars, _context):
+        row["historyBarCount"] = len(bars)
+        return row
+
+    monkeypatch.setattr(backend, "_inst_iter_alpaca_bar_batches", fake_batches)
+    monkeypatch.setattr(backend, "_inst_compute_symbol_metrics", fake_compute)
+    monkeypatch.setattr(backend, "_inst_apply_benchmark_metrics", fake_benchmark)
+    monkeypatch.setattr(backend, "_inst_apply_trading_cost_metrics", lambda row: row)
+
+    rows, failed_count, errors = backend._inst_stream_alpaca_symbol_metrics(
+        ["AAA", "BBB", "CCC"],
+        {"source": "test"},
+        {symbol: {"name": symbol} for symbol in ("AAA", "BBB", "CCC")},
+        {symbol: {} for symbol in ("AAA", "BBB", "CCC")},
+        {"bars": {}, "returns": {}},
+        period="6mo",
+        feed="iex",
+        batch_size=2,
+    )
+
+    assert [row["symbol"] for row in rows] == ["AAA", "CCC"]
+    assert [row["historyBarCount"] for row in rows] == [1, 1]
+    assert failed_count == 1
+    assert errors == {"BBB": "bars unavailable"}
+    assert iterator_args == {
+        "symbols": ["AAA", "BBB", "CCC"],
+        "market_cfg": {"source": "test"},
+        "period": "6mo",
+        "feed": "iex",
+        "batch_size": 2,
+    }
+
+
+def test_bar_batch_generator_drops_raw_response_locals_before_yield(monkeypatch):
+    payload = {
+        "bars": {"AAA": [{"t": "2026-07-01T00:00:00Z", "c": 101}]},
+        "next_page_token": None,
+    }
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return payload
+
+    monkeypatch.setattr(backend.requests, "get", lambda *_args, **_kwargs: FakeResponse())
+    iterator = backend._inst_iter_alpaca_bar_batches(
+        ["AAA"],
+        {"api_key": "key", "api_secret": "secret"},
+        batch_size=1,
+    )
+
+    _symbols, history, _errors = next(iterator)
+    frame_locals = iterator.gi_frame.f_locals
+
+    assert history["AAA"][0]["c"] == 101
+    assert frame_locals["resp"] is None
+    assert frame_locals["payload"] is None
+    assert frame_locals["bars_payload"] is None
+    assert frame_locals["bars"] is None
+    assert frame_locals["bar"] is None
+    iterator.close()
+
+
 def test_finra_daily_short_volume_is_not_labeled_as_short_interest(monkeypatch):
     monkeypatch.setattr(
         backend,
