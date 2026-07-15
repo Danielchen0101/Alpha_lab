@@ -1,6 +1,6 @@
 version: 2
-# Keep routine updates compact. Major version migrations stay manual;
-# Dependabot security updates are still created regardless of update type.
+# Keep routine updates small enough to review. Runtime and major-version
+# migrations stay manual; Dependabot security updates are still created.
 updates:
   - package-ecosystem: npm
     directory: /frontend
@@ -12,11 +12,16 @@ updates:
         applies-to: version-updates
         patterns:
           - "*"
+        exclude-patterns:
+          - "@supabase/*"
+          - "react"
+          - "react-dom"
+          - "framer-motion"
         update-types:
           - minor
           - patch
     allow:
-      - dependency-name: "*"
+      - dependency-type: direct
         update-types:
           - version-update:semver-minor
           - version-update:semver-patch
@@ -29,6 +34,7 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 3
+    versioning-strategy: increase-if-necessary
     groups:
       backend-minor-and-patch:
         applies-to: version-updates
@@ -38,7 +44,7 @@ updates:
           - minor
           - patch
     allow:
-      - dependency-name: "*"
+      - dependency-type: direct
         update-types:
           - version-update:semver-minor
           - version-update:semver-patch
@@ -74,17 +80,15 @@ updates:
       interval: monthly
     open-pull-requests-limit: 2
     groups:
-      runtime-minor-and-patch:
+      runtime-patch:
         applies-to: version-updates
         patterns:
           - "*"
         update-types:
-          - minor
           - patch
     allow:
       - dependency-name: "*"
         update-types:
-          - version-update:semver-minor
           - version-update:semver-patch
     labels:
       - dependencies
