@@ -131,7 +131,7 @@ jobs:
     - uses: actions/checkout@v7
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@v4
 
     - name: Build production image
       uses: docker/build-push-action@v6
@@ -159,7 +159,7 @@ jobs:
     
     - name: Set up Docker Buildx
       if: env.DOCKER_USERNAME != '' && env.DOCKER_PASSWORD != ''
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@v4
     
     - name: Login to DockerHub
       if: env.DOCKER_USERNAME != '' && env.DOCKER_PASSWORD != ''
