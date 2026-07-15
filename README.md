@@ -34,9 +34,9 @@ The platform is designed around visible evidence. Scanner inputs, validation res
 
 The routed interface supports English and Simplified Chinese. Language selection persists in the browser and updates the application and Ant Design locale; text returned by external providers may remain in its source language.
 
-![AlphaLab v3 public overview in Simplified Chinese](docs/assets/alphalab-v3-overview.png)
+![AlphaLab v3 public overview in English](docs/assets/alphalab-v3-overview.png)
 
-_AlphaLab v3 public overview in the Simplified Chinese interface. Figures shown in this product illustration are not live telemetry._
+_AlphaLab v3 public overview in the English interface. Figures shown in this product illustration are not live telemetry._
 
 ## Capabilities
 
