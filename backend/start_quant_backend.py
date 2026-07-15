@@ -7,6 +7,7 @@
 from flask import Flask, request, jsonify, has_request_context
 
 from datetime import datetime, timedelta, time as dt_time, timezone
+from zoneinfo import ZoneInfo
 import re
 import sys
 
@@ -37932,10 +37933,19 @@ def pipeline_admission():
     )
     return jsonify({'success': True, 'results': rows, 'summary': summary})
 
+_PA_EASTERN_TZ = ZoneInfo('America/New_York')
+
+
 def _pa_now_et():
     """Return current real time in America/New_York."""
-    import pytz
-    return datetime.now(pytz.timezone('America/New_York'))
+    return datetime.now(_PA_EASTERN_TZ)
+
+
+def _pa_as_et(value):
+    """Normalize an aware or UTC-naive datetime to America/New_York."""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(_PA_EASTERN_TZ)
 
 def _pa_is_circuit_breaker_open(config, now_et=None):
     """Return True only while the persisted circuit-breaker deadline is active."""
@@ -38150,7 +38160,6 @@ def _pa_check_market_open(uid, trade_mode='paper'):
     Returns: (is_open, status_string, source_string, next_open, next_close, market_stage)
     market_stage: 'premarket' | 'open' | 'after_hours' | 'weekend' | 'holiday'
     """
-    import pytz
     now_et = _pa_now_et()
 
     def _derive_market_stage(_is_open, _raw_status, _now):
@@ -42991,7 +43000,6 @@ def _pa_execute_and_save(uid, config, interval, mode, trigger,
 
 def _pa_scheduler_loop():
     """Main scheduler loop — runs every 30s, checks market open, runs pipelines for all enabled users."""
-    import pytz
     global _PA_SCHEDULER_LOOP_COUNT, _PA_SCHEDULER_LAST_HEARTBEAT
     # Set initial heartbeat immediately so status endpoint sees Running right away
     with _PA_SCHEDULER_LAST_HEARTBEAT_LOCK:
@@ -43124,10 +43132,7 @@ def _pa_scheduler_loop():
                         if last_run_at:
                             try:
                                 last_dt = dateutil.parser.isoparse(last_run_at)
-                                if last_dt.tzinfo:
-                                    last_dt_et = last_dt.astimezone(pytz.timezone('America/New_York'))
-                                else:
-                                    last_dt_et = pytz.UTC.localize(last_dt).astimezone(pytz.timezone('America/New_York'))
+                                last_dt_et = _pa_as_et(last_dt)
                                 run_today = (last_dt_et.date() == now_et.date())
                             except Exception:
                                 pass
@@ -43140,10 +43145,7 @@ def _pa_scheduler_loop():
                             if next_run_from_config:
                                 try:
                                     next_dt = dateutil.parser.isoparse(next_run_from_config)
-                                    if next_dt.tzinfo:
-                                        next_dt_et = next_dt.astimezone(pytz.timezone('America/New_York'))
-                                    else:
-                                        next_dt_et = pytz.UTC.localize(next_dt).astimezone(pytz.timezone('America/New_York'))
+                                    next_dt_et = _pa_as_et(next_dt)
                                     if now_et >= next_dt_et:
                                         should_run = True
                                         run_reason = 'interval_due'
@@ -43269,7 +43271,6 @@ def pipeline_exit_scan():
 
 @app.route('/api/ai-agent/pipeline-auto/status', methods=['GET'])
 def pipeline_auto_status():
-    import pytz
     user = require_auth()
     if not user:
         return jsonify({'success': False, 'message': 'Authentication required'}), 401
@@ -43309,10 +43310,7 @@ def pipeline_auto_status():
     if last_completed_at:
         try:
             _l = dateutil.parser.isoparse(last_completed_at)
-            if _l.tzinfo:
-                _l_et = _l.astimezone(pytz.timezone('America/New_York'))
-            else:
-                _l_et = pytz.UTC.localize(_l).astimezone(pytz.timezone('America/New_York'))
+            _l_et = _pa_as_et(_l)
             last_auto_run_display = _l_et.strftime('%H:%M')
             if enabled and interval_minutes > 0:
                 next_from_last_et = _l_et + timedelta(minutes=interval_minutes)
@@ -43332,10 +43330,7 @@ def pipeline_auto_status():
             try:
                 parsed = dateutil.parser.isoparse(config_next_run)
                 now_et = _pa_now_et()
-                if parsed.tzinfo:
-                    parsed_et = parsed.astimezone(pytz.timezone('America/New_York'))
-                else:
-                    parsed_et = pytz.UTC.localize(parsed).astimezone(pytz.timezone('America/New_York'))
+                parsed_et = _pa_as_et(parsed)
                 authoritative_next_et = parsed_et
                 next_run_at = parsed_et.isoformat()
                 seconds_until_next = max(0, (parsed_et - now_et).total_seconds())
@@ -43369,7 +43364,7 @@ def pipeline_auto_status():
         try:
             _no = dateutil.parser.isoparse(no_val) if isinstance(no_val, str) else no_val
             if _no is not None and hasattr(_no, 'strftime'):
-                _no_et = _no.astimezone(pytz.timezone('America/New_York')) if getattr(_no, 'tzinfo', None) else _no
+                _no_et = _pa_as_et(_no)
                 return _no_et.isoformat(), _no_et.strftime('%a %m-%d %H:%M ET')
         except Exception:
             pass
@@ -44310,7 +44305,6 @@ def _pipeline_auto_get_market_schedule(uid=None, days=15):
     Always returns a days array. Uses Alpaca calendar API with fallback.
     Returns: (days_list, source_string, warning_string)
     """
-    import pytz
     now_et = _pa_now_et()
     start_date = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
     end_date = start_date + timedelta(days=days - 1)

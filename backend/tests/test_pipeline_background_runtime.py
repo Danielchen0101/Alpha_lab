@@ -1,4 +1,5 @@
 import json
+import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -31,6 +32,16 @@ class _TrackedThread:
 
     def is_alive(self):
         return self.alive
+
+
+def test_pipeline_timezone_helpers_do_not_depend_on_pytz(monkeypatch):
+    monkeypatch.setitem(sys.modules, "pytz", object())
+
+    current = backend._pa_now_et()
+    converted = backend._pa_as_et(datetime(2026, 7, 15, 20, 0))
+
+    assert current.tzinfo == backend._PA_EASTERN_TZ
+    assert converted.isoformat() == "2026-07-15T16:00:00-04:00"
 
 
 def test_circuit_breaker_state_uses_persisted_deadline_not_status_text():
