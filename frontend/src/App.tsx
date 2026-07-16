@@ -199,10 +199,10 @@ const ThemedApp: React.FC = () => {
       token: { 
         colorPrimary: '#1890ff', 
         borderRadius: 6,
-        fontSize: 13.5,
+        fontSize: 14,
         fontSizeSM: 12,
-        controlHeight: 30,
-        controlHeightSM: 24,
+        controlHeight: 34,
+        controlHeightSM: 28,
         padding: 16,
         paddingSM: 12,
         margin: 16,

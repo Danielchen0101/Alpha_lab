@@ -28,18 +28,27 @@ const translations: Record<Language, Translation> = {
   'zh-CN': zhCN,
 };
 
-// 从 localStorage 获取保存的语言设置
-const getStoredLanguage = (): Language => {
-  const stored = localStorage.getItem('quant-platform-language');
+export const LANGUAGE_STORAGE_KEY = 'quant-platform-language';
+export const LANGUAGE_PREFERENCE_VERSION_KEY = 'quant-platform-language-version';
+export const LANGUAGE_PREFERENCE_VERSION = '2';
+
+// Preserve an explicit user choice, but always start new visitors in English.
+export const getInitialLanguage = (): Language => {
+  if (typeof window === 'undefined') return 'en-US';
+
+  // Version 1 inferred Chinese from the browser and persisted that value, so a
+  // visitor could remain on Chinese even after English became the product
+  // default. Reset that legacy value once; choices made after this migration
+  // continue to be preserved normally.
+  if (window.localStorage.getItem(LANGUAGE_PREFERENCE_VERSION_KEY) !== LANGUAGE_PREFERENCE_VERSION) {
+    return 'en-US';
+  }
+
+  const stored = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
   if (stored === 'zh-CN' || stored === 'en-US') {
     return stored;
   }
-  
-  // 根据浏览器语言自动选择
-  const browserLang = navigator.language;
-  if (browserLang.startsWith('zh')) {
-    return 'zh-CN';
-  }
+
   return 'en-US';
 };
 
@@ -49,18 +58,20 @@ interface LanguageProviderProps {
 }
 
 export const LanguageProvider: React.FC<LanguageProviderProps> = ({ children }) => {
-  const [language, setLanguageState] = useState<Language>(getStoredLanguage);
+  const [language, setLanguageState] = useState<Language>(getInitialLanguage);
   const [t, setT] = useState<Translation>(translations[language]);
 
   // 更新语言
   const setLanguage = (lang: Language) => {
     setLanguageState(lang);
-    localStorage.setItem('quant-platform-language', lang);
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, lang);
+    window.localStorage.setItem(LANGUAGE_PREFERENCE_VERSION_KEY, LANGUAGE_PREFERENCE_VERSION);
   };
 
   // 当语言改变时更新翻译
   useEffect(() => {
-    localStorage.setItem('quant-platform-language', language);
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
+    window.localStorage.setItem(LANGUAGE_PREFERENCE_VERSION_KEY, LANGUAGE_PREFERENCE_VERSION);
     setT(translations[language]);
     
     // Set document html lang attribute

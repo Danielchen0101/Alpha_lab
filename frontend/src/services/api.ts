@@ -368,11 +368,12 @@ export const entryPlanAPI = {
   generate: (candidates: any[], accountSize = 100000, riskPerTradePct = 1, maxPositionPct = 10,
              existingPositions: any[] = [], dailyLoss = 0, holdingSymbols: string[] = [],
              executionMode = 'Recommend Only', accountMode = 'paper',
-             riskProfile = 'medium', timeHorizon = 'mid') => {
+             riskProfile = 'medium', timeHorizon = 'mid', pipelineMode = 'hybrid',
+             leverageEnabled = false) => {
     return api.post('/ai/entry-plan', {
       candidates, accountSize, riskPerTradePct, maxPositionPct,
       existingPositions, dailyLoss, holdingSymbols, executionMode, accountMode,
-      riskProfile, timeHorizon
+      riskProfile, timeHorizon, pipelineMode, leverageEnabled
     });
   },
   execute: (data: {
@@ -622,10 +623,37 @@ export interface TradingPosition {
   lastUpdated?: string;
 }
 
+export interface WorkspacePreferences {
+  tradeMode: 'paper' | 'real';
+  pipelineMode: 'manual' | 'hybrid' | 'ai';
+  riskProfile: 'low' | 'medium' | 'high';
+  timeHorizon: 'short' | 'mid' | 'long';
+  leverageEnabled: boolean;
+  scheduleEnabled: boolean;
+  intervalMinutes: number;
+  liveAutoTradingEnabled: boolean;
+  strategyPolicy?: any;
+  updatedAt?: string;
+}
+
+export const workspacePreferencesAPI = {
+  get: () => api.get<{ success: boolean; preferences: WorkspacePreferences }>('/user/preferences'),
+  update: (data: Partial<Pick<WorkspacePreferences, 'tradeMode' | 'pipelineMode' | 'riskProfile' | 'timeHorizon' | 'leverageEnabled'>>) =>
+    api.patch<{ success: boolean; preferences: WorkspacePreferences }>('/user/preferences', data),
+};
+
 // Pipeline Auto API (market-hours auto pipeline scheduler)
 export const pipelineAutoAPI = {
   getStatus: () => api.get('/ai-agent/pipeline-auto/status'),
-  saveConfig: (data: { enabled: boolean; intervalMinutes?: number | null; mode: string; lastRunAt?: string; riskProfile?: string; timeHorizon?: string; tradeMode?: string; liveAutoTradingEnabled?: boolean }) =>
+  setLiveAuthority: (enabled: boolean) =>
+    api.patch<{
+      success: boolean;
+      liveAutoTradingEnabled: boolean;
+      preferences?: WorkspacePreferences;
+      reason?: string;
+      message?: string;
+    }>('/ai-agent/live-auto-authority', { enabled }),
+  saveConfig: (data: { enabled: boolean; intervalMinutes?: number | null; mode: string; lastRunAt?: string; riskProfile?: string; timeHorizon?: string; tradeMode?: string; leverageEnabled?: boolean; liveAutoTradingEnabled?: boolean }) =>
     api.post('/ai-agent/pipeline-auto/config', data),
   getHistory: (limit = 5) =>
     api.get<{ success: boolean; history: any[]; count: number }>(`/ai-agent/pipeline-auto/history?limit=${limit}`),
@@ -635,7 +663,7 @@ export const pipelineAutoAPI = {
     api.post('/ai-agent/pipeline-auto/run-headless-test', data || { dryRun: true }),
   runNow: (data?: {}) =>
     api.post<{ success: boolean; runId?: string; status?: string; error?: string; message?: string }>('/ai-agent/pipeline-auto/run-now', data || {}),
-  runPipeline: (data: { trigger?: string; mode?: string; intervalMinutes?: number; riskProfile?: string; timeHorizon?: string; tradeMode?: string }) =>
+  runPipeline: (data: { trigger?: string; mode?: string; intervalMinutes?: number; riskProfile?: string; timeHorizon?: string; tradeMode?: string; leverageEnabled?: boolean }) =>
     api.post('/ai-agent/pipeline/run', data),
   getPipelineResult: (runId?: string, kind?: 'manual' | 'auto') =>
     api.get('/ai-agent/pipeline/result', { params: { runId, kind } }),

@@ -519,7 +519,6 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
     if (signingOut) return;
     setSigningOut(true);
     try {
-      setTradeMode('paper');
       await logout();
       navigate('/signin', { replace: true });
     } finally {

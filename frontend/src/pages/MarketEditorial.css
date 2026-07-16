@@ -12,16 +12,40 @@
   --market-number-font: Inter, "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   width: min(100%, 1660px);
   min-width: 0;
+  max-width: 100%;
   margin: 0 auto;
   padding: clamp(24px, 3vw, 52px) clamp(20px, 3.2vw, 54px) 64px;
   color: var(--market-ink);
   font-variant-numeric: tabular-nums lining-nums;
+  overflow-x: clip;
 }
 
 .market-editorial,
 .market-editorial * {
   box-sizing: border-box;
 }
+
+.market-editorial > *,
+.market-editorial .market-filter-grid > *,
+.market-editorial .market-ledger > *,
+.market-editorial .market-intelligence__grid > *,
+.market-editorial .market-detail > * { min-width: 0; max-width: 100%; }
+
+.market-table-wrap,
+.market-editorial .market-table,
+.market-editorial .ant-table-wrapper,
+.market-editorial .ant-table-container,
+.market-editorial .ant-table-content,
+.market-editorial .ant-table-body {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.market-editorial .recharts-responsive-container,
+.market-editorial svg,
+.market-editorial canvas { max-width: 100%; }
 
 .market-editorial button,
 .market-editorial input {
@@ -1020,6 +1044,16 @@
   .market-ledger > div > small { font-size: 12px; }
   .market-breadth__ratio { margin-top: 38px; }
   .market-horizontal-bars > div { grid-template-columns: minmax(68px, 0.75fr) minmax(70px, 1.25fr) 24px; }
+}
+
+@media (max-width: 360px) {
+  .market-editorial { padding-inline: 8px; }
+  .market-filter-grid { grid-template-columns: minmax(0, 1fr); }
+  .market-field,
+  .market-field--wide,
+  .market-field--universe { grid-column: auto; }
+  .market-ledger > div { padding-inline: 12px; }
+  .market-row-actions { flex-wrap: wrap; }
 }
 
 @media (prefers-reduced-motion: reduce) {

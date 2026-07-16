@@ -10,16 +10,34 @@ interface ThemeContextType {
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
+export const THEME_STORAGE_KEY = 'alphaLabThemeMode';
+export const THEME_PREFERENCE_VERSION_KEY = 'alphaLabThemeModeVersion';
+export const THEME_PREFERENCE_VERSION = '2';
+
+export const getInitialThemeMode = (): ThemeMode => {
+  if (typeof window === 'undefined') return 'light';
+
+  // Earlier releases defaulted to the operating-system theme and persisted it.
+  // Migrate that legacy value once so the refreshed product starts in light
+  // mode, while preserving all choices made after this version marker exists.
+  if (window.localStorage.getItem(THEME_PREFERENCE_VERSION_KEY) !== THEME_PREFERENCE_VERSION) {
+    return 'light';
+  }
+
+  const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
+  return saved === 'light' || saved === 'dark' || saved === 'system'
+    ? saved
+    : 'light';
+};
+
 export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
-    const saved = localStorage.getItem('alphaLabThemeMode');
-    return (saved as ThemeMode) || 'system';
-  });
+  const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialThemeMode);
 
   const [resolvedTheme, setResolvedTheme] = useState<'light' | 'dark'>('light');
 
   useEffect(() => {
-    localStorage.setItem('alphaLabThemeMode', themeMode);
+    window.localStorage.setItem(THEME_STORAGE_KEY, themeMode);
+    window.localStorage.setItem(THEME_PREFERENCE_VERSION_KEY, THEME_PREFERENCE_VERSION);
     
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     

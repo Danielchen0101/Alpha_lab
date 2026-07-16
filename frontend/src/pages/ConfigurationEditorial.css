@@ -8,10 +8,13 @@
   --config-green: #163126;
   --config-green-mid: #315e43;
   width: min(1460px, calc(100% - 48px));
+  max-width: 100%;
+  min-width: 0;
   margin: 0 auto;
   padding: 16px 0 72px;
   color: var(--config-ink);
   font-variant-numeric: tabular-nums lining-nums;
+  overflow-x: clip;
 }
 
 .configuration-page *, .configuration-page *::before, .configuration-page *::after { box-sizing: border-box; }
@@ -67,6 +70,11 @@
 .configuration-nav__security p { margin: 0; color: var(--config-muted); font-size: 10.5px; line-height: 1.5; }
 
 .configuration-content { min-width: 0; }
+.configuration-page > *,
+.configuration-hero > *,
+.configuration-layout > *,
+.config-card-header > *,
+.config-card-actions > * { min-width: 0; max-width: 100%; }
 .configuration-page .ant-row,
 .configuration-page .ant-col,
 .configuration-page .ant-form-item,
@@ -242,4 +250,13 @@
   .config-card-header { flex-direction: column; }
   .config-card-actions { grid-template-columns: 1fr; }
   .configuration-page .ant-row { row-gap: 0 !important; }
+}
+
+@media (max-width: 360px) {
+  .configuration-page { width: calc(100% - 14px); }
+  .configuration-nav { grid-template-columns: minmax(0, 1fr); }
+  .configuration-nav > a { border-right: 0; }
+  .configuration-hero__copy,
+  .configuration-guide { padding-inline: 16px; }
+  .config-card-header { padding-inline: 14px; }
 }

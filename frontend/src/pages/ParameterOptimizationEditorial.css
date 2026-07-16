@@ -16,15 +16,39 @@
   --op-number: Inter, "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   width: min(100%, 1660px);
   min-width: 0;
+  max-width: 100%;
   margin: 0 auto;
   padding: clamp(28px, 3vw, 52px) clamp(20px, 3.2vw, 54px) 72px;
   color: var(--op-ink);
+  overflow-x: clip;
 }
 
 .optimization-editorial,
 .optimization-editorial * {
   box-sizing: border-box;
 }
+
+.optimization-editorial > *,
+.optimization-editorial .op-config-grid > *,
+.optimization-editorial .op-workbench-body > *,
+.optimization-editorial .op-parameter-grid > *,
+.optimization-editorial .op-result-panel > * { min-width: 0; max-width: 100%; }
+
+.optimization-editorial .op-table-shell,
+.optimization-editorial .optimization-table-container,
+.optimization-editorial .ant-table-wrapper,
+.optimization-editorial .ant-table-container,
+.optimization-editorial .ant-table-content,
+.optimization-editorial .ant-table-body {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.optimization-editorial .recharts-responsive-container,
+.optimization-editorial svg,
+.optimization-editorial canvas { max-width: 100%; }
 
 .op-hero {
   display: grid;
@@ -638,6 +662,13 @@
   .op-result-panel > header { padding-inline: 17px; }
   .op-result-panel__body { padding: 14px; }
   .op-heatmap-shell > div { min-width: 680px; }
+}
+
+@media (max-width: 420px) {
+  .optimization-editorial { padding-inline: 9px; }
+  .op-section-heading { padding-inline: 14px; }
+  .op-result-panel > header { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .op-progress-panel__top { align-items: flex-start; flex-direction: column; gap: 8px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -13331,9 +13331,15 @@ def _inst_direction_snapshot(row):
     return round(score, 2), round(agreement, 2), len(components) - positives, len(components)
 
 
-def _inst_score_rows(rows):
+def _inst_score_rows(rows, strategy_policy=None):
     if not rows:
         return rows
+
+    strategy_policy = strategy_policy or _strategy_policy()
+    factor_weights = strategy_policy.get('factorWeights') or {
+        'momentum': 0.25, 'trend': 0.25, 'relative': 0.20,
+        'liquidity': 0.15, 'risk': 0.15,
+    }
 
     momentum_values = []
     trend_values = []
@@ -13415,11 +13421,11 @@ def _inst_score_rows(rows):
         score_reliability = round(0.75 * factor_coverage + 0.25 * history_reliability, 2)
 
         base_score = (
-            0.30 * momentum_score +
-            0.20 * trend_factor_score +
-            0.20 * relative_score +
-            0.15 * liquidity_score +
-            0.15 * risk_score
+            factor_weights['momentum'] * momentum_score +
+            factor_weights['trend'] * trend_factor_score +
+            factor_weights['relative'] * relative_score +
+            factor_weights['liquidity'] * liquidity_score +
+            factor_weights['risk'] * risk_score
         )
         agreement_adjustment = (direction_agreement - 50.0) * 0.06
         reliability_multiplier = 0.70 + 0.30 * score_reliability / 100.0
@@ -13453,7 +13459,10 @@ def _inst_score_rows(rows):
             'risk': risk_score,
         }
         row['scoreBreakdown'] = {
-            'weights': {'momentum': 0.30, 'trend': 0.20, 'relative': 0.20, 'liquidity': 0.15, 'risk': 0.15},
+            'weights': factor_weights,
+            'strategyPolicyVersion': strategy_policy.get('version'),
+            'riskProfile': strategy_policy.get('riskProfile'),
+            'timeHorizon': strategy_policy.get('timeHorizon'),
             'riskAdjustedMomentumRaw': round(momentum_values[index], 4) if momentum_values[index] is not None else None,
             'advPercentile': adv_pct[index],
             'costPercentile': cost_pct[index],
@@ -13480,7 +13489,14 @@ def _inst_score_rows(rows):
         row['directionSignalCount'] = direction_signal_count
         row['factorCoveragePct'] = round(factor_coverage, 2)
         row['scoreReliability'] = score_reliability
-        row['scoreVersion'] = 'institutional_cross_section_v5'
+        row['scoreVersion'] = 'institutional_cross_section_v6_strategy_mandate'
+        row['strategyMandate'] = {
+            'riskProfile': strategy_policy.get('riskProfile'),
+            'timeHorizon': strategy_policy.get('timeHorizon'),
+            'selectionFocus': strategy_policy.get('selectionFocus'),
+            'holdingPeriod': strategy_policy.get('holdingPeriod'),
+            'optionsAllowed': False,
+        }
         confidence = (0.45 + abs(direction_score - 50.0) / 100.0) * (0.75 + 0.25 * score_reliability / 100.0)
         row['trendConfidence'] = round(min(0.95, confidence), 2)
         row['volumeStatus'] = 'High' if (row.get('volumeRatio') or 0) >= 1.5 else ('Low' if (row.get('volumeRatio') or 0) < 0.7 else 'Normal')
@@ -13501,7 +13517,7 @@ def _inst_score_rows(rows):
         row['aiReasoning'] = row['scannerReason']
         row['detailedReasoning'] = row['scannerReason']
         row['analysisStatus'] = 'completed'
-        row['analysisSource'] = 'institutional_cross_section_v5'
+        row['analysisSource'] = 'institutional_cross_section_v6_strategy_mandate'
         row['scoreSource'] = 'deterministic_institutional_factors'
         row['reasoningSource'] = 'deterministic_institutional_factors'
         row['aiCalled'] = False
@@ -15084,6 +15100,15 @@ def _institutional_market_scanner_impl():
         history_period = data.get('historyPeriod', '18mo')
         feed = data.get('feed') or _MARKET_DATA_FEED or 'iex'
         alpaca_mode = data.get('alpacaMode') or data.get('mode') or 'paper'
+        risk_profile = data.get('riskProfile') or data.get('risk_profile') or 'medium'
+        time_horizon = data.get('timeHorizon') or data.get('time_horizon') or 'mid'
+        pipeline_mode = data.get('pipelineMode') or data.get('pipeline_mode') or 'hybrid'
+        leverage_enabled = data.get('leverageEnabled') is True
+        strategy_policy = _strategy_policy(
+            risk_profile, time_horizon, pipeline_mode, leverage_enabled
+        )
+        if not strategy_policy['permissions']['aiResearch']:
+            ai_review_top_n = 0
 
         market_cfg, asset_configs, cfg_status, cfg_message = _inst_resolve_alpaca_scanner_configs(alpaca_mode)
         if cfg_status == 'auth_required':
@@ -15165,7 +15190,7 @@ def _institutional_market_scanner_impl():
                 for reason in reasons:
                     filtered_reasons[reason] = filtered_reasons.get(reason, 0) + 1
 
-        scored = _inst_score_rows(passed_rows)
+        scored = _inst_score_rows(passed_rows, strategy_policy)
         scored.sort(key=lambda r: (
             _inst_to_float(r.get('selectionScore'), 0) or 0,
             _inst_to_float(r.get('factorScores', {}).get('liquidity'), 0) or 0,
@@ -15192,7 +15217,14 @@ def _institutional_market_scanner_impl():
         news_stats = _inst_apply_news_enrichment(results, market_cfg, days_back=_INST_SCANNER_NEWS_DAYS_BACK)
         earnings_stats = _inst_apply_earnings_calendar(results, finnhub_cfg if finnhub_status == 'ok' else {})
         short_volume_stats = _inst_apply_finra_short_volume(results)
-        options_stats = _inst_apply_options_overlay(results, market_cfg, max_symbols=_INST_SCANNER_OPTION_REVIEW_TOP_N)
+        # Options are excluded from the product mandate in every risk mode.  Do
+        # not spend API capacity fetching an overlay that cannot influence a plan.
+        options_stats = {
+            'status': 'disabled',
+            'source': 'Strategy mandate: options prohibited',
+            'symbolsWithOptions': 0,
+            'optionsAllowed': False,
+        }
         ai_review_stats = _inst_apply_ai_trader_review(results, max_symbols=ai_review_top_n)
 
         bullish_count = sum(1 for r in results if 'Bullish' in _safe_str(r.get('trendLabel')))
@@ -15253,13 +15285,8 @@ def _institutional_market_scanner_impl():
             'newsRiskCount': risk_watch_count,
             'lastScanTime': int(time.time()),
             'filters': filters,
-            'weights': {
-                'momentum': 0.30,
-                'trend': 0.20,
-                'relative': 0.20,
-                'liquidity': 0.15,
-                'risk': 0.15,
-            },
+            'weights': strategy_policy['factorWeights'],
+            'strategyPolicy': strategy_policy,
             'filteredReasons': filtered_reasons,
             'dataSource': ' + '.join(data_sources),
             'finnhubStatus': finnhub_status,
@@ -15283,7 +15310,7 @@ def _institutional_market_scanner_impl():
             'aiAdvanceCount': sum(1 for r in results if r.get('aiTraderDecision') == 'Advance'),
             'aiWatchCount': sum(1 for r in results if r.get('aiTraderDecision') == 'Watch'),
             'aiAvoidCount': sum(1 for r in results if r.get('aiTraderDecision') == 'Avoid'),
-            'scoreVersion': 'institutional_cross_section_v5',
+            'scoreVersion': 'institutional_cross_section_v6_strategy_mandate',
             'dataCoverage': {
                 'assets': 'Alpaca /v2/assets',
                 'snapshots': 'Alpaca /v2/stocks/snapshots',
@@ -15305,7 +15332,8 @@ def _institutional_market_scanner_impl():
                 'alpacaNewsFields': ['newsCount', 'newsSentiment', 'eventRisk', 'topNewsHeadline', 'latestNewsTime'],
                 'eventFields': ['nextEarningsDate', 'daysToEarnings', 'earningsHour'],
                 'shortVolumeFields': ['shortVolumeRatio', 'shortVolumeDate', 'shortVolumeContext', 'shortVolumeIsShortInterest'],
-                'optionsFields': ['optionContractsSampled', 'avgCallIV', 'avgPutIV', 'optionIvSkew', 'callPutCountRatio'],
+                'optionsFields': [],
+                'optionsPolicy': 'Options prohibited by strategy mandate',
                 'aiReviewFields': ['aiTraderDecision', 'aiTraderConfidence', 'aiTraderRationale', 'aiRiskFlags', 'aiContradictions', 'aiMissingChecks', 'aiUrgency', 'aiNextStep'],
                 'excludedUnavailableFundamentals': [] if finnhub_has_data else ['marketCap', 'sector', 'trailingPE', 'forwardPE', 'priceToBook', 'epsGrowthForward', 'analystRating'],
             },
@@ -27491,6 +27519,17 @@ def entry_plan_execute():
 
         # ── 2. Verify all required gates ──
         blockers = []
+        strategy_policy = plan_snapshot.get('strategyPolicy') if isinstance(plan_snapshot.get('strategyPolicy'), dict) else {}
+        instrument_type = str(
+            plan_snapshot.get('instrumentType')
+            or plan_snapshot.get('assetClass')
+            or plan_snapshot.get('securityType')
+            or ''
+        ).strip().lower()
+        if instrument_type in ('option', 'options', 'us_option') or plan_snapshot.get('optionsAllowed') is True:
+            blockers.append('Options are prohibited by the AlphaLab strategy mandate')
+        if strategy_policy and strategy_policy.get('optionsAllowed') is not False:
+            blockers.append('Strategy mandate must explicitly prohibit options before execution')
         final_action = plan_snapshot.get('finalAction', '')
         risk_gate = plan_snapshot.get('riskGate', plan_snapshot.get('hardRiskGate', {}))
         risk_gate_status = risk_gate.get('status', 'BLOCK')
@@ -27773,7 +27812,13 @@ def entry_plan_execute():
                 non_marginable_buying_power = float(acc_data.get('non_marginable_buying_power', 0) or 0)
                 equity = float(acc_data.get('equity', 0))
                 last_equity = float(acc_data.get('last_equity', 0) or 0)
-                allow_margin = bool(plan_snapshot.get('allowMargin', False))
+                # Legacy plan fields cannot activate borrowing. Margin is usable
+                # only when the signed strategy mandate explicitly allows the
+                # high-risk, short-horizon leveraged sleeve.
+                allow_margin = bool(
+                    strategy_policy.get('leverageEnabled') is True
+                    and plan_snapshot.get('allowMargin') is True
+                )
                 cash_capacity = max(cash, non_marginable_buying_power, 0.0)
                 spendable_buying_power = buying_power if allow_margin else min(buying_power, cash_capacity)
                 if acc_data.get('trading_blocked') or acc_data.get('account_blocked') or acc_data.get('trade_suspended_by_user'):
@@ -27784,8 +27829,13 @@ def entry_plan_execute():
                     _bp_check_passed = False
                 if last_equity > 0 and equity > 0:
                     session_loss_pct = max(0.0, (last_equity - equity) / last_equity * 100.0)
-                    if session_loss_pct >= 3.0:
-                        blockers.append(f'Account session loss {session_loss_pct:.2f}% reached the 3% kill switch')
+                    daily_loss_stop_pct = _as_float(strategy_policy.get('dailyLossStopPct'), 2.5)
+                    daily_loss_stop_pct = min(max(daily_loss_stop_pct, 0.5), 4.0)
+                    if session_loss_pct >= daily_loss_stop_pct:
+                        blockers.append(
+                            f'Account session loss {session_loss_pct:.2f}% reached the '
+                            f'{daily_loss_stop_pct:.1f}% strategy kill switch'
+                        )
                         _bp_check_passed = False
             else:
                 blockers.append(f'Cannot verify buying power: HTTP {acc_resp.status_code}')
@@ -27799,6 +27849,11 @@ def entry_plan_execute():
             if asset_resp.status_code == 200:
                 asset_data = asset_resp.json() or {}
                 fractionable = bool(asset_data.get('fractionable', fractionable))
+                asset_class = str(asset_data.get('class') or asset_data.get('asset_class') or '').strip().lower()
+                if asset_class not in ('us_equity', ''):
+                    blockers.append(
+                        f'{symbol} asset class {asset_class or "unknown"} is outside the US-equity-only mandate'
+                    )
                 if not asset_data.get('tradable', True) or asset_data.get('status') not in (None, 'active'):
                     blockers.append(f'{symbol} is not active and tradable in Alpaca {alpaca_mode}')
             else:
@@ -32067,6 +32122,175 @@ def _generate_final_decision(verdict, metrics, stability, opt_results, strategy)
     return decision
 
 
+def _strategy_policy(risk_profile='medium', time_horizon='mid', pipeline_mode='hybrid',
+                     leverage_enabled=False):
+    """Return the single strategy mandate used by research, entry, exit and execution.
+
+    Percent fields are expressed as human-readable percentages (for example,
+    ``riskPerTradePct=1.0`` means one percent).  Options are intentionally
+    prohibited for every mandate.  Leveraged equity ETP exposure is opt-in and
+    only valid for the aggressive, short-horizon mandate.
+    """
+    profile = str(risk_profile or 'medium').strip().lower()
+    horizon = str(time_horizon or 'mid').strip().lower()
+    mode = str(pipeline_mode or 'hybrid').strip().lower()
+    if profile not in ('low', 'medium', 'high'):
+        profile = 'medium'
+    if horizon not in ('short', 'mid', 'long'):
+        horizon = 'mid'
+    if mode not in ('manual', 'hybrid', 'ai'):
+        mode = 'hybrid'
+
+    risk = {
+        'low': {
+            'label': 'Capital Preservation',
+            'targetDeploymentPct': 30.0,
+            'maxGrossExposurePct': 35.0,
+            'maxSinglePositionPct': 8.0,
+            'riskPerTradePct': 0.50,
+            'dailyLossStopPct': 1.50,
+            'maxOpenBuys': 2,
+            'maxPositions': 8,
+            'sectorCapPct': 20.0,
+        },
+        'medium': {
+            'label': 'Balanced Growth',
+            'targetDeploymentPct': 50.0,
+            'maxGrossExposurePct': 60.0,
+            'maxSinglePositionPct': 15.0,
+            'riskPerTradePct': 1.00,
+            'dailyLossStopPct': 2.50,
+            'maxOpenBuys': 5,
+            'maxPositions': 10,
+            'sectorCapPct': 30.0,
+        },
+        'high': {
+            'label': 'Aggressive Growth',
+            'targetDeploymentPct': 100.0,
+            'maxGrossExposurePct': 100.0,
+            'maxSinglePositionPct': 25.0,
+            'riskPerTradePct': 1.50,
+            'dailyLossStopPct': 4.00,
+            'maxOpenBuys': 7,
+            'maxPositions': 12,
+            'sectorCapPct': 40.0,
+        },
+    }[profile]
+    holding = {
+        'short': {
+            'label': '1-5 trading days',
+            'selectionFocus': 'Recent momentum, volume expansion, catalysts and liquidity',
+            'timeStopDays': 5,
+            'reviewAfterDays': 3,
+            'stopMultiplier': 0.80,
+            'targetR1': 1.50,
+            'targetR2': 2.25,
+            'minimumR': 1.25,
+            'maxStopPct': 5.0,
+            'slippageCapBps': 12,
+            'participationCapPct': 3.0,
+            'factorWeights': {'momentum': .35, 'trend': .10, 'relative': .20, 'liquidity': .25, 'risk': .10},
+        },
+        'mid': {
+            'label': '2-8 weeks',
+            'selectionFocus': 'Balanced momentum, trend persistence, relative strength and stability',
+            'timeStopDays': 40,
+            'reviewAfterDays': 20,
+            'stopMultiplier': 1.00,
+            'targetR1': 1.80,
+            'targetR2': 2.80,
+            'minimumR': 1.50,
+            'maxStopPct': 9.0,
+            'slippageCapBps': 18,
+            'participationCapPct': 5.0,
+            'factorWeights': {'momentum': .25, 'trend': .25, 'relative': .20, 'liquidity': .15, 'risk': .15},
+        },
+        'long': {
+            'label': '3-12 months',
+            'selectionFocus': 'Long trend, quality, durable relative strength and drawdown resilience',
+            'timeStopDays': 180,
+            'reviewAfterDays': 60,
+            'stopMultiplier': 1.25,
+            'targetR1': 2.20,
+            'targetR2': 3.50,
+            'minimumR': 1.75,
+            'maxStopPct': 15.0,
+            'slippageCapBps': 25,
+            'participationCapPct': 8.0,
+            'factorWeights': {'momentum': .10, 'trend': .35, 'relative': .20, 'liquidity': .10, 'risk': .25},
+        },
+    }[horizon]
+
+    # Risk appetite changes the emphasis without changing the horizon's intent.
+    weights = dict(holding['factorWeights'])
+    if profile == 'low':
+        weights['risk'] += .08
+        weights['momentum'] = max(.05, weights['momentum'] - .05)
+        weights['trend'] = max(.05, weights['trend'] - .03)
+    elif profile == 'high':
+        weights['risk'] = max(.05, weights['risk'] - .05)
+        weights['momentum'] += .03
+        weights['trend'] += .02
+    weight_total = sum(weights.values()) or 1.0
+    weights = {key: round(value / weight_total, 4) for key, value in weights.items()}
+
+    leverage_requested = bool(leverage_enabled)
+    leverage_active = bool(leverage_requested and profile == 'high' and horizon == 'short')
+    leverage_reason = ''
+    if leverage_requested and not leverage_active:
+        leverage_reason = 'Leveraged exposure requires High risk and Short horizon.'
+    max_gross = 115.0 if leverage_active else risk['maxGrossExposurePct']
+
+    permissions = {
+        'manual': {
+            'aiResearch': False, 'aiChallenge': False, 'aiSelects': False,
+            'autoBuy': False, 'autoSell': False, 'userApprovalRequired': True,
+            'label': 'Manual Control',
+        },
+        'hybrid': {
+            'aiResearch': True, 'aiChallenge': True, 'aiSelects': False,
+            'autoBuy': False, 'autoSell': False, 'userApprovalRequired': True,
+            'label': 'AI Review',
+        },
+        'ai': {
+            'aiResearch': True, 'aiChallenge': True, 'aiSelects': True,
+            'autoBuy': True, 'autoSell': True, 'userApprovalRequired': False,
+            'label': 'Full AI',
+        },
+    }[mode]
+
+    return {
+        'version': 'strategy_mandate_v1',
+        'riskProfile': profile,
+        'timeHorizon': horizon,
+        'pipelineMode': mode,
+        'label': '%s · %s · %s' % (risk['label'], holding['label'], permissions['label']),
+        **risk,
+        'maxGrossExposurePct': max_gross,
+        'holdingPeriod': holding['label'],
+        'selectionFocus': holding['selectionFocus'],
+        'timeStopDays': holding['timeStopDays'],
+        'reviewAfterDays': holding['reviewAfterDays'],
+        'stopMultiplier': holding['stopMultiplier'],
+        'targetR1': holding['targetR1'],
+        'targetR2': holding['targetR2'],
+        'minimumR': holding['minimumR'],
+        'maxStopPct': holding['maxStopPct'],
+        'slippageCapBps': holding['slippageCapBps'],
+        'participationCapPct': holding['participationCapPct'],
+        'factorWeights': weights,
+        'leverageRequested': leverage_requested,
+        'leverageEnabled': leverage_active,
+        'leverageUnavailableReason': leverage_reason,
+        'leveragedSleeveMaxPct': 15.0 if leverage_active else 0.0,
+        'leveragedProductPolicy': 'long-only leveraged equity ETPs; no inverse products',
+        'optionsAllowed': False,
+        'allowedAssetClasses': ['us_equity'],
+        'permissions': permissions,
+        'hardRiskGatesFinal': True,
+    }
+
+
 def _generate_risk_gate(verdict, metrics, stability, strategy, recent_vs_long=None,
                          risk_profile='medium', time_horizon='mid', event_risk=None, data_quality=None):
     """Generate a conservative risk gate assessment for DV result. Rule-based, context-aware."""
@@ -32080,6 +32304,13 @@ def _generate_risk_gate(verdict, metrics, stability, strategy, recent_vs_long=No
     }
 
     try:
+        mandate = _strategy_policy(risk_profile, time_horizon)
+        max_drawdown_block = {'low': 20.0, 'medium': 30.0, 'high': 40.0}.get(
+            mandate['riskProfile'], 30.0
+        )
+        max_drawdown_warn = {'low': 12.0, 'medium': 20.0, 'high': 28.0}.get(
+            mandate['riskProfile'], 20.0
+        )
         failures = []
         warnings = []
 
@@ -32106,7 +32337,7 @@ def _generate_risk_gate(verdict, metrics, stability, strategy, recent_vs_long=No
         if sharpe is not None and sharpe < 0:
             failures.append(f'Negative Sharpe {sharpe:.2f}')
 
-        if max_dd is not None and max_dd > 35:
+        if max_dd is not None and max_dd > max_drawdown_block:
             failures.append(f'Excessive drawdown {max_dd:.1f}%')
 
         if pf is not None and pf < 0.8:
@@ -32125,7 +32356,7 @@ def _generate_risk_gate(verdict, metrics, stability, strategy, recent_vs_long=No
         if sharpe is not None and 0 <= sharpe < 0.5:
             warnings.append(f'Low Sharpe {sharpe:.2f}')
 
-        if max_dd is not None and 20 < max_dd <= 35:
+        if max_dd is not None and max_drawdown_warn < max_dd <= max_drawdown_block:
             warnings.append(f'Elevated drawdown {max_dd:.1f}%')
 
         if pf is not None and 0.8 <= pf < 1.2:
@@ -33339,10 +33570,17 @@ def ai_entry_plan():
         account_mode = data.get('accountMode', 'paper').strip().lower()
         risk_profile = data.get('riskProfile', 'medium').strip().lower()
         time_horizon = data.get('timeHorizon', 'mid').strip().lower()
+        pipeline_mode = data.get('pipelineMode') or data.get('pipeline_mode') or (
+            'manual' if execution_mode == 'Recommend Only' else 'hybrid'
+        )
+        leverage_enabled = data.get('leverageEnabled') is True
         if risk_profile not in ('low', 'medium', 'high'):
             risk_profile = 'medium'
         if time_horizon not in ('short', 'mid', 'long'):
             time_horizon = 'mid'
+        strategy_policy = _strategy_policy(
+            risk_profile, time_horizon, pipeline_mode, leverage_enabled
+        )
 
         is_manual = (execution_mode == 'Recommend Only')
 
@@ -33435,65 +33673,52 @@ def ai_entry_plan():
         if not candidates:
             return jsonify({'success': False, 'message': 'No candidates provided'}), 400
 
-        # B4: Tiered allocation caps by riskProfile (replaces simple multiplier approach)
-        ALLOCATION_RULES = {
-            'low': {
-                'max_total_bp_pct': 0.30,
-                'max_per_trade_pv_pct': 0.05,
-                'max_per_trade_bp_pct': 0.10,
-                'max_open_buys': 2,
-                'max_portfolio_positions': 5,
-                'leveraged_allowed': False,
-                'label': 'Conservative',
-            },
-            'medium': {
-                'max_total_bp_pct': 0.50,
-                'max_per_trade_pv_pct': 0.08,
-                'max_per_trade_bp_pct': 0.15,
-                'max_open_buys': 5,
-                'max_portfolio_positions': 10,
-                'leveraged_allowed': 'limited',
-                'leveraged_max_pct': 0.20,
-                'label': 'Moderate',
-            },
-            'high': {
-                'max_total_bp_pct': 0.70,
-                'max_per_trade_pv_pct': 0.12,
-                'max_per_trade_bp_pct': 0.25,
-                'max_open_buys': 8,
-                'max_portfolio_positions': 15,
-                'leveraged_allowed': True,
-                'leveraged_max_pct': 0.35,
-                'label': 'Aggressive',
-            },
+        # Unified mandate: cash-funded in Low/Medium and in High unless the user
+        # explicitly enables the leveraged sleeve.  High + Short may use margin,
+        # but total gross and the leveraged-product sleeve remain bounded.
+        _rules = {
+            'label': strategy_policy['label'],
+            'max_total_bp_pct': strategy_policy['maxGrossExposurePct'] / 100.0,
+            'max_per_trade_pv_pct': strategy_policy['maxSinglePositionPct'] / 100.0,
+            'max_open_buys': strategy_policy['maxOpenBuys'],
+            'max_portfolio_positions': strategy_policy['maxPositions'],
+            'leveraged_allowed': strategy_policy['leverageEnabled'],
+            'leveraged_max_pct': strategy_policy['leveragedSleeveMaxPct'] / 100.0,
         }
-        _rules = ALLOCATION_RULES.get(risk_profile, ALLOCATION_RULES['medium'])
 
-        # Per-trade cap: min(portfolio_value * pv_pct, available_bp * bp_pct)
-        # Use cash-funded capacity by default. Margin buying power remains
-        # informational and never silently increases an automated position.
         _cash_capacity = max(live_cash, live_non_marginable_buying_power, 0)
-        _spendable_bp = min(live_buying_power, _cash_capacity) if live_buying_power > 0 else 0
+        if strategy_policy['leverageEnabled']:
+            _spendable_bp = max(live_buying_power, 0)
+        else:
+            _spendable_bp = min(live_buying_power, _cash_capacity) if live_buying_power > 0 else 0
         _safe_bp = max(_spendable_bp * 0.90, 0)  # 10% operational buffer
-        _max_total_allocation = _safe_bp * _rules['max_total_bp_pct']
+        _deployment_ceiling_pct = strategy_policy['targetDeploymentPct']
+        if strategy_policy['leverageEnabled']:
+            _deployment_ceiling_pct += strategy_policy['leveragedSleeveMaxPct']
+        _deployment_ceiling_pct = min(
+            _deployment_ceiling_pct, strategy_policy['maxGrossExposurePct']
+        )
+        _max_total_allocation = min(
+            _safe_bp,
+            account_size * (_deployment_ceiling_pct / 100.0),
+        ) if account_size > 0 else 0
         _max_per_trade = min(
             account_size * _rules['max_per_trade_pv_pct'],
-            _safe_bp * _rules['max_per_trade_bp_pct']
+            _max_total_allocation,
         ) if account_size > 0 else 0
         _max_open_buys = _rules['max_open_buys']
         _max_portfolio_positions = _rules.get('max_portfolio_positions', 10)
         _lev_allowed = _rules['leveraged_allowed']
         _lev_max_pct = _rules.get('leveraged_max_pct', 0.0)
 
-        # Risk is a portfolio-loss budget, not a leverage preference. Keep the
-        # caller's profile-derived budget bounded at 1% per trade; allocation
-        # limits above control gross exposure separately.
-        adjusted_risk_pct = max(0.10, min(risk_per_trade_pct, 1.0))
-        adjusted_max_pos_pct = min(max_position_pct, _rules['max_per_trade_pv_pct'] * 100.0)
+        # Ignore stale caller defaults: the mandate is the authoritative risk
+        # budget and sizing contract for every manual and scheduled run.
+        adjusted_risk_pct = strategy_policy['riskPerTradePct']
+        adjusted_max_pos_pct = strategy_policy['maxSinglePositionPct']
 
         risk_dollars = account_size * (adjusted_risk_pct / 100.0)
         max_pos_dollars = account_size * (adjusted_max_pos_pct / 100.0)
-        daily_loss_limit = account_size * 0.03
+        daily_loss_limit = account_size * (strategy_policy['dailyLossStopPct'] / 100.0)
 
         # B2: Budget tracker for multi-order buying power management
         _total_allocated = 0.0
@@ -33558,8 +33783,14 @@ def ai_entry_plan():
             wr = float(c.get('winRate') or 0)
             conf = float(c.get('confidence') or c.get('matchConfidence') or 50)
             stability = float(c.get('stabilityScore') or 50)
-            # Lower verdict rank is better; evidence metrics sort descending.
-            return (vo, -sharpe, -pf, -wr, -conf, -stability)
+            factor_scores = c.get('factorScores') if isinstance(c.get('factorScores'), dict) else {}
+            mandate_score = sum(
+                float(factor_scores.get(name) or 50) * weight
+                for name, weight in strategy_policy['factorWeights'].items()
+            )
+            # Lower verdict rank is better; the selected holding horizon owns
+            # first priority, followed by validated strategy evidence.
+            return (vo, -mandate_score, -sharpe, -pf, -wr, -conf, -stability)
         candidates = sorted(candidates, key=_candidate_sort_key)
 
         for candidate in candidates:
@@ -33639,7 +33870,7 @@ def ai_entry_plan():
                     'buyingPowerBefore': round(_safe_bp - _total_allocated, 2),
                     'buyingPowerAfter': round(_safe_bp - _total_allocated, 2),
                     'riskDollars': 0, 'riskBudget': 0, 'riskUsedPct': 0,
-                    'riskPct': risk_per_trade_pct, 'maxLossPct': 0,
+                    'riskPct': adjusted_risk_pct, 'maxLossPct': 0,
                     'holdingPeriod': 'N/A',
                     'timeHorizon': time_horizon,
                     'riskProfile': risk_profile,
@@ -33715,7 +33946,7 @@ def ai_entry_plan():
                     'positionSizeShares': 0, 'positionSizeDollars': 0, 'positionPct': 0,
                     'positionCapped': False, 'positionCapStatus': 'N/A',
                     'riskDollars': 0, 'riskBudget': 0, 'riskUsedPct': 0,
-                    'riskPct': risk_per_trade_pct, 'maxLossPct': 0,
+                    'riskPct': adjusted_risk_pct, 'maxLossPct': 0,
                     'aiDecision': 'SKIP', 'confidence': 0, 'bestStrategy': strategy,
                     'finalAction': 'SKIP', 'tradeReadiness': 'BLOCKED', 'entryTriggerMet': False,
                     'hardRiskGate': {
@@ -33775,7 +34006,7 @@ def ai_entry_plan():
                     'buyingPowerBefore': round(_safe_bp - _total_allocated, 2),
                     'buyingPowerAfter': round(_safe_bp - _total_allocated, 2),
                     'riskDollars': 0, 'riskBudget': 0, 'riskUsedPct': 0,
-                    'riskPct': risk_per_trade_pct, 'maxLossPct': 0,
+                    'riskPct': adjusted_risk_pct, 'maxLossPct': 0,
                     'holdingPeriod': 'N/A',
                     'timeHorizon': time_horizon,
                     'riskProfile': risk_profile,
@@ -34054,8 +34285,8 @@ def ai_entry_plan():
                     'riskReward1': 0, 'riskReward2': 0, 'riskRewardReview': False,
                     'positionSizeShares': 0, 'positionSizeDollars': 0, 'positionPct': 0,
                     'positionCapped': False, 'positionCapStatus': 'N/A',
-                    'riskDollars': 0, 'riskBudget': round(account_size * (risk_per_trade_pct / 100.0), 2),
-                    'riskUsedPct': 0, 'riskPct': risk_per_trade_pct, 'maxLossPct': 0,
+                    'riskDollars': 0, 'riskBudget': round(account_size * (adjusted_risk_pct / 100.0), 2),
+                    'riskUsedPct': 0, 'riskPct': adjusted_risk_pct, 'maxLossPct': 0,
                     'aiDecision': 'SKIP', 'confidence': 0, 'bestStrategy': strategy,
                     'finalAction': 'BLOCKED_BY_RISK', 'tradeReadiness': 'BLOCKED', 'entryTriggerMet': False,
                     'hardRiskGate': {
@@ -34231,39 +34462,16 @@ def ai_entry_plan():
             # ── 5. Compute institutional entry geometry ──
             # Use the high side of the buy zone as the conservative fill reference.
             # This keeps stop distance, reward/risk, and position sizing on the same basis.
-            HOLDING_PERIOD_MAP = {
-                'short': {
-                    'label': '1-3 trading days',
-                    'stop_mult': 0.85,
-                    'target_rr1': 1.45,
-                    'target_rr2': 2.20,
-                    'slippage_bps': 12,
-                    'participation_cap_pct': 0.03,
-                    'min_rr': 1.25,
-                    'max_stop_pct': 0.055,
-                },
-                'mid': {
-                    'label': '3-15 trading days',
-                    'stop_mult': 1.00,
-                    'target_rr1': 1.75,
-                    'target_rr2': 2.70,
-                    'slippage_bps': 18,
-                    'participation_cap_pct': 0.05,
-                    'min_rr': 1.45,
-                    'max_stop_pct': 0.080,
-                },
-                'long': {
-                    'label': '2-8 weeks',
-                    'stop_mult': 1.20,
-                    'target_rr1': 2.00,
-                    'target_rr2': 3.20,
-                    'slippage_bps': 25,
-                    'participation_cap_pct': 0.08,
-                    'min_rr': 1.60,
-                    'max_stop_pct': 0.120,
-                },
+            _hp = {
+                'label': strategy_policy['holdingPeriod'],
+                'stop_mult': strategy_policy['stopMultiplier'],
+                'target_rr1': strategy_policy['targetR1'],
+                'target_rr2': strategy_policy['targetR2'],
+                'slippage_bps': strategy_policy['slippageCapBps'],
+                'participation_cap_pct': strategy_policy['participationCapPct'] / 100.0,
+                'min_rr': strategy_policy['minimumR'],
+                'max_stop_pct': strategy_policy['maxStopPct'] / 100.0,
             }
-            _hp = HOLDING_PERIOD_MAP.get(time_horizon, HOLDING_PERIOD_MAP['mid'])
             _holding_period_label = _hp['label']
             planned_entry_ref = entry_zone_high if entry_zone_high > 0 else current_price
             if planned_entry_ref <= 0:
@@ -34432,7 +34640,7 @@ def ai_entry_plan():
             raw_position_shares = 0
             raw_position_dollars = 0
             max_allocation_dollars = max_pos_dollars
-            max_allocation_pct = max_position_pct
+            max_allocation_pct = adjusted_max_pos_pct
             risk_dollars_actual = 0
 
             if risk_per_share > 0 and current_price > 0:
@@ -34458,7 +34666,7 @@ def ai_entry_plan():
                     position_capped = True
                     position_cap_status = (
                         f'capped to {pos_pct:.1f}% max allocation '
-                        f'(raw {raw_position_dollars / account_size * 100:.1f}% > {max_position_pct}%)'
+                        f'(raw {raw_position_dollars / account_size * 100:.1f}% > {adjusted_max_pos_pct}%)'
                     ) if account_size > 0 else f'capped to max allocation ${max_pos_dollars:.0f}'
                     _min_shares = 0.01 if symbol_fractionable else 1.0
                     if pos_shares < _min_shares:
@@ -34475,10 +34683,10 @@ def ai_entry_plan():
                     risk_gate_blockers.append(f'{symbol} is not tradable on Alpaca account mode {account_mode}')
                     risk_gate_passed = False
 
-                # 9b. Risk ≤ 1% per trade (as % of portfolio value)
+                # 9b. Risk must stay within the selected mandate.
                 risk_as_pct_of_account = round(risk_dollars_actual / account_size * 100, 2) if account_size > 0 else 0
-                if risk_as_pct_of_account > 1.0 and account_size > 0:
-                    _risk_msg = f'Risk ${risk_dollars_actual:.0f} is {risk_as_pct_of_account:.2f}% of portfolio value, exceeds 1% recommended limit'
+                if risk_as_pct_of_account > adjusted_risk_pct and account_size > 0:
+                    _risk_msg = f'Risk ${risk_dollars_actual:.0f} is {risk_as_pct_of_account:.2f}% of portfolio value, exceeds {adjusted_risk_pct:.2f}% mandate limit'
                     if is_manual:
                         risk_gate_warnings.append(_risk_msg + ' (advisory only)')
                     else:
@@ -34623,7 +34831,10 @@ def ai_entry_plan():
 
             # 9c. Daily loss < 3%
             if daily_loss >= daily_loss_limit:
-                risk_gate_blockers.append(f'Daily loss ${daily_loss:.0f} exceeds 3% limit ${daily_loss_limit:.0f} - BLOCK ALL TRADING')
+                risk_gate_blockers.append(
+                    f'Daily loss ${daily_loss:.0f} exceeds {strategy_policy["dailyLossStopPct"]:.1f}% '
+                    f'limit ${daily_loss_limit:.0f} - BLOCK ALL TRADING'
+                )
                 risk_gate_passed = False
                 final_action = 'SKIP'
 
@@ -34648,9 +34859,14 @@ def ai_entry_plan():
                 and existing_plan.get('positionSizeShares', 0) > 0
             )
             sector_count = candidate_sectors.get(current_sector, 0) + planned_sector_count + 1
-            if current_sector != 'Unknown' and sector_count >= 3:
+            _max_sector_positions = max(
+                1,
+                math.ceil(strategy_policy['maxPositions'] * strategy_policy['sectorCapPct'] / 100.0),
+            )
+            if current_sector != 'Unknown' and sector_count > _max_sector_positions:
                 risk_gate_warnings.append(
-                    f'Proposed {current_sector} exposure would reach {sector_count} positions; review concentration.'
+                    f'Proposed {current_sector} exposure would reach {sector_count} positions; '
+                    f'mandate cap is {_max_sector_positions}.'
                 )
 
             # 9g. Earnings check
@@ -35055,7 +35271,9 @@ def ai_entry_plan():
                 'maxTotalAllocationDollars': round(_max_total_allocation, 2),
                 'maxOpenBuyOrders': _max_open_buys,
                 'maxPortfolioPositions': _max_portfolio_positions,
-                'allowMargin': False,
+                'allowMargin': strategy_policy['leverageEnabled'],
+                'optionsAllowed': False,
+                'strategyPolicy': strategy_policy,
                 'rawShares': raw_position_shares,
                 'suggestedShares': raw_position_shares,
                 'rawAllocationDollars': round(raw_position_dollars, 2),
@@ -35473,20 +35691,20 @@ def ai_entry_plan():
         # ── 14. Leveraged ETF Alternative Lookup (per riskProfile allocation caps) ──
         if _lev_allowed:
             LEVERAGED_ETF_MAP = {
-                'TSLA': {'bull': ['TSLL', 'TSLR'], 'bear': ['TSLQ', 'TSLZ']},
-                'NVDA': {'bull': ['NVDL', 'NVDU'], 'bear': ['NVD', 'NVDQ']},
-                'AAPL': {'bull': ['AAPU'], 'bear': ['AAPD']},
-                'AMZN': {'bull': ['AMZU'], 'bear': ['AMZD']},
-                'META': {'bull': ['FBL'], 'bear': ['FBZ']},
-                'GOOGL': {'bull': ['GOOX'], 'bear': ['GGLS']},
-                'MSFT': {'bull': ['MSFU'], 'bear': ['MSFD']},
-                'AMD': {'bull': ['AMDL'], 'bear': ['AMDS']},
-                'NFLX': {'bull': ['NFXL'], 'bear': ['NFXS']},
-                'COIN': {'bull': ['CONL'], 'bear': ['COID']},
-                'MSTR': {'bull': ['MSTU', 'MSTX'], 'bear': ['MSTZ', 'MSTS']},
-                'QQQ': {'bull': ['TQQQ', 'QLD'], 'bear': ['SQQQ', 'QID']},
-                'SPY': {'bull': ['SPXL', 'UPRO', 'SSO'], 'bear': ['SPXS', 'SPXU', 'SDS']},
-                'IWM': {'bull': ['TNA', 'UWM'], 'bear': ['TZA', 'TWM']},
+                'TSLA': ['TSLL', 'TSLR'],
+                'NVDA': ['NVDL', 'NVDU'],
+                'AAPL': ['AAPU'],
+                'AMZN': ['AMZU'],
+                'META': ['FBL'],
+                'GOOGL': ['GOOX'],
+                'MSFT': ['MSFU'],
+                'AMD': ['AMDL'],
+                'NFLX': ['NFXL'],
+                'COIN': ['CONL'],
+                'MSTR': ['MSTU', 'MSTX'],
+                'QQQ': ['TQQQ', 'QLD'],
+                'SPY': ['SPXL', 'UPRO', 'SSO'],
+                'IWM': ['TNA', 'UWM'],
             }
 
             def _is_soft_blocker(blocker_text):
@@ -35517,11 +35735,9 @@ def ai_entry_plan():
                 if not mapping:
                     continue
 
-                ai_dec = str(plan.get('aiDecision', '')).upper()
-                setup = str(plan.get('setup', '')).lower()
-                direction = 'bear' if ('bear' in setup or ai_dec == 'SELL') else 'bull'
+                direction = 'bull'
 
-                for alt_sym in mapping.get(direction, []):
+                for alt_sym in mapping:
                     # Check Alpaca asset tradability
                     alt_tradable = False
                     alt_fractionable = False
@@ -35644,7 +35860,7 @@ def ai_entry_plan():
                     alt_passed = True
 
                     # B10: Leveraged allocation cap per riskProfile
-                    _lev_cap_total = _safe_bp * _lev_max_pct  # max total leveraged allocation
+                    _lev_cap_total = account_size * _lev_max_pct
                     _lev_reduction = 0.40  # reduce leveraged position to 40% of non-leveraged amount
                     _lev_remaining = _lev_cap_total - _leveraged_allocated
                     if _lev_remaining <= 0:
@@ -35708,7 +35924,7 @@ def ai_entry_plan():
                         'originalSymbol': sym,
                         'alternativeDirection': direction,
                         'alternativeFailed': False,
-                        'alternativeReason': f'{sym} blocked by position/capital limits. High-risk mode — using leveraged ETF {alt_sym}.',
+                        'alternativeReason': f'{sym} blocked by position/capital limits. High-risk short-horizon mandate — reviewing leveraged ETF {alt_sym}.',
                         'alternativeRiskWarning': f'{alt_sym} is a leveraged ETF with amplified volatility and loss risk.',
                         'alternativeFractionable': alt_fractionable,
                         'strategy': plan.get('strategy', 'unknown'),
@@ -35735,7 +35951,7 @@ def ai_entry_plan():
                         'riskDollars': alt_risk_dollars_actual,
                         'riskBudget': risk_dollars,
                         'riskUsedPct': round(alt_risk_dollars_actual / risk_dollars * 100, 2) if risk_dollars > 0 else 0,
-                        'riskPct': risk_per_trade_pct,
+                        'riskPct': adjusted_risk_pct,
                         'maxLossPct': round(alt_sl_pct, 2),
                         'aiDecision': 'BUY' if alt_gate != 'BLOCK' else 'SKIP',
                         'confidence': min(plan.get('confidence', 50), 60),
@@ -35810,6 +36026,9 @@ def ai_entry_plan():
                         'limitPrice': round(alt_price, 2),
                         'timeInForce': 'day',
                         'isLeveraged': True,
+                        'allowMargin': True,
+                        'optionsAllowed': False,
+                        'strategyPolicy': strategy_policy,
                         'leverageReason': f'{alt_sym} is a leveraged {direction} ETF tracking {sym} ({_lev_reduction*100:.0f}% allocation vs. non-leveraged)',
                         'existingPosition': alt_sym in (existing_positions if existing_positions else []),
                         'existingOpenOrder': alt_sym in (open_buy_orders if account_data_fetched else []),
@@ -35867,7 +36086,13 @@ def ai_entry_plan():
                     'reason': p.get('decisionReason') or p.get('reason'),
                 } for p in buy_plans[:8]],
             })
-        return jsonify({'success': True, 'status': ep_status, 'plans': plans, 'errors': errors})
+        return jsonify({
+            'success': True,
+            'status': ep_status,
+            'plans': plans,
+            'errors': errors,
+            'strategyPolicy': strategy_policy,
+        })
 
     except Exception as e:
         print(f'[ENTRY PLAN] Error: {e}')
@@ -35884,7 +36109,7 @@ def ai_entry_plan():
         traceback.print_exc()
         # Return partial results if any plans were generated before the error
         if plans:
-            return jsonify({'success': True, 'status': 'partial', 'plans': plans, 'errors': errors + [{'symbol': '(global)', 'message': str(e)}], 'message': str(e)})
+            return jsonify({'success': True, 'status': 'partial', 'plans': plans, 'errors': errors + [{'symbol': '(global)', 'message': str(e)}], 'message': str(e), 'strategyPolicy': strategy_policy})
         return jsonify({'success': False, 'message': str(e), 'errors': errors}), 500
 
 # ============ MTF Multi-Timeframe Confirmation Analysis (v2) ============
@@ -37726,6 +37951,7 @@ def _pa_run_admission(uid, dv_results, fine_results=None, market_results=None,
     is coherent, fresh, non-duplicative, and compatible with current account limits.
     """
     import hashlib
+    import math
 
     fine_by_symbol = {
         str(row.get('symbol') or '').upper(): row for row in (fine_results or []) if row.get('symbol')
@@ -37740,9 +37966,13 @@ def _pa_run_admission(uid, dv_results, fine_results=None, market_results=None,
     buying_power = _pa_safe_float(account.get('buyingPower'), None)
     account_blocked = bool(account.get('accountBlocked'))
     profile = str(risk_profile or 'medium').lower()
-    max_positions = {'low': 5, 'medium': 8, 'high': 10}.get(profile, 8)
-    max_new_positions = {'low': 2, 'medium': 4, 'high': 5}.get(profile, 4)
-    max_per_sector = {'low': 1, 'medium': 2, 'high': 3}.get(profile, 2)
+    mandate = _strategy_policy(profile, time_horizon, pipeline_mode)
+    max_positions = mandate['maxPositions']
+    max_new_positions = mandate['maxOpenBuys']
+    max_per_sector = max(
+        1,
+        math.ceil(max_positions * mandate['sectorCapPct'] / 100.0),
+    )
     max_signal_age = {'short': 1200, 'mid': 1800, 'long': 3600}.get(str(time_horizon).lower(), 1800)
 
     rows = []
@@ -37906,7 +38136,11 @@ def _pa_run_admission(uid, dv_results, fine_results=None, market_results=None,
         admitted_count += 1
         sector_counts[sector_key] = sector_counts.get(sector_key, 0) + 1
 
-    ai_stats = _pa_admission_ai_challenge(uid, rows, enabled=ai_enabled and pipeline_mode in ('ai', 'hybrid'))
+    ai_stats = _pa_admission_ai_challenge(
+        uid,
+        rows,
+        enabled=bool(ai_enabled and mandate['permissions']['aiChallenge']),
+    )
     counts = {'ADMIT': 0, 'HOLD': 0, 'BLOCK': 0}
     for row in rows:
         decision = row.get('admissionDecision') or 'HOLD'
@@ -37919,7 +38153,8 @@ def _pa_run_admission(uid, dv_results, fine_results=None, market_results=None,
         'maxNewPositions': max_new_positions,
         'maxPerSector': max_per_sector,
         'ai': ai_stats,
-        'policy': 'institutional_pre_entry_admission_v1',
+        'policy': 'institutional_pre_entry_admission_v2_strategy_mandate',
+        'strategyPolicy': mandate,
     }
 
 
@@ -38038,9 +38273,33 @@ def _pa_resolve_auto_run_context(uid, cfg):
         'risk_profile': cfg.get('risk_profile') or cfg.get('riskProfile') or 'medium',
         'time_horizon': cfg.get('time_horizon') or cfg.get('timeHorizon') or 'mid',
         'trade_mode': cfg.get('trade_mode') or cfg.get('tradeMode') or 'paper',
+        'leverage_enabled': bool(cfg.get('leverage_enabled', False)),
         'live_auto_trading_enabled': cfg.get('live_auto_trading_enabled', False),
         'enabled': cfg.get('enabled', False),
         'contextSource': 'saved_config' if (cfg.get('risk_profile') or cfg.get('time_horizon') or cfg.get('trade_mode')) else 'default_fallback',
+    }
+
+
+def _pa_workspace_preferences(config):
+    """Return the user-facing operational preferences from persisted config."""
+    config = config or {}
+    risk_profile = config.get('risk_profile') or config.get('riskProfile') or 'medium'
+    time_horizon = config.get('time_horizon') or config.get('timeHorizon') or 'mid'
+    pipeline_mode = config.get('mode') or 'hybrid'
+    leverage_enabled = bool(config.get('leverage_enabled', False))
+    return {
+        'tradeMode': config.get('trade_mode') or config.get('tradeMode') or 'paper',
+        'pipelineMode': pipeline_mode,
+        'riskProfile': risk_profile,
+        'timeHorizon': time_horizon,
+        'leverageEnabled': leverage_enabled,
+        'scheduleEnabled': bool(config.get('enabled', False)),
+        'intervalMinutes': int(config.get('interval_minutes') or 0),
+        'liveAutoTradingEnabled': bool(config.get('live_auto_trading_enabled', False)),
+        'strategyPolicy': _strategy_policy(
+            risk_profile, time_horizon, pipeline_mode, leverage_enabled
+        ),
+        'updatedAt': config.get('updated_at') or '',
     }
 
 
@@ -38310,7 +38569,9 @@ _PA_MARKET_SCANNER_SETTINGS = {
 }
 
 
-def _pa_market_scanner_headless(uid, trade_mode='paper'):
+def _pa_market_scanner_headless(uid, trade_mode='paper', risk_profile='medium',
+                                time_horizon='mid', pipeline_mode='hybrid',
+                                leverage_enabled=False):
     """Run the exact institutional scanner used by the AI Agent page.
 
     Keeping the settings here mirrors scannerRunnerService defaults while the
@@ -38321,6 +38582,10 @@ def _pa_market_scanner_headless(uid, trade_mode='paper'):
         **_PA_MARKET_SCANNER_SETTINGS,
         'filters': dict(_PA_MARKET_SCANNER_SETTINGS['filters']),
         'alpacaMode': 'live' if str(trade_mode).lower() in ('real', 'live') else 'paper',
+        'riskProfile': risk_profile,
+        'timeHorizon': time_horizon,
+        'pipelineMode': pipeline_mode,
+        'leverageEnabled': bool(leverage_enabled),
         'suppressDiscord': True,
     }
     response, status = _pa_call_endpoint(
@@ -40251,24 +40516,25 @@ def _pa_exit_policy(risk_profile='medium', time_horizon='mid'):
     """Return transparent, volatility-aware long-position exit thresholds."""
     profile = str(risk_profile or 'medium').lower()
     horizon = str(time_horizon or 'mid').lower()
+    mandate = _strategy_policy(profile, horizon)
     return {
         'riskProfile': profile,
         'timeHorizon': horizon,
-        'fallbackRiskPct': {
-            'low': {'short': 0.04, 'mid': 0.05, 'long': 0.07},
-            'medium': {'short': 0.05, 'mid': 0.06, 'long': 0.08},
-            'high': {'short': 0.07, 'mid': 0.08, 'long': 0.10},
-        }.get(profile, {}).get(horizon, 0.06),
-        'fallbackTargetR': {'low': 1.6, 'medium': 1.8, 'high': 2.0}.get(profile, 1.8),
-        'breakEvenAtR': {'low': 0.85, 'medium': 1.0, 'high': 1.2}.get(profile, 1.0),
-        'trailStartsAtR': {'low': 1.25, 'medium': 1.5, 'high': 1.75}.get(profile, 1.5),
+        'fallbackRiskPct': mandate['maxStopPct'] / 100.0,
+        'fallbackTargetR': mandate['targetR1'],
+        'breakEvenAtR': {'low': 0.80, 'medium': 1.0, 'high': 1.20}.get(profile, 1.0),
+        'trailStartsAtR': {'low': 1.15, 'medium': 1.50, 'high': 1.85}.get(profile, 1.5),
         'atrStopMultiple': {
-            'low': {'short': 2.2, 'mid': 2.6, 'long': 3.0},
-            'medium': {'short': 2.5, 'mid': 3.0, 'long': 3.4},
-            'high': {'short': 2.8, 'mid': 3.3, 'long': 3.8},
+            'low': {'short': 1.8, 'mid': 2.4, 'long': 3.0},
+            'medium': {'short': 2.2, 'mid': 2.8, 'long': 3.4},
+            'high': {'short': 2.6, 'mid': 3.2, 'long': 3.8},
         }.get(profile, {}).get(horizon, 3.0),
-        'timeStopDays': {'short': 10, 'mid': 30, 'long': 90}.get(horizon, 30),
-        'maxPositionReviewPct': {'low': 10.0, 'medium': 15.0, 'high': 20.0}.get(profile, 15.0),
+        'timeStopDays': mandate['timeStopDays'],
+        'reviewAfterDays': mandate['reviewAfterDays'],
+        'maxPositionReviewPct': mandate['maxSinglePositionPct'],
+        'holdingPeriod': mandate['holdingPeriod'],
+        'optionsAllowed': False,
+        'strategyPolicyVersion': mandate['version'],
     }
 
 
@@ -40691,9 +40957,9 @@ def _pa_fetch_exit_market_context(uid, symbols, trade_mode='paper'):
     }
 
 
-def _pa_exit_risk_decision(current_price, avg_entry, stop, target, risk_profile='medium'):
+def _pa_exit_risk_decision(current_price, avg_entry, stop, target, risk_profile='medium', time_horizon='mid'):
     pl_pct = ((current_price - avg_entry) / avg_entry * 100.0) if avg_entry > 0 else 0.0
-    severe_loss_threshold = {'low': -7.0, 'medium': -10.0, 'high': -15.0}.get(str(risk_profile).lower(), -10.0)
+    severe_loss_threshold = -float(_strategy_policy(risk_profile, time_horizon)['maxStopPct'])
     if pl_pct <= severe_loss_threshold:
         return 'emergency_exit', 'Account risk stop reached at %.1f%% P/L' % pl_pct, pl_pct
     if stop and current_price <= float(stop):
@@ -40849,19 +41115,13 @@ def _pa_exit_scan_headless_legacy(uid, entry_plans, mode, dry_run=False, risk_pr
     automation_cfg = _pa_get_config(uid) or {}
     unattended_live_allowed = trade_mode != 'real' or automation_cfg.get('live_auto_trading_enabled') is True
     can_submit = mode == 'ai' and unattended_live_allowed and not dry_run
+    exit_policy = _pa_exit_policy(risk_profile, time_horizon)
 
     def fallback_geometry(avg_entry, current_price):
         baseline = avg_entry if avg_entry > 0 else current_price
-        stop_factor = {
-            'low': {'short': 0.96, 'mid': 0.95, 'long': 0.93},
-            'medium': {'short': 0.95, 'mid': 0.94, 'long': 0.92},
-            'high': {'short': 0.93, 'mid': 0.92, 'long': 0.90},
-        }.get(risk_profile, {}).get(time_horizon, 0.94)
-        target_factor = {
-            'low': {'short': 1.06, 'mid': 1.08, 'long': 1.10},
-            'medium': {'short': 1.08, 'mid': 1.12, 'long': 1.15},
-            'high': {'short': 1.10, 'mid': 1.15, 'long': 1.20},
-        }.get(risk_profile, {}).get(time_horizon, 1.12)
+        risk_distance = float(exit_policy['fallbackRiskPct'])
+        stop_factor = 1.0 - risk_distance
+        target_factor = 1.0 + risk_distance * float(exit_policy['fallbackTargetR'])
         return _entry_round_price(baseline * stop_factor, 'down'), _entry_round_price(baseline * target_factor, 'down')
 
     for position in positions or []:
@@ -40891,7 +41151,9 @@ def _pa_exit_scan_headless_legacy(uid, entry_plans, mode, dry_run=False, risk_pr
 
         symbol_orders = orders_by_symbol.get(symbol, [])
         protection = _pa_classify_sell_protection(symbol_orders)
-        action, reason, pl_pct = _pa_exit_risk_decision(current_price, avg_entry, stop, target, risk_profile)
+        action, reason, pl_pct = _pa_exit_risk_decision(
+            current_price, avg_entry, stop, target, risk_profile, time_horizon
+        )
         signal = {
             'symbol': symbol,
             'qty': qty,
@@ -41984,7 +42246,7 @@ def _pa_save_pipeline_debug_dump(uid, run_id, trigger, mode, risk_profile, time_
 
 def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=False,
                      risk_profile='medium', time_horizon='mid', trade_mode='paper',
-                     run_id=None):
+                     run_id=None, leverage_enabled=None):
     """Run the full AI pipeline headlessly for one user."""
     PIPELINE_TIMEOUT = 1800  # 30-minute hard timeout for the entire pipeline (50 symbols + AI)
     STAGE_TIMEOUTS = {
@@ -41997,6 +42259,13 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         'exit_scan': 60,
     }
     started = time.time()
+    saved_config = _pa_get_config(uid) or {}
+    if leverage_enabled is None:
+        leverage_enabled = saved_config.get('leverage_enabled', False)
+    leverage_enabled = bool(leverage_enabled)
+    strategy_policy = _strategy_policy(
+        risk_profile, time_horizon, mode, leverage_enabled
+    )
     stage_started_at = {}
     _now_et = _pa_now_et()
     summary = {
@@ -42004,6 +42273,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         'validation_count': 0, 'admission_count': 0, 'entry_plan_count': 0, 'orders_submitted': 0,
         'exit_scan_count': 0, 'dryRun': dry_run, 'trigger': trigger,
         'startedAt': _pa_utc_iso(),
+        'strategyPolicy': strategy_policy,
         'steps': [],
     }
     # run_context carries data between pipeline stages
@@ -42122,6 +42392,10 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         scanner_results, scanner_stage_summary, scanner_stage_stats = _pa_market_scanner_headless(
             uid,
             trade_mode=trade_mode,
+            risk_profile=risk_profile,
+            time_horizon=time_horizon,
+            pipeline_mode=mode,
+            leverage_enabled=leverage_enabled,
         )
         _check_stopped()
         _check_timeout('market_scanner')
@@ -42571,7 +42845,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
             [r.get('symbol') for r in admission_results if r.get('admissionDecision') != 'ADMIT']))
         entry_plans = []
         # Derive riskPerTradePct from riskProfile: Low→0.5, Medium→1.0, High→1.5
-        _ep_risk_pct = {'low': 0.5, 'medium': 1.0, 'high': 1.5}.get(risk_profile, 1.0)
+        _ep_risk_pct = strategy_policy['riskPerTradePct']
         # Unified execution mode: matches frontend entryPlanApiExecutionMode
         # Manual → Recommend Only; all others: paper → Paper Trade, real → Real Trade
         if mode == 'manual':
@@ -42586,7 +42860,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                 'candidates': ep_candidates,
                 'accountSize': pipeline_account_size,
                 'riskPerTradePct': _ep_risk_pct,
-                'maxPositionPct': 10,
+                'maxPositionPct': strategy_policy['maxSinglePositionPct'],
                 'existingPositions': pipeline_holdings,
                 'dailyLoss': 0,
                 'holdingSymbols': pipeline_holdings,
@@ -42594,6 +42868,8 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                 'accountMode': trade_mode,
                 'riskProfile': risk_profile,
                 'timeHorizon': time_horizon,
+                'pipelineMode': mode,
+                'leverageEnabled': leverage_enabled,
                 'suppressDiscord': True,
             })
             _check_stopped()
@@ -42906,7 +43182,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
 
 def _pa_execute_and_save(uid, config, interval, mode, trigger,
                          risk_profile='medium', time_horizon='mid', trade_mode='paper',
-                         run_id=None):
+                         run_id=None, leverage_enabled=None):
     """Run pipeline for one user and save config BEFORE releasing running lock.
 
     This prevents the race window where status endpoint sees isRunning=false
@@ -42925,7 +43201,8 @@ def _pa_execute_and_save(uid, config, interval, mode, trigger,
     try:
         summary = _pa_run_pipeline(uid, interval, mode, trigger=trigger,
                                    risk_profile=risk_profile, time_horizon=time_horizon,
-                                   trade_mode=trade_mode, run_id=run_id)
+                                   trade_mode=trade_mode, run_id=run_id,
+                                   leverage_enabled=leverage_enabled)
     finally:
         _run_completed_at = _pa_now_et()
         success = summary['errors'] == 0 if summary else False
@@ -43242,6 +43519,168 @@ def _pa_scheduler_loop():
     _pa_log('Scheduler loop stopped')
 
 # ── API Routes ──
+def _pa_validate_live_auto_authority(uid, config):
+    """Return an API-safe error payload when unattended live orders are unsafe.
+
+    The authorization is deliberately independent from the background schedule:
+    enabling or revoking order authority must never change the user's cadence or
+    start a pipeline run as a side effect.
+    """
+    config = config or {}
+    trade_mode = config.get('trade_mode') or config.get('tradeMode') or 'paper'
+    pipeline_mode = config.get('mode') or 'hybrid'
+    if trade_mode != 'real' or pipeline_mode != 'ai':
+        return {
+            'reason': 'live_auto_requires_real_ai_mode',
+            'message': 'Live automation requires Real trade mode and Full AI pipeline mode.',
+        }
+
+    live_config = resolve_alpaca_config_for_user(uid, 'real')
+    if not live_config.get('api_key') or not live_config.get('api_secret'):
+        return {
+            'reason': 'live_broker_not_configured',
+            'message': 'Live Alpaca credentials must be configured before unattended real orders.',
+        }
+
+    try:
+        live_headers = {
+            'APCA-API-KEY-ID': live_config['api_key'],
+            'APCA-API-SECRET-KEY': live_config['api_secret'],
+        }
+        account_check = requests.get(
+            (live_config.get('base_url') or 'https://api.alpaca.markets') + '/v2/account',
+            headers=live_headers,
+            timeout=8,
+        )
+        account_payload = account_check.json() if account_check.status_code == 200 else {}
+    except Exception:
+        return {
+            'reason': 'live_account_verification_failed',
+            'message': 'Live account verification failed; unattended orders remain disabled.',
+        }
+
+    if (
+        account_check.status_code != 200
+        or account_payload.get('trading_blocked')
+        or account_payload.get('account_blocked')
+    ):
+        return {
+            'reason': 'live_account_not_ready',
+            'message': 'The live Alpaca account could not be verified or is blocked.',
+        }
+    return None
+
+
+@app.route('/api/ai-agent/live-auto-authority', methods=['PATCH'])
+def pipeline_live_auto_authority():
+    """Grant or revoke unattended live-order authority without touching schedule state."""
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+
+    uid = user['id']
+    data = request.get_json(silent=True) or {}
+    enabled_raw = data.get('enabled')
+    if not isinstance(enabled_raw, bool):
+        return jsonify({
+            'success': False,
+            'reason': 'invalid_authority_value',
+            'message': 'The live automation authority value must be true or false.',
+        }), 400
+
+    config = _pa_get_config(uid) or {}
+    if enabled_raw:
+        authority_error = _pa_validate_live_auto_authority(uid, config)
+        if authority_error:
+            return jsonify({'success': False, **authority_error}), 400
+
+    # Revocation is always allowed and intentionally skips broker verification.
+    config['live_auto_trading_enabled'] = enabled_raw
+    config['updated_at'] = datetime.now(timezone.utc).isoformat()
+    saved, reason = _pa_save_config(uid, config)
+    if not saved:
+        return jsonify({
+            'success': False,
+            'reason': reason or 'save_failed',
+            'message': 'Live automation authority could not be saved.',
+        }), 503
+
+    return jsonify({
+        'success': True,
+        'liveAutoTradingEnabled': enabled_raw,
+        'preferences': _pa_workspace_preferences(config),
+    })
+
+
+@app.route('/api/user/preferences', methods=['GET', 'PATCH'])
+def user_workspace_preferences():
+    """Load or update the authenticated user's durable operational settings.
+
+    Live automatic order authority cannot be enabled here. It remains protected
+    by the broker-verifying pipeline-auto config endpoint.
+    """
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    uid = user['id']
+    config = _pa_get_config(uid) or {}
+
+    if request.method == 'GET':
+        return jsonify({'success': True, 'preferences': _pa_workspace_preferences(config)})
+
+    data = request.get_json(silent=True) or {}
+    allowed_fields = {
+        'tradeMode': ('trade_mode', ('paper', 'real')),
+        'pipelineMode': ('mode', ('manual', 'hybrid', 'ai')),
+        'riskProfile': ('risk_profile', ('low', 'medium', 'high')),
+        'timeHorizon': ('time_horizon', ('short', 'mid', 'long')),
+    }
+    unknown_fields = sorted(set(data.keys()) - set(allowed_fields.keys()) - {'leverageEnabled'})
+    if unknown_fields:
+        return jsonify({
+            'success': False,
+            'reason': 'unsupported_preference',
+            'message': 'One or more preferences are not supported.',
+        }), 400
+
+    for public_name, (stored_name, valid_values) in allowed_fields.items():
+        if public_name not in data:
+            continue
+        value = str(data.get(public_name) or '').lower()
+        if value not in valid_values:
+            return jsonify({
+                'success': False,
+                'reason': 'invalid_preference',
+                'field': public_name,
+                'message': '%s is invalid.' % public_name,
+            }), 400
+        config[stored_name] = value
+
+    if 'leverageEnabled' in data:
+        if not isinstance(data.get('leverageEnabled'), bool):
+            return jsonify({
+                'success': False,
+                'reason': 'invalid_preference',
+                'field': 'leverageEnabled',
+                'message': 'leverageEnabled must be true or false.',
+            }), 400
+        config['leverage_enabled'] = data['leverageEnabled']
+
+    # Changing away from Real + Full AI must revoke unattended live-order
+    # authority. Re-enabling it still requires the broker verification endpoint.
+    if config.get('trade_mode', 'paper') != 'real' or config.get('mode', 'hybrid') != 'ai':
+        config['live_auto_trading_enabled'] = False
+    config['updated_at'] = datetime.now(timezone.utc).isoformat()
+    saved, reason = _pa_save_config(uid, config)
+    if not saved:
+        return jsonify({
+            'success': False,
+            'reason': reason or 'save_failed',
+            'message': 'Preferences could not be saved.',
+        }), 503
+    return jsonify({'success': True, 'preferences': _pa_workspace_preferences(config)})
+
+
 @app.route('/api/ai-agent/exit-scan', methods=['POST'])
 def pipeline_exit_scan():
     """Run the same exit engine used by the unattended Position Guard."""
@@ -43620,6 +44059,13 @@ def pipeline_auto_status():
         'timeHorizon': config.get('time_horizon') or config.get('timeHorizon') or 'mid',
         'tradeMode': config.get('trade_mode') or config.get('tradeMode') or 'paper',
         'liveAutoTradingEnabled': bool(config.get('live_auto_trading_enabled', False)),
+        'leverageEnabled': bool(config.get('leverage_enabled', False)),
+        'strategyPolicy': _strategy_policy(
+            config.get('risk_profile') or config.get('riskProfile') or 'medium',
+            config.get('time_horizon') or config.get('timeHorizon') or 'mid',
+            config.get('mode') or 'hybrid',
+            config.get('leverage_enabled', False),
+        ),
         'contextSource': _pa_resolve_auto_run_context(uid, config)['contextSource'],
         'lastBackendRunAt': last_run_at,
         'lastBackendRunStatus': 'success' if last_decision in ('pipeline_success', 'auto_run_now_success', 'manual_pipeline_success') else
@@ -43677,6 +44123,13 @@ def pipeline_run():
     risk_profile = data.get('riskProfile', 'medium')
     time_horizon = data.get('timeHorizon', 'mid')
     trade_mode = data.get('tradeMode', 'paper')
+    leverage_enabled = data.get('leverageEnabled')
+    if leverage_enabled is not None and not isinstance(leverage_enabled, bool):
+        return jsonify({
+            'success': False,
+            'reason': 'invalid_leverage_preference',
+            'message': 'leverageEnabled must be true or false.',
+        }), 400
     run_id = 'pipeline-run-%d' % int(time.time())
 
     is_manual_req = (trigger == 'manual')
@@ -43711,7 +44164,8 @@ def pipeline_run():
             config['current_auto_run_id'] = run_id
             _pa_execute_and_save(uid, config, interval, mode, trigger=trigger,
                                  risk_profile=risk_profile, time_horizon=time_horizon,
-                                 trade_mode=trade_mode, run_id=run_id)
+                                 trade_mode=trade_mode, run_id=run_id,
+                                 leverage_enabled=leverage_enabled)
             if is_manual_req:
                 _pa_log('[ManualPipeline] background thread completed runId=%s' % run_id)
         except Exception:
@@ -44154,47 +44608,16 @@ def pipeline_auto_config():
     config['risk_profile'] = data.get('riskProfile') or data.get('risk_profile') or config.get('risk_profile') or 'medium'
     config['time_horizon'] = data.get('timeHorizon') or data.get('time_horizon') or config.get('time_horizon') or 'mid'
     config['trade_mode'] = data.get('tradeMode') or data.get('trade_mode') or config.get('trade_mode') or 'paper'
+    if data.get('leverageEnabled') is not None:
+        config['leverage_enabled'] = data.get('leverageEnabled') is True
     requested_live_auto = data.get('liveAutoTradingEnabled') if data.get('liveAutoTradingEnabled') is not None else config.get('live_auto_trading_enabled', False)
     requested_live_auto = requested_live_auto is True or (
         isinstance(requested_live_auto, str) and requested_live_auto.lower() == 'true'
     )
     if requested_live_auto:
-        if config['trade_mode'] != 'real' or mode != 'ai':
-            return jsonify({
-                'success': False,
-                'reason': 'live_auto_requires_real_ai_mode',
-                'message': 'Live Auto Trading requires Real trade mode and Full AI pipeline mode.',
-            }), 400
-        live_config = resolve_alpaca_config_for_user(uid, 'real')
-        if not live_config.get('api_key') or not live_config.get('api_secret'):
-            return jsonify({
-                'success': False,
-                'reason': 'live_broker_not_configured',
-                'message': 'Live Alpaca credentials must be configured before unattended real orders.',
-            }), 400
-        try:
-            live_headers = {
-                'APCA-API-KEY-ID': live_config['api_key'],
-                'APCA-API-SECRET-KEY': live_config['api_secret'],
-            }
-            account_check = requests.get(
-                (live_config.get('base_url') or 'https://api.alpaca.markets') + '/v2/account',
-                headers=live_headers,
-                timeout=8,
-            )
-            account_payload = account_check.json() if account_check.status_code == 200 else {}
-            if account_check.status_code != 200 or account_payload.get('trading_blocked') or account_payload.get('account_blocked'):
-                return jsonify({
-                    'success': False,
-                    'reason': 'live_account_not_ready',
-                    'message': 'The live Alpaca account could not be verified or is blocked.',
-                }), 400
-        except Exception:
-            return jsonify({
-                'success': False,
-                'reason': 'live_account_verification_failed',
-                'message': 'Live account verification failed; unattended orders remain disabled.',
-            }), 400
+        authority_error = _pa_validate_live_auto_authority(uid, config)
+        if authority_error:
+            return jsonify({'success': False, **authority_error}), 400
     config['live_auto_trading_enabled'] = requested_live_auto
     config['updated_at'] = datetime.now(timezone.utc).isoformat()
     if not enabled:

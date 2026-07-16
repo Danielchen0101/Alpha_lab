@@ -19,16 +19,40 @@
   --app-border-soft: var(--strategy-rule-soft);
   width: min(100%, 1660px);
   min-width: 0;
+  max-width: 100%;
   min-height: 100vh;
   margin: 0 auto;
   padding: clamp(28px, 3vw, 52px) clamp(20px, 3.2vw, 54px) 72px;
   color: var(--strategy-ink);
+  overflow-x: clip;
 }
 
 .strategy-comparison-shell,
 .strategy-comparison-shell * {
   box-sizing: border-box;
 }
+
+.strategy-comparison-shell > *,
+.strategy-comparison-shell .comparison-analysis-grid > *,
+.strategy-comparison-shell .comparison-session-grid > *,
+.strategy-comparison-shell .comparison-summary-ledger > *,
+.strategy-comparison-shell .ant-card,
+.strategy-comparison-shell .ant-card-body { min-width: 0; max-width: 100%; }
+
+.strategy-comparison-shell .professional-table,
+.strategy-comparison-shell .ant-table-wrapper,
+.strategy-comparison-shell .ant-table-container,
+.strategy-comparison-shell .ant-table-content,
+.strategy-comparison-shell .ant-table-body {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.strategy-comparison-shell .recharts-responsive-container,
+.strategy-comparison-shell svg,
+.strategy-comparison-shell canvas { max-width: 100%; }
 
 .strategy-comparison-shell button,
 .strategy-comparison-shell input {
@@ -586,6 +610,20 @@
   .warning-pill {
     white-space: normal;
   }
+}
+
+@media (max-width: 420px) {
+  .strategy-comparison-shell { padding-inline: 9px; }
+  .comparison-evidence-board { margin-inline: -9px; padding-inline: 9px; }
+  .comparison-summary-ledger { grid-template-columns: minmax(0, 1fr); }
+  .strategy-comparison-shell .summary-card-hover,
+  .strategy-comparison-shell .summary-card-hover:nth-child(n) {
+    grid-column: auto;
+    border-right: 0 !important;
+    border-bottom: 1px solid var(--strategy-rule-soft) !important;
+  }
+  .strategy-comparison-shell .summary-card-hover:last-child { border-bottom: 0 !important; }
+  .strategy-comparison-shell .primary-cta-button { width: calc(100% - 18px); }
 }
 
 @media (prefers-reduced-motion: reduce) {

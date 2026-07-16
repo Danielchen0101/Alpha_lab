@@ -25,7 +25,6 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTheme } from '../contexts/ThemeContext';
-import { useTradeMode } from '../contexts/TradeModeContext';
 import { clearConfigStatusCache, ConfigStatusLoadResult, loadConfigStatus } from '../services/api';
 import './SettingsEditorial.css';
 
@@ -79,7 +78,6 @@ const Settings: React.FC = () => {
   const { user, session, loading, logout } = useAuth();
   const { language } = useLanguage();
   const { themeMode, setThemeMode } = useTheme();
-  const { setTradeMode } = useTradeMode();
   const isZh = language === 'zh-CN';
   const requestIdRef = useRef(0);
   const [securityModalVisible, setSecurityModalVisible] = useState(false);
@@ -423,7 +421,6 @@ const Settings: React.FC = () => {
             danger
             icon={<LogoutOutlined />}
             onClick={async () => {
-              setTradeMode('paper');
               await logout();
               navigate('/signin', { replace: true });
             }}

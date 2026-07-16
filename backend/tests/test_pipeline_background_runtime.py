@@ -61,6 +61,250 @@ def test_circuit_breaker_state_uses_persisted_deadline_not_status_text():
     }, now) is False
 
 
+def test_workspace_preferences_restore_saved_operational_context(monkeypatch):
+    config = {
+        "enabled": True,
+        "interval_minutes": 30,
+        "mode": "ai",
+        "risk_profile": "high",
+        "time_horizon": "long",
+        "trade_mode": "real",
+        "live_auto_trading_enabled": True,
+    }
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: dict(config))
+
+    response = backend.app.test_client().get("/api/user/preferences")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    preferences = payload["preferences"]
+    assert preferences["tradeMode"] == "real"
+    assert preferences["pipelineMode"] == "ai"
+    assert preferences["riskProfile"] == "high"
+    assert preferences["timeHorizon"] == "long"
+    assert preferences["leverageEnabled"] is False
+    assert preferences["scheduleEnabled"] is True
+    assert preferences["intervalMinutes"] == 30
+    assert preferences["liveAutoTradingEnabled"] is True
+    assert preferences["strategyPolicy"]["optionsAllowed"] is False
+    assert preferences["strategyPolicy"]["permissions"]["autoBuy"] is True
+    assert preferences["updatedAt"] == ""
+
+
+def test_workspace_preferences_merge_without_resetting_schedule(monkeypatch):
+    config = {
+        "enabled": True,
+        "interval_minutes": 60,
+        "mode": "ai",
+        "risk_profile": "medium",
+        "time_horizon": "mid",
+        "trade_mode": "real",
+        "live_auto_trading_enabled": True,
+        "next_run_at": "2026-07-16T10:30:00-04:00",
+    }
+    saved = []
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: dict(config))
+    monkeypatch.setattr(
+        backend,
+        "_pa_save_config",
+        lambda uid, value: saved.append(dict(value)) or (True, ""),
+    )
+
+    response = backend.app.test_client().patch(
+        "/api/user/preferences",
+        json={"tradeMode": "paper", "riskProfile": "low"},
+    )
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert saved[-1]["enabled"] is True
+    assert saved[-1]["interval_minutes"] == 60
+    assert saved[-1]["next_run_at"] == "2026-07-16T10:30:00-04:00"
+    assert saved[-1]["trade_mode"] == "paper"
+    assert saved[-1]["risk_profile"] == "low"
+    assert saved[-1]["live_auto_trading_enabled"] is False
+    assert payload["preferences"]["scheduleEnabled"] is True
+
+
+def test_workspace_preferences_persist_leverage_without_resetting_context(monkeypatch):
+    config = {
+        "enabled": True,
+        "interval_minutes": 15,
+        "mode": "ai",
+        "risk_profile": "high",
+        "time_horizon": "short",
+        "trade_mode": "paper",
+    }
+    saved = []
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: dict(config))
+    monkeypatch.setattr(
+        backend,
+        "_pa_save_config",
+        lambda uid, value: saved.append(dict(value)) or (True, ""),
+    )
+
+    response = backend.app.test_client().patch(
+        "/api/user/preferences", json={"leverageEnabled": True}
+    )
+    preferences = response.get_json()["preferences"]
+
+    assert response.status_code == 200
+    assert saved[-1]["leverage_enabled"] is True
+    assert saved[-1]["enabled"] is True
+    assert saved[-1]["mode"] == "ai"
+    assert preferences["strategyPolicy"]["leverageEnabled"] is True
+    assert preferences["strategyPolicy"]["leveragedSleeveMaxPct"] == 15.0
+    assert preferences["strategyPolicy"]["optionsAllowed"] is False
+
+
+def test_workspace_preferences_reject_unknown_or_invalid_fields(monkeypatch):
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: {})
+
+    unknown = backend.app.test_client().patch(
+        "/api/user/preferences", json={"liveAutoTradingEnabled": True}
+    )
+    invalid = backend.app.test_client().patch(
+        "/api/user/preferences", json={"tradeMode": "danger"}
+    )
+
+    assert unknown.status_code == 400
+    assert unknown.get_json()["reason"] == "unsupported_preference"
+    assert invalid.status_code == 400
+    assert invalid.get_json()["reason"] == "invalid_preference"
+
+
+def test_live_auto_authority_updates_only_authority_and_preserves_schedule(monkeypatch):
+    config = {
+        "enabled": True,
+        "interval_minutes": 30,
+        "next_run_at": "2026-07-16T10:30:00-04:00",
+        "mode": "ai",
+        "risk_profile": "high",
+        "time_horizon": "short",
+        "trade_mode": "real",
+        "live_auto_trading_enabled": False,
+    }
+    saved = []
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: dict(config))
+    monkeypatch.setattr(backend, "_pa_validate_live_auto_authority", lambda uid, cfg: None)
+    monkeypatch.setattr(
+        backend,
+        "_pa_save_config",
+        lambda uid, value: saved.append(dict(value)) or (True, ""),
+    )
+
+    response = backend.app.test_client().patch(
+        "/api/ai-agent/live-auto-authority", json={"enabled": True}
+    )
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["liveAutoTradingEnabled"] is True
+    assert saved[-1]["live_auto_trading_enabled"] is True
+    assert saved[-1]["enabled"] is True
+    assert saved[-1]["interval_minutes"] == 30
+    assert saved[-1]["next_run_at"] == "2026-07-16T10:30:00-04:00"
+
+
+def test_live_auto_authority_keeps_existing_value_when_validation_fails(monkeypatch):
+    config = {
+        "enabled": True,
+        "interval_minutes": 15,
+        "mode": "hybrid",
+        "trade_mode": "real",
+        "live_auto_trading_enabled": False,
+    }
+    saved = []
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: config)
+    monkeypatch.setattr(
+        backend,
+        "_pa_validate_live_auto_authority",
+        lambda uid, cfg: {
+            "reason": "live_auto_requires_real_ai_mode",
+            "message": "Full AI mode is required.",
+        },
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_save_config",
+        lambda uid, value: saved.append(dict(value)) or (True, ""),
+    )
+
+    response = backend.app.test_client().patch(
+        "/api/ai-agent/live-auto-authority", json={"enabled": True}
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["reason"] == "live_auto_requires_real_ai_mode"
+    assert config["live_auto_trading_enabled"] is False
+    assert saved == []
+
+
+def test_live_auto_authority_revocation_never_requires_broker_verification(monkeypatch):
+    config = {
+        "enabled": True,
+        "interval_minutes": 15,
+        "mode": "ai",
+        "trade_mode": "real",
+        "live_auto_trading_enabled": True,
+    }
+    saved = []
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: dict(config))
+    monkeypatch.setattr(
+        backend,
+        "_pa_validate_live_auto_authority",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("revocation must not call the live broker")
+        ),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_save_config",
+        lambda uid, value: saved.append(dict(value)) or (True, ""),
+    )
+
+    response = backend.app.test_client().patch(
+        "/api/ai-agent/live-auto-authority", json={"enabled": False}
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["liveAutoTradingEnabled"] is False
+    assert saved[-1]["live_auto_trading_enabled"] is False
+    assert saved[-1]["enabled"] is True
+
+
+def test_live_auto_authority_does_not_change_ui_state_when_save_fails(monkeypatch):
+    config = {
+        "enabled": True,
+        "interval_minutes": 15,
+        "mode": "ai",
+        "trade_mode": "real",
+        "live_auto_trading_enabled": False,
+    }
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: dict(config))
+    monkeypatch.setattr(backend, "_pa_validate_live_auto_authority", lambda uid, cfg: None)
+    monkeypatch.setattr(
+        backend,
+        "_pa_save_config",
+        lambda uid, value: (False, "supabase_write_failed"),
+    )
+
+    response = backend.app.test_client().patch(
+        "/api/ai-agent/live-auto-authority", json={"enabled": True}
+    )
+
+    assert response.status_code == 503
+    assert response.get_json()["reason"] == "supabase_write_failed"
+
+
 def test_discord_pipeline_event_is_deduped_only_after_success(monkeypatch):
     calls = []
     outcomes = [
@@ -541,6 +785,7 @@ def test_manual_run_uses_the_same_backend_pipeline_executor(monkeypatch):
             "riskProfile": "low",
             "timeHorizon": "long",
             "tradeMode": "real",
+            "leverageEnabled": True,
         },
     )
 
@@ -553,6 +798,19 @@ def test_manual_run_uses_the_same_backend_pipeline_executor(monkeypatch):
     assert executions[0]["risk_profile"] == "low"
     assert executions[0]["time_horizon"] == "long"
     assert executions[0]["trade_mode"] == "real"
+    assert executions[0]["leverage_enabled"] is True
+
+
+def test_manual_pipeline_rejects_non_boolean_leverage_preference(monkeypatch):
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
+
+    response = backend.app.test_client().post(
+        "/api/ai-agent/pipeline/run",
+        json={"trigger": "manual", "leverageEnabled": "yes"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["reason"] == "invalid_leverage_preference"
 
 
 def test_position_guard_runs_deterministic_protection_and_notifies(monkeypatch):

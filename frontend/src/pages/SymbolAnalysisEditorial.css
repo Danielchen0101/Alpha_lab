@@ -16,6 +16,8 @@
   --sa-mono: "SFMono-Regular", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
   --sa-numbers: "SF Pro Display", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   min-height: 100%;
   color: var(--sa-ink);
   background-color: var(--sa-paper);
@@ -25,6 +27,7 @@
     repeating-radial-gradient(circle at 28% 38%, transparent 0 6px, rgba(38, 44, 35, 0.014) 6.5px 7px);
   background-size: 11px 11px, 15px 15px, 24px 24px;
   animation: sa-enter 360ms ease-out;
+  overflow-x: clip;
 }
 
 @keyframes sa-enter {
@@ -52,9 +55,20 @@
 .sa-canvas {
   width: 100%;
   max-width: 1960px;
+  min-width: 0;
   margin: 0 auto;
   padding: clamp(22px, 2.25vw, 40px);
 }
+
+.editorial-symbol-analysis .sa-canvas > *,
+.editorial-symbol-analysis .sa-workbench > *,
+.editorial-symbol-analysis .sa-indicator-grid > *,
+.editorial-symbol-analysis .sa-profile-grid > *,
+.editorial-symbol-analysis .sa-level-grid > * { min-width: 0; max-width: 100%; }
+
+.editorial-symbol-analysis .recharts-responsive-container,
+.editorial-symbol-analysis svg,
+.editorial-symbol-analysis canvas { max-width: 100%; }
 
 .sa-page-state {
   display: grid;
@@ -851,4 +865,15 @@
   .sa-company > div { border-right: 0; border-bottom: 1px solid var(--sa-rule-soft) !important; }
   .sa-company > div:last-child { border-bottom: 0 !important; }
   .sa-footer { flex-wrap: wrap; padding-block: 12px; }
+}
+
+@media (max-width: 380px) {
+  .sa-canvas { padding-inline: 7px; }
+  .sa-symbol-header { padding-inline: 12px; }
+  .sa-title h1 { font-size: 30px; }
+  .sa-actions { grid-template-columns: minmax(0, 1fr); }
+  .sa-timeframe { max-width: 100%; overflow-x: auto; }
+  .editorial-symbol-analysis .sa-timeframe .ant-radio-group { min-width: max-content; }
+  .sa-chart-metrics { overflow-x: auto; }
+  .sa-chart-metrics > div { flex: 0 0 92px; }
 }

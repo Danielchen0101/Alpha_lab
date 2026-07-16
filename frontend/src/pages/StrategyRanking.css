@@ -11,16 +11,40 @@
   --ranking-red: var(--shell-red, #a74730);
   width: min(100%, 1660px);
   min-width: 0;
+  max-width: 100%;
   min-height: 100vh;
   margin: 0 auto;
   padding: clamp(28px, 3vw, 52px) clamp(20px, 3.2vw, 54px) 72px;
   color: var(--ranking-ink);
+  overflow-x: clip;
 }
 
 .strategy-ranking-page,
 .strategy-ranking-page * {
   box-sizing: border-box;
 }
+
+.strategy-ranking-page > *,
+.strategy-ranking-page .strategy-ranking-chart-grid > *,
+.strategy-ranking-page .strategy-ranking-ledger > *,
+.strategy-ranking-page .strategy-ranking-filter-band > *,
+.strategy-ranking-page .ant-card,
+.strategy-ranking-page .ant-card-body { min-width: 0; max-width: 100%; }
+
+.strategy-ranking-page .strategy-ranking-table-card,
+.strategy-ranking-page .ant-table-wrapper,
+.strategy-ranking-page .ant-table-container,
+.strategy-ranking-page .ant-table-content,
+.strategy-ranking-page .ant-table-body {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.strategy-ranking-page .recharts-responsive-container,
+.strategy-ranking-page svg,
+.strategy-ranking-page canvas { max-width: 100%; }
 
 .strategy-ranking-loading {
   display: flex;
@@ -717,6 +741,16 @@
     justify-content: flex-start;
     row-gap: 8px;
   }
+}
+
+@media (max-width: 420px) {
+  .strategy-ranking-page { padding-inline: 9px; }
+  .strategy-ranking-intelligence { margin-inline: -9px; padding-inline: 9px; }
+  .strategy-ranking-ledger { grid-template-columns: minmax(0, 1fr); }
+  .strategy-ranking-ledger article,
+  .strategy-ranking-ledger article:nth-child(n) { border-right: 0; border-bottom: 1px solid var(--ranking-rule-soft); }
+  .strategy-ranking-ledger article:last-child { border-bottom: 0; }
+  .strategy-ranking-table-heading { padding-inline: 14px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -13,6 +13,7 @@
   --public-editorial-en: 'Iowan Old Style', Charter, Baskerville, Georgia, 'Times New Roman', serif;
   --public-display-zh: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
   min-height: 100vh;
+  min-width: 0;
   overflow-x: clip;
   color-scheme: light;
   color: var(--public-ink);
@@ -25,6 +26,15 @@
 }
 
 .public-page *, .public-page *::before, .public-page *::after { box-sizing: border-box; }
+.public-page img,
+.public-page svg,
+.public-page canvas { max-width: 100%; }
+.public-page section,
+.public-page article,
+.public-page aside,
+.public-page header,
+.public-page dl,
+.public-page div { min-width: 0; }
 .public-page button { font: inherit; }
 .public-page button:focus-visible, .public-page a:focus-visible { outline: 2px solid var(--public-blue); outline-offset: 4px; }
 
@@ -76,7 +86,7 @@
 }
 .public-hero h1 { max-width: 660px; margin-top: 22px; font-size: clamp(3.1rem, 4.55vw, 4.9rem); }
 .public-hero-copy > p { max-width: 600px; margin: 28px 0 0; color: #4f554f; font-size: clamp(1rem, 1.35vw, 1.22rem); line-height: 1.65; }
-.public-actions { display: flex; align-items: center; gap: 24px; margin-top: 30px; }
+.public-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 24px; margin-top: 30px; }
 .public-primary, .public-secondary { min-height: 47px; border-radius: 0; cursor: pointer; }
 .public-primary { padding: 0 25px; color: white; border: 1px solid #1d2420; background: #1d2420; font-weight: 650; transition: transform .18s ease, background .18s ease; }
 .public-primary:hover { background: #2b332e; transform: translateY(-2px); }
@@ -92,8 +102,8 @@
   box-shadow: 0 22px 70px rgba(74,66,48,.08);
 }
 .public-instrument-header { display: flex; justify-content: space-between; align-items: center; gap: 18px; min-height: 54px; padding: 12px 18px; border-bottom: 1px solid var(--public-rule-soft); }
-.public-instrument-header strong { color: var(--public-blue); font: 700 .78rem ui-monospace, monospace; letter-spacing: .08em; }
-.public-instrument-header span { color: var(--public-muted); font: .68rem ui-monospace, monospace; letter-spacing: .07em; line-height: 1.4; text-transform: uppercase; }
+.public-instrument-header strong { min-width: 0; overflow-wrap: anywhere; color: var(--public-blue); font: 700 .78rem ui-monospace, monospace; letter-spacing: .08em; line-height: 1.4; }
+.public-instrument-header span { min-width: 0; overflow-wrap: anywhere; color: var(--public-muted); font: .68rem ui-monospace, monospace; letter-spacing: .07em; line-height: 1.4; text-transform: uppercase; }
 .public-instrument-body { padding: clamp(20px, 3vw, 34px); }
 
 .public-sparkline { display: block; width: 100%; height: auto; overflow: visible; color: var(--public-blue); }
@@ -161,7 +171,7 @@
 .public-card:hover { background: var(--public-paper-bright); }
 .public-card > span { color: var(--public-blue); font: 700 .7rem ui-monospace, monospace; letter-spacing: .09em; }
 .public-card h3 { max-width: 350px; margin: 44px 0 14px; font-family: var(--public-display-en); font-size: clamp(1.45rem, 2.2vw, 2.2rem); font-weight: 650; letter-spacing: -.04em; line-height: 1.08; }
-.public-card p { margin: 0; color: var(--public-muted); font-size: .93rem; line-height: 1.65; }
+.public-card p { margin: 0; overflow-wrap: anywhere; color: var(--public-muted); font-size: .93rem; line-height: 1.65; }
 .public-card dl { margin: 28px 0 0; }
 .public-card dl div { display: flex; justify-content: space-between; gap: 18px; padding: 9px 0; border-top: 1px solid var(--public-rule-soft); }
 .public-card dt { color: var(--public-muted); font-size: .7rem; }
@@ -354,11 +364,11 @@
 .public-feature-row { display: grid; grid-template-columns: 64px minmax(0,1fr) auto; gap: 22px; padding: 28px 0; border-bottom: 1px solid var(--public-rule); }
 .public-feature-row > span { color: var(--public-blue); font: 700 .7rem ui-monospace, monospace; }
 .public-feature-copy h3 { margin: 0; font-family: var(--public-display-en); font-size: clamp(1.25rem, 2vw, 1.85rem); font-weight: 650; letter-spacing: -.035em; }
-.public-feature-copy p { max-width: 680px; margin: 10px 0 0; color: var(--public-muted); line-height: 1.62; }
-.public-feature-row > b { align-self: center; color: var(--public-moss); font: 650 .68rem ui-monospace, monospace; letter-spacing: .07em; text-transform: uppercase; }
+.public-feature-copy p { max-width: 680px; margin: 10px 0 0; overflow-wrap: anywhere; color: var(--public-muted); line-height: 1.62; }
+.public-feature-row > b { min-width: 0; align-self: center; overflow-wrap: anywhere; color: var(--public-moss); font: 650 .68rem ui-monospace, monospace; letter-spacing: .07em; line-height: 1.45; text-transform: uppercase; }
 
 .public-tab-list { display: flex; flex-wrap: wrap; margin-bottom: 28px; border: 1px solid var(--public-rule); border-right: 0; }
-.public-tab-list button { min-height: 48px; flex: 1 1 130px; padding: 8px 16px; color: var(--public-muted); border: 0; border-right: 1px solid var(--public-rule); background: transparent; cursor: pointer; font: 650 .7rem ui-monospace, monospace; letter-spacing: .07em; text-transform: uppercase; }
+.public-tab-list button { min-width: 0; min-height: 48px; flex: 1 1 130px; padding: 8px 16px; overflow-wrap: anywhere; color: var(--public-muted); border: 0; border-right: 1px solid var(--public-rule); background: transparent; cursor: pointer; font: 650 .7rem ui-monospace, monospace; letter-spacing: .07em; line-height: 1.4; text-transform: uppercase; }
 .public-tab-list button:hover { background: rgba(43,95,174,.05); }
 .public-tab-list button.is-active { color: white; background: var(--public-blue); }
 
@@ -379,10 +389,10 @@
 .public-cta h2 { max-width: 900px; margin-top: 22px; font-size: clamp(2.4rem, 4vw, 4.45rem); }
 .public-cta > span { display: block; max-width: 680px; margin-top: 22px; color: var(--public-muted); font-size: 1.05rem; line-height: 1.65; }
 
-@media (max-width: 1020px) {
+@media (max-width: 1080px) {
   .public-hero { grid-template-columns: 1fr; min-height: auto; }
   .public-hero-copy { max-width: 760px; }
-  .public-hero-visual { max-width: 900px; }
+  .public-hero-visual { width: 100%; max-width: 900px; }
   .public-card-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .public-section-heading { grid-template-columns: 1fr; gap: 22px; }
   .public-topic-section .public-section-heading { grid-template-columns: 1fr; gap: 26px; }
@@ -416,6 +426,20 @@
   .public-metric-strip > div:nth-child(-n+2) { border-bottom: 1px solid var(--public-rule); }
 }
 
+@media (max-width: 600px) {
+  .public-kicker { grid-template-columns: auto 26px minmax(0, 1fr); }
+  .public-kicker span,
+  .public-kicker b { overflow-wrap: anywhere; line-height: 1.45; }
+  .public-actions { align-items: stretch; flex-direction: column; gap: 10px; }
+  .public-primary { width: 100%; }
+  .public-secondary { align-self: flex-start; }
+  .public-tab-list { border-bottom: 0; }
+  .public-tab-list button { flex-basis: 50%; border-bottom: 1px solid var(--public-rule); }
+  .public-data-main,
+  .public-data-aside { padding: 22px 18px; }
+  .public-data-aside dl div { align-items: flex-start; }
+}
+
 @media (max-width: 520px) {
   .public-hero h1 { font-size: clamp(2.7rem, 13.6vw, 4rem); }
   .public-page.is-zh .public-hero h1 { font-size: clamp(2.55rem, 12vw, 3.5rem); }
@@ -432,6 +456,21 @@
   .public-sparkline.size-featured .public-sparkline-axis text { font-size: 28px; }
 }
 
+@media (max-width: 430px) {
+  .public-hero { gap: 38px; }
+  .public-hero-copy > p,
+  .public-section-heading span,
+  .public-sticky-copy span,
+  .public-cta > span { font-size: .95rem; line-height: 1.62; }
+  .public-card { min-height: 0; }
+  .public-card h3 { margin-top: 34px; }
+  .public-instrument-body { padding: 18px 14px; }
+  .public-metric-strip dt { font-size: .62rem; overflow-wrap: anywhere; }
+  .public-metric-strip dd { margin-top: 9px; }
+  .public-tab-list button { padding-right: 10px; padding-left: 10px; }
+  .public-data-aside dl div { flex-direction: column; gap: 5px; }
+}
+
 @media (max-width: 390px) {
   .public-hero, .public-section, .public-section.is-dark, .public-cta { width: calc(100% - 24px); }
   .public-hero { padding-top: 94px; }
@@ -445,6 +484,14 @@
   .public-metric-strip dd { font-size: 1.55rem; }
   .public-card { padding: 24px 20px; }
   .public-cta { padding-right: 20px; padding-left: 20px; }
+}
+
+@media (min-width: 1920px) {
+  .public-hero,
+  .public-section,
+  .public-section.is-dark,
+  .public-cta { width: min(100% - 96px, 1560px); }
+  .public-hero { grid-template-columns: minmax(360px, .72fr) minmax(0, 1.28fr); }
 }
 
 @media (prefers-reduced-motion: reduce) {

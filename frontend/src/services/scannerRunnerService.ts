@@ -15,6 +15,14 @@ interface ActiveRun {
   stopRequested: boolean;
   abortController: AbortController;
   startedAt: number;
+  strategyContext?: ScannerStrategyContext;
+}
+
+export interface ScannerStrategyContext {
+  riskProfile: 'low' | 'medium' | 'high';
+  timeHorizon: 'short' | 'mid' | 'long';
+  pipelineMode: 'manual' | 'hybrid' | 'ai';
+  leverageEnabled: boolean;
 }
 
 let activeRun: ActiveRun | null = null;
@@ -72,7 +80,7 @@ const MARKET_SCANNER_PROGRESS_STAGES = [
   {
     key: 'events',
     label: 'Events + Overlays',
-    detail: 'Fetching news, earnings calendar, FINRA short volume, and options overlay',
+    detail: 'Fetching news, earnings calendar, and FINRA short-volume context',
     start: 68,
     end: 80,
     durationMs: 25000,
@@ -327,7 +335,7 @@ export function stopMarketScannerByUser(): void {
 /**
  * Start the Market Scanner. Called from Portfolio.tsx when user clicks Run.
  */
-export async function startMarketScanner(): Promise<void> {
+export async function startMarketScanner(strategyContext?: ScannerStrategyContext): Promise<void> {
   // If already running, don't start another
   if (activeRun && !activeRun.stopRequested) {
     if (process.env.NODE_ENV !== 'production') console.log('[ScannerRunner] Scan already running, skipping');
@@ -380,6 +388,7 @@ export async function startMarketScanner(): Promise<void> {
     stopRequested: false,
     abortController,
     startedAt: Date.now(),
+    strategyContext,
   };
 
   // Start the actual scan
@@ -515,6 +524,7 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
 
     const response = await scannerApi.post('/market/scanner', {
       ...settings,
+      ...(run.strategyContext || {}),
       suppressDiscord: true,
     }, { signal: run.abortController.signal });
     stopProgressTimer();

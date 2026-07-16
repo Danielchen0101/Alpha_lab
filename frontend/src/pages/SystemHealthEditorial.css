@@ -14,6 +14,8 @@
   --sh-red: #a43b2b;
   --sh-red-soft: rgba(164, 59, 43, 0.09);
   width: min(100%, 1540px);
+  max-width: 100%;
+  min-width: 0;
   margin: 0 auto;
   padding: clamp(34px, 4.2vw, 70px) clamp(20px, 3.3vw, 54px) 72px;
   color: var(--sh-ink);
@@ -21,6 +23,7 @@
   font-size: 15px;
   line-height: 1.5;
   font-variant-numeric: tabular-nums lining-nums;
+  overflow-x: clip;
 }
 
 .system-health-page *,
@@ -28,6 +31,16 @@
 .system-health-page *::after {
   box-sizing: border-box;
 }
+
+.system-health-page > *,
+.sh-hero > *,
+.sh-lower-grid > *,
+.sh-side-stack > *,
+.sh-service-cards > * { min-width: 0; max-width: 100%; }
+
+.sh-latency-chart,
+.system-health-page svg,
+.system-health-page canvas { max-width: 100%; }
 
 .sh-hero {
   display: flex;
@@ -903,6 +916,15 @@ html[data-theme="dark"] .sh-ledger__row:hover {
   .sh-environment-list > div {
     grid-template-columns: minmax(90px, 0.8fr) minmax(0, 1.2fr);
   }
+}
+
+@media (max-width: 380px) {
+  .system-health-page { padding-inline: 9px; }
+  .sh-service-cards { padding-inline: 7px; }
+  .sh-service-card__head { flex-direction: column; }
+  .sh-service-card dl > div { align-items: flex-start; flex-direction: column; gap: 4px; padding-block: 7px; }
+  .sh-service-card dd { max-width: 100%; text-align: left; }
+  .sh-environment-list > div { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (prefers-reduced-motion: reduce) {

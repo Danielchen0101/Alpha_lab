@@ -110,12 +110,16 @@
 .signal-estuary__chart {
   position: relative;
   width: 100%;
+  max-width: 1600px;
   margin-top: -10px;
+  margin-right: auto;
+  margin-left: auto;
 }
 
 .signal-estuary__svg {
   display: block;
   width: 100%;
+  max-width: 100%;
   height: auto;
   overflow: visible;
 }
@@ -296,7 +300,7 @@
   margin-top: -8px;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 820px) {
   .signal-estuary {
     padding: 13px 12px 14px;
     border-right: 0;
@@ -304,6 +308,7 @@
   }
 
   .signal-estuary__header {
+    flex-wrap: wrap;
     min-height: 29px;
   }
 
@@ -322,6 +327,7 @@
   .signal-estuary__chart {
     width: 100%;
     margin-top: -4px;
+    margin-right: auto;
     margin-left: 0;
   }
 
@@ -350,12 +356,69 @@
 }
 
 @media (max-width: 430px) {
+  .signal-estuary {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .signal-estuary__header {
+    font-size: 10px;
+    letter-spacing: 0.07em;
+  }
+
   .signal-estuary__key {
     width: 18px;
   }
 
+  .signal-estuary__ticker-labels text {
+    font-size: 30px;
+    letter-spacing: 0.025em;
+  }
+
+  .signal-estuary__axis text {
+    font-size: 28px;
+    letter-spacing: 0.025em;
+  }
+
+  .signal-estuary__axis text:nth-child(even) {
+    display: none;
+  }
+
+  .signal-estuary__stages li {
+    padding-right: 3px;
+    padding-left: 3px;
+  }
+
   .signal-estuary__stage-label {
+    min-height: 2.4em;
+    overflow: visible;
+    font-size: 9.5px;
+    line-height: 1.2;
     letter-spacing: 0.02em;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+    white-space: normal;
+  }
+}
+
+@media (max-width: 350px) {
+  .signal-estuary__legend {
+    width: 100%;
+    justify-content: space-between;
+    gap: 5px;
+  }
+
+  .signal-estuary__legend span {
+    gap: 4px;
+  }
+
+  .signal-estuary__key {
+    width: 14px;
+  }
+
+  .signal-estuary__stage-arrow {
+    right: -5px;
+    width: 10px;
   }
 }
 

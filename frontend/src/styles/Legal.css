@@ -1,6 +1,16 @@
 .legal-public-page {
+  min-width: 0;
   padding-top: clamp(108px, 12vw, 154px);
 }
+
+.legal-public-page *,
+.legal-public-page *::before,
+.legal-public-page *::after { box-sizing: border-box; }
+
+.legal-public-hero > *,
+.legal-document-shell > *,
+.legal-document-section > *,
+.legal-document-warning > * { min-width: 0; }
 
 .legal-public-hero {
   display: grid;
@@ -51,6 +61,7 @@
   color: var(--public-muted);
   font-size: clamp(.98rem, 1.15vw, 1.08rem);
   line-height: 1.7;
+  overflow-wrap: anywhere;
 }
 
 .legal-public-meta {
@@ -161,6 +172,8 @@
 }
 
 .legal-document-rail a > b {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: .78rem;
   font-weight: 560;
   line-height: 1.45;
@@ -174,7 +187,7 @@
 }
 
 .legal-document-related > span { margin-bottom: 4px; }
-.legal-document-related a { display: flex; grid-template-columns: none; justify-content: space-between; padding: 5px 0; color: var(--public-blue); }
+.legal-document-related a { display: flex; min-width: 0; justify-content: space-between; gap: 12px; padding: 5px 0; overflow-wrap: anywhere; color: var(--public-blue); }
 .legal-document-related a > i,
 .legal-document-end a > i { font-style: normal; }
 
@@ -204,7 +217,7 @@
 }
 
 .legal-document-note p,
-.legal-document-warning p { margin: 1px 0 0; color: var(--public-muted); line-height: 1.68; }
+.legal-document-warning p { margin: 1px 0 0; overflow-wrap: anywhere; color: var(--public-muted); line-height: 1.68; }
 
 .legal-document-section {
   display: grid;
@@ -247,6 +260,7 @@
   color: #555b55;
   font-size: .98rem;
   line-height: 1.82;
+  overflow-wrap: anywhere;
 }
 
 .legal-document-section .legal-list-introduction { margin-bottom: 12px; }
@@ -266,6 +280,7 @@
   color: #555b55;
   font-size: .96rem;
   line-height: 1.7;
+  overflow-wrap: anywhere;
 }
 
 .legal-document-section li::before {
@@ -318,7 +333,7 @@
     max-height: none;
     overflow: hidden;
   }
-  .legal-document-rail nav { overflow-x: auto; scrollbar-width: thin; }
+  .legal-document-rail nav { max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; scrollbar-width: thin; }
   .legal-document-rail ol { display: flex; width: max-content; min-width: 100%; }
   .legal-document-rail li { min-width: min(230px, 72vw); border-top: 0 !important; border-right: 1px solid var(--public-rule-soft); }
   .legal-document-related { grid-template-columns: auto auto; align-items: center; }
@@ -344,6 +359,23 @@
   .legal-document-related > span { grid-column: auto; }
 }
 
+@media (max-width: 430px) {
+  .legal-public-page { padding-top: 76px; }
+  .legal-public-hero { gap: 32px; padding-top: 30px; padding-bottom: 44px; }
+  .legal-public-hero h1 { font-size: clamp(2.65rem, 13vw, 3.4rem); }
+  .legal-public-page.is-zh .legal-public-hero h1 { font-size: clamp(2.45rem, 12vw, 3.1rem); }
+  .legal-public-hero-copy > span { margin-top: 20px; font-size: .94rem; }
+  .legal-public-meta > div { grid-template-columns: minmax(92px, .42fr) minmax(0, 1fr); padding: 16px 13px; }
+  .legal-public-meta dt { font-size: .62rem; overflow-wrap: anywhere; }
+  .legal-public-meta dd { font-size: .82rem; }
+  .legal-document-shell { gap: 28px; padding-top: 38px; padding-bottom: 84px; }
+  .legal-document-rail li { min-width: min(210px, 78vw); }
+  .legal-document-note { padding-top: 18px; padding-bottom: 21px; }
+  .legal-document-section { padding-top: 34px; padding-bottom: 34px; }
+  .legal-document-section h2 { font-size: clamp(1.5rem, 7vw, 1.85rem); }
+  .legal-document-warning { margin-top: 30px; padding: 18px 16px; }
+}
+
 @media (max-width: 390px) {
   .legal-public-hero,
   .legal-document-shell { width: calc(100% - 24px); }
@@ -351,6 +383,12 @@
   .legal-document-section > span { line-height: 1; }
   .legal-document-note { grid-template-columns: 28px minmax(0, 1fr); gap: 12px; }
   .legal-document-end { align-items: flex-start; flex-direction: column; }
+}
+
+@media (min-width: 1920px) {
+  .legal-public-hero,
+  .legal-document-shell { width: min(100% - 96px, 1440px); }
+  .legal-document-shell { grid-template-columns: minmax(260px, 320px) minmax(0, 1fr); }
 }
 
 @media (prefers-contrast: more) {

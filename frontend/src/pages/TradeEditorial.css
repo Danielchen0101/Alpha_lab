@@ -11,13 +11,38 @@
   --trade-red: var(--shell-red, #a74730);
   width: min(100%, 1720px);
   min-width: 0;
+  max-width: 100%;
   margin: 0 auto;
   padding: clamp(24px, 3vw, 48px) clamp(18px, 3vw, 48px) 64px;
   color: var(--trade-ink);
+  overflow-x: clip;
 }
 
 .trade-editorial,
 .trade-editorial * { box-sizing: border-box; }
+
+.trade-editorial > *,
+.trade-editorial .ant-row,
+.trade-editorial .ant-col,
+.trade-editorial .ant-card,
+.trade-editorial .ant-card-body,
+.trade-editorial .trade-performance-overview > * { min-width: 0; max-width: 100%; }
+
+.trade-editorial .trade-table,
+.trade-editorial .watchlist-table,
+.trade-editorial .ant-table-wrapper,
+.trade-editorial .ant-table-container,
+.trade-editorial .ant-table-content,
+.trade-editorial .ant-table-body {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.trade-editorial .recharts-responsive-container,
+.trade-editorial svg,
+.trade-editorial canvas { max-width: 100%; }
 
 .trade-editorial button,
 .trade-editorial .ant-card,
@@ -648,7 +673,7 @@
 
 @media (max-width: 420px) {
   .trade-editorial { padding-inline: 9px; }
-  .trade-editorial__hero h1 { font-size: 36px; }
+  .trade-editorial__hero h1 { font-size: 30px; }
   .trade-panel-heading__icon { display: none; }
   .trade-panel-heading__identity { flex-wrap: wrap; }
   .trade-panel-heading__identity > div:nth-child(2) { min-width: 0; flex: 1; }
@@ -666,6 +691,15 @@
   .trade-performance-current small { font-size: 10.5px; }
   .trade-watchlist-stat { min-height: 70px; }
   .trade-editorial .ant-empty { margin-block: 24px; }
+  .trade-watchlist-stats { grid-template-columns: minmax(0, 1fr); }
+  .trade-watchlist-stat,
+  .trade-watchlist-stat:nth-of-type(n) { border-right: 0; border-bottom: 1px solid var(--trade-rule-soft); }
+  .trade-watchlist-stat:last-child { border-bottom: 0; }
+  .trade-performance-overview { grid-template-columns: minmax(0, 1fr); }
+  .trade-performance-primary,
+  .trade-performance-metric,
+  .trade-performance-metric:nth-child(n) { grid-column: auto; border-right: 0; border-bottom: 1px solid var(--trade-rule-soft); }
+  .trade-performance-metric:last-child { border-bottom: 0; }
 }
 
 .trade-confirm-root .ant-modal-confirm .ant-modal-content {

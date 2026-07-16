@@ -4,6 +4,10 @@
   --rex-muted: #626760;
   --rex-blue: #2b5fae;
   --rex-rule: rgba(23,26,23,.17);
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   color: var(--rex-ink);
   border: 1px solid rgba(23,26,23,.52);
@@ -11,43 +15,45 @@
   background: var(--rex-paper);
   box-shadow: 0 20px 65px rgba(74,66,48,.07);
 }
+.research-explorer *, .research-explorer *::before, .research-explorer *::after { box-sizing: border-box; }
 .research-explorer button { font: inherit; }
 .research-explorer-toolbar { display: flex; justify-content: space-between; gap: 20px; padding: 12px 14px; border-bottom: 1px solid var(--rex-rule); }
-.research-explorer-toolbar > div { display: flex; flex-wrap: wrap; gap: 4px; }
-.research-explorer-toolbar button { min-height: 40px; padding: 7px 11px; color: var(--rex-muted); border: 1px solid transparent; background: transparent; cursor: pointer; font: 650 .68rem ui-monospace, monospace; letter-spacing: .05em; line-height: 1.35; text-transform: uppercase; }
+.research-explorer-toolbar > div { display: flex; min-width: 0; flex-wrap: wrap; gap: 4px; }
+.research-explorer-toolbar button { min-height: 40px; padding: 7px 11px; color: var(--rex-muted); border: 1px solid transparent; background: transparent; cursor: pointer; font: 650 .76rem ui-monospace, monospace; letter-spacing: .05em; line-height: 1.35; text-transform: uppercase; overflow-wrap: anywhere; }
 .research-explorer-toolbar button:hover { border-color: var(--rex-rule); }
 .research-explorer-toolbar button.is-active { color: white; background: var(--rex-blue); }
 .research-explorer-toolbar button:focus-visible { outline: 2px solid var(--rex-blue); outline-offset: 2px; }
 .research-explorer-grid { display: grid; grid-template-columns: minmax(0,1.4fr) minmax(230px,.6fr); }
 .research-explorer-main { min-width: 0; padding: clamp(22px,4vw,44px); }
 .research-explorer-title { display: flex; justify-content: space-between; gap: 24px; align-items: start; }
-.research-explorer-title span, .research-explorer-title b { color: var(--rex-blue); font: 700 .68rem ui-monospace, monospace; letter-spacing: .08em; line-height: 1.35; }
+.research-explorer-title > div { min-width: 0; }
+.research-explorer-title span, .research-explorer-title b { color: var(--rex-blue); font: 700 .74rem ui-monospace, monospace; letter-spacing: .08em; line-height: 1.35; }
 .research-explorer-title b { padding: 5px 7px; border: 1px solid rgba(43,95,174,.4); white-space: nowrap; }
-.research-explorer-title h3 { margin: 10px 0 0; font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif; font-size: clamp(1.5rem,2.5vw,2.5rem); font-weight: 680; letter-spacing: -.045em; line-height: 1.05; }
+.research-explorer-title h3 { margin: 10px 0 0; font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif; font-size: clamp(1.5rem,2.5vw,2.5rem); font-weight: 680; letter-spacing: -.045em; line-height: 1.05; overflow-wrap: anywhere; }
 .research-explorer-main > p { max-width: 720px; margin: 16px 0 28px; color: var(--rex-muted); font-size: .9rem; line-height: 1.6; }
 .research-explorer-main .public-sparkline { height: auto; aspect-ratio: 640 / 220; }
-.research-explorer .public-sparkline { display: block; width: 100%; overflow: visible; color: var(--rex-blue); }
+.research-explorer .public-sparkline { display: block; width: 100%; max-width: 100%; overflow: hidden; color: var(--rex-blue); }
 .research-explorer .public-sparkline-dot,
 .research-explorer .public-sparkline-comparison-end { fill: var(--rex-paper); }
-.research-explorer-chart-legend { display: flex; align-items: center; gap: 18px; margin: 0 0 8px; color: var(--rex-muted); font: 650 .66rem ui-monospace, monospace; letter-spacing: .06em; line-height: 1.35; text-transform: uppercase; }
+.research-explorer-chart-legend { display: flex; align-items: center; gap: 18px; margin: 0 0 8px; color: var(--rex-muted); font: 650 .74rem ui-monospace, monospace; letter-spacing: .06em; line-height: 1.35; text-transform: uppercase; }
 .research-explorer-chart-legend span { display: inline-flex; align-items: center; gap: 7px; }
 .research-explorer-chart-legend i { width: 22px; height: 2px; background: var(--rex-blue); }
 .research-explorer-chart-legend i.is-benchmark { height: 1px; background: repeating-linear-gradient(90deg, rgba(83,90,83,.62) 0 4px, transparent 4px 7px); }
 .research-explorer-chart-legend b { margin-left: auto; color: #747a73; font-weight: 650; }
 .research-explorer-metrics { padding: clamp(22px,3vw,34px); border-left: 1px solid var(--rex-rule); }
-.research-explorer-metrics > p { margin: 0; color: var(--rex-muted); font: 650 .68rem ui-monospace, monospace; letter-spacing: .08em; }
+.research-explorer-metrics > p { margin: 0; color: var(--rex-muted); font: 650 .74rem ui-monospace, monospace; letter-spacing: .08em; }
 .research-explorer-metrics dl { margin: 22px 0 0; }
 .research-explorer-metrics dl > div { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; padding: 14px 0; border-top: 1px solid rgba(23,26,23,.1); }
-.research-explorer-metrics dt { color: var(--rex-muted); font: .68rem ui-monospace, monospace; }
+.research-explorer-metrics dt { color: var(--rex-muted); font: .74rem ui-monospace, monospace; }
 .research-explorer-metrics dd { margin: 0; color: var(--rex-ink); font-family: 'SF Pro Display', -apple-system, sans-serif; font-size: 1.4rem; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.04em; }
 .research-explorer-metrics dd.is-primary { color: var(--rex-blue); }
 .research-explorer-metrics dd.is-risk { color: #b86f4b; }
 .research-explorer-evidence { display: grid; grid-template-columns: auto repeat(3,minmax(0,1fr)) auto; align-items: center; gap: 0; border-top: 1px solid var(--rex-rule); }
 .research-explorer-evidence > span, .research-explorer-evidence > p, .research-explorer-evidence > small { margin: 0; padding: 15px; border-right: 1px solid var(--rex-rule); }
-.research-explorer-evidence > span { color: var(--rex-blue); font: 700 .68rem ui-monospace, monospace; letter-spacing: .07em; }
-.research-explorer-evidence > p { color: var(--rex-muted); font-size: .75rem; line-height: 1.45; }
-.research-explorer-evidence i { margin-right: 7px; color: var(--rex-blue); font: normal .66rem ui-monospace, monospace; }
-.research-explorer-evidence > small { border-right: 0; color: #684c3a; font-size: .72rem; line-height: 1.45; }
+.research-explorer-evidence > span { color: var(--rex-blue); font: 700 .74rem ui-monospace, monospace; letter-spacing: .07em; }
+.research-explorer-evidence > p { color: var(--rex-muted); font-size: .78rem; line-height: 1.45; }
+.research-explorer-evidence i { margin-right: 7px; color: var(--rex-blue); font: normal .72rem ui-monospace, monospace; }
+.research-explorer-evidence > small { border-right: 0; color: #684c3a; font-size: .76rem; line-height: 1.45; }
 .research-explorer.is-compact .research-explorer-main .public-sparkline { height: auto; }
 
 @media (max-width: 820px) {
@@ -64,13 +70,35 @@
 @media (max-width: 520px) {
   .research-explorer-toolbar { padding: 10px; }
   .research-explorer-toolbar > div { width: 100%; }
+  .research-explorer-toolbar > div:first-child button { flex: 1 1 100%; min-height: 44px; text-align: left; }
   .research-explorer-toolbar > div:last-child button { flex: 1 1 0; }
   .research-explorer-title { flex-direction: column; gap: 12px; }
-  .research-explorer-main { padding-right: 14px; padding-left: 14px; }
+  .research-explorer-main { padding: 20px 14px; }
+  .research-explorer-main > p { margin-top: 14px; margin-bottom: 22px; font-size: .92rem; }
   .research-explorer-chart-legend { flex-wrap: wrap; }
   .research-explorer-chart-legend b { width: 100%; margin-left: 0; }
   .research-explorer-metrics dl { grid-template-columns: 1fr; }
+  .research-explorer-metrics { padding: 20px 14px; }
   .research-explorer-metrics dl > div:nth-child(odd), .research-explorer-metrics dl > div:nth-child(even) { padding-right: 0; padding-left: 0; border-right: 0; }
+}
+
+@media (max-width: 350px) {
+  .research-explorer-toolbar,
+  .research-explorer-main,
+  .research-explorer-metrics {
+    padding-right: 11px;
+    padding-left: 11px;
+  }
+
+  .research-explorer-title h3 {
+    font-size: 1.42rem;
+  }
+
+  .research-explorer-evidence > span,
+  .research-explorer-evidence > p,
+  .research-explorer-evidence > small {
+    padding: 13px 11px;
+  }
 }
 
 @media (prefers-contrast: more) {
