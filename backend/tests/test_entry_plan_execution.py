@@ -293,3 +293,29 @@ def test_live_auto_requires_explicit_backend_authorization(monkeypatch):
 
     assert payload['action'] == 'BLOCKED'
     assert payload['code'] == 'live_auto_not_enabled'
+
+
+def test_entry_execute_rejects_options_before_broker_submission(monkeypatch):
+    monkeypatch.setattr(backend, 'get_supabase_user', lambda: {'id': 'test-user'})
+    monkeypatch.setattr(backend, 'send_discord_notification', lambda *args, **kwargs: {'sent': True})
+    snapshot = _executable_snapshot(
+        instrumentType='option',
+        optionsAllowed=False,
+        strategyPolicy={
+            'optionsAllowed': False,
+            'allowedAssetClasses': ['us_equity'],
+            'leverageEnabled': False,
+            'dailyLossStopPct': 2.5,
+        },
+    )
+
+    response = backend.app.test_client().post('/api/entry-plan/execute', json={
+        'symbol': 'AAPL260717C00200000',
+        'planSnapshot': snapshot,
+        'executionMode': 'paper',
+        'isAutoExecute': True,
+    })
+    payload = response.get_json()
+
+    assert payload['action'] == 'BLOCKED'
+    assert any('Options are prohibited' in blocker for blocker in payload['blockers'])

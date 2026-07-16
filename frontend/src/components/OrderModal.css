@@ -13,6 +13,14 @@
   --order-soft-line: color-mix(in srgb, var(--app-text-strong) 9%, transparent);
   --order-surface: color-mix(in srgb, var(--app-card-bg) 94%, #f0ece1);
   --order-surface-soft: color-mix(in srgb, var(--app-card-bg-soft) 82%, #eee8dc);
+  box-sizing: border-box;
+  max-width: calc(100vw - 32px);
+}
+
+.order-modal *,
+.order-modal *::before,
+.order-modal *::after {
+  box-sizing: border-box;
 }
 
 .order-modal .ant-modal-content {
@@ -56,6 +64,7 @@
 
 .order-modal__heading {
   display: flex;
+  min-width: 0;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -64,11 +73,13 @@
 
 .order-modal__heading > div {
   display: flex;
+  min-width: 0;
   flex-direction: column;
   gap: 2px;
 }
 
 .order-modal__heading strong {
+  overflow-wrap: anywhere;
   font-family: Georgia, 'Times New Roman', serif;
   font-size: 26px;
   font-weight: 500;
@@ -99,6 +110,7 @@
   font-weight: 700;
   letter-spacing: 0.055em;
   text-transform: uppercase;
+  white-space: normal;
 }
 
 .order-modal__mode-pill i {
@@ -190,6 +202,11 @@
 .order-modal__account-note .anticon {
   margin-top: 3px;
   font-size: 14px;
+}
+
+.order-modal__account-note > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .order-modal__account-note.is-paper {
@@ -421,6 +438,7 @@
 
 .order-modal__advanced-trigger > span {
   display: flex;
+  min-width: 0;
   flex-direction: column;
   gap: 2px;
 }
@@ -433,6 +451,7 @@
   color: var(--app-text-muted);
   font-size: 10.5px;
   font-weight: 450;
+  overflow-wrap: anywhere;
 }
 
 .order-modal__advanced-trigger > .anticon {
@@ -581,6 +600,7 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 16px;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 .order-modal__summary {
@@ -615,16 +635,22 @@
 }
 
 .order-modal__summary dt {
+  min-width: 0;
+  flex: 1 1 auto;
   color: var(--app-text-muted);
   font-size: 10.5px;
+  overflow-wrap: anywhere;
 }
 
 .order-modal__summary dd {
+  min-width: 0;
+  flex: 0 1 auto;
   margin: 0;
   color: var(--app-text-strong);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   font-weight: 700;
+  overflow-wrap: anywhere;
   text-align: right;
 }
 
@@ -785,9 +811,23 @@
     padding-bottom: 8px;
   }
 
+  @supports (width: 100dvw) {
+    .order-modal {
+      top: max(8px, env(safe-area-inset-top));
+      width: calc(100dvw - 16px) !important;
+      max-width: calc(100dvw - 16px) !important;
+    }
+  }
+
   .order-modal .ant-modal-content {
     max-height: calc(100vh - 16px);
     border-radius: 2px;
+  }
+
+  @supports (height: 100dvh) {
+    .order-modal .ant-modal-content {
+      max-height: calc(100dvh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    }
   }
 
   .order-modal .ant-modal-header {
@@ -797,16 +837,26 @@
   .order-modal .ant-modal-close {
     top: 14px;
     inset-inline-end: 12px;
+    width: 40px;
+    height: 40px;
   }
 
   .order-modal .ant-modal-body {
     max-height: calc(100vh - 84px);
     padding: 0 14px 16px;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  @supports (height: 100dvh) {
+    .order-modal .ant-modal-body {
+      max-height: calc(100dvh - 84px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    }
   }
 
   .order-modal__heading {
     display: block;
-    padding-right: 35px;
+    padding-right: 46px;
   }
 
   .order-modal__heading strong {
@@ -814,8 +864,10 @@
   }
 
   .order-modal__mode-pill {
+    max-width: 100%;
     margin-top: 8px;
     min-height: 24px;
+    overflow-wrap: anywhere;
   }
 
   .order-modal__steps {
@@ -870,7 +922,7 @@
   .order-modal__footer {
     bottom: -16px;
     margin: 14px -14px -16px;
-    padding: 11px 14px 12px;
+    padding: 11px 14px max(12px, env(safe-area-inset-bottom));
   }
 
   .order-modal .order-modal__secondary.ant-btn,
@@ -899,13 +951,75 @@
   }
 
   .order-modal__advanced-trigger small {
-    max-width: 245px;
+    max-width: min(245px, calc(100vw - 92px));
+  }
+
+  .order-modal__review-hero {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .order-modal__review-estimate {
+    width: 100%;
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  .order-modal__review-estimate strong {
+    max-width: 100%;
+    overflow-wrap: anywhere;
   }
 
   .order-modal .order-modal__secondary.ant-btn,
   .order-modal .order-modal__primary.ant-btn {
     padding-inline: 9px !important;
-    font-size: 11px !important;
+    font-size: 12.5px !important;
+  }
+}
+
+@media (max-width: 340px) {
+  .order-modal .ant-modal-header {
+    padding-inline: 13px;
+  }
+
+  .order-modal .ant-modal-body {
+    padding-right: 11px;
+    padding-left: 11px;
+  }
+
+  .order-modal__steps {
+    margin-inline: 0;
+  }
+
+  .order-modal__step {
+    gap: 5px;
+  }
+
+  .order-modal__step-line {
+    margin-inline: 7px;
+  }
+
+  .order-modal__section {
+    padding-right: 11px;
+    padding-left: 11px;
+  }
+
+  .order-modal__footer {
+    margin-right: -11px;
+    margin-left: -11px;
+    padding-right: 11px;
+    padding-left: 11px;
+  }
+}
+
+@media (max-height: 600px) and (min-width: 641px) {
+  .order-modal .ant-modal-content {
+    max-height: calc(100dvh - 24px);
+  }
+
+  .order-modal .ant-modal-body {
+    max-height: calc(100dvh - 112px);
+    overscroll-behavior: contain;
   }
 }
 

@@ -241,8 +241,8 @@ const SignalEstuaryVisual: React.FC<SignalEstuaryVisualProps> = ({
             {TICKERS.map((ticker) => (
               <g key={ticker.symbol} transform={`translate(1014 ${ticker.y})`}>
                 <circle r="3.2" fill={ticker.color} />
-                <line x1="5" x2="13" stroke={ticker.color} />
-                <text x="18" y="4" fill={ticker.color}>
+                <line x1="-5" x2="-13" stroke={ticker.color} />
+                <text x="-18" y="4" fill={ticker.color} textAnchor="end">
                   {ticker.symbol}
                 </text>
               </g>

@@ -9,13 +9,22 @@
   --settings-green-soft: #dce8dc;
   --settings-blue: #1d5fa7;
   width: min(1440px, calc(100% - 48px));
+  max-width: 100%;
+  min-width: 0;
   margin: 0 auto;
   padding: 28px 0 64px;
   color: var(--settings-ink);
   font-variant-numeric: tabular-nums lining-nums;
+  overflow-x: clip;
 }
 
 .settings-page *, .settings-page *::before, .settings-page *::after { box-sizing: border-box; }
+.settings-page > *,
+.settings-status > *,
+.settings-provider-grid > *,
+.settings-content-grid > *,
+.settings-account > *,
+.settings-panel > * { min-width: 0; max-width: 100%; }
 
 .settings-hero {
   display: flex;
@@ -291,4 +300,7 @@
   .settings-account { padding: 18px 16px; }
   .settings-account__identity { gap: 12px; }
   .settings-account__actions { grid-template-columns: 1fr; }
+  .settings-theme-option { grid-template-columns: 62px minmax(0, 1fr); }
+  .settings-security-modal__details .ant-descriptions-view { overflow-x: auto; }
+  .settings-security-modal__details table { min-width: 280px; table-layout: fixed; }
 }

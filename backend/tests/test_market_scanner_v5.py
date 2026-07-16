@@ -72,7 +72,7 @@ def test_selection_priority_and_direction_are_separate_contracts():
 
     scored = backend._inst_score_rows(rows)
 
-    assert all(row["scoreVersion"] == "institutional_cross_section_v5" for row in scored)
+    assert all(row["scoreVersion"] == "institutional_cross_section_v6_strategy_mandate" for row in scored)
     assert all(row["trendScore"] == row["selectionScore"] for row in scored)
     assert all(row["trendScoreDetail"] == row["directionScore"] for row in scored)
     assert scored[0]["selectionScore"] > scored[2]["selectionScore"]

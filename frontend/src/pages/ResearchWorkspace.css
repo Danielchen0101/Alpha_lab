@@ -12,16 +12,39 @@
   --rw-number: Inter, "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   width: min(100%, 1660px);
   min-width: 0;
+  max-width: 100%;
   margin: 0 auto;
   padding: clamp(28px, 3vw, 52px) clamp(20px, 3.2vw, 54px) 68px;
   color: var(--rw-ink);
   font-variant-numeric: tabular-nums lining-nums;
+  overflow-x: clip;
 }
 
 .research-workspace,
 .research-workspace * {
   box-sizing: border-box;
 }
+
+.research-workspace > *,
+.research-workspace .rw-analysis-grid > *,
+.research-workspace .rw-review-analysis > *,
+.research-workspace .rw-section-heading > *,
+.research-workspace .rw-filter-band > * { min-width: 0; max-width: 100%; }
+
+.research-workspace .rw-table,
+.research-workspace .ant-table-wrapper,
+.research-workspace .ant-table-container,
+.research-workspace .ant-table-content,
+.research-workspace .ant-table-body {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.research-workspace .recharts-responsive-container,
+.research-workspace svg,
+.research-workspace canvas { max-width: 100%; }
 
 .rw-hero {
   display: grid;
@@ -1002,6 +1025,10 @@ html[data-theme='dark'] .rw-state-band--stale .rw-state-band__icon {
   .rw-hero-actions { grid-template-columns: minmax(0, 1fr); }
   .rw-kpi-ledger article > span { min-height: 42px; }
   .rw-decision-grid { grid-template-columns: minmax(0, 1fr); }
+  .research-workspace { padding-inline: 9px; }
+  .rw-section-heading { padding-inline: 14px; }
+  .rw-source-line { grid-template-columns: minmax(0, 1fr); }
+  .rw-source-line > * { grid-column: auto !important; }
 }
 
 @media (prefers-reduced-motion: reduce) {

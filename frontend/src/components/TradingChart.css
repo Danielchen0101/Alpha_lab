@@ -11,7 +11,11 @@
   --tc-cursor: rgba(235, 242, 233, 0.54);
   --tc-baseline: rgba(235, 242, 233, 0.23);
   --tc-hover: rgba(235, 242, 233, 0.04);
-  overflow: visible;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   color: var(--tc-ink);
   background: var(--tc-panel);
   border: 1px solid var(--tc-border);
@@ -25,6 +29,10 @@
   gap: 24px;
   padding: 18px 20px 15px;
   border-bottom: 1px solid var(--tc-border);
+}
+
+.trading-chart__header > * {
+  min-width: 0;
 }
 
 .trading-chart__eyebrow,
@@ -41,6 +49,7 @@
 
 .trading-chart__last-line {
   display: flex;
+  min-width: 0;
   align-items: baseline;
   gap: 10px;
   margin-top: 6px;
@@ -71,6 +80,7 @@
   grid-template-columns: repeat(3, minmax(92px, 1fr));
   gap: 0;
   margin: 0;
+  min-width: 0;
 }
 
 .trading-chart__range div {
@@ -102,7 +112,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 27px;
+  min-height: 34px;
   padding: 3px 9px;
   color: var(--tc-muted);
   background: transparent;
@@ -131,6 +141,15 @@
     var(--tc-panel);
   background-size: 32px 32px;
 }
+
+.trading-chart__canvas > div,
+.trading-chart__canvas .recharts-responsive-container,
+.trading-chart__canvas .recharts-wrapper,
+.trading-chart__canvas .recharts-surface {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .trading-chart__canvas .recharts-tooltip-wrapper { pointer-events: none; }
 
 .trading-chart__volume {
@@ -151,7 +170,9 @@
 }
 
 .trading-chart__tooltip {
+  box-sizing: border-box;
   min-width: 164px;
+  max-width: min(220px, calc(100vw - 32px));
   padding: 12px 13px;
   color: #1a211c;
   background: #f8f6ef;
@@ -170,12 +191,12 @@
 .trading-chart__tooltip em.is-sell { color: #8a402f; background: #f6e6e1; }
 
 .trading-chart__parameters {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
   border-top: 1px solid var(--tc-border);
 }
 
-.trading-chart__parameters > span { min-width: 180px; padding: 12px 18px; border-right: 1px solid var(--tc-border); }
+.trading-chart__parameters > span { min-width: 0; padding: 12px 18px; border-right: 1px solid var(--tc-border); overflow-wrap: anywhere; }
 .trading-chart__parameters strong { display: block; margin-top: 3px; font-size: 12px; font-weight: 650; }
 
 .trading-chart--empty {
@@ -193,14 +214,66 @@
 .trading-chart--empty strong { font-family: var(--app-serif, Georgia, serif); font-size: 21px; font-weight: 500; }
 .trading-chart--empty span { max-width: 420px; color: var(--tc-muted); font-size: 12px; }
 
-@media (max-width: 760px) {
-  .trading-chart__header { align-items: flex-start; flex-direction: column; padding: 15px; }
+@media (max-width: 820px) {
+  .trading-chart__header { align-items: flex-start; flex-direction: column; gap: 14px; padding: 15px; }
   .trading-chart__range { width: 100%; }
   .trading-chart__range div:first-child { border-left: 0; padding-left: 0; }
   .trading-chart__range div { min-width: 0; padding: 0 10px; }
   .trading-chart__range dt { font-size: 8px; }
   .trading-chart__range dd { font-size: 12px; }
-  .trading-chart__controls { padding-inline: 12px; }
+  .trading-chart__controls { padding: 8px 12px; }
+  .trading-chart__controls button { min-height: 40px; }
+  .trading-chart__parameters > span { padding: 12px 14px; }
+  .trading-chart--empty { min-width: 0; padding: 24px 16px; }
+}
+
+@media (max-width: 430px) {
+  .trading-chart__header {
+    padding: 13px 12px;
+  }
+
+  .trading-chart__last-line {
+    flex-wrap: wrap;
+    gap: 6px 9px;
+  }
+
+  .trading-chart__last-line strong {
+    font-size: clamp(24px, 9vw, 30px);
+  }
+
+  .trading-chart__range {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 12px;
+  }
+
+  .trading-chart__range div {
+    padding-inline: 10px;
+  }
+
+  .trading-chart__range div:nth-child(3) {
+    grid-column: 1 / -1;
+    padding-top: 10px;
+    padding-left: 0;
+    border-top: 1px solid var(--tc-border);
+    border-left: 0;
+  }
+
+  .trading-chart__controls > span {
+    flex-basis: 100%;
+    margin-right: 0;
+  }
+
+  .trading-chart__controls button {
+    flex: 1 1 calc(50% - 3px);
+    justify-content: center;
+    min-width: 0;
+  }
+
+  .trading-chart__tooltip {
+    min-width: 148px;
+    max-width: calc(100vw - 24px);
+    padding: 10px 11px;
+  }
 }
 .trading-chart__eyebrow,
 .trading-chart__range dt,
@@ -209,5 +282,5 @@
 .trading-chart__volume > span,
 .trading-chart__tooltip > span,
 .trading-chart__tooltip em {
-  font-size: 10.5px !important;
+  font-size: clamp(11.5px, 0.72vw, 12px) !important;
 }

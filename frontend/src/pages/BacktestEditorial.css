@@ -16,6 +16,7 @@
   width: min(100%, 1660px) !important;
   max-width: 1660px !important;
   min-width: 0;
+  overflow-x: clip;
   margin: 0 auto;
   padding: clamp(28px, 3vw, 52px) clamp(20px, 3.2vw, 54px) 72px !important;
   color: var(--bt-ink);
@@ -25,6 +26,33 @@
 .backtest-editorial * {
   box-sizing: border-box;
 }
+
+.backtest-editorial > *,
+.backtest-editorial .ant-row,
+.backtest-editorial .ant-col,
+.backtest-editorial .ant-card,
+.backtest-editorial .ant-card-body,
+.backtest-editorial .ant-tabs,
+.backtest-editorial .ant-tabs-content,
+.backtest-editorial .ant-tabs-tabpane {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.backtest-editorial .ant-table-wrapper,
+.backtest-editorial .ant-table-container,
+.backtest-editorial .ant-table-content,
+.backtest-editorial .ant-table-body,
+.history-table-container {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.backtest-editorial .recharts-responsive-container,
+.backtest-editorial svg,
+.backtest-editorial canvas { max-width: 100%; }
 
 .bt-hero {
   display: grid;
@@ -978,6 +1006,17 @@
   .bt-detail-parameter-grid { grid-template-columns: minmax(0, 1fr); }
   .bt-detail-chart { height: 250px; }
   .bt-detail-chart--drawdown { height: 220px; }
+}
+
+@media (max-width: 420px) {
+  .backtest-editorial { padding-inline: 9px !important; }
+  .bt-hero__instrument { padding: 15px; }
+  .performance-strip { grid-template-columns: minmax(0, 1fr); }
+  .stat-metric-card,
+  .stat-metric-card:nth-child(n) { border-right: 0; border-bottom: 1px solid var(--bt-rule-soft); }
+  .stat-metric-card:last-child { border-bottom: 0; }
+  .bt-detail-toolbar { align-items: stretch; flex-direction: column; }
+  .bt-detail-toolbar .ant-btn { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

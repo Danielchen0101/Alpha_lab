@@ -51,10 +51,19 @@ code {
 .analysis-page-shell,
 .backtest-page-shell {
   width: 100%;
-  max-width: 1440px;
+  max-width: 1840px;
+  min-width: 0;
   margin: 0 auto;
-  padding: clamp(16px, 2.5vw, 32px);
+  padding: clamp(16px, 1.75vw, 32px);
   animation: fadeIn 0.5s ease-out;
+}
+
+.dashboard-page-shell > *,
+.market-page-shell > *,
+.watchlist-page-shell > *,
+.analysis-page-shell > *,
+.backtest-page-shell > * {
+  min-width: 0;
 }
 
 @keyframes fadeIn {
@@ -67,6 +76,8 @@ code {
 }
 
 .ant-layout-content {
+  width: 100%;
+  min-width: 0;
   transition: margin-left 0.2s;
 }
 
@@ -124,19 +135,25 @@ code {
   }
 
   .ant-layout-content {
+    width: 100%;
     margin-left: 0 !important;
-    margin: 12px !important;
+    margin: 0 !important;
     height: auto !important;
     min-height: calc(100vh - 88px) !important;
-    overflow-x: auto !important;
-  }
-
-  .ant-layout-content > div {
-    padding: 16px !important;
+    overflow-x: clip !important;
   }
 
   .ant-card {
-    margin: 8px;
+    max-width: 100%;
+    margin: 0;
+  }
+
+  .dashboard-page-shell,
+  .market-page-shell,
+  .watchlist-page-shell,
+  .analysis-page-shell,
+  .backtest-page-shell {
+    padding: clamp(12px, 3.5vw, 20px);
   }
 }
 
@@ -5881,7 +5898,7 @@ code {
 .ai-agent-page-container .agent-stage-status,
 .ai-agent-page-container .agent-stage-progress > span,
 .ai-agent-page-container .agent-stage-summary small {
-  font-size: 10.5px !important;
+  font-size: clamp(11.5px, 0.72vw, 12px) !important;
 }
 
 .epv2-admission-status,
@@ -5889,5 +5906,5 @@ code {
 .epv2-policy span,
 .epv2-order-audit span,
 .protected-route-loading__index {
-  font-size: 10.5px !important;
+  font-size: clamp(11.5px, 0.72vw, 12px) !important;
 }
