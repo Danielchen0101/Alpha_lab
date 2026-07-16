@@ -190,10 +190,19 @@ DEFAULT_CORS_ORIGINS = (
     "https://www.alphalabquant.com,"
     "https://quant-platform.pages.dev"
 )
+CLOUDFLARE_PAGES_PREVIEW_ORIGIN = re.compile(
+    r"\Ahttps://[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.quant-platform\.pages\.dev\Z",
+    re.ASCII | re.IGNORECASE,
+)
 raw_allowed_origins = os.getenv("CORS_ORIGINS") or os.getenv("FRONTEND_ORIGIN") or DEFAULT_CORS_ORIGINS
 allowed_origins = "*" if raw_allowed_origins == "*" else [
     origin.strip() for origin in raw_allowed_origins.split(",") if origin.strip()
 ]
+if allowed_origins != "*":
+    # Cloudflare Pages creates a distinct single-label subdomain for every
+    # deployment and branch preview. Keep production origins exact while
+    # allowing previews from this Pages project only.
+    allowed_origins.append(CLOUDFLARE_PAGES_PREVIEW_ORIGIN)
 cors_supports_credentials = allowed_origins != "*"
 
 CORS(
