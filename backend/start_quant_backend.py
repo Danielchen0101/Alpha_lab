@@ -38506,6 +38506,11 @@ _PA_CURRENT_UID = None
 _PA_RUNNING_USERS = set()
 _PA_RUNNING_USERS_LOCK = threading.Lock()
 _PA_RUNTIME_LOCK_DIR = os.getenv('ALPHALAB_RUNTIME_LOCK_DIR') or tempfile.gettempdir()
+_PA_SCHEDULER_HEARTBEAT_PATH = os.path.join(
+    _PA_RUNTIME_LOCK_DIR,
+    'alphalab-pipeline-auto-scheduler-heartbeat.json',
+)
+_PA_SCHEDULER_HEARTBEAT_FILE_LOCK = threading.Lock()
 _PA_FILE_LOCK_UNSUPPORTED = object()
 _PA_SCHEDULER_PROCESS_LOCK = None
 _PA_USER_PROCESS_LOCKS = {}
@@ -38622,6 +38627,39 @@ def _pa_touch_scheduler_heartbeat(completed=False, error=''):
             _PA_SCHEDULER_LAST_ERROR = str(error)[:160]
         elif completed:
             _PA_SCHEDULER_LAST_ERROR = ''
+        heartbeat_payload = {
+            'heartbeat': _PA_SCHEDULER_LAST_HEARTBEAT,
+            'completedAt': _PA_SCHEDULER_LAST_COMPLETED_AT,
+            'lastError': _PA_SCHEDULER_LAST_ERROR,
+            'loopCount': _PA_SCHEDULER_LOOP_COUNT,
+            'pid': os.getpid(),
+        }
+
+    # Gunicorn imports this module in the master process, while health requests
+    # are served by a worker. A small host-local heartbeat lets the worker
+    # observe the scheduler without moving scheduler ownership or duplicating
+    # background runs. This is best-effort and never blocks the scheduler.
+    try:
+        with _PA_SCHEDULER_HEARTBEAT_FILE_LOCK:
+            os.makedirs(os.path.dirname(_PA_SCHEDULER_HEARTBEAT_PATH), exist_ok=True)
+            tmp_path = '%s.%s.tmp' % (_PA_SCHEDULER_HEARTBEAT_PATH, os.getpid())
+            with open(tmp_path, 'w', encoding='utf-8') as handle:
+                json.dump(heartbeat_payload, handle, separators=(',', ':'))
+                handle.flush()
+            os.replace(tmp_path, _PA_SCHEDULER_HEARTBEAT_PATH)
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def _pa_read_shared_scheduler_heartbeat():
+    try:
+        with open(_PA_SCHEDULER_HEARTBEAT_PATH, 'r', encoding='utf-8') as handle:
+            payload = json.load(handle)
+        if not isinstance(payload, dict):
+            return {}
+        return payload
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return {}
 
 
 def _pa_scheduler_health_snapshot(now_ts=None):
@@ -38631,11 +38669,33 @@ def _pa_scheduler_health_snapshot(now_ts=None):
         completed_at = _PA_SCHEDULER_LAST_COMPLETED_AT
         last_error = _PA_SCHEDULER_LAST_ERROR
     thread_alive = bool(_PA_SCHEDULER_THREAD and _PA_SCHEDULER_THREAD.is_alive())
+    source = 'process_local'
+    shared_heartbeat = _pa_read_shared_scheduler_heartbeat()
+    try:
+        shared_ts = float(shared_heartbeat.get('heartbeat') or 0)
+    except (TypeError, ValueError):
+        shared_ts = 0
+    if shared_ts > heartbeat:
+        heartbeat = shared_ts
+        source = 'shared_heartbeat'
+        try:
+            completed_at = float(shared_heartbeat.get('completedAt') or 0)
+        except (TypeError, ValueError):
+            completed_at = 0
+        last_error = str(shared_heartbeat.get('lastError') or '')[:160]
+        try:
+            loop_count = int(shared_heartbeat.get('loopCount') or 0)
+        except (TypeError, ValueError):
+            loop_count = 0
+    else:
+        loop_count = _PA_SCHEDULER_LOOP_COUNT
     age = max(0.0, now_ts - heartbeat) if heartbeat else None
-    healthy = bool(thread_alive and age is not None and age < 120)
+    heartbeat_alive = bool(age is not None and age < 120)
+    healthy = bool((thread_alive or source == 'shared_heartbeat') and heartbeat_alive)
     return {
         'running': healthy,
-        'threadAlive': thread_alive,
+        'threadAlive': bool(thread_alive or (source == 'shared_heartbeat' and heartbeat_alive)),
+        'source': source,
         'heartbeatAgeSeconds': round(age, 1) if age is not None else None,
         'lastHeartbeatAt': (
             datetime.fromtimestamp(heartbeat, timezone.utc).isoformat()
@@ -38646,7 +38706,7 @@ def _pa_scheduler_health_snapshot(now_ts=None):
             if completed_at else ''
         ),
         'lastError': last_error,
-        'loopCount': _PA_SCHEDULER_LOOP_COUNT,
+        'loopCount': loop_count,
     }
 
 
