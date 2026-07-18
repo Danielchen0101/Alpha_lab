@@ -1,5 +1,7 @@
 # 开发日志 - Development Log
 
+> 历史说明：本文保留早期版本的开发记录，其中的文件名、端口和启动方式不代表当前 v3 架构。当前安装与部署请以 [QUICK_START.md](QUICK_START.md)、[DEPLOYMENT.md](../DEPLOYMENT.md) 和仓库根目录 [README.md](../README.md) 为准。
+
 ## v2.6.4
 
 ### 主要更新

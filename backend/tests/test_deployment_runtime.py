@@ -38,8 +38,8 @@ def test_nginx_has_no_backend_port_collision_and_supports_supabase():
     assert "proxy_pass http://127.0.0.1:5000" in nginx
     assert "proxy_read_timeout 900s" in nginx
     assert "pid /tmp/nginx.pid" in nginx
-    assert "https://*.supabase.co" in nginx
-    assert "wss://*.supabase.co" in nginx
+    assert "https://nwpxjqgqegxttucsmvmp.supabase.co" in nginx
+    assert "wss://nwpxjqgqegxttucsmvmp.supabase.co" in nginx
 
 
 def test_render_start_command_keeps_scheduler_singleton():
@@ -59,7 +59,31 @@ def test_supabase_schema_has_explicit_data_api_grants_and_owner_rls():
 
     assert "TO authenticated" in schema
     assert "USING ((SELECT auth.uid()) = user_id)" in schema
-    assert "WITH CHECK ((SELECT auth.uid()) = user_id)" in schema
-    assert "GRANT SELECT, INSERT, UPDATE ON TABLE user_pipeline_auto_configs TO authenticated" in schema
+    assert "WITH CHECK ((SELECT auth.uid()) = user_id)" not in schema
+    assert "GRANT SELECT ON TABLE user_pipeline_auto_configs TO authenticated" in schema
+    assert "REVOKE ALL ON TABLE user_pipeline_auto_configs FROM anon, authenticated" in schema
     assert "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE user_pipeline_auto_configs TO service_role" in schema
-    assert "GRANT SELECT, INSERT ON TABLE user_pipeline_auto_runs TO authenticated" in schema
+    assert "GRANT SELECT ON TABLE user_pipeline_auto_runs TO authenticated" in schema
+    assert "GRANT SELECT, INSERT ON TABLE user_pipeline_auto_runs TO authenticated" not in schema
+
+
+def test_supabase_hardening_migration_revokes_browser_writes_and_anon_access():
+    migration = (ROOT / "backend" / "supabase_security_hardening.sql").read_text(encoding="utf-8")
+
+    for table in (
+        "user_api_configs",
+        "user_auto_scan_configs",
+        "user_auto_scan_runs",
+        "user_pipeline_auto_configs",
+        "user_pipeline_auto_runs",
+        "user_operations_safety_state",
+        "user_operations_audit_events",
+        "user_notification_delivery_events",
+        "user_order_lifecycle_events",
+        "user_readiness_status",
+        "user_operation_artifacts",
+    ):
+        assert table in migration
+    assert "REVOKE ALL ON TABLE public.%I FROM PUBLIC, anon, authenticated" in migration
+    assert "GRANT SELECT ON TABLE public.%I TO authenticated" in migration
+    assert "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.%I TO service_role" in migration

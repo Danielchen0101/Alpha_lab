@@ -2679,6 +2679,8 @@ const messages = {
     testConnection: '测试连接',
     saveChanges: '保存更改',
     paperSecurityNote: '模拟密钥仅用于测试，不涉及真实资金。',
+    alpacaWebsite: 'Alpaca API 官网',
+    finnhubWebsite: 'Finnhub API 官网',
     liveTitle: 'Alpaca 实盘交易',
     liveSubtitle: '仅在你明确选择实盘环境时使用的凭证。',
     securityWarning: '安全警告',

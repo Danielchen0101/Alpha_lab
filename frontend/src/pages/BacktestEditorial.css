@@ -881,8 +881,8 @@
 }
 
 :root[data-theme='dark'] .backtest-editorial {
-  --bt-dark: #0b120d;
-  --bt-dark-surface: #111b14;
+  --bt-dark: #151318;
+  --bt-dark-surface: #211e25;
 }
 
 @media (max-width: 1280px) {

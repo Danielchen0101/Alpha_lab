@@ -12,11 +12,13 @@ import {
 } from '@ant-design/icons';
 
 import marketDataService from '../services/marketDataService';
+import { isOperationsArtifactConflict, operationsArtifactsAPI } from '../services/operationsArtifactsService';
+import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { marketSymbolPath, rememberMarketSymbol } from '../routes/marketRoutes';
 import './WatchlistEditorial.css';
 
-const STORAGE_KEY = 'quant_watchlist_symbols';
+const STORAGE_KEY_PREFIX = 'quant_watchlist_symbols';
 const REFRESH_INTERVAL_MS = 60_000;
 
 type WatchlistDisplayItem = {
@@ -52,9 +54,11 @@ const normalizeSymbols = (value: unknown): string[] => {
   ));
 };
 
-const readStoredSymbols = (serialized?: string | null): string[] => {
+const watchlistStorageKey = (userId: string): string => `${STORAGE_KEY_PREFIX}:${userId}`;
+
+const readStoredSymbols = (storageKey: string, serialized?: string | null): string[] => {
   if (typeof window === 'undefined') return [];
-  const source = serialized === undefined ? window.localStorage.getItem(STORAGE_KEY) : serialized;
+  const source = serialized === undefined ? window.localStorage.getItem(storageKey) : serialized;
   if (!source) return [];
   try {
     return normalizeSymbols(JSON.parse(source));
@@ -65,6 +69,7 @@ const readStoredSymbols = (serialized?: string | null): string[] => {
 
 const Watchlist: React.FC = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const { language, t, translateSector, translateSignal } = useLanguage();
   const isChinese = language === 'zh-CN';
 
@@ -157,7 +162,7 @@ const Watchlist: React.FC = () => {
   };
 
   const locale = isChinese ? 'zh-CN' : 'en-US';
-  const [watchlistSymbols, setWatchlistSymbols] = useState<string[]>(readStoredSymbols);
+  const [watchlistSymbols, setWatchlistSymbols] = useState<string[]>([]);
   const [watchlistData, setWatchlistData] = useState<WatchlistDisplayItem[]>([]);
   const [newSymbol, setNewSymbol] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
@@ -169,6 +174,10 @@ const Watchlist: React.FC = () => {
   const [sortedInfo, setSortedInfo] = useState<SortState>({});
 
   const symbolsRef = useRef(watchlistSymbols);
+  const durableHydratedRef = useRef(false);
+  const durableVersionRef = useRef<number | undefined>(undefined);
+  const durableDirtyRef = useRef(false);
+  const durableSaveTimerRef = useRef<number | null>(null);
   const requestIdRef = useRef(0);
   const mountedRef = useRef(true);
 
@@ -182,6 +191,81 @@ const Watchlist: React.FC = () => {
       requestIdRef.current += 1;
     };
   }, []);
+
+  const persistDurableWatchlist = useCallback(async (symbols: string[]) => {
+    const normalized = normalizeSymbols(symbols);
+    try {
+      const artifact = await operationsArtifactsAPI.put(
+        'watchlist',
+        'primary',
+        { symbols: normalized },
+        durableVersionRef.current,
+      );
+      if (artifact) durableVersionRef.current = artifact.version;
+      durableDirtyRef.current = false;
+    } catch (error) {
+      if (!isOperationsArtifactConflict(error)) throw error;
+
+      // A second tab or device saved first. Refresh the version and retry this
+      // explicit local edit once instead of overwriting an unknown revision.
+      const latest = await operationsArtifactsAPI.get<{ symbols?: string[] }>('watchlist', 'primary');
+      durableVersionRef.current = latest?.version;
+      const retry = await operationsArtifactsAPI.put(
+        'watchlist',
+        'primary',
+        { symbols: normalized },
+        durableVersionRef.current,
+      );
+      if (retry) durableVersionRef.current = retry.version;
+      durableDirtyRef.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user?.id) {
+      durableHydratedRef.current = false;
+      durableVersionRef.current = undefined;
+      durableDirtyRef.current = false;
+      setWatchlistSymbols([]);
+      return undefined;
+    }
+
+    let active = true;
+    const hydrateDurableWatchlist = async () => {
+      const storageKey = watchlistStorageKey(user.id);
+      const localSymbols = readStoredSymbols(storageKey);
+      symbolsRef.current = localSymbols;
+      setWatchlistSymbols(localSymbols);
+      durableHydratedRef.current = false;
+      durableVersionRef.current = undefined;
+      durableDirtyRef.current = false;
+      try {
+        const artifact = await operationsArtifactsAPI.get<{ symbols?: string[] }>('watchlist', 'primary');
+        if (!active) return;
+        durableVersionRef.current = artifact?.version;
+        const remoteSymbols = normalizeSymbols(artifact?.payload?.symbols);
+        if (durableDirtyRef.current) {
+          await persistDurableWatchlist(symbolsRef.current);
+        } else if (remoteSymbols.length > 0 || artifact) {
+          symbolsRef.current = remoteSymbols;
+          setWatchlistSymbols(remoteSymbols);
+        } else if (localSymbols.length > 0) {
+          // Only a cache already namespaced to this authenticated account may
+          // seed a new server artifact. Legacy global caches are never read.
+          await persistDurableWatchlist(localSymbols);
+        }
+      } catch (error) {
+        console.warn('Durable watchlist is unavailable; using this device cache.', error);
+      } finally {
+        if (active) {
+          window.localStorage.setItem(storageKey, JSON.stringify(symbolsRef.current));
+          durableHydratedRef.current = true;
+        }
+      }
+    };
+    void hydrateDurableWatchlist();
+    return () => { active = false; };
+  }, [persistDurableWatchlist, user?.id]);
 
   const formatPrice = useCallback((value: number | null, currency = 'USD'): string => {
     if (value === null) return '—';
@@ -311,12 +395,29 @@ const Watchlist: React.FC = () => {
 
   useEffect(() => {
     symbolsRef.current = watchlistSymbols;
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(watchlistSymbols));
+    if (!user?.id) return undefined;
+    if (!durableHydratedRef.current) {
+      void refreshWatchlistData(watchlistSymbols);
+      return undefined;
+    }
+    const storageKey = watchlistStorageKey(user.id);
+    window.localStorage.setItem(storageKey, JSON.stringify(watchlistSymbols));
     window.dispatchEvent(new CustomEvent('alphalab:watchlist-change', {
       detail: { symbols: watchlistSymbols },
     }));
+    if (durableHydratedRef.current) {
+      if (durableSaveTimerRef.current !== null) window.clearTimeout(durableSaveTimerRef.current);
+      durableSaveTimerRef.current = window.setTimeout(() => {
+        void persistDurableWatchlist(watchlistSymbols).catch((error) => {
+          console.warn('Watchlist could not be synchronized across devices.', error);
+        });
+      }, 300);
+    }
     void refreshWatchlistData(watchlistSymbols);
-  }, [refreshWatchlistData, watchlistSymbols]);
+    return () => {
+      if (durableSaveTimerRef.current !== null) window.clearTimeout(durableSaveTimerRef.current);
+    };
+  }, [persistDurableWatchlist, refreshWatchlistData, user?.id, watchlistSymbols]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -326,12 +427,14 @@ const Watchlist: React.FC = () => {
   }, [refreshWatchlistData]);
 
   useEffect(() => {
+    if (!user?.id) return undefined;
+    const storageKey = watchlistStorageKey(user.id);
     const handleStorageChange = (event: StorageEvent) => {
-      if (event.key === STORAGE_KEY) setWatchlistSymbols(readStoredSymbols(event.newValue));
+      if (event.key === storageKey) setWatchlistSymbols(readStoredSymbols(storageKey, event.newValue));
     };
     window.addEventListener('storage', handleStorageChange);
     return () => window.removeEventListener('storage', handleStorageChange);
-  }, []);
+  }, [user?.id]);
 
   useEffect(() => {
     const handleGlobalRefresh = () => {
@@ -395,6 +498,7 @@ const Watchlist: React.FC = () => {
         return;
       }
 
+      durableDirtyRef.current = true;
       setWatchlistSymbols(current => normalizeSymbols([...current, resolvedSymbol]));
       setNewSymbol('');
       message.success(t.watchlist.addedToWatchlist.replace('{symbol}', resolvedSymbol));
@@ -407,6 +511,7 @@ const Watchlist: React.FC = () => {
   }, [newSymbol, resolveWatchlistSymbol, t.watchlist]);
 
   const handleRemoveSymbol = useCallback((symbolToRemove: string) => {
+    durableDirtyRef.current = true;
     setWatchlistSymbols(current => current.filter(symbol => symbol !== symbolToRemove));
     setWatchlistData(current => current.filter(item => item.symbol !== symbolToRemove));
     message.success(t.watchlist.removedFromWatchlist.replace('{symbol}', symbolToRemove));

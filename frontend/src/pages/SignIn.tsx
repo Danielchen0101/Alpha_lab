@@ -37,6 +37,14 @@ const getSafeRedirectPath = (candidate?: string | null) => {
   return candidate;
 };
 
+const getRememberedLandingPage = () => {
+  try {
+    return getSafeRedirectPath(window.localStorage.getItem('alphalab:default-landing-page'));
+  } catch {
+    return null;
+  }
+};
+
 const useCompactCaptcha = () => {
   const [compact, setCompact] = useState(false);
 
@@ -54,7 +62,7 @@ const useCompactCaptcha = () => {
 const SignIn: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { login, isAuthenticated, loading } = useAuth();
+  const { login, isAuthenticated, loading, mfaRequired } = useAuth();
   const { t, language, setLanguage } = useLanguage();
   const { resolvedTheme } = useTheme();
   const [submitting, setSubmitting] = useState(false);
@@ -75,6 +83,7 @@ const SignIn: React.FC = () => {
   const queryRedirect = new URLSearchParams(location.search).get('next');
   const redirectPath = getSafeRedirectPath(queryRedirect)
     || getSafeRedirectPath(stateRedirect)
+    || getRememberedLandingPage()
     || '/dashboard';
 
   useEffect(() => {
@@ -105,7 +114,7 @@ const SignIn: React.FC = () => {
       </main>
     );
   }
-  if (isAuthenticated) return <Navigate to={redirectPath} replace />;
+  if (isAuthenticated) return <Navigate to={mfaRequired ? `/mfa?next=${encodeURIComponent(redirectPath)}` : redirectPath} replace />;
 
   const handleLogin = async (values: { email: string; password: string; remember?: boolean }) => {
     setSubmitting(true);
@@ -118,7 +127,7 @@ const SignIn: React.FC = () => {
       } else {
         localStorage.removeItem(REMEMBER_EMAIL_KEY);
       }
-      navigate(redirectPath, { replace: true });
+      navigate(result.mfaRequired ? `/mfa?next=${encodeURIComponent(redirectPath)}` : redirectPath, { replace: true });
     } else {
       setCaptchaToken('');
       turnstileRef.current?.reset();
@@ -247,7 +256,14 @@ const SignIn: React.FC = () => {
                   <Form.Item name="remember" valuePropName="checked" noStyle>
                     <Checkbox className="auth-checkbox">{t.auth.rememberEmail}</Checkbox>
                   </Form.Item>
-                  <Link to="/forgot-password" className="auth-link-forgot">{t.auth.forgotPassword}</Link>
+                  <Link
+                    to="/forgot-password"
+                    className="auth-link-forgot auth-link-forgot--button"
+                    aria-label={t.auth.forgotPassword}
+                  >
+                    <KeyOutlined aria-hidden="true" />
+                    <span>{t.auth.forgotPassword}</span>
+                  </Link>
                 </div>
 
                 <div className="auth-captcha-wrapper" style={{ marginBottom: 14 }}>

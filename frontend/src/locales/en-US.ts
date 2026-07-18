@@ -2679,6 +2679,8 @@ const messages = {
     testConnection: 'Test Connection',
     saveChanges: 'Save Changes',
     paperSecurityNote: 'Paper keys are used for testing only. Real funds are never at risk here.',
+    alpacaWebsite: 'Alpaca API website',
+    finnhubWebsite: 'Finnhub API website',
     liveTitle: 'Alpaca Live Trading',
     liveSubtitle: 'Credentials used when you explicitly choose the live environment.',
     securityWarning: 'Security Warning',

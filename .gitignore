@@ -8,6 +8,7 @@ dist/
 coverage/
 .next/
 frontend/build/
+frontend/build-e2e/
 
 # Playwright / E2E test artifacts
 frontend/test-results/
@@ -87,6 +88,9 @@ Thumbs.db
 
 # Memory / temp scripts
 memory/*.py
+# Local debugging transcripts can contain request payloads or provider tokens.
+memory/*.md
+memory/*.tsx
 
 # Runtime state files (auto-generated)
 backend/auto_scan_configs.json
@@ -94,6 +98,7 @@ backend/pipeline_auto_configs.json
 backend/pipeline_auto_history.json
 backend/pipeline_runtime_state.json
 backend/pipeline_managed_positions.json
+backend/operations_store.local.json
 
 # Debug dumps — never commit
 backend/debug_manual_pipeline_result.json

@@ -677,20 +677,20 @@
 }
 
 html[data-theme="dark"] .system-health-page {
-  --sh-paper: #161b18;
-  --sh-paper-deep: #1b211d;
-  --sh-ink: #ece9df;
-  --sh-muted: #a4a89f;
-  --sh-rule: rgba(236, 233, 223, 0.18);
-  --sh-rule-strong: rgba(236, 233, 223, 0.42);
-  --sh-green: #8eb799;
-  --sh-green-soft: rgba(142, 183, 153, 0.11);
-  --sh-blue: #75a9df;
-  --sh-blue-soft: rgba(117, 169, 223, 0.11);
-  --sh-amber: #d3a164;
-  --sh-amber-soft: rgba(211, 161, 100, 0.12);
-  --sh-red: #df8b7d;
-  --sh-red-soft: rgba(223, 139, 125, 0.1);
+  --sh-paper: var(--app-bg, #121114);
+  --sh-paper-deep: var(--app-surface-elevated, #242129);
+  --sh-ink: var(--app-text, #eee9df);
+  --sh-muted: var(--app-text-muted, #aaa3ae);
+  --sh-rule: var(--app-border-soft, rgba(226, 214, 196, 0.1));
+  --sh-rule-strong: var(--app-border, rgba(226, 214, 196, 0.2));
+  --sh-green: var(--app-positive, #9db58c);
+  --sh-green-soft: rgba(157, 181, 140, 0.11);
+  --sh-blue: var(--app-accent-secondary, #b6a0c9);
+  --sh-blue-soft: rgba(182, 160, 201, 0.11);
+  --sh-amber: var(--app-accent, #d6a45f);
+  --sh-amber-soft: rgba(214, 164, 95, 0.12);
+  --sh-red: var(--app-danger, #df7b68);
+  --sh-red-soft: rgba(223, 123, 104, 0.1);
 }
 
 html[data-theme="dark"] .sh-overall,

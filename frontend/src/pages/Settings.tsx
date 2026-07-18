@@ -1,23 +1,21 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Descriptions, Modal } from 'antd';
+import { Alert, Button, Descriptions, Modal, message } from 'antd';
 import {
   ApiOutlined,
   ArrowRightOutlined,
-  BgColorsOutlined,
   CheckCircleOutlined,
   CloudServerOutlined,
-  DesktopOutlined,
+  DownloadOutlined,
   ExclamationCircleOutlined,
   EyeOutlined,
   KeyOutlined,
   LockOutlined,
   LogoutOutlined,
-  MoonOutlined,
   ReloadOutlined,
   RobotOutlined,
   SafetyCertificateOutlined,
   SettingOutlined,
-  SunOutlined,
+  StopOutlined,
   ThunderboltOutlined,
   UserOutlined,
 } from '@ant-design/icons';
@@ -26,6 +24,12 @@ import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { clearConfigStatusCache, ConfigStatusLoadResult, loadConfigStatus } from '../services/api';
+import MfaEnrollmentPanel from '../components/MfaEnrollmentPanel';
+import SettingsPreferencesPanel from '../components/SettingsPreferencesPanel';
+import { operationsArtifactsAPI } from '../services/operationsArtifactsService';
+import { safetyCenterAPI } from '../services/safetyCenterService';
+import { exportJsonReport, timestampedFilename } from '../utils/exportReport';
+import { supabase } from '../lib/supabaseClient';
 import './SettingsEditorial.css';
 
 type ServiceStatus =
@@ -77,10 +81,12 @@ const Settings: React.FC = () => {
   const navigate = useNavigate();
   const { user, session, loading, logout } = useAuth();
   const { language } = useLanguage();
-  const { themeMode, setThemeMode } = useTheme();
+  const { themeMode } = useTheme();
   const isZh = language === 'zh-CN';
   const requestIdRef = useRef(0);
   const [securityModalVisible, setSecurityModalVisible] = useState(false);
+  const [exportingData, setExportingData] = useState(false);
+  const [revokingSessions, setRevokingSessions] = useState(false);
   const [statusRefreshKey, setStatusRefreshKey] = useState(0);
   const [statusMessage, setStatusMessage] = useState('');
   const [statuses, setStatuses] = useState<Record<ProviderStatus, ServiceStatus>>({
@@ -142,6 +148,13 @@ const Settings: React.FC = () => {
     masked: '仅返回遮罩值',
     securityMessage: '安全边界',
     securityDescription: '账户认证由 Supabase 管理；外部服务密钥经认证后保存，页面不会回显完整密钥。若怀疑密钥泄露，请立即在对应提供商后台轮换。',
+    exportData: '下载我的账户数据',
+    exportSuccess: '账户数据已安全导出，凭证密钥未包含在文件中。',
+    exportPartial: '已导出可用数据，但部分服务暂时无法读取；文件中已列出缺失部分。',
+    exportError: '暂时无法导出账户数据，请稍后重试。',
+    revokeSessions: '退出其他设备',
+    revokeSuccess: '其他设备上的登录会话已撤销。',
+    revokeError: '暂时无法撤销其他会话，请稍后重试。',
     close: '完成',
   } : {
     eyebrow: 'WORKSPACE / SETTINGS',
@@ -196,6 +209,13 @@ const Settings: React.FC = () => {
     masked: 'Masked values only',
     securityMessage: 'Security boundary',
     securityDescription: 'Supabase manages account authentication. External-service credentials are saved after authentication and full secrets are never returned to this page. Rotate a key at its provider immediately if exposure is suspected.',
+    exportData: 'Download my account data',
+    exportSuccess: 'Your account data was exported without credential secrets.',
+    exportPartial: 'Available data was exported, but some services could not be read. Missing sections are listed in the file.',
+    exportError: 'Account data could not be exported. Try again shortly.',
+    revokeSessions: 'Sign out other devices',
+    revokeSuccess: 'Sessions on other devices have been revoked.',
+    revokeError: 'Other sessions could not be revoked. Try again shortly.',
     close: 'Done',
   };
 
@@ -296,11 +316,58 @@ const Settings: React.FC = () => {
     { key: 'finnhub' as const, section: 'finnhub', icon: <CloudServerOutlined />, category: copy.market, name: copy.marketName, description: copy.marketDesc },
   ];
   const readyCount = Object.values(statuses).filter((status) => status === 'connected').length;
-  const themeOptions = [
-    { value: 'light', label: copy.light, description: copy.lightDesc, icon: <SunOutlined /> },
-    { value: 'dark', label: copy.dark, description: copy.darkDesc, icon: <MoonOutlined /> },
-    { value: 'system', label: copy.system, description: copy.systemDesc, icon: <DesktopOutlined /> },
-  ];
+  const exportAccountData = async () => {
+    setExportingData(true);
+    try {
+      const results = await Promise.allSettled([
+        safetyCenterAPI.getSafety(),
+        safetyCenterAPI.getReadiness(),
+        safetyCenterAPI.getOrderEvents(250),
+        safetyCenterAPI.getNotificationHistory(250),
+        safetyCenterAPI.getAuditEvents(500),
+        operationsArtifactsAPI.get<{ symbols?: string[] }>('watchlist', 'primary'),
+        operationsArtifactsAPI.get<{ strategies?: any[] }>('strategy-blueprints', 'saved'),
+      ] as const);
+      const sectionNames = ['safety', 'readiness', 'orderEvents', 'notificationHistory', 'auditTrail', 'watchlist', 'savedStrategies'];
+      const failedSections = results
+        .map((result, index) => result.status === 'rejected' ? sectionNames[index] : null)
+        .filter((section): section is string => Boolean(section));
+      if (failedSections.length === results.length) throw new Error('All account export sources failed');
+      const value = <T,>(index: number, fallback: T): T => (
+        results[index]?.status === 'fulfilled' ? (results[index] as PromiseFulfilledResult<T>).value : fallback
+      );
+      exportJsonReport(timestampedFilename('alphalab-account-data', 'json'), {
+        schemaVersion: 1,
+        exportedAt: new Date().toISOString(),
+        exportCompleteness: failedSections.length ? 'partial' : 'complete',
+        unavailableSections: failedSections,
+        account: { id: user?.id || null, email: user?.email || null, authenticationProvider: 'Supabase Auth' },
+        preferences: { language, themeMode },
+        safety: value(0, null),
+        readiness: value(1, null),
+        orderEvents: value(2, []),
+        notificationHistory: value(3, []),
+        auditTrail: value(4, []),
+        watchlist: value(5, null),
+        savedStrategies: value(6, null),
+        disclosure: 'Authentication secrets, broker credentials, API keys, and session tokens are intentionally excluded.',
+      });
+      if (failedSections.length) message.warning(copy.exportPartial);
+      else message.success(copy.exportSuccess);
+    } catch {
+      message.error(copy.exportError);
+    } finally {
+      setExportingData(false);
+    }
+  };
+
+  const revokeOtherSessions = async () => {
+    setRevokingSessions(true);
+    const { error } = await supabase.auth.signOut({ scope: 'others' });
+    if (error) message.error(copy.revokeError);
+    else message.success(copy.revokeSuccess);
+    setRevokingSessions(false);
+  };
 
   return (
     <div className="settings-page">
@@ -352,7 +419,9 @@ const Settings: React.FC = () => {
         </div>
       </section>
 
-      <div className="settings-content-grid">
+      <SettingsPreferencesPanel />
+
+      <div className="settings-content-grid settings-content-grid--single">
         <section className="settings-panel settings-panel--connections">
           <div className="settings-panel__icon"><ApiOutlined /></div>
           <div className="settings-panel__copy">
@@ -369,38 +438,6 @@ const Settings: React.FC = () => {
           </div>
         </section>
 
-        <section className="settings-panel settings-panel--appearance">
-          <div className="settings-panel__heading">
-            <div className="settings-panel__icon"><BgColorsOutlined /></div>
-            <div>
-              <span className="settings-section-index">{copy.displayIndex}</span>
-              <h2>{copy.appearance}</h2>
-              <p>{copy.appearanceDesc}</p>
-            </div>
-          </div>
-          <div className="settings-theme-grid" role="radiogroup" aria-label={copy.appearance}>
-            {themeOptions.map((option) => {
-              const active = themeMode === option.value;
-              return (
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={active}
-                  className={`settings-theme-option${active ? ' is-active' : ''}`}
-                  key={option.value}
-                  onClick={() => setThemeMode(option.value as typeof themeMode)}
-                >
-                  <span className={`settings-theme-option__preview settings-theme-option__preview--${option.value}`}>
-                    <i /><i /><i />
-                  </span>
-                  <span className="settings-theme-option__label">{option.icon}<b>{option.label}</b></span>
-                  <small>{option.description}</small>
-                  {active && <span className="settings-theme-option__active"><CheckCircleOutlined /> {copy.selected}</span>}
-                </button>
-              );
-            })}
-          </div>
-        </section>
       </div>
 
       <section className="settings-account">
@@ -449,12 +486,17 @@ const Settings: React.FC = () => {
           <Descriptions.Item label={copy.session}>{session ? copy.active : copy.inactive}</Descriptions.Item>
           <Descriptions.Item label={copy.credentialPolicy}>{copy.masked}</Descriptions.Item>
         </Descriptions>
+        <div className="settings-security-modal__actions">
+          <Button icon={<DownloadOutlined />} loading={exportingData} onClick={exportAccountData}>{copy.exportData}</Button>
+          <Button icon={<StopOutlined />} loading={revokingSessions} onClick={revokeOtherSessions}>{copy.revokeSessions}</Button>
+        </div>
         <Alert
           message={copy.securityMessage}
           description={copy.securityDescription}
           type="info"
           showIcon
         />
+        <MfaEnrollmentPanel language={language} />
       </Modal>
     </div>
   );

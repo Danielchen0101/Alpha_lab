@@ -21,11 +21,13 @@ backend/*.log
 backend/debug_*_pipeline_result.json
 backend/pipeline_runtime_state.json
 backend/pipeline_managed_positions.json
+backend/operations_store.local.json
 
 **/__pycache__
 **/*.py[cod]
 **/.pytest_cache
 screenshots
+memory
 coverage
 dist
 tmp

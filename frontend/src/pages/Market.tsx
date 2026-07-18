@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Button,
@@ -21,7 +21,10 @@ import {
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useAuth } from '../contexts/AuthContext';
 import { useTradeMode } from '../contexts/TradeModeContext';
+import { readCachedWorkspacePreferences, useWorkspacePreferences } from '../contexts/WorkspacePreferencesContext';
+import { isOperationsArtifactConflict, operationsArtifactsAPI } from '../services/operationsArtifactsService';
 import { scannerApi } from '../services/api';
 import { scannerStateStore } from '../services/scannerStateStore';
 import {
@@ -31,8 +34,8 @@ import {
 } from '../routes/marketRoutes';
 import './MarketEditorial.css';
 
-const SETTINGS_KEY = 'alpha_lab_market_scanner_settings_v4';
-const SESSION_KEY = 'alpha_lab_market_scanner_view_v1';
+const SETTINGS_KEY_PREFIX = 'alpha_lab_market_scanner_settings_v4';
+const SESSION_KEY_PREFIX = 'alpha_lab_market_scanner_view_v1';
 
 type ScannerUniverse = 'alpaca_market';
 
@@ -561,32 +564,52 @@ const factorLabels = {
   risk: { en: 'Risk', zh: '风险' },
 };
 
-const loadSettings = (): ScannerSettings => {
+const settingsStorageKey = (userId: string): string => `${SETTINGS_KEY_PREFIX}:${userId}`;
+const sessionStorageKey = (userId: string): string => `${SESSION_KEY_PREFIX}:${userId}`;
+
+const accountScannerDefaults = (userId?: string | null): ScannerSettings => {
+  const research = readCachedWorkspacePreferences(userId).research;
+  return {
+    ...defaultSettings,
+    maxSymbols: research.maxSymbols,
+    maxResults: research.outputSize,
+    aiReviewTopN: research.aiReviewLimit,
+    filters: {
+      ...defaultSettings.filters,
+      minPrice: research.minPrice,
+      minMarketCap: research.minMarketCap,
+      minDollarVolume: research.minDollarVolume,
+    },
+  };
+};
+
+const loadSettings = (storageKey: string, userId?: string | null): ScannerSettings => {
+  const defaults = accountScannerDefaults(userId);
   try {
-    const raw = window.localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return defaultSettings;
+    const raw = window.localStorage.getItem(storageKey);
+    if (!raw) return defaults;
     const parsed = JSON.parse(raw);
     return {
-      ...defaultSettings,
+      ...defaults,
       ...parsed,
-      filters: { ...defaultSettings.filters, ...(parsed.filters || {}) },
+      filters: { ...defaults.filters, ...(parsed.filters || {}) },
     };
   } catch {
-    return defaultSettings;
+    return defaults;
   }
 };
 
-const saveSettings = (settings: ScannerSettings) => {
+const saveSettings = (storageKey: string, settings: ScannerSettings) => {
   try {
-    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    window.localStorage.setItem(storageKey, JSON.stringify(settings));
   } catch {
     // The scanner remains usable when storage is unavailable.
   }
 };
 
-const loadPersistedView = (): PersistedScannerView => {
+const loadPersistedView = (storageKey: string): PersistedScannerView => {
   try {
-    const raw = window.sessionStorage.getItem(SESSION_KEY);
+    const raw = window.sessionStorage.getItem(storageKey);
     if (!raw) return { results: [], summary: null, lastDuration: null };
     const parsed = JSON.parse(raw);
     return {
@@ -692,8 +715,10 @@ const aiColor = (decision?: string): string => {
 
 const Market: React.FC = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const { language, translateSector } = useLanguage();
   const { tradeMode } = useTradeMode();
+  const { preferences } = useWorkspacePreferences();
   const isZh = language === 'zh-CN';
   const c = isZh ? copy.zh : copy.en;
   const formatScannerError = (value: unknown): string => {
@@ -730,8 +755,19 @@ const Market: React.FC = () => {
       'Strong Bearish': '强势看跌',
     } as Record<string, string>)[value] || value;
   };
-  const [initialView] = useState<PersistedScannerView>(() => loadPersistedView());
-  const [settings, setSettings] = useState<ScannerSettings>(() => loadSettings());
+  const accountSettingsKey = user?.id ? settingsStorageKey(user.id) : '';
+  const accountSessionKey = user?.id ? sessionStorageKey(user.id) : '';
+  const [initialView] = useState<PersistedScannerView>(() => (
+    user?.id ? loadPersistedView(sessionStorageKey(user.id)) : { results: [], summary: null, lastDuration: null }
+  ));
+  const [settings, setSettings] = useState<ScannerSettings>(() => (
+    user?.id ? loadSettings(settingsStorageKey(user.id), user.id) : defaultSettings
+  ));
+  const settingsRef = useRef(settings);
+  const settingsHydratedRef = useRef(false);
+  const settingsVersionRef = useRef<number | undefined>(undefined);
+  const settingsDirtyRef = useRef(false);
+  const settingsSaveTimerRef = useRef<number | null>(null);
   const [results, setResults] = useState<ScannerResult[]>(initialView.results);
   const [summary, setSummary] = useState<ScannerSummary | null>(initialView.summary);
   const [lastDuration, setLastDuration] = useState<number | null>(initialView.lastDuration);
@@ -739,14 +775,117 @@ const Market: React.FC = () => {
   const [error, setError] = useState('');
   const [scanStartedAt, setScanStartedAt] = useState<number | null>(null);
   const [scanElapsed, setScanElapsed] = useState(0);
+  const skipNextViewSaveRef = useRef(false);
+
+  const persistSettings = React.useCallback(async (nextSettings: ScannerSettings) => {
+    try {
+      const artifact = await operationsArtifactsAPI.put(
+        'market-scanner',
+        'settings',
+        { settings: nextSettings },
+        settingsVersionRef.current,
+      );
+      if (artifact) settingsVersionRef.current = artifact.version;
+      settingsDirtyRef.current = false;
+    } catch (error) {
+      if (!isOperationsArtifactConflict(error)) throw error;
+      const latest = await operationsArtifactsAPI.get<{ settings?: Partial<ScannerSettings> }>('market-scanner', 'settings');
+      settingsVersionRef.current = latest?.version;
+      const retry = await operationsArtifactsAPI.put(
+        'market-scanner',
+        'settings',
+        { settings: nextSettings },
+        settingsVersionRef.current,
+      );
+      if (retry) settingsVersionRef.current = retry.version;
+      settingsDirtyRef.current = false;
+    }
+  }, []);
 
   useEffect(() => {
+    if (!user?.id || !accountSettingsKey) {
+      settingsHydratedRef.current = false;
+      settingsVersionRef.current = undefined;
+      settingsDirtyRef.current = false;
+      setSettings(defaultSettings);
+      return undefined;
+    }
+
+    let active = true;
+    const hydrateSettings = async () => {
+      const defaults = accountScannerDefaults(user.id);
+      const localSettings = loadSettings(accountSettingsKey, user.id);
+      settingsRef.current = localSettings;
+      setSettings(localSettings);
+      settingsHydratedRef.current = false;
+      settingsVersionRef.current = undefined;
+      settingsDirtyRef.current = false;
+      try {
+        const artifact = await operationsArtifactsAPI.get<{ settings?: Partial<ScannerSettings> }>('market-scanner', 'settings');
+        if (!active) return;
+        settingsVersionRef.current = artifact?.version;
+        const remote = artifact?.payload?.settings;
+        if (settingsDirtyRef.current) {
+          await persistSettings(settingsRef.current);
+        } else if (remote && typeof remote === 'object') {
+          const hydrated = {
+            ...defaults,
+            ...remote,
+            filters: { ...defaults.filters, ...(remote.filters || {}) },
+          };
+          settingsRef.current = hydrated;
+          setSettings(hydrated);
+          saveSettings(accountSettingsKey, hydrated);
+        } else if (!artifact && window.localStorage.getItem(accountSettingsKey)) {
+          // Only an authenticated account-scoped cache can seed the durable
+          // mandate. The former global key is intentionally never read.
+          await persistSettings(localSettings);
+        }
+      } catch (error) {
+        console.warn('Scanner settings are using this device cache.', error);
+      } finally {
+        if (active) settingsHydratedRef.current = true;
+      }
+    };
+    void hydrateSettings();
+    return () => { active = false; };
+  }, [accountSettingsKey, persistSettings, user?.id]);
+
+  useEffect(() => {
+    if (!settingsHydratedRef.current) return undefined;
+    if (settingsSaveTimerRef.current !== null) window.clearTimeout(settingsSaveTimerRef.current);
+    settingsSaveTimerRef.current = window.setTimeout(() => {
+      void persistSettings(settings).catch((error) => {
+        console.warn('Scanner settings could not be synchronized across devices.', error);
+      });
+    }, 350);
+    return () => {
+      if (settingsSaveTimerRef.current !== null) window.clearTimeout(settingsSaveTimerRef.current);
+    };
+  }, [persistSettings, settings]);
+
+  useEffect(() => {
+    skipNextViewSaveRef.current = true;
+    const view = accountSessionKey
+      ? loadPersistedView(accountSessionKey)
+      : { results: [], summary: null, lastDuration: null };
+    setResults(view.results);
+    setSummary(view.summary);
+    setLastDuration(view.lastDuration);
+  }, [accountSessionKey]);
+
+  useEffect(() => {
+    if (!accountSessionKey) return;
+    if (skipNextViewSaveRef.current) {
+      skipNextViewSaveRef.current = false;
+      return;
+    }
     try {
-      window.sessionStorage.setItem(SESSION_KEY, JSON.stringify({ results, summary, lastDuration }));
+      window.sessionStorage.setItem(accountSessionKey, JSON.stringify({ results, summary, lastDuration }));
     } catch {
       // Session persistence is an enhancement, not a scanning requirement.
     }
-  }, [lastDuration, results, summary]);
+  }, [accountSessionKey, lastDuration, results, summary]);
 
   useEffect(() => {
     if (!initialView.results.length) return;
@@ -783,27 +922,34 @@ const Market: React.FC = () => {
   }, [loading, scanStartedAt]);
 
   const updateSetting = (patch: Partial<ScannerSettings>) => {
+    settingsDirtyRef.current = true;
     setSettings((current) => {
       const next = { ...current, ...patch };
-      saveSettings(next);
+      settingsRef.current = next;
+      if (accountSettingsKey) saveSettings(accountSettingsKey, next);
       return next;
     });
   };
 
   const updateFilter = (key: keyof ScannerFilters, value: number | null) => {
+    settingsDirtyRef.current = true;
     setSettings((current) => {
       const next = {
         ...current,
         filters: { ...current.filters, [key]: value ?? defaultSettings.filters[key] },
       };
-      saveSettings(next);
+      settingsRef.current = next;
+      if (accountSettingsKey) saveSettings(accountSettingsKey, next);
       return next;
     });
   };
 
   const resetFilters = () => {
-    setSettings(defaultSettings);
-    saveSettings(defaultSettings);
+    const defaults = accountScannerDefaults(user?.id);
+    settingsDirtyRef.current = true;
+    settingsRef.current = defaults;
+    setSettings(defaults);
+    if (accountSettingsKey) saveSettings(accountSettingsKey, defaults);
   };
 
   const runScanner = async () => {
@@ -813,7 +959,7 @@ const Market: React.FC = () => {
       setScanStartedAt(Date.now());
       setScanElapsed(0);
       setError('');
-      saveSettings(settings);
+      if (accountSettingsKey) saveSettings(accountSettingsKey, settings);
       const currentScanner = scannerStateStore.getState().marketScanner;
       scannerStateStore.updateMarketScanner({
         status: 'running',
@@ -835,6 +981,10 @@ const Market: React.FC = () => {
       const response = await scannerApi.post('/market/scanner', {
         ...settings,
         alpacaMode: tradeMode,
+        excludedSymbols: preferences.research.excludedSymbols,
+        excludedSectors: preferences.research.excludedSectors,
+        dataFreshnessSeconds: preferences.research.dataFreshnessSeconds,
+        includeExtendedHours: preferences.research.includeExtendedHours,
       });
       const payload = response.data || {};
       if (!payload.success) throw new Error(payload.message || payload.error || c.scannerFailed);

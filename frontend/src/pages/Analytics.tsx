@@ -1102,6 +1102,9 @@ const Analytics: React.FC = () => {
   // 初始化加载数据
   useEffect(() => {
     fetchAnalyticsData();
+    // The analytics report is an initial snapshot; manual refresh owns later
+    // requests and the loader is intentionally not a render dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 渲染函数

@@ -5,6 +5,7 @@ import {
   ArrowRightOutlined,
   AuditOutlined,
   ExperimentOutlined,
+  FileSearchOutlined,
   FilterOutlined,
   FundOutlined,
   LineChartOutlined,
@@ -30,6 +31,7 @@ import {
   RESEARCH_REVIEW_PATH,
 } from '../routes/researchRoutes';
 import './ResearchWorkspace.css';
+import EvidenceDrawer from '../components/EvidenceDrawer';
 
 type CandidateFilter = 'all' | 'priority' | 'advance' | 'challenge' | 'event';
 type CandidateRecord = Record<string, any> & { symbol: string };
@@ -464,6 +466,7 @@ export const CandidateUniversePage: React.FC = () => {
   const c = isZh ? copy.zh : copy.en;
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<CandidateFilter>('all');
+  const [evidenceRecord, setEvidenceRecord] = useState<CandidateRecord | null>(null);
   const results = useMemo(
     () => asArray(snapshot.marketScanner.results).filter((row): row is CandidateRecord => Boolean(row?.symbol)),
     [snapshot.marketScanner.results],
@@ -625,10 +628,13 @@ export const CandidateUniversePage: React.FC = () => {
       title: c.actions,
       key: 'actions',
       fixed: 'right',
-      width: 178,
+      width: 242,
       align: 'center',
       render: (_value, record) => (
         <div className="rw-row-actions">
+          <Tooltip title={c.evidence}>
+            <Button aria-label={`${c.evidence} ${record.symbol}`} icon={<FileSearchOutlined />} onClick={() => setEvidenceRecord(record)} />
+          </Tooltip>
           <Button icon={<LineChartOutlined />} onClick={() => openSymbol(record.symbol)}>{c.analyze}</Button>
           <Button icon={<AuditOutlined />} onClick={() => navigate(`${RESEARCH_REVIEW_PATH}?symbol=${encodeURIComponent(record.symbol)}`)}>{c.review}</Button>
         </div>
@@ -736,6 +742,7 @@ export const CandidateUniversePage: React.FC = () => {
           }}
         />
       </section>
+      <EvidenceDrawer open={Boolean(evidenceRecord)} onClose={() => setEvidenceRecord(null)} record={evidenceRecord} language={language} stage="market-scanner" />
     </div>
   );
 };
@@ -777,6 +784,7 @@ export const ReviewWorkspacePage: React.FC = () => {
   const isZh = language === 'zh-CN';
   const c = isZh ? copy.zh : copy.en;
   const [search, setSearch] = useState(() => searchParams.get('symbol') || '');
+  const [evidenceArtifact, setEvidenceArtifact] = useState<ReviewArtifact | null>(null);
 
   useEffect(() => {
     const requestedSymbol = searchParams.get('symbol');
@@ -907,9 +915,16 @@ export const ReviewWorkspacePage: React.FC = () => {
       title: c.open,
       key: 'open',
       fixed: 'right',
-      width: 116,
+      width: 188,
       align: 'center',
-      render: (_value, item) => <Button icon={<LineChartOutlined />} onClick={() => { rememberMarketSymbol(item.symbol); navigate(marketSymbolPath(item.symbol)); }}>{c.analyze}</Button>,
+      render: (_value, item) => (
+        <div className="rw-row-actions">
+          <Tooltip title={c.evidence}>
+            <Button aria-label={`${c.evidence} ${item.symbol}`} icon={<FileSearchOutlined />} onClick={() => setEvidenceArtifact(item)} />
+          </Tooltip>
+          <Button icon={<LineChartOutlined />} onClick={() => { rememberMarketSymbol(item.symbol); navigate(marketSymbolPath(item.symbol)); }}>{c.analyze}</Button>
+        </div>
+      ),
     },
   ];
 
@@ -1002,6 +1017,7 @@ export const ReviewWorkspacePage: React.FC = () => {
       </section>
 
       <footer className="rw-source-line"><SafetyCertificateOutlined /><span>{c.readOnly}</span><p>{c.readOnlyNote}</p><Button type="link" onClick={() => navigate(AI_RESEARCH_PATH)}>{c.pipeline} <ArrowRightOutlined /></Button></footer>
+      <EvidenceDrawer open={Boolean(evidenceArtifact)} onClose={() => setEvidenceArtifact(null)} record={evidenceArtifact?.record || null} language={language} stage={evidenceArtifact?.stage} />
     </div>
   );
 };

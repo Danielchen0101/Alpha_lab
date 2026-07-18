@@ -10,8 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Danielchen0101/quant_platform/releases"><img src="https://img.shields.io/badge/release-v3.0.0-0f766e?style=flat-square" alt="Release v3.0.0"></a>
-  <a href="https://github.com/Danielchen0101/quant_platform/actions/workflows/ci.yml"><img src="https://github.com/Danielchen0101/quant_platform/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/Danielchen0101/Alpha_lab/releases"><img src="https://img.shields.io/badge/release-v3.0.0-0f766e?style=flat-square" alt="Release v3.0.0"></a>
+  <a href="https://github.com/Danielchen0101/Alpha_lab/actions/workflows/ci.yml"><img src="https://github.com/Danielchen0101/Alpha_lab/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2563eb?style=flat-square" alt="MIT License"></a>
   <img src="https://img.shields.io/badge/Node.js-%E2%89%A520-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js 20 or newer">
   <img src="https://img.shields.io/badge/Python-3.11-3776ab?style=flat-square&logo=python&logoColor=white" alt="Python 3.11">
@@ -32,7 +32,7 @@ AlphaLab v3.0.0 brings market research, strategy testing, portfolio-aware decisi
 
 The platform is designed around visible evidence. Scanner inputs, validation results, blockers, order plans, and pipeline state remain inspectable instead of being hidden behind a single model score. AI providers can summarize evidence and challenge a decision, while deterministic code retains control of data-quality checks, portfolio admission, sizing, execution authorization, and hard risk stops.
 
-The routed interface supports English and Simplified Chinese. Language selection persists in the browser and updates the application and Ant Design locale; text returned by external providers may remain in its source language.
+The routed interface supports English and Simplified Chinese. New visitors start in English. An authenticated user's explicit language choice is saved with the workspace, restored across devices, and also controls supported Discord notification copy; local browser storage keeps switching usable while the backend is temporarily unavailable. Text returned by external providers may remain in its source language.
 
 ![AlphaLab v3 public overview in English](docs/assets/alphalab-v3-overview.png)
 
@@ -49,8 +49,10 @@ _AlphaLab v3 public overview in the English interface. Figures shown in this pro
 | Strategy lab | Twelve backtest engines including a buy-and-hold benchmark, return/risk/trade metrics, equity and drawdown charts, trade records, exhaustive parameter-grid sweeps, comparison, and ranking |
 | Trade planning | Trigger conditions, entry zones, sizing, stop and target geometry, order previews, and explicit paper/live authorization checks |
 | Brokerage | Alpaca paper and live account views, positions, orders, assets, portfolio history, reviewed order entry, cancellation, and managed position protection |
-| Operations | Activity log, runtime and configuration health, scheduled-run history, market-session scheduling, pipeline diagnostics, and optional Discord notifications |
-| Configuration | Per-user Alpaca, market-data, AI-provider, Finnhub, and Discord settings stored through the authenticated backend |
+| Portfolio evidence | Exposure, concentration, cash weight, drawdown, unrealized P/L, source freshness, holdings CSV export, and a versioned portfolio JSON report |
+| Operations and safety | Activity log, runtime and configuration health, Safety Center controls, readiness checks, order and notification histories, scheduled-run state, pipeline diagnostics, and optional bilingual Discord notifications |
+| Evidence and saved artifacts | Read-only candidate evidence drawers with sensitive-field redaction and JSON export, plus cross-device scanner settings, watchlists, and saved strategy blueprints |
+| Configuration and identity | Per-user Alpaca, market-data, AI-provider, Finnhub, and Discord settings; persistent workspace mode and language; secure email password recovery; Supabase TOTP MFA enrollment and challenge flows |
 
 Data freshness and availability depend on the connected vendor, account entitlements, market hours, and rate limits. AlphaLab reports missing or stale inputs where the integration exposes that state; it does not make every feed real-time.
 
@@ -84,7 +86,7 @@ flowchart LR
 | Hybrid | Adds AI review and challenge; no automatic order submission |
 | Full AI | May submit an eligible order only after deterministic gates and explicit execution authorization |
 
-Paper mode is the session default. Live mode is separate, requires valid live credentials, and unattended live execution additionally requires an explicit persisted opt-in.
+New accounts begin in paper mode. After a user explicitly chooses paper or live mode, that account-scoped preference is restored on later sign-ins and other devices instead of being reset by authentication changes. Live mode remains separate, requires valid live credentials, and unattended live execution additionally requires an explicit persisted opt-in.
 
 ## Architecture
 
@@ -106,7 +108,7 @@ flowchart TB
     end
 
     auth["Supabase Auth"]
-    db["Supabase Postgres<br>RLS configs and run history"]
+    db["Supabase Postgres<br>RLS configs, operations, artifacts, and run history"]
     market["Market data and news<br>Alpaca · Finnhub"]
     broker["Alpaca brokerage<br>paper · live"]
     ai["Configurable AI providers<br>DeepSeek · OpenAI · Claude · Gemini · NVIDIA NIM"]
@@ -128,7 +130,7 @@ flowchart TB
     pipeline --> discord
 ~~~
 
-The backend currently owns both the REST API and the scheduler. Keep exactly one Gunicorn worker in production; running multiple workers or replicas can create multiple schedulers because there is no distributed scheduler lock.
+The backend currently owns the REST API, scheduler, and managed-position guard. Keep exactly one Gunicorn worker in production; running multiple workers or replicas can create multiple schedulers because there is no distributed scheduler lock. Route-level React code splitting keeps public and authenticated pages out of the initial route bundle until they are needed. A bilingual top-level error boundary provides a recovery path for render failures, and optional privacy-minimized Web Vitals events can be enabled for a host application's telemetry collector.
 
 | Layer | Technology |
 | --- | --- |
@@ -147,13 +149,13 @@ The backend currently owns both the REST API and the scheduler. Keep exactly one
 | Workspace area | Routes | Purpose |
 | --- | --- | --- |
 | Public | <code>/</code>, <code>/platform</code>, <code>/workflow</code>, <code>/research</code>, <code>/examples</code>, <code>/data</code>, <code>/technology</code>, <code>/security</code>, <code>/about</code> | Product, methodology, examples, architecture, security, and project information |
-| Account and legal | <code>/signin</code>, <code>/signup</code>, <code>/forgot-password</code>, <code>/reset-password</code>, <code>/terms</code>, <code>/privacy</code> | Supabase-backed account and legal flows |
+| Account and legal | <code>/signin</code>, <code>/signup</code>, <code>/forgot-password</code>, <code>/reset-password</code>, <code>/mfa</code>, <code>/terms</code>, <code>/privacy</code> | Supabase-backed account, TOTP MFA, and legal flows |
 | Overview | <code>/dashboard</code>, <code>/activity</code>, <code>/system-health</code> | Market overview, activity, configuration state, and runtime health |
 | Markets | <code>/market</code>, <code>/market/symbol/:symbol</code>, <code>/watchlist</code> | Scanner, symbol research, and saved market lists |
 | Research | <code>/agent</code>, <code>/agent/candidates</code>, <code>/agent/review</code> | Pipeline control plus read-only candidate and review workspaces |
 | Strategies | <code>/backtest</code>, <code>/backtest/:id</code>, <code>/compare</code>, <code>/optimize</code>, <code>/ranking</code> | Backtests, details, parameter grids, comparison, and ranking |
 | Trade | <code>/trade</code>, <code>/portfolio</code> | Reviewed orders, account state, positions, and portfolio history |
-| Settings | <code>/settings</code>, <code>/settings/configuration</code> | Preferences and external-service connections |
+| Settings and safety | <code>/settings</code>, <code>/settings/configuration</code>, <code>/safety</code> | Preferences, MFA enrollment, external-service connections, readiness, entry pause/resume, order lifecycle, and delivery history |
 
 ### Backend API modules
 
@@ -165,6 +167,7 @@ The backend currently owns both the REST API and the scheduler. Keep exactly one
 | <code>/api/backtest/*</code> | Backtests, history, and parameter-grid optimization |
 | <code>/api/ai/*</code>, <code>/api/ai-agent/*</code> | AI analysis, staged research, scheduler control, results, and history |
 | <code>/api/entry-plan/*</code>, <code>/api/trading/*</code> | Entry-plan checks, account data, reviewed orders, and cancellation |
+| <code>/api/operations/*</code> | Durable Safety Center state, readiness, audit events, order lifecycle, notification delivery, and cross-device artifacts |
 | <code>/api/notifications/*</code> | Discord configuration, testing, and event delivery |
 
 The API is JSON/REST only. The repository does not currently include an OpenAPI specification or a WebSocket server.
@@ -183,13 +186,19 @@ Alpaca, Finnhub, AI-provider, and Discord credentials are optional at boot. Add 
 ### 1. Clone the repository
 
 ~~~bash
-git clone https://github.com/Danielchen0101/quant_platform.git
-cd quant_platform
+git clone https://github.com/Danielchen0101/Alpha_lab.git
+cd Alpha_lab
 ~~~
 
 ### 2. Prepare Supabase
 
-Create a Supabase project, enable the authentication providers you intend to use, then run <code>backend/supabase_schema.sql</code> in the Supabase SQL Editor. The schema creates owner-scoped tables for encrypted provider configuration, pipeline schedules, and run history.
+Create a Supabase project, enable the authentication providers you intend to use, then apply these SQL files in order in the Supabase SQL Editor:
+
+1. <code>backend/supabase_schema.sql</code> for encrypted provider configuration, workspace preferences, pipeline schedules, and run history;
+2. <code>backend/supabase_operations_store.sql</code> for Safety Center state, readiness, append-only operational records, order and notification history, and cross-device artifacts;
+3. <code>backend/supabase_security_hardening.sql</code> to make browser roles read-only and keep all validated mutations behind the backend.
+
+All three SQL files are required in production. Real new-entry paths fail closed when durable operations storage cannot be read, and the Safety Center and artifact APIs return an unavailable response instead of silently switching to process-local files. Local operations fallback is limited to development and test environments.
 
 Collect:
 
@@ -275,6 +284,7 @@ Every <code>REACT_APP_*</code> value is embedded into the browser build and must
 | <code>REACT_APP_SUPABASE_URL</code> | Yes | Supabase project URL used by browser authentication |
 | <code>REACT_APP_SUPABASE_ANON_KEY</code> | Yes | Browser-safe Supabase anonymous key |
 | <code>REACT_APP_TURNSTILE_SITE_KEY</code> | Production auth | Public Cloudflare Turnstile site key |
+| <code>REACT_APP_ENABLE_ANALYTICS</code> | No | Set to <code>true</code> to emit sanitized <code>alphalab:web-vital</code> browser events for a host telemetry collector |
 
 ### Backend runtime variables
 
@@ -283,12 +293,14 @@ Every <code>REACT_APP_*</code> value is embedded into the browser build and must
 | <code>SUPABASE_URL</code> | Yes | Supabase project used for token verification and durable state |
 | <code>SUPABASE_SERVICE_ROLE_KEY</code> | Yes | Server-only database key; never expose it to React |
 | <code>FERNET_KEY</code> | Yes in persistent environments | Encrypts saved Alpaca, AI, Finnhub, and Discord fields; it must remain stable |
+| <code>APP_SECRET_KEY</code> | Production | Stable Flask session and application signing secret |
 | <code>FRONTEND_ORIGIN</code> | One origin | Allowed browser origin |
 | <code>CORS_ORIGINS</code> | Multiple origins | Comma-separated alternative to <code>FRONTEND_ORIGIN</code> |
 | <code>FLASK_ENV</code> | Production | Set to <code>production</code> outside local development |
 | <code>PORT</code> | Hosted Gunicorn | Port supplied by Render or another process manager; the local entry point remains on 8889 |
 | <code>FLASK_DEBUG</code> | No | Enables Flask debug behavior for local development |
 | <code>DEBUG_ENDPOINTS</code> | No | Enables diagnostic endpoints only when <code>FLASK_ENV=development</code> |
+| <code>OPERATIONS_STORE_LOCAL_FALLBACK</code> | Development only | Allows the local JSON operations mirror outside tests; never enable it on a hosted production service |
 
 Authenticated broker and provider workflows use the per-user values saved from the Settings UI. They do not intentionally fall back to shared server-wide trading credentials.
 
@@ -301,17 +313,17 @@ AlphaLab supports a split web/API deployment and an all-in-one container.
 | Service | Setting | Value |
 | --- | --- | --- |
 | Cloudflare Pages | Root directory | <code>frontend</code> |
-| Cloudflare Pages | Build command | <code>npm run build</code> |
+| Cloudflare Pages | Build command | <code>npm ci && npm run build</code> |
 | Cloudflare Pages | Output directory | <code>build</code> |
 | Render | Root directory | <code>backend</code> |
 | Render | Build command | <code>pip install -r requirements.txt</code> |
 | Render | Start command | <code>MALLOC_ARENA_MAX=2 gunicorn start_quant_backend:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 900</code> |
 
-Set the four frontend build variables in Cloudflare Pages and the backend runtime variables in Render. Point <code>REACT_APP_API_BASE_URL</code> to the Render service with the <code>/api</code> suffix, and set <code>FRONTEND_ORIGIN</code> to the exact deployed frontend origin.
+Apply all three Supabase SQL files before deploying the application. Set the frontend build variables in Cloudflare Pages and the backend runtime variables in Render. Point <code>REACT_APP_API_BASE_URL</code> to the Render service with the <code>/api</code> suffix, and set <code>FRONTEND_ORIGIN</code> to the exact deployed frontend origin.
 
 Add the deployed frontend origin and its <code>/auth/confirmed</code> and <code>/reset-password</code> callbacks to the Supabase Auth URL configuration. Configure the same production host for Turnstile.
 
-The scheduler, position guard, and order reconciliation run inside the backend process. Unattended operation therefore requires an always-on instance. A sleeping instance stops those tasks until the service wakes again.
+The scheduler, position guard, and order reconciliation run inside the backend process. Unattended operation therefore requires an always-on instance. A sleeping instance stops those tasks until the service wakes again. Pausing new entries in the Safety Center preserves broker-side protective sell, stop, and OCO orders; it does not make the in-process guard independent of backend availability.
 
 ### Docker
 
@@ -357,13 +369,14 @@ npx tsc --noEmit
 npm run build
 ~~~
 
-The Playwright suite is a production smoke test and currently targets <code>https://www.alphalabquant.com</code>:
+Playwright builds and serves the production frontend locally at <code>http://127.0.0.1:4173</code> by default. Set <code>PLAYWRIGHT_BASE_URL</code> only when intentionally testing an external deployment:
 
 ~~~bash
 npm run test:e2e
+PLAYWRIGHT_BASE_URL=https://www.alphalabquant.com npm run test:e2e
 ~~~
 
-The v3 release upgrades direct Axios and React Router dependencies. Create React App 5 still brings legacy audit findings through its build, Jest/jsdom, SVG, and development-server toolchain; npm's suggested forced replacement is not applied because it would replace React Scripts with an invalid/breaking version. See the v3 release notes for the recorded count and upgrade boundary.
+The current validation baseline is **64 frontend Jest tests, 293 backend pytest tests, and 12 Chromium Playwright tests**. CI also runs production builds, TypeScript and ESLint checks, high/critical npm dependency gating, Python dependency auditing, secret scanning, and Docker validation. Create React App remains a legacy toolchain, but the documentation does not pin audit or bundle-size counts that can become stale after each lockfile update.
 
 These checks do not prove market-data quality, strategy validity, broker availability, deployment availability, or future trading performance. Verify every configured environment separately.
 
@@ -371,10 +384,13 @@ These checks do not prove market-data quality, strategy validity, broker availab
 
 - **Supabase sessions:** the browser obtains a Supabase session and sends its bearer token with authenticated workspace requests.
 - **Owner-scoped storage:** the supplied SQL enables row-level security for provider configuration, pipeline configuration, and run history. Backend service-role queries are scoped to the verified user.
+- **Durable operations state:** the operations migration adds versioned Safety Center state, readiness, lifecycle and delivery records, and owner-scoped artifacts. Production real-entry checks fail closed if this store is unavailable.
 - **Server-side secrets:** <code>SUPABASE_SERVICE_ROLE_KEY</code> and <code>FERNET_KEY</code> stay on the backend. Browser builds receive only the Supabase anonymous key and other public build values.
 - **Credential protection:** provider fields are encrypted before storage and masked on reads when a stable Fernet key and the cryptography dependency are present. Missing or rotating the key can make stored values unreadable.
 - **Human verification:** Turnstile protects production sign-in, registration, and password-recovery flows when configured.
-- **Paper-first execution:** sessions return to paper mode after account or authentication changes. Live and unattended execution require separate, explicit authorization.
+- **MFA:** users can enroll a TOTP authenticator in Settings; enrolled accounts are routed through an AAL2 challenge when the Supabase session requires it.
+- **Account-scoped trading mode:** new accounts start in paper mode, while an explicit paper/live choice is saved and restored across sessions and devices. Live and unattended execution still require separate authorization.
+- **Safety semantics:** pausing new entries can optionally cancel pending managed buys while retaining protective exits; resuming uses optimistic version checks against durable state.
 - **Bounded AI authority:** AI can summarize, challenge, or downgrade evidence; it cannot bypass deterministic data, capacity, duplicate-order, execution, or hard-stop controls.
 
 The Flask application retains legacy compatibility routes, and its built-in rate limiting is process-local rather than a distributed WAF. Review exposed routes, use HTTPS, restrict CORS to exact origins, place production deployments behind appropriate edge controls, and rotate any credential that may have been exposed.

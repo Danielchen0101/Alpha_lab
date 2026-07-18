@@ -3,28 +3,29 @@ import { Alert, Button, Typography } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import {
+  MarketRiskSnapshotResponse,
   StockData,
   getDashboardStatus,
+  getMarketRiskSnapshot,
   safeNumber,
 } from '../services/marketDataService';
 import { sharedDataService } from '../services/sharedDataService';
 import { pipelineAutoAPI } from '../services/api';
 import { useLanguage } from '../contexts/LanguageContext';
-import { formatMarketCap } from '../utils/format';
+import { useAuth } from '../contexts/AuthContext';
 import { marketSymbolPath, rememberMarketSymbol } from '../routes/marketRoutes';
 import './DashboardEditorial.css';
 
 const { Text } = Typography;
 
-const STORAGE_KEY = 'quant_watchlist_symbols';
+const STORAGE_KEY_PREFIX = 'quant_watchlist_symbols';
 
 type MoversView = 'all' | 'gainers' | 'losers' | 'watchlist';
 type StatusTone = 'good' | 'warn' | 'bad' | 'neutral';
 
-interface SectorData {
+interface MarketPulseData {
   name: string;
-  count: number;
-  percentage: number;
+  change: number;
 }
 
 interface SectorBreadthData {
@@ -39,6 +40,11 @@ interface HistogramBin {
   label: string;
   count: number;
   tone: 'negative' | 'neutral' | 'positive';
+}
+
+interface DashboardMover extends StockData {
+  dollarVolume?: number;
+  exchange?: string;
 }
 
 function getChangePercent(stock: StockData): number | null {
@@ -113,11 +119,16 @@ const getStatusTone = (status?: string): StatusTone => {
 
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const { t, translateSector, language } = useLanguage();
+  const watchlistStorageKey = user?.id ? `${STORAGE_KEY_PREFIX}:${user.id}` : null;
   const fetchingRef = useRef(false);
   const refreshRef = useRef<() => void>(() => undefined);
 
   const [marketData, setMarketData] = useState<StockData[]>([]);
+  const [marketRisk, setMarketRisk] = useState<MarketRiskSnapshotResponse | null>(null);
+  const [riskLoading, setRiskLoading] = useState(false);
+  const [riskError, setRiskError] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [needsConfig, setNeedsConfig] = useState(false);
@@ -138,17 +149,17 @@ const Dashboard: React.FC = () => {
     overview: '市场概览', watchlist: '自选列表', signalStream: '信号流', systemStatus: '系统状态',
     lastSync: '最后同步', refresh: '刷新', layout: '布局 02 · 宽幅编辑式', title: '今日市场结构',
     subtitle: '基于当前市场快照与研究工作区的实时概览。', universe: '股票池', advancing: '上涨',
-    declining: '下跌', avgMove: '平均波动', marketCap: '总市值', largestMove: '最大波动', totalSymbols: '全部标的',
-    averageMove: '平均涨跌幅', strongestMove: '当前最大波动', marketRegime: '市场状态', asOf: '截至',
-    breadthSpectrum: '涨跌分布', advancingDeclining: '上涨 / 下跌', sectorParticipation: '板块参与度',
-    sector: '板块', ratio: '比例', noBreadth: '当前快照暂无可用涨跌数据。', sessionBrief: '盘面摘要',
-    leadingMove: '领先波动', concentration: '集中度', topTenMarketCap: '市值前十占比', unavailable: '暂无',
+    declining: '下跌', avgMove: '中位涨跌', marketCap: '风险分数', largestMove: '数据覆盖', totalSymbols: '有效样本 / 1,500',
+    averageMove: '等权股票中位数', strongestMove: '有效日涨跌快照', marketRegime: '全市场风险状态', asOf: '数据日期',
+    breadthSpectrum: '涨跌横截面分布', advancingDeclining: '上涨 / 下跌', sectorParticipation: '交易所广度',
+    sector: '交易所', ratio: '比例', noBreadth: '当前全市场快照暂无可用涨跌数据。', sessionBrief: '风险摘要',
+    leadingMove: '风险状态', concentration: '尾部下跌', topTenMarketCap: '跌幅≥2% 的股票比例', unavailable: '暂无',
     systemReadiness: '系统就绪状态', researchQueue: '研究队列', reviewQueue: '查看活动', observed: '已观察',
     observedDescription: '最近一次管线扫描', shortlisted: '已入选', shortlistedDescription: '进入精筛的候选',
     validated: '已验证', validatedDescription: '通过深度验证', riskPlan: '风险计划', riskPlanDescription: '已生成入场计划',
     notLinked: '—', marketMovers: '市场异动', topMovers: '波动排行', gainers: '涨幅榜', losers: '跌幅榜',
     company: '公司', price: '价格', change: '涨跌', volume: '成交量', noMovers: '当前筛选暂无可用标的。',
-    viewMarkets: '查看全部市场', sectorMap: '板块分布', viewSectors: '查看板块', shareOfUniverse: '占股票池',
+    viewMarkets: '查看全部市场', sectorMap: '行业 ETF 确认', viewSectors: '查看市场', shareOfUniverse: '用 XLK、XLF、XLV 等 11 个行业 ETF 确认风险扩散',
     manage: '管理', noWatchlist: '自选列表为空。', addSymbols: '添加标的', waiting: '等待市场数据同步…',
     dataSource: '数据源', dataQuality: '数据质量', quoteFeed: '行情源', environment: '环境', broker: '券商状态',
     lastUpdated: '最后更新', good: '良好', partial: '部分可用', issue: '异常', loading: '同步中',
@@ -157,17 +168,17 @@ const Dashboard: React.FC = () => {
     overview: 'Market overview', watchlist: 'Watchlist', signalStream: 'Signal stream', systemStatus: 'System status',
     lastSync: 'Last sync', refresh: 'Refresh', layout: 'Layout 02 · Wide editorial', title: 'Today’s market structure',
     subtitle: 'A live view of the current market snapshot and research workspace.', universe: 'Universe', advancing: 'Advancing',
-    declining: 'Declining', avgMove: 'Avg move', marketCap: 'Market cap', largestMove: 'Largest move', totalSymbols: 'Total symbols',
-    averageMove: 'Average move', strongestMove: 'Strongest move', marketRegime: 'Market regime', asOf: 'As of',
-    breadthSpectrum: 'Breadth spectrum', advancingDeclining: 'Advancing / declining', sectorParticipation: 'Sector participation',
-    sector: 'Sector', ratio: 'Ratio', noBreadth: 'No change data is available in the current snapshot.', sessionBrief: 'Session brief',
-    leadingMove: 'Leading move', concentration: 'Concentration', topTenMarketCap: 'Top 10 by market cap', unavailable: 'Unavailable',
+    declining: 'Declining', avgMove: 'Median move', marketCap: 'Risk score', largestMove: 'Data coverage', totalSymbols: 'Valid sample / 1,500',
+    averageMove: 'Median equal-weight stock', strongestMove: 'Valid daily-change snapshots', marketRegime: 'Broad-market risk state', asOf: 'Data date',
+    breadthSpectrum: 'Cross-sectional return distribution', advancingDeclining: 'Advancing / declining', sectorParticipation: 'Venue breadth',
+    sector: 'Venue', ratio: 'Ratio', noBreadth: 'No broad-market change data is available.', sessionBrief: 'Risk brief',
+    leadingMove: 'Risk state', concentration: 'Downside tail', topTenMarketCap: 'Stocks down 2% or more', unavailable: 'Unavailable',
     systemReadiness: 'System readiness', researchQueue: 'Research queue', reviewQueue: 'View activity', observed: 'Observed',
     observedDescription: 'Latest pipeline scan', shortlisted: 'Shortlisted', shortlistedDescription: 'Candidates sent to fine scan',
     validated: 'Validated', validatedDescription: 'Passed deeper validation', riskPlan: 'Risk plan', riskPlanDescription: 'Entry plans generated',
     notLinked: '—', marketMovers: 'Market movers', topMovers: 'Top movers', gainers: 'Gainers', losers: 'Losers',
     company: 'Company', price: 'Price', change: 'Change', volume: 'Volume', noMovers: 'No instruments match this view.',
-    viewMarkets: 'View all markets', sectorMap: 'Sector map', viewSectors: 'View sectors', shareOfUniverse: 'Share of universe',
+    viewMarkets: 'View all markets', sectorMap: 'Sector ETF confirmation', viewSectors: 'View markets', shareOfUniverse: 'XLK, XLF, XLV, and eight peers confirm whether risk is spreading',
     manage: 'Manage', noWatchlist: 'Your watchlist is empty.', addSymbols: 'Add symbols', waiting: 'Waiting for market data synchronization…',
     dataSource: 'Data source', dataQuality: 'Data quality', quoteFeed: 'Quote feed', environment: 'Environment', broker: 'Broker status',
     lastUpdated: 'Last updated', good: 'Good', partial: 'Partial', issue: 'Issue', loading: 'Syncing',
@@ -212,6 +223,19 @@ const Dashboard: React.FC = () => {
     }
   };
 
+  const fetchMarketRisk = async (forceRefresh = false) => {
+    try {
+      setRiskLoading(true);
+      setRiskError('');
+      const snapshot = await getMarketRiskSnapshot(forceRefresh);
+      setMarketRisk(snapshot);
+    } catch (requestError: any) {
+      setRiskError(requestError?.response?.data?.error || requestError?.message || 'Broad-market risk snapshot unavailable.');
+    } finally {
+      setRiskLoading(false);
+    }
+  };
+
   const fetchMarketData = async (forceRefresh = false) => {
     if (fetchingRef.current && !forceRefresh) return;
     try {
@@ -251,6 +275,7 @@ const Dashboard: React.FC = () => {
 
   const refresh = () => {
     fetchMarketData(true);
+    fetchMarketRisk(true);
     fetchSystemStatus();
     fetchPipelineSummary();
   };
@@ -260,6 +285,7 @@ const Dashboard: React.FC = () => {
     setError('');
     const loadTimer = window.setTimeout(() => {
       fetchMarketData();
+      fetchMarketRisk();
       fetchSystemStatus();
       fetchPipelineSummary();
     }, 100);
@@ -270,11 +296,13 @@ const Dashboard: React.FC = () => {
 
   useEffect(() => {
     const handleStorageChange = (event: StorageEvent) => {
-      if (event.key === STORAGE_KEY) setWatchlistVersion(version => version + 1);
+      if (watchlistStorageKey && event.key === watchlistStorageKey) {
+        setWatchlistVersion(version => version + 1);
+      }
     };
     window.addEventListener('storage', handleStorageChange);
     return () => window.removeEventListener('storage', handleStorageChange);
-  }, []);
+  }, [watchlistStorageKey]);
 
   useEffect(() => {
     const handleGlobalRefresh = () => refreshRef.current();
@@ -291,7 +319,7 @@ const Dashboard: React.FC = () => {
   const watchlistSymbols = useMemo(() => {
     // The version counter invalidates this snapshot when another tab edits localStorage.
     void watchlistVersion;
-    const saved = localStorage.getItem(STORAGE_KEY);
+    const saved = watchlistStorageKey ? localStorage.getItem(watchlistStorageKey) : null;
     if (!saved) return [] as string[];
     try {
       const parsed = JSON.parse(saved);
@@ -300,128 +328,110 @@ const Dashboard: React.FC = () => {
     } catch {
       return [] as string[];
     }
-  }, [watchlistVersion]);
+  }, [watchlistStorageKey, watchlistVersion]);
 
   const marketStats = useMemo(() => {
-    const changes = marketData
-      .map(stock => getChangePercent(stock))
-      .filter((change): change is number => change !== null);
-    const validMarketCaps = marketData.filter(stock => safeNumber(stock.marketCap) > 0);
-    const totalMarketCap = validMarketCaps.reduce((sum, stock) => sum + safeNumber(stock.marketCap), 0);
-    const largestMoveStock = marketData.reduce<StockData | null>((largest, stock) => {
-      const change = getChangePercent(stock);
-      if (change === null) return largest;
-      if (!largest) return stock;
-      const largestChange = getChangePercent(largest);
-      return largestChange === null || Math.abs(change) > Math.abs(largestChange) ? stock : largest;
-    }, null);
-
+    const broad = marketRisk?.snapshot;
+    const broadMover = marketRisk?.movers?.[0];
     return {
-      totalSymbols: marketData.length,
-      validChangeCount: changes.length,
-      gainers: changes.filter(change => change > 0).length,
-      losers: changes.filter(change => change < 0).length,
-      avgChange: changes.length ? changes.reduce((sum, change) => sum + change, 0) / changes.length : 0,
-      totalMarketCap,
-      largestMoveStock,
-      largestMovePercent: largestMoveStock ? getChangePercent(largestMoveStock) : null,
+      totalSymbols: broad?.validCount ?? 0,
+      universeCount: broad?.universeCount ?? 0,
+      validChangeCount: broad?.validCount ?? 0,
+      gainers: broad?.advancing ?? 0,
+      losers: broad?.declining ?? 0,
+      unchanged: broad?.unchanged ?? 0,
+      avgChange: broad?.equalWeightChangePct ?? 0,
+      medianChange: broad?.medianChangePct ?? 0,
+      riskScore: broad?.riskScore ?? null,
+      riskLevel: broad?.riskLevel ?? null,
+      regime: broad?.regime ?? null,
+      coveragePct: broad?.coveragePct ?? 0,
+      downTwoPct: broad?.downTwoPct ?? 0,
+      dispersionPct: broad?.dispersionPct ?? 0,
+      largestMoveStock: broadMover ? ({
+        symbol: broadMover.symbol,
+        name: broadMover.name,
+        price: broadMover.price,
+        previousClose: broadMover.previousClose,
+        change: broadMover.price - broadMover.previousClose,
+        changePercent: broadMover.changePct,
+      } as StockData) : null,
+      largestMovePercent: broadMover?.changePct ?? null,
     };
-  }, [marketData]);
+  }, [marketRisk]);
 
-  const sectorData = useMemo<SectorData[]>(() => {
-    const counts = new Map<string, number>();
-    marketData.forEach(stock => {
-      const rawName = stock.sector || stock.industry;
-      if (!rawName || ['unknown', 'none', 'n/a'].includes(rawName.toLowerCase())) return;
-      counts.set(rawName, (counts.get(rawName) || 0) + 1);
-    });
-    if (!counts.size && marketData.length) {
-      return [{ name: 'Stocks', count: marketData.length, percentage: 100 }];
-    }
-    return Array.from(counts.entries())
-      .map(([name, count]) => ({
-        name,
-        count,
-        percentage: marketData.length ? (count / marketData.length) * 100 : 0,
-      }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 6);
-  }, [marketData]);
+  const marketPulseData = useMemo<MarketPulseData[]>(() => (
+    (marketRisk?.sectorEtfs || [])
+      .map(row => ({ name: row.symbol, change: row.changePct }))
+      .sort((a, b) => Math.abs(b.change) - Math.abs(a.change))
+      .slice(0, 5)
+  ), [marketRisk]);
 
   const sectorBreadth = useMemo<SectorBreadthData[]>(() => {
-    const sectors = new Map<string, SectorBreadthData>();
-    marketData.forEach(stock => {
-      const rawName = stock.sector || stock.industry || 'General';
-      const name = ['unknown', 'none', 'n/a'].includes(rawName.toLowerCase()) ? 'General' : rawName;
-      const row = sectors.get(name) || { name, total: 0, advancing: 0, declining: 0, unchanged: 0 };
-      const change = getChangePercent(stock);
-      row.total += 1;
-      if (change === null || change === 0) row.unchanged += 1;
-      else if (change > 0) row.advancing += 1;
-      else row.declining += 1;
-      sectors.set(name, row);
-    });
-    return Array.from(sectors.values()).sort((a, b) => b.total - a.total).slice(0, 5);
-  }, [marketData]);
+    if (marketRisk?.exchangeBreadth?.length) return marketRisk.exchangeBreadth;
+    return [];
+  }, [marketRisk]);
 
   const histogram = useMemo<HistogramBin[]>(() => {
-    const ranges = [
-      { min: -Infinity, max: -5, label: '<−5', tone: 'negative' as const },
-      { min: -5, max: -3, label: '−5', tone: 'negative' as const },
-      { min: -3, max: -2, label: '−3', tone: 'negative' as const },
-      { min: -2, max: -1.5, label: '−2', tone: 'negative' as const },
-      { min: -1.5, max: -1, label: '−1.5', tone: 'negative' as const },
-      { min: -1, max: -0.75, label: '−1', tone: 'negative' as const },
-      { min: -0.75, max: -0.5, label: '−.75', tone: 'negative' as const },
-      { min: -0.5, max: -0.25, label: '−.5', tone: 'negative' as const },
-      { min: -0.25, max: 0, label: '−.25', tone: 'negative' as const },
-      { min: 0, max: 0.25, label: '0', tone: 'neutral' as const },
-      { min: 0.25, max: 0.5, label: '+.25', tone: 'positive' as const },
-      { min: 0.5, max: 0.75, label: '+.5', tone: 'positive' as const },
-      { min: 0.75, max: 1, label: '+.75', tone: 'positive' as const },
-      { min: 1, max: 1.5, label: '+1', tone: 'positive' as const },
-      { min: 1.5, max: 2, label: '+1.5', tone: 'positive' as const },
-      { min: 2, max: 3, label: '+2', tone: 'positive' as const },
-      { min: 3, max: 5, label: '+3', tone: 'positive' as const },
-      { min: 5, max: Infinity, label: '>+5', tone: 'positive' as const },
-    ];
-    const bins = ranges.map(range => ({ label: range.label, count: 0, tone: range.tone }));
-    marketData.forEach(stock => {
-      const change = getChangePercent(stock);
-      if (change === null) return;
-      const index = ranges.findIndex((range, rangeIndex) => (
-        change >= range.min && (change < range.max || rangeIndex === ranges.length - 1)
-      ));
-      if (index >= 0) bins[index].count += 1;
-    });
-    return bins;
-  }, [marketData]);
-
-  const concentration = useMemo(() => {
-    const marketCaps = marketData.map(stock => safeNumber(stock.marketCap)).filter(value => value > 0).sort((a, b) => b - a);
-    const total = marketCaps.reduce((sum, value) => sum + value, 0);
-    if (!total) return null;
-    return (marketCaps.slice(0, 10).reduce((sum, value) => sum + value, 0) / total) * 100;
-  }, [marketData]);
+    if (marketRisk?.snapshot?.distribution?.length) {
+      return marketRisk.snapshot.distribution.map((bin, index, bins) => ({
+        label: bin.label,
+        count: bin.count,
+        tone: index < Math.floor(bins.length / 2)
+          ? 'negative' as const
+          : index === Math.floor(bins.length / 2)
+            ? 'neutral' as const
+            : 'positive' as const,
+      }));
+    }
+    return [];
+  }, [marketRisk]);
 
   const watchlistData = marketData
     .filter(stock => watchlistSymbols.includes(stock.symbol.toUpperCase().trim()))
     .slice(0, 5);
 
-  const moversData = useMemo(() => {
-    let stocks = marketData.filter(stock => getChangePercent(stock) !== null);
+  const moversData = useMemo<DashboardMover[]>(() => {
+    let stocks: DashboardMover[] = marketRisk?.movers?.length
+      ? marketRisk.movers.map(row => ({
+          symbol: row.symbol,
+          name: row.name,
+          price: row.price,
+          change: row.price - row.previousClose,
+          changePercent: row.changePct,
+          changePct: row.changePct,
+          volume: null,
+          marketCap: null,
+          sector: null,
+          industry: null,
+          currency: 'USD',
+          dayHigh: null,
+          dayLow: null,
+          previousClose: row.previousClose,
+          dataSource: 'Alpaca broad-market snapshot',
+          timestamp: marketRisk.generatedAt,
+          dollarVolume: row.dollarVolume,
+          exchange: row.exchange,
+        }))
+      : [];
     if (moversView === 'gainers') stocks = stocks.filter(stock => (getChangePercent(stock) || 0) > 0);
     if (moversView === 'losers') stocks = stocks.filter(stock => (getChangePercent(stock) || 0) < 0);
-    if (moversView === 'watchlist') stocks = stocks.filter(stock => watchlistSymbols.includes(stock.symbol.toUpperCase().trim()));
+    if (moversView === 'watchlist') {
+      stocks = marketData.filter(stock => watchlistSymbols.includes(stock.symbol.toUpperCase().trim()));
+    }
     return [...stocks]
       .sort((a, b) => Math.abs(getChangePercent(b) || 0) - Math.abs(getChangePercent(a) || 0))
       .slice(0, 6);
-  }, [marketData, moversView, watchlistSymbols]);
+  }, [marketData, marketRisk, moversView, watchlistSymbols]);
 
   const advancingPercent = marketStats.validChangeCount ? (marketStats.gainers / marketStats.validChangeCount) * 100 : 0;
   const decliningPercent = marketStats.validChangeCount ? (marketStats.losers / marketStats.validChangeCount) * 100 : 0;
   const histogramMax = Math.max(...histogram.map(bin => bin.count), 1);
-  const lastUpdated = lastFetched
+  const lastUpdated = marketRisk?.asOf
+    ? new Intl.DateTimeFormat(isZh ? 'zh-CN' : 'en-US', {
+        timeZone: 'America/New_York', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+      }).format(new Date(marketRisk.asOf))
+    : lastFetched
     ? new Intl.DateTimeFormat(isZh ? 'zh-CN' : 'en-US', {
         timeZone: 'America/New_York',
         hour: '2-digit',
@@ -430,16 +440,30 @@ const Dashboard: React.FC = () => {
         hour12: false,
       }).format(new Date(lastFetched))
     : '—';
-  const dataSource = marketData[0]?.dataSource || '—';
-  const dataQuality = loading
+  const dataSource = marketRisk?.snapshot?.source || marketData[0]?.dataSource || '—';
+  const dataQuality = loading || riskLoading
     ? ui.loading
     : error
       ? ui.issue
+      : riskError
+        ? ui.partial
+      : marketRisk && marketRisk.snapshot.coveragePct < 85
+        ? ui.partial
       : marketData.length && marketData.some(stock => stock.price === null)
         ? ui.partial
         : marketData.length
           ? ui.good
           : '—';
+  const riskLabels = isZh ? {
+    normal: '常态', guarded: '警惕', elevated: '偏高', high: '高风险',
+    risk_on: '风险偏好', constructive: '稳定', mixed: '分化', defensive: '防御', risk_off: '风险规避',
+  } : {
+    normal: 'Normal', guarded: 'Guarded', elevated: 'Elevated', high: 'High risk',
+    risk_on: 'Risk on', constructive: 'Constructive', mixed: 'Mixed', defensive: 'Defensive', risk_off: 'Risk off',
+  };
+  const riskLabel = marketStats.regime ? riskLabels[marketStats.regime as keyof typeof riskLabels] : '—';
+  const riskTone = (marketStats.riskScore ?? 0) >= 50 ? 'is-negative' : (marketStats.riskScore ?? 0) >= 30 ? 'is-warn' : 'is-positive';
+  const pulseMax = Math.max(...marketPulseData.map(item => Math.abs(item.change)), 1);
   const pipelineObserved = pipelineSummary
     ? safeNumber(pipelineSummary.scannedTotal ?? pipelineSummary.scanned)
     : null;
@@ -478,7 +502,7 @@ const Dashboard: React.FC = () => {
           </div>
         </header>
 
-        {(needsAuth || needsConfig || error || (marketData.length > 0 && marketData.every(stock => stock.price === null))) && (
+        {(needsAuth || needsConfig || error || riskError || (marketData.length > 0 && marketData.every(stock => stock.price === null))) && (
           <div className="ed-alerts">
             {needsAuth && (
               <Alert message={<Text strong>{t.dashboard.authRequired}</Text>} description={t.dashboard.authRequiredDesc} type="warning" showIcon />
@@ -500,6 +524,14 @@ const Dashboard: React.FC = () => {
                 showIcon
               />
             )}
+            {riskError && !needsAuth && !needsConfig && (
+              <Alert
+                message={<Text strong>{isZh ? '全市场风险快照暂不可用' : 'Broad-market risk snapshot unavailable'}</Text>}
+                description={isZh ? '页面不会用 10 只默认股票替代大盘结论。请稍后刷新。' : 'The page will not substitute the 10 default tickers for a broad-market conclusion. Retry shortly.'}
+                type="warning"
+                showIcon
+              />
+            )}
             {!loading && !error && !needsAuth && !needsConfig && marketData.length > 0 && marketData.every(stock => stock.price === null) && (
               <Alert
                 message={<Text strong>{t.dashboard.apiError}</Text>}
@@ -516,39 +548,35 @@ const Dashboard: React.FC = () => {
           <article>
             <span>{ui.universe}</span>
             <strong className="is-blue">{marketStats.totalSymbols ? marketStats.totalSymbols.toLocaleString() : '—'}</strong>
-            <small>{ui.totalSymbols}</small>
+            <small>{ui.totalSymbols} · {marketStats.coveragePct.toFixed(1)}%</small>
           </article>
           <article>
             <span>{ui.advancing}</span>
-            <strong className="is-positive">{marketStats.gainers.toLocaleString()}</strong>
-            <small>{advancingPercent.toFixed(1)}%</small>
+            <strong className="is-positive">{marketStats.validChangeCount ? marketStats.gainers.toLocaleString() : '—'}</strong>
+            <small>{marketStats.validChangeCount ? `${advancingPercent.toFixed(1)}%` : '—'}</small>
           </article>
           <article>
             <span>{ui.declining}</span>
-            <strong className="is-negative">{marketStats.losers.toLocaleString()}</strong>
-            <small>{decliningPercent.toFixed(1)}%</small>
+            <strong className="is-negative">{marketStats.validChangeCount ? marketStats.losers.toLocaleString() : '—'}</strong>
+            <small>{marketStats.validChangeCount ? `${decliningPercent.toFixed(1)}%` : '—'}</small>
           </article>
           <article>
             <span>{ui.avgMove}</span>
-            <strong className={marketStats.avgChange >= 0 ? 'is-positive' : 'is-negative'}>
-              {marketStats.validChangeCount ? formatSignedPercent(marketStats.avgChange) : '—'}
+            <strong className={marketStats.medianChange >= 0 ? 'is-positive' : 'is-negative'}>
+              {marketStats.validChangeCount ? formatSignedPercent(marketStats.medianChange) : '—'}
             </strong>
             <small>{ui.averageMove}</small>
           </article>
           <article>
             <span>{ui.marketCap}</span>
-            <strong className="is-blue">{marketStats.totalMarketCap ? formatMarketCap(marketStats.totalMarketCap) : '—'}</strong>
-            <small>{ui.marketCap}</small>
+            <strong className={riskTone}>{marketStats.riskScore === null ? '—' : marketStats.riskScore.toFixed(0)}</strong>
+            <small>{riskLabel} · /100</small>
           </article>
           <article>
             <span>{ui.largestMove}</span>
             <div className="ed-largest-move">
-              <strong>{marketStats.largestMoveStock?.symbol || '—'}</strong>
-              {marketStats.largestMovePercent !== null && (
-                <b className={marketStats.largestMovePercent >= 0 ? 'is-positive' : 'is-negative'}>
-                  {formatSignedPercent(marketStats.largestMovePercent)}
-                </b>
-              )}
+              <strong>{marketStats.validChangeCount.toLocaleString()}</strong>
+              <b className="is-blue">/ {marketStats.universeCount.toLocaleString()}</b>
             </div>
             <small>{ui.strongestMove}</small>
           </article>
@@ -564,17 +592,17 @@ const Dashboard: React.FC = () => {
             <div className="ed-breadth-summary">
               <div>
                 <span>{ui.advancing}</span>
-                <strong className="is-moss">{marketStats.gainers.toLocaleString()}</strong>
-                <small>{advancingPercent.toFixed(1)}%</small>
+                <strong className="is-moss">{marketStats.validChangeCount ? marketStats.gainers.toLocaleString() : '—'}</strong>
+                <small>{marketStats.validChangeCount ? `${advancingPercent.toFixed(1)}%` : '—'}</small>
               </div>
               <div className="ed-breadth-ratio">
-                <strong><span>{advancingPercent.toFixed(1)}</span> / <b>{decliningPercent.toFixed(1)}</b></strong>
+                <strong><span>{marketStats.validChangeCount ? advancingPercent.toFixed(1) : '—'}</span> / <b>{marketStats.validChangeCount ? decliningPercent.toFixed(1) : '—'}</b></strong>
                 <small>{ui.advancingDeclining}</small>
               </div>
               <div className="ed-align-right">
                 <span>{ui.declining}</span>
-                <strong className="is-copper">{marketStats.losers.toLocaleString()}</strong>
-                <small>{decliningPercent.toFixed(1)}%</small>
+                <strong className="is-copper">{marketStats.validChangeCount ? marketStats.losers.toLocaleString() : '—'}</strong>
+                <small>{marketStats.validChangeCount ? `${decliningPercent.toFixed(1)}%` : '—'}</small>
               </div>
             </div>
 
@@ -628,24 +656,20 @@ const Dashboard: React.FC = () => {
             <div className="ed-session-grid">
               <div className="ed-session-facts">
                 <div className="ed-fact-block">
-                  <span>{ui.leadingMove}</span>
-                  <div>
-                    <strong>{marketStats.largestMoveStock?.symbol || '—'}</strong>
-                    {marketStats.largestMovePercent !== null && (
-                      <b className={marketStats.largestMovePercent >= 0 ? 'is-positive' : 'is-negative'}>
-                        {formatSignedPercent(marketStats.largestMovePercent)}
-                      </b>
-                    )}
+                <span>{ui.leadingMove}</span>
+                <div>
+                    <strong>{riskLabel}</strong>
+                    {marketStats.riskScore !== null && <b className={riskTone}>{marketStats.riskScore.toFixed(0)} / 100</b>}
                   </div>
-                  <small>{ui.strongestMove}</small>
+                  <small>{isZh ? `离散度 ${marketStats.dispersionPct.toFixed(2)}%` : `Dispersion ${marketStats.dispersionPct.toFixed(2)}%`}</small>
                 </div>
                 <div className="ed-fact-block">
                   <span>{ui.concentration}</span>
                   <small>{ui.topTenMarketCap}</small>
-                  <div className="ed-concentration-bar" aria-label={`${ui.concentration}: ${concentration?.toFixed(1) || ui.unavailable}`}>
-                    <i style={{ width: `${concentration || 0}%` }} />
+                  <div className="ed-concentration-bar" aria-label={`${ui.concentration}: ${marketStats.downTwoPct.toFixed(1)}%`}>
+                    <i className={marketStats.downTwoPct >= 20 ? 'is-stressed' : undefined} style={{ width: `${marketStats.downTwoPct}%` }} />
                   </div>
-                  <strong className="ed-concentration-value">{concentration === null ? '—' : `${concentration.toFixed(1)}%`}</strong>
+                  <strong className="ed-concentration-value">{marketStats.validChangeCount ? `${marketStats.downTwoPct.toFixed(1)}%` : '—'}</strong>
                 </div>
                 <div className="ed-fact-block" id="dashboard-system-status">
                   <span>{ui.systemReadiness}</span>
@@ -713,8 +737,8 @@ const Dashboard: React.FC = () => {
                     <th scope="col">{ui.company}</th>
                     <th scope="col">{ui.price}</th>
                     <th scope="col">{ui.change}</th>
-                    <th scope="col">{ui.volume}</th>
-                    <th scope="col">{ui.marketCap}</th>
+                    <th scope="col">{isZh ? '流动性' : 'Dollar liquidity'}</th>
+                    <th scope="col">{isZh ? '交易所' : 'Venue'}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -731,8 +755,8 @@ const Dashboard: React.FC = () => {
                         <td className={(change || 0) >= 0 ? 'is-positive' : 'is-negative'}>
                           {formatSignedPercent(change)}
                         </td>
-                        <td>{formatCompactNumber(stock.volume)}</td>
-                        <td>{safeNumber(stock.marketCap) ? formatMarketCap(stock.marketCap) : '—'}</td>
+                        <td>{stock.dollarVolume ? `$${formatCompactNumber(stock.dollarVolume)}` : '—'}</td>
+                        <td>{stock.exchange || '—'}</td>
                       </tr>
                     );
                   })}
@@ -749,11 +773,11 @@ const Dashboard: React.FC = () => {
                 <h2 id="sector-map-title">{ui.sectorMap}</h2>
                 <button type="button" onClick={() => navigate('/market')}>{ui.viewSectors} <b>→</b></button>
               </div>
-              {sectorData.length ? sectorData.slice(0, 5).map(sector => (
-                <div className="ed-sector-map-row" key={sector.name}>
-                  <span>{translateSector(sector.name)}</span>
-                  <div><i style={{ width: `${sector.percentage}%` }} /></div>
-                  <strong>{sector.percentage.toFixed(1)}%</strong>
+              {marketPulseData.length ? marketPulseData.map(item => (
+                <div className="ed-sector-map-row" key={item.name}>
+                  <span>{item.name}</span>
+                  <div><i className={item.change < 0 ? 'is-negative' : 'is-positive'} style={{ width: `${Math.max(4, Math.abs(item.change) / pulseMax * 100)}%` }} /></div>
+                  <strong className={item.change < 0 ? 'is-negative' : 'is-positive'}>{formatSignedPercent(item.change)}</strong>
                 </div>
               )) : <div className="ed-inline-empty">{t.dashboard.sectorDataUnavailable}</div>}
               <small>{ui.shareOfUniverse}</small>

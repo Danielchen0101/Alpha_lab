@@ -9,10 +9,10 @@
   --sa-blue: var(--shell-blue, #245ca4);
   --sa-green: var(--shell-green, #345d3d);
   --sa-red: var(--shell-red, #a74730);
-  --sa-dark: #142019;
-  --sa-dark-2: #19271f;
+  --sa-dark: #151318;
+  --sa-dark-2: #211e25;
   --sa-dark-text: #f3f0e7;
-  --sa-dark-muted: #a9b1a7;
+  --sa-dark-muted: #aaa3ae;
   --sa-mono: "SFMono-Regular", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
   --sa-numbers: "SF Pro Display", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   width: 100%;

@@ -13,6 +13,7 @@ import {
   LineChart, Line
 } from 'recharts';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useAuth } from '../contexts/AuthContext';
 import { backtraderAPI } from '../services/api';
 import './StrategyComparison.css';
 
@@ -90,7 +91,7 @@ interface MetricData {
 // Backtest识别色常量 - 支持多个backtest
 const BACKTEST_COLORS = [
   {
-    primary: '#245ca4',      // 研究蓝 - Backtest 1
+    primary: '#d6a45f',      // 黄铜 - Backtest 1
     light: '#eff6ff',        // 极浅蓝
     border: '#bfdbfe',       // 边框蓝
     text: '#1e40af',         // 深蓝文字
@@ -459,6 +460,7 @@ const SummaryCard: React.FC<{
 const StrategyComparison: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [backtestResults, setBacktestResults] = useState<RealBacktestResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>('');
@@ -485,7 +487,9 @@ const StrategyComparison: React.FC = () => {
     let localUnavailable = false;
 
     try {
-      const saved = localStorage.getItem('quant_backtest_history');
+      const saved = user?.id
+        ? localStorage.getItem(`quant_backtest_history:${user.id}`)
+        : null;
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) localRecords = parsed.map(normalizeBacktestRecord);
@@ -523,7 +527,7 @@ const StrategyComparison: React.FC = () => {
     if (apiUnavailable) setHistoryIssue(selectableRecords.length > 0 ? 'fallback' : 'unavailable');
     else if (localUnavailable) setHistoryIssue('local');
     setHistoryLoading(false);
-  }, []);
+  }, [user?.id]);
 
   // 从路由state或sessionStorage获取选中的backtests
   const routeSelectedBacktests = location.state?.selectedBacktests;
@@ -1033,8 +1037,8 @@ const StrategyComparison: React.FC = () => {
           </div>
 
           <div className="comparison-summary-ledger">
-            <SummaryCard title={t.comparison.bestReturn} value={formatPercent(summaryMetrics?.bestReturn?.results?.totalReturn)} unit={summaryMetrics?.bestReturn?.parameters?.symbol || ''} color="#10b981" />
-            <SummaryCard title={t.comparison.bestSharpe} value={formatNumber(summaryMetrics?.bestSharpe?.results?.sharpeRatio)} unit={summaryMetrics?.bestSharpe?.parameters?.symbol || ''} color="#3b82f6" />
+            <SummaryCard title={t.comparison.bestReturn} value={formatPercent(summaryMetrics?.bestReturn?.results?.totalReturn)} unit={summaryMetrics?.bestReturn?.parameters?.symbol || ''} color="var(--app-positive)" />
+            <SummaryCard title={t.comparison.bestSharpe} value={formatNumber(summaryMetrics?.bestSharpe?.results?.sharpeRatio)} unit={summaryMetrics?.bestSharpe?.parameters?.symbol || ''} color="var(--app-accent-secondary)" />
             <SummaryCard title={t.comparison.lowestDrawdown} value={formatDrawdown(summaryMetrics?.lowestDD?.results?.maxDrawdown)} unit={summaryMetrics?.lowestDD?.parameters?.symbol || ''} color="#ef4444" />
             <SummaryCard title={t.comparison.highestWinRate} value={formatPercent(summaryMetrics?.bestWinRate?.results?.winRate, 1)} unit={summaryMetrics?.bestWinRate?.parameters?.symbol || ''} color="#f59e0b" />
             <SummaryCard title={t.comparison.bestProfitFactor} value={formatNumber(summaryMetrics?.bestProfitFactor?.results?.profitFactor)} unit={summaryMetrics?.bestProfitFactor?.parameters?.symbol || ''} color="#722ed1" />
@@ -1128,7 +1132,7 @@ const StrategyComparison: React.FC = () => {
             </div>
           </section>
 
-          <Card title={<Space><LineChartOutlined style={{ color: '#245ca4' }} /><span style={{ fontWeight: 800, color: 'var(--app-text-strong)' }}>{t.comparison.relativeEquityGrowth}</span></Space>} className="premium-card comparison-equity-card" style={{ marginBottom: 32 }}>
+          <Card title={<Space><LineChartOutlined style={{ color: 'var(--app-accent)' }} /><span style={{ fontWeight: 800, color: 'var(--app-text-strong)' }}>{t.comparison.relativeEquityGrowth}</span></Space>} className="premium-card comparison-equity-card" style={{ marginBottom: 32 }}>
             {equityCurveData.length > 0 ? (
               <div className="comparison-equity-chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={equityCurveData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--app-border-soft)" /><XAxis dataKey="date" tick={{ fontSize: 10, fill: 'var(--app-text-muted)' }} axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 10, fill: 'var(--app-text-muted)' }} axisLine={false} tickLine={false} domain={['auto', 'auto']} /><Tooltip contentStyle={{ backgroundColor: 'var(--app-card-bg)', borderRadius: 2, border: '1px solid var(--app-border-soft)', boxShadow: '0 10px 25px rgba(0,0,0,0.1)', color: 'var(--app-text)' }} itemStyle={{ color: 'var(--app-text)' }} formatter={(v: number) => [`$${v.toLocaleString()}`]} /><Legend iconType="circle" wrapperStyle={{ paddingTop: 24, fontSize: 12, color: 'var(--app-text-muted)' }} />{backtestResults.map((b, i) => <Line key={b.backtestId} type="monotone" dataKey={`backtest${i+1}`} name={`${b.parameters.symbol || '—'} (${(t.strategies as Record<string, string>)[b.parameters.strategy] || b.parameters.strategy || '—'})`} stroke={BACKTEST_COLORS[i % BACKTEST_COLORS.length].primary} strokeWidth={2.5} dot={false} connectNulls activeDot={{ r: 5, strokeWidth: 0 }} />)}</LineChart></ResponsiveContainer></div>
             ) : <Empty description={<span style={{ color: 'var(--app-text-muted)' }}>{t.comparison.noEquityCurveDetailed}</span>} />}

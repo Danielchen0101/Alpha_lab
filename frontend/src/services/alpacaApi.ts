@@ -5,6 +5,7 @@
 import axios from 'axios';
 import { devLog } from '../utils/logger';
 import { supabase } from '../lib/supabaseClient';
+import { hasSessionAwayExpired, readAwaySince, refreshSessionOnce } from './authSession';
 
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
 
@@ -24,8 +25,8 @@ api.interceptors.request.use(
       try {
         const payload = JSON.parse(atob(session.access_token.split('.')[1]));
         if (!payload.exp || Date.now() >= (payload.exp * 1000 - 60000)) {
-          const { data: refreshed } = await supabase.auth.refreshSession();
-          if (refreshed.session) session = refreshed.session;
+          const refreshedSession = await refreshSessionOnce();
+          if (refreshedSession) session = refreshedSession;
         }
       } catch { /* use existing token */ }
     }
@@ -51,7 +52,7 @@ api.interceptors.response.use(
     }
     return response;
   },
-  (error) => {
+  async (error) => {
     console.error('Alpaca API 响应错误:', error.message);
     if (error.response) {
       console.error('状态码:', error.response.status);
@@ -59,9 +60,25 @@ api.interceptors.response.use(
       
       // 处理认证错误
       if (error.response.status === 401) {
-        supabase.auth.signOut().then(() => {
+        const requestConfig = error.config as any;
+        if (requestConfig && !requestConfig._authRetry) {
+          requestConfig._authRetry = true;
+          try {
+            const refreshedSession = await refreshSessionOnce();
+            if (refreshedSession?.access_token) {
+              requestConfig.headers = requestConfig.headers || {};
+              requestConfig.headers.Authorization = `Bearer ${refreshedSession.access_token}`;
+              return api.request(requestConfig);
+            }
+          } catch {
+            // Confirm session state before signing out below.
+          }
+        }
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session || hasSessionAwayExpired(readAwaySince())) {
+          await supabase.auth.signOut();
           window.location.href = '/signin';
-        });
+        }
       }
     }
     return Promise.reject(error);

@@ -5,12 +5,12 @@ import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, loading, mfaStatus, mfaRequired } = useAuth();
   const { language } = useLanguage();
   const location = useLocation();
   const isChinese = language === 'zh-CN';
 
-  if (loading) {
+  if (loading || (isAuthenticated && mfaStatus === 'checking')) {
     return (
       <main className="protected-route-loading" aria-busy="true" aria-live="polite">
         <section className="protected-route-loading__panel" role="status">
@@ -38,6 +38,11 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
         }}
       />
     );
+  }
+
+  if (mfaRequired && location.pathname !== '/mfa') {
+    const next = `${location.pathname}${location.search}${location.hash}`;
+    return <Navigate to={`/mfa?next=${encodeURIComponent(next)}`} replace />;
   }
 
   return <>{children}</>;

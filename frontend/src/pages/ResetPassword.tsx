@@ -22,6 +22,10 @@ const ResetPassword: React.FC = () => {
     window.scrollTo(0, 0);
     const query = new URLSearchParams(window.location.search);
     const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    const hasRecoveryHint = query.get('type') === 'recovery'
+      || hash.get('type') === 'recovery'
+      || query.has('code')
+      || hash.has('access_token');
     if (
       query.get('error')
       || hash.get('error')
@@ -47,14 +51,17 @@ const ResetPassword: React.FC = () => {
     };
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (session && (event === 'PASSWORD_RECOVERY' || event === 'INITIAL_SESSION')) {
+      if (session && (event === 'PASSWORD_RECOVERY' || (event === 'INITIAL_SESSION' && hasRecoveryHint))) {
         markRecoveryReady();
       }
     });
 
     void supabase.auth.getSession()
       .then(({ data: { session } }) => {
-        if (session) markRecoveryReady();
+        // A normal signed-in session must never be enough to turn this public
+        // route into a password-change form. Require evidence that the page was
+        // opened from a Supabase recovery link.
+        if (session && hasRecoveryHint) markRecoveryReady();
       })
       .catch(() => {
         // The timeout below presents the same invalid-link state if session recovery fails.

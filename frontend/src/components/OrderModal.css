@@ -781,19 +781,19 @@
 }
 
 :root[data-theme='dark'] .order-modal {
-  --order-accent: #70a7df;
-  --order-buy: #83b894;
-  --order-sell: #d78972;
-  --order-live: #d1ae72;
-  --order-paper: #70a7df;
-  --order-surface: #111b18;
-  --order-surface-soft: #17231f;
+  --order-accent: var(--app-accent, #d6a45f);
+  --order-buy: var(--app-positive, #9db58c);
+  --order-sell: var(--app-danger, #df7b68);
+  --order-live: var(--app-accent-secondary, #b6a0c9);
+  --order-paper: var(--app-accent, #d6a45f);
+  --order-surface: var(--app-card-bg, #1c1a20);
+  --order-surface-soft: var(--app-surface-elevated, #242129);
 }
 
 :root[data-theme='dark'] .order-modal .order-modal__primary.ant-btn {
-  border-color: #d8e1d4;
-  color: #142019;
-  background: #d8e1d4;
+  border-color: #d6a45f;
+  color: #18161b;
+  background: #d6a45f;
 }
 
 :root[data-theme='dark'] .order-modal .order-modal__primary.ant-btn.is-sell {

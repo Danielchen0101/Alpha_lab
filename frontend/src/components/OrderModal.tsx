@@ -22,6 +22,7 @@ import {
 import { tradingAccountAPI } from '../services/api';
 import { useTradeMode } from '../contexts/TradeModeContext';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useWorkspacePreferences } from '../contexts/WorkspacePreferencesContext';
 import { normalizeMarketSymbol } from '../routes/marketRoutes';
 import './OrderModal.css';
 
@@ -375,6 +376,7 @@ const OrderModal: React.FC<OrderModalProps> = ({
 }) => {
   const { tradeMode } = useTradeMode();
   const { language } = useLanguage();
+  const { preferences } = useWorkspacePreferences();
   const copy = ORDER_MODAL_COPY[language];
   const formatOrderError = (value: unknown): string => {
     const friendly = {
@@ -432,16 +434,23 @@ const OrderModal: React.FC<OrderModalProps> = ({
     setReviewValues(null);
     setAdvancedOpen(hasLinkedExits);
     setError(null);
+    const useExtendedHours = Boolean(preferences.trading.extendedHours) && !hasPresetLimit;
+    const preferredOrderType = hasPresetLimit
+      ? 'limit'
+      : useExtendedHours
+        ? 'limit'
+        : preferences.trading.defaultOrderType;
+    const preferredTimeInForce = useExtendedHours ? 'day' : preferences.trading.timeInForce;
     form.setFieldsValue({
       symbol: preset?.symbol || '',
       side: preset?.side || 'buy',
-      amountMode: 'shares',
+      amountMode: preferences.trading.orderSizeMode,
       qty: preset?.qty || undefined,
       notional: undefined,
-      type: hasPresetLimit ? 'limit' : 'market',
-      time_in_force: 'day',
+      type: preferredOrderType,
+      time_in_force: preferredTimeInForce,
       trailMode: 'price',
-      extended_hours: false,
+      extended_hours: useExtendedHours,
       order_class: hasLinkedExits ? 'bracket' : 'simple',
       limit_price: preset?.limitPrice || undefined,
       stop_price: undefined,
@@ -460,6 +469,10 @@ const OrderModal: React.FC<OrderModalProps> = ({
     preset?.stopLossPrice,
     preset?.symbol,
     preset?.takeProfitPrice,
+    preferences.trading.defaultOrderType,
+    preferences.trading.extendedHours,
+    preferences.trading.orderSizeMode,
+    preferences.trading.timeInForce,
     visible,
   ]);
 

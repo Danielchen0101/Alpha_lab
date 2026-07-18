@@ -28,6 +28,7 @@ import {
 import { PieChartOutlined, ReloadOutlined, ArrowUpOutlined, ArrowDownOutlined, SafetyCertificateOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { tradingAccountAPI, TradingAccountResponse, TradingPosition } from '../services/api';
+import PortfolioInsights from '../components/PortfolioInsights';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTradeMode } from '../contexts/TradeModeContext';
 import './PortfolioEditorial.css';
@@ -254,6 +255,7 @@ const Portfolio: React.FC = () => {
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [stale, setStale] = useState(false);
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
 
@@ -369,6 +371,7 @@ const Portfolio: React.FC = () => {
       let nextSource: PortfolioDataSource | undefined;
       let nextHistorySource: PortfolioDataSource | undefined;
       let accountEquity = 0;
+      let coreSnapshotFresh = true;
       const expectedSource: PortfolioDataSource = mode === 'real' ? 'alpaca_real' : 'alpaca_paper';
 
       if (accountRes.status === 'fulfilled') {
@@ -379,13 +382,13 @@ const Portfolio: React.FC = () => {
           nextSource = data.source;
           nextUpdatedAt = data.updatedAt || nextUpdatedAt;
         } else {
-          setAccount(null);
+          coreSnapshotFresh = false;
           nextError = !isExpectedPortfolioResponse(data, mode, expectedSource)
             ? editorialCopy.historyMismatch
             : localizeApiMessage(data.error || data.message, t.portfolio.dataUnavailable, isZh);
         }
       } else {
-        setAccount(null);
+        coreSnapshotFresh = false;
         nextError = extractApiError(accountRes.reason, t.portfolio.dataUnavailable, isZh);
       }
 
@@ -396,7 +399,7 @@ const Portfolio: React.FC = () => {
           nextSource = nextSource || data.source;
           nextUpdatedAt = nextUpdatedAt || data.updatedAt || '';
         } else {
-          setPositions([]);
+          coreSnapshotFresh = false;
           if (!nextError) {
             nextError = !isExpectedPortfolioResponse(data, mode, expectedSource)
               ? editorialCopy.historyMismatch
@@ -404,7 +407,7 @@ const Portfolio: React.FC = () => {
           }
         }
       } else {
-        setPositions([]);
+        coreSnapshotFresh = false;
         if (!nextError) nextError = extractApiError(positionsRes.reason, t.portfolio.dataUnavailable, isZh);
       }
 
@@ -438,31 +441,33 @@ const Portfolio: React.FC = () => {
             }
           }
         } else {
-          setPortfolioHistory([]);
-          setPortfolioChange({ value: 0, percent: 0 });
-          setHistorySource(undefined);
           if (!isExpectedPortfolioResponse(data, mode, expectedSource)) {
+            setPortfolioHistory([]);
+            setPortfolioChange({ value: 0, percent: 0 });
+            setHistorySource(undefined);
             nextHistoryError = editorialCopy.historyMismatch;
           } else {
             nextHistoryError = localizeApiMessage(data.error || data.message, t.portfolio.dataUnavailable, isZh);
           }
         }
       } else if (includeHistory && historyRes && historyRes.status === 'rejected') {
-        setPortfolioHistory([]);
-        setPortfolioChange({ value: 0, percent: 0 });
-        setHistorySource(undefined);
         nextHistoryError = extractApiError(historyRes.reason, t.portfolio.dataUnavailable, isZh);
       }
 
-      setSource(nextSource);
-      setLastUpdated(nextUpdatedAt);
+      if (nextSource) setSource(nextSource);
+      if (nextUpdatedAt) setLastUpdated(nextUpdatedAt);
+      setStale(!coreSnapshotFresh);
       setError(nextError);
       if (includeHistory) {
-        setHistorySource(nextHistorySource);
+        // A transient history failure must not erase the provenance attached
+        // to the last usable curve. Explicit mode/source mismatches clear it
+        // in the branches above.
+        if (nextHistorySource) setHistorySource(nextHistorySource);
         setHistoryError(nextHistoryError);
       }
     } catch (loadError: any) {
       if (!isCurrentRequest()) return;
+      setStale(true);
       setError(extractApiError(loadError, t.portfolio.dataUnavailable, isZh));
     } finally {
       if (activeRefreshRef.current?.requestId === requestId) {
@@ -488,6 +493,7 @@ const Portfolio: React.FC = () => {
     setLastUpdated('');
     setError(null);
     setHistoryError(null);
+    setStale(false);
 
     // A mode change always starts a new generation, even if the old account is still loading.
     loadData(tradeMode, portfolioRangeRef.current, true, true);
@@ -1019,6 +1025,17 @@ const Portfolio: React.FC = () => {
           </Card>
         </Col>
       </Row>
+
+      <PortfolioInsights
+        account={account}
+        positions={positions}
+        history={portfolioHistory}
+        mode={tradeMode}
+        source={source}
+        updatedAt={lastUpdated}
+        language={language}
+        stale={stale}
+      />
     </div>
   );
 };

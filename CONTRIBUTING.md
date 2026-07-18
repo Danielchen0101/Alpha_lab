@@ -19,8 +19,8 @@ Requirements:
 - A Supabase project for authenticated flows
 
 ```bash
-git clone https://github.com/Danielchen0101/quant_platform.git
-cd quant_platform
+git clone https://github.com/Danielchen0101/Alpha_lab.git
+cd Alpha_lab
 
 cp frontend/.env.example frontend/.env
 cp backend/.env.example backend/.env

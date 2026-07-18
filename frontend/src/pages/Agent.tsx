@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTradeMode } from '../contexts/TradeModeContext';
+import { useAuth } from '../contexts/AuthContext';
 
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend as RechartsLegend, ResponsiveContainer } from 'recharts'; // eslint-disable-line @typescript-eslint/no-unused-vars
 import {
@@ -60,6 +61,20 @@ const AUTO_PIPELINE_STAGE_FALLBACK = [
   { key: 'execution', label: 'Execution' },
   { key: 'exit_scan', label: 'Position & Exit' },
 ];
+
+const accountStorageKey = (base: string, userId?: string): string | null => (
+  userId ? `${base}:${userId}` : null
+);
+
+const readAccountStorage = (base: string, userId?: string): string | null => {
+  const key = accountStorageKey(base, userId);
+  return key ? localStorage.getItem(key) : null;
+};
+
+const writeAccountStorage = (base: string, userId: string | undefined, value: string): void => {
+  const key = accountStorageKey(base, userId);
+  if (key) localStorage.setItem(key, value);
+};
 
 const ExitMetric: React.FC<{ label: string; value: React.ReactNode; tone?: 'default' | 'good' | 'warn' | 'risk' }> = ({ label, value, tone = 'default' }) => (
   <div className={`exit-plan-metric is-${tone}`}>
@@ -458,6 +473,8 @@ const getEntryPlanExecutionSnapshot = (plan: any): any => {
 
 const Agent: React.FC = (): React.ReactElement => {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const accountUserId = user?.id;
   const { t, language, translateSector } = useLanguage();
   const isZh = language === 'zh-CN';
   const agentText = useCallback(
@@ -591,7 +608,7 @@ const Agent: React.FC = (): React.ReactElement => {
         notifications: '通知',
         discordOn: 'Discord 已开启',
         discordOff: 'Discord 已关闭',
-        notificationScope: '交易 · 重要风险 · 单次运行摘要',
+        notificationScope: '买卖 · 推荐股票 · 重要风险 · 单次运行摘要',
         riskControls: '风险控制',
         circuitOpen: '熔断器已触发',
         hardGatesActive: '硬风控已启用',
@@ -674,6 +691,7 @@ const Agent: React.FC = (): React.ReactElement => {
         discordPolicy: 'Discord 通知策略',
         quietAlertsOn: '精简通知已开启',
         trades: '交易',
+        recommendations: '推荐',
         risk: '风险',
         digest: '摘要',
         materialEventsOnly: '仅重要事件',
@@ -788,7 +806,7 @@ const Agent: React.FC = (): React.ReactElement => {
         notifications: 'Notifications',
         discordOn: 'Discord On',
         discordOff: 'Discord Off',
-        notificationScope: 'Trades · material risk · one cycle digest',
+        notificationScope: 'Buys & sells · recommendations · material risk · one cycle digest',
         riskControls: 'Risk Controls',
         circuitOpen: 'Circuit Open',
         hardGatesActive: 'Hard Gates Active',
@@ -871,6 +889,7 @@ const Agent: React.FC = (): React.ReactElement => {
         discordPolicy: 'Discord policy',
         quietAlertsOn: 'Quiet alerts on',
         trades: 'trades',
+        recommendations: 'recommendations',
         risk: 'risk',
         digest: 'digest',
         materialEventsOnly: 'material events only',
@@ -1204,7 +1223,7 @@ const Agent: React.FC = (): React.ReactElement => {
   }, []);
 
   // Trading Account Mode (global context)
-  const { tradeMode, tradeModeReady } = useTradeMode();
+  const { tradeMode } = useTradeMode();
   const [tradingAccountData, setTradingAccountData] = useState<any>(null);
   const [tradingAccountLoading, setTradingAccountLoading] = useState(false);
 
@@ -1212,24 +1231,24 @@ const Agent: React.FC = (): React.ReactElement => {
   type RiskProfile = 'low' | 'medium' | 'high';
   type TimeHorizon = 'short' | 'mid' | 'long';
   const [riskProfile, setRiskProfile] = useState<RiskProfile>(() => {
-    const stored = localStorage.getItem('agent_riskProfile');
+    const stored = readAccountStorage('agent_riskProfile', accountUserId);
     return (stored === 'low' || stored === 'high') ? stored : 'medium';
   });
   const [timeHorizon, setTimeHorizon] = useState<TimeHorizon>(() => {
-    const stored = localStorage.getItem('agent_timeHorizon');
+    const stored = readAccountStorage('agent_timeHorizon', accountUserId);
     return (stored === 'short' || stored === 'long') ? stored : 'mid';
   });
   const [leverageEnabled, setLeverageEnabled] = useState<boolean>(() => (
-    localStorage.getItem('agent_leverageEnabled') === 'true'
+    readAccountStorage('agent_leverageEnabled', accountUserId) === 'true'
   ));
   const handleRiskProfileChange = (val: string | number) => {
     const v = val as RiskProfile;
     const disableLeverage = v !== 'high';
     setRiskProfile(v);
-    localStorage.setItem('agent_riskProfile', v);
+    writeAccountStorage('agent_riskProfile', accountUserId, v);
     if (disableLeverage) {
       setLeverageEnabled(false);
-      localStorage.setItem('agent_leverageEnabled', 'false');
+      writeAccountStorage('agent_leverageEnabled', accountUserId, 'false');
     }
     void workspacePreferencesAPI.update({
       riskProfile: v,
@@ -1242,10 +1261,10 @@ const Agent: React.FC = (): React.ReactElement => {
     const v = val as TimeHorizon;
     const disableLeverage = v !== 'short';
     setTimeHorizon(v);
-    localStorage.setItem('agent_timeHorizon', v);
+    writeAccountStorage('agent_timeHorizon', accountUserId, v);
     if (disableLeverage) {
       setLeverageEnabled(false);
-      localStorage.setItem('agent_leverageEnabled', 'false');
+      writeAccountStorage('agent_leverageEnabled', accountUserId, 'false');
     }
     void workspacePreferencesAPI.update({
       timeHorizon: v,
@@ -1263,7 +1282,7 @@ const Agent: React.FC = (): React.ReactElement => {
       return;
     }
     setLeverageEnabled(enabled);
-    localStorage.setItem('agent_leverageEnabled', String(enabled));
+    writeAccountStorage('agent_leverageEnabled', accountUserId, String(enabled));
     void workspacePreferencesAPI.update({ leverageEnabled: enabled }).catch(() => {
       message.error(agentText('Leverage preference could not be saved.', '杠杆偏好保存失败。'));
     });
@@ -1327,13 +1346,13 @@ const Agent: React.FC = (): React.ReactElement => {
     } catch { return []; }
   });
   const [pipelineMode, setPipelineMode] = useState<'ai' | 'hybrid' | 'manual'>(() => {
-    const saved = localStorage.getItem('pipelineMode');
+    const saved = readAccountStorage('pipelineMode', accountUserId);
     return saved === 'ai' || saved === 'hybrid' || saved === 'manual' ? saved : 'hybrid';
   });
   const handlePipelineModeChange = (value: string | number) => {
     const nextMode = value as 'ai' | 'hybrid' | 'manual';
     setPipelineMode(nextMode);
-    localStorage.setItem('pipelineMode', nextMode);
+    writeAccountStorage('pipelineMode', accountUserId, nextMode);
     void workspacePreferencesAPI.update({ pipelineMode: nextMode }).catch(() => {
       message.error(agentText('Pipeline mode could not be saved.', '流程模式保存失败。'));
     });
@@ -1342,7 +1361,7 @@ const Agent: React.FC = (): React.ReactElement => {
   const riskMandate = {
     low: { deploymentPct: 30, grossPct: 35, singlePct: 8, riskPerTradePct: 0.5, dailyStopPct: 1.5, positions: 8 },
     medium: { deploymentPct: 50, grossPct: 60, singlePct: 15, riskPerTradePct: 1.0, dailyStopPct: 2.5, positions: 10 },
-    high: { deploymentPct: 100, grossPct: leverageEnabled && timeHorizon === 'short' ? 115 : 100, singlePct: 25, riskPerTradePct: 1.5, dailyStopPct: 4.0, positions: 12 },
+    high: { deploymentPct: 100, grossPct: leverageEnabled && timeHorizon === 'short' ? 115 : 100, singlePct: 100, riskPerTradePct: 1.5, dailyStopPct: 4.0, positions: 12 },
   }[riskProfile];
   const horizonMandate = {
     short: { holding: agentText('1–5 trading days', '1–5 个交易日'), reviewDays: 3, timeStopDays: 5, maxStopPct: 5, targetR: 1.5, focus: agentText('Momentum, liquidity and fresh catalysts', '动量、流动性与最新催化因素') },
@@ -1350,9 +1369,9 @@ const Agent: React.FC = (): React.ReactElement => {
     long: { holding: agentText('3–12 months', '3–12 个月'), reviewDays: 60, timeStopDays: 180, maxStopPct: 15, targetR: 2.2, focus: agentText('Durable trend, quality and long-term strength', '长期趋势、基本质量与持续强度') },
   }[timeHorizon];
   const aiMandate = {
-    manual: { label: agentText('Manual', '手动'), research: false, selection: false, buy: false, sell: false, approval: true },
-    hybrid: { label: agentText('AI assisted', 'AI 辅助'), research: true, selection: false, buy: false, sell: false, approval: true },
-    ai: { label: agentText('Full AI', '全 AI'), research: true, selection: true, buy: true, sell: true, approval: false },
+    manual: { label: agentText('Manual', '手动'), research: false, selection: false, buy: false, scaleIn: false, reduce: false, sell: false, approval: true },
+    hybrid: { label: agentText('AI assisted', 'AI 辅助'), research: true, selection: false, buy: false, scaleIn: false, reduce: false, sell: false, approval: true },
+    ai: { label: agentText('Full AI', '全 AI'), research: true, selection: true, buy: true, scaleIn: true, reduce: true, sell: true, approval: false },
   }[pipelineMode];
   const leverageAvailable = riskProfile === 'high' && timeHorizon === 'short';
   const strategyMandate = {
@@ -1364,7 +1383,7 @@ const Agent: React.FC = (): React.ReactElement => {
   };
 
   const [pipelineSchedule, setPipelineSchedule] = useState<'off' | '15m' | '30m' | '1h' | '2h'>(() => {
-    const saved = localStorage.getItem('pipelineSchedule');
+    const saved = readAccountStorage('pipelineSchedule', accountUserId);
     return saved === '15m' || saved === '30m' || saved === '1h' || saved === '2h' ? saved : 'off';
   });
   // Ref: only sync pipelineSchedule from backend on first successful status fetch
@@ -1398,6 +1417,30 @@ const Agent: React.FC = (): React.ReactElement => {
   const [pipelineAutoScheduleLoading, setPipelineAutoScheduleLoading] = useState(false);
   const [pipelineAutoScheduleExpanded, setPipelineAutoScheduleExpanded] = useState(false);
   const [pipelineAutoScheduleError, setPipelineAutoScheduleError] = useState<string>('');
+
+  // Never carry one account's operational choices into another account's UI.
+  // The durable backend status fetched below remains authoritative; these
+  // account-scoped values only prevent an empty-state flash while it loads.
+  useEffect(() => {
+    initialAutoSyncRef.current = true;
+    pipelineAutoStatusRef.current = null;
+    setPipelineAutoStatus(null);
+
+    const cachedRisk = readAccountStorage('agent_riskProfile', accountUserId);
+    const cachedHorizon = readAccountStorage('agent_timeHorizon', accountUserId);
+    const cachedMode = readAccountStorage('pipelineMode', accountUserId);
+    const cachedSchedule = readAccountStorage('pipelineSchedule', accountUserId);
+
+    setRiskProfile(cachedRisk === 'low' || cachedRisk === 'high' ? cachedRisk : 'medium');
+    setTimeHorizon(cachedHorizon === 'short' || cachedHorizon === 'long' ? cachedHorizon : 'mid');
+    setLeverageEnabled(readAccountStorage('agent_leverageEnabled', accountUserId) === 'true');
+    setPipelineMode(cachedMode === 'ai' || cachedMode === 'manual' ? cachedMode : 'hybrid');
+    setPipelineSchedule(
+      cachedSchedule === '15m' || cachedSchedule === '30m' || cachedSchedule === '1h' || cachedSchedule === '2h'
+        ? cachedSchedule
+        : 'off',
+    );
+  }, [accountUserId]);
 
   const fetchPipelineAutoStatus = useCallback(async () => {
     try {
@@ -1466,7 +1509,7 @@ const Agent: React.FC = (): React.ReactElement => {
   }, [pipelineAutoScheduleExpanded, fetchPipelineAutoSchedule]);
 
   // Save pipeline-auto config when schedule changes
-  const savePipelineAutoConfig = useCallback(async (schedule: 'off' | '15m' | '30m' | '1h' | '2h', liveOverride?: boolean) => {
+  const savePipelineAutoConfig = useCallback(async (schedule: 'off' | '15m' | '30m' | '1h' | '2h') => {
     setPipelineAutoLoading(true);
     // Mark user as having interacted — initial sync effect should not overwrite this
     initialAutoSyncRef.current = false;
@@ -1482,7 +1525,6 @@ const Agent: React.FC = (): React.ReactElement => {
         timeHorizon,
         tradeMode,
         leverageEnabled,
-        liveAutoTradingEnabled: liveOverride ?? liveAutoTradingEnabled,
       });
       if (!res?.data?.success) {
         const reason = res?.data?.reason || res?.data?.message || 'Unknown error';
@@ -1498,7 +1540,7 @@ const Agent: React.FC = (): React.ReactElement => {
         ? (intervalToKey[statusData.intervalMinutes] || 'off')
         : 'off';
       setPipelineSchedule(newSchedule);
-      localStorage.setItem('pipelineSchedule', newSchedule);
+      writeAccountStorage('pipelineSchedule', accountUserId, newSchedule);
       const marketOpen = statusData?.marketOpen === true;
       if (enabled && prevSchedule === 'off' && marketOpen) {
         console.log('[AutoRun] Toggle-on: backend scheduler armed during market hours');
@@ -1536,13 +1578,13 @@ const Agent: React.FC = (): React.ReactElement => {
           ? (intervalToKey[statusData.intervalMinutes] || 'off')
           : 'off';
         setPipelineSchedule(newSchedule);
-        localStorage.setItem('pipelineSchedule', newSchedule);
+        writeAccountStorage('pipelineSchedule', accountUserId, newSchedule);
         console.log('[PipelineAutoConfig] rollback toggle to backend state: enabled=%s schedule=%s', backendEnabled, newSchedule);
       }
     } finally {
       setPipelineAutoLoading(false);
     }
-  }, [pipelineMode, fetchPipelineAutoStatus, pipelineSchedule, riskProfile, timeHorizon, tradeMode, leverageEnabled, liveAutoTradingEnabled]);
+  }, [accountUserId, pipelineMode, fetchPipelineAutoStatus, pipelineSchedule, riskProfile, timeHorizon, tradeMode, leverageEnabled]);
 
   const persistLiveAutoTrading = useCallback(async (nextValue: boolean) => {
     setPipelineAutoLoading(true);
@@ -1607,15 +1649,9 @@ const Agent: React.FC = (): React.ReactElement => {
     setLiveAutoConfirmOpen(true);
   };
 
-  useEffect(() => {
-    if (!liveAutoTradingEnabled) return;
-    if (!tradeModeReady) return;
-    if (pipelineMode === 'ai' && tradeMode === 'real') return;
-    void persistLiveAutoTrading(false);
-  }, [liveAutoTradingEnabled, pipelineMode, tradeMode, tradeModeReady, persistLiveAutoTrading]);
-
   // Auto-save config when mode/risk/horizon/trade changes and schedule is enabled
   const autoSaveTimerRef = useRef<any>(null);
+  const autoSaveRequestRef = useRef(0);
   const prevAutoSaveRef = useRef<{ mode: string; risk: string; horizon: string; trade: string; leverage: boolean }>({ mode: '', risk: '', horizon: '', trade: '', leverage: false });
   useEffect(() => {
     if (pipelineSchedule === 'off') return;
@@ -1624,20 +1660,62 @@ const Agent: React.FC = (): React.ReactElement => {
     if (current.mode === prev.mode && current.risk === prev.risk && current.horizon === prev.horizon && current.trade === prev.trade && current.leverage === prev.leverage) return;
     prevAutoSaveRef.current = current;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    const requestId = ++autoSaveRequestRef.current;
     autoSaveTimerRef.current = setTimeout(async () => {
+      const intervalMap: Record<string, number> = { '15m': 15, '30m': 30, '1h': 60, '2h': 120 };
+      const payload = {
+        enabled: true,
+        intervalMinutes: intervalMap[pipelineSchedule] || 15,
+        mode: pipelineMode,
+        riskProfile,
+        timeHorizon,
+        tradeMode,
+        leverageEnabled,
+      };
+      const backendMatches = (status: any) => Boolean(status)
+        && status.enabled === true
+        && Number(status.intervalMinutes) === payload.intervalMinutes
+        && status.mode === payload.mode
+        && status.riskProfile === payload.riskProfile
+        && status.timeHorizon === payload.timeHorizon
+        && status.tradeMode === payload.tradeMode
+        && status.leverageEnabled === payload.leverageEnabled;
       try {
-        const intervalMap: Record<string, number> = { '15m': 15, '30m': 30, '1h': 60, '2h': 120 };
-        const res = await pipelineAutoAPI.saveConfig({ enabled: true, intervalMinutes: intervalMap[pipelineSchedule] || 15, mode: pipelineMode, riskProfile, timeHorizon, tradeMode, leverageEnabled, liveAutoTradingEnabled });
-        if (!res?.data?.success) { message.warning(agentText('Automation settings could not be synced. The scheduler may still have the previous settings.', '自动化设置同步失败，调度器可能仍在使用上一次的设置。')); }
-      } catch { message.warning(agentText('Automation settings could not be synced. The scheduler may still have the previous settings.', '自动化设置同步失败，调度器可能仍在使用上一次的设置。')); }
+        let response;
+        try {
+          response = await pipelineAutoAPI.saveConfig(payload);
+        } catch {
+          // A short retry absorbs a transient Render/Supabase wake-up without
+          // showing a false warning for settings that ultimately persisted.
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          if (requestId !== autoSaveRequestRef.current) return;
+          response = await pipelineAutoAPI.saveConfig(payload);
+        }
+        if (requestId !== autoSaveRequestRef.current) return;
+        if (!response?.data?.success) throw new Error(response?.data?.message || 'save_failed');
+
+        const status = await fetchPipelineAutoStatus();
+        if (requestId !== autoSaveRequestRef.current) return;
+        if (!backendMatches(status)) throw new Error('scheduler_status_mismatch');
+      } catch {
+        if (requestId !== autoSaveRequestRef.current) return;
+        // The save response can be lost after the backend commits. Confirm the
+        // authoritative status before telling the user that sync failed.
+        const status = await fetchPipelineAutoStatus();
+        if (requestId !== autoSaveRequestRef.current || backendMatches(status)) return;
+        message.warning(agentText(
+          'Automation settings could not be synced. The scheduler may still have the previous settings.',
+          '自动化设置同步失败，调度器可能仍在使用上一次的设置。',
+        ));
+      }
     }, 600);
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
-  }, [agentText, pipelineMode, riskProfile, timeHorizon, tradeMode, pipelineSchedule, leverageEnabled, liveAutoTradingEnabled]);
+  }, [agentText, fetchPipelineAutoStatus, pipelineMode, riskProfile, timeHorizon, tradeMode, pipelineSchedule, leverageEnabled]);
 
   // Initial fetch: always fetch pipeline-auto status on mount to correct stale localStorage
   useEffect(() => {
     fetchPipelineAutoStatus();
-  }, [fetchPipelineAutoStatus]);
+  }, [accountUserId, fetchPipelineAutoStatus]);
 
   // Restore all operational settings from the authenticated user's durable
   // backend config. Local storage is only a fast UI cache.
@@ -1654,24 +1732,24 @@ const Agent: React.FC = (): React.ReactElement => {
     const savedLeverage = pipelineAutoStatus.leverageEnabled === true;
     if (savedMode === 'ai' || savedMode === 'hybrid' || savedMode === 'manual') {
       setPipelineMode(savedMode);
-      localStorage.setItem('pipelineMode', savedMode);
+      writeAccountStorage('pipelineMode', accountUserId, savedMode);
     }
     if (savedRisk === 'low' || savedRisk === 'medium' || savedRisk === 'high') {
       setRiskProfile(savedRisk);
-      localStorage.setItem('agent_riskProfile', savedRisk);
+      writeAccountStorage('agent_riskProfile', accountUserId, savedRisk);
     }
     if (savedHorizon === 'short' || savedHorizon === 'mid' || savedHorizon === 'long') {
       setTimeHorizon(savedHorizon);
-      localStorage.setItem('agent_timeHorizon', savedHorizon);
+      writeAccountStorage('agent_timeHorizon', accountUserId, savedHorizon);
     }
     setLeverageEnabled(savedLeverage);
-    localStorage.setItem('agent_leverageEnabled', String(savedLeverage));
+    writeAccountStorage('agent_leverageEnabled', accountUserId, String(savedLeverage));
     setPipelineSchedule(newSchedule);
     setLiveAutoTradingEnabled(pipelineAutoStatus.liveAutoTradingEnabled === true);
-    localStorage.setItem('pipelineSchedule', newSchedule);
+    writeAccountStorage('pipelineSchedule', accountUserId, newSchedule);
     console.log('[PipelineAutoConfig] initial sync from backend: enabled=%s interval=%s schedule=%s',
       backendEnabled, pipelineAutoStatus.intervalMinutes, newSchedule);
-  }, [pipelineAutoStatus]);
+  }, [accountUserId, pipelineAutoStatus]);
 
   // Poll slowly while scheduled and quickly during a one-shot/background run.
   useEffect(() => {
@@ -2203,7 +2281,7 @@ const Agent: React.FC = (): React.ReactElement => {
       setDvErrorMessage(null);
       setDvErrors([]);
       // Start a new scan via module-level service
-      startMarketScanner({ riskProfile, timeHorizon, pipelineMode, leverageEnabled });
+      startMarketScanner({ accountUserId, riskProfile, timeHorizon, pipelineMode, leverageEnabled });
     }
   };
 
@@ -5017,6 +5095,9 @@ const Agent: React.FC = (): React.ReactElement => {
             </div>
           </div>
           <Space size={8} wrap>
+            {String(ep.entryIntent || '').toUpperCase() === 'SCALE_IN' && (
+              <Tag color="cyan" bordered={false}>{agentText('SCALE IN', '补仓')}</Tag>
+            )}
             <Tag className={`epv2-chip epv2-chip-${actionTone}`} bordered={false}>{agentEnumLabel(packet.planState || ep.planState || action)}</Tag>
             <Tag className={`epv2-chip epv2-chip-${String(gateStatus).toLowerCase()}`} bordered={false}>{agentText('Gate', '风控门槛')} {agentEnumLabel(gateStatus)}</Tag>
             <Tag className="epv2-chip epv2-chip-neutral" bordered={false}>{agentEnumLabel(ep.dataQuality || controls.dataQuality || 'DATA')}</Tag>
@@ -5093,6 +5174,14 @@ const Agent: React.FC = (): React.ReactElement => {
               <Metric label={agentText('Risk Budget', '风险预算')} value={fmtMoney(sizing.riskBudget ?? ep.riskBudget)} />
               <Metric label={agentText('Cash Capacity', '可用现金')} value={fmtMoney(ep.accountSpendablePower ?? tradingAccountData?.cash)} />
               <Metric label={agentText('Allocation Cap', '配置上限')} value={fmtMoney(ep.maxAllocationDollars)} />
+              {String(ep.entryIntent || '').toUpperCase() === 'SCALE_IN' && (
+                <>
+                  <Metric label={agentText('Existing Position', '现有仓位')} value={fmtMoney(ep.existingPositionValue)} />
+                  <Metric label={agentText('After Add', '补仓后仓位')} value={fmtMoney(ep.postTradePositionValue)} />
+                  <Metric label={agentText('Scale-ins', '已补仓次数')} value={`${ep.scaleInCount || 0}/${ep.maxScaleIns || 0}`} />
+                  <Metric label={agentText('Position P/L', '持仓收益')} value={fmtPct(ep.existingUnrealizedPct)} />
+                </>
+              )}
             </div>
             <div className="epv2-footnote">{sizing.capStatus || ep.positionCapStatus || agentText('Within allocation limits', '未超过配置上限')}</div>
           </section>
@@ -5601,7 +5690,7 @@ const Agent: React.FC = (): React.ReactElement => {
       // before the auto pipeline reads them via _pa_resolve_auto_run_context.
       const intervalMap: Record<string, number> = { '15m': 15, '30m': 30, '1h': 60, '2h': 120 };
       const scheduleEnabled = pipelineSchedule !== 'off';
-      await pipelineAutoAPI.saveConfig({
+      const configResponse = await pipelineAutoAPI.saveConfig({
         enabled: scheduleEnabled,
         intervalMinutes: scheduleEnabled ? intervalMap[pipelineSchedule] || 15 : null,
         mode: pipelineMode,
@@ -5611,6 +5700,9 @@ const Agent: React.FC = (): React.ReactElement => {
         leverageEnabled,
         liveAutoTradingEnabled,
       });
+      if (!configResponse?.data?.success) {
+        throw new Error(configResponse?.data?.message || configResponse?.data?.reason || 'Automation settings could not be saved');
+      }
       console.log('[AutoPipelineNow] saved config mode=%s risk=%s horizon=%s trade=%s', pipelineMode, riskProfile, timeHorizon, tradeMode);
       const res = await pipelineAutoAPI.runNow({});
       if (!res?.data?.success) {
@@ -5622,7 +5714,15 @@ const Agent: React.FC = (): React.ReactElement => {
       setAutoRunStep('market_scanner');
       setAutoRunProgress(1);
       setAutoRunClock(Date.now());
-      message.success(agentText('The seven-stage cycle is running in the background.', '七阶段流程已在后台运行。'));
+      const authority = res.data.orderAuthority;
+      if (authority && !authority.authorized) {
+        message.warning(agentText(
+          `The research cycle is running, but broker orders are locked: ${authority.message}`,
+          `研究流程已启动，但自动买卖仍被锁定：${authority.code === 'live_auto_not_enabled' ? '请先开启实盘自动交易授权。' : '需要使用完整 AI 模式。'}`,
+        ));
+      } else {
+        message.success(agentText('The seven-stage cycle is running in the background.', '七阶段流程已在后台运行。'));
+      }
       fetchPipelineAutoStatus();
     } catch (e: any) {
       console.log('[AutoPipelineNow] failed: %s', e.message);
@@ -5887,12 +5987,9 @@ const Agent: React.FC = (): React.ReactElement => {
     pipelineAutoAPI.stopPipeline().catch(() => {});
   };
 
-  // Persist pipeline mode to localStorage
-  useEffect(() => { localStorage.setItem('pipelineMode', pipelineMode); }, [pipelineMode]);
-
-  // Persist pipeline schedule choice to localStorage
+  // Keep scanner timing UI in sync. Account-scoped persistence happens only
+  // after an explicit save or a durable backend sync, never on account switch.
   useEffect(() => {
-    localStorage.setItem('pipelineSchedule', pipelineSchedule);
     scannerStateStore.updatePipelineSchedule({ intervalKey: pipelineSchedule });
   }, [pipelineSchedule]);
 
@@ -6785,9 +6882,11 @@ const Agent: React.FC = (): React.ReactElement => {
                   )}
                 </div>
                 <small>
-                  {pipelineMode === 'ai'
-                    ? agentConsoleCopy.eligibleOrders
-                    : agentConsoleCopy.fullAiRequired}
+                  {liveAutoTradingEnabled
+                    ? agentText('Authorization stays saved until you turn it off. Orders are active only in Real + Full AI.', '授权会一直保留，直到你手动关闭；只有实盘 + 全 AI 时才会实际生效。')
+                    : pipelineMode === 'ai'
+                      ? agentConsoleCopy.eligibleOrders
+                      : agentConsoleCopy.fullAiRequired}
                 </small>
               </div>
 
@@ -6870,6 +6969,7 @@ const Agent: React.FC = (): React.ReactElement => {
                   {pipelineAutoStatus?.discordEnabled
                     ? [
                         discordPolicy.tradeActivity ? agentConsoleCopy.trades : null,
+                        discordPolicy.recommendations ? agentConsoleCopy.recommendations : null,
                         discordPolicy.riskAlerts ? agentConsoleCopy.risk : null,
                         discordPolicy.cycleDigest ? agentConsoleCopy.digest : null,
                       ].filter(Boolean).join(' / ') || agentConsoleCopy.materialEventsOnly
@@ -7022,7 +7122,7 @@ const Agent: React.FC = (): React.ReactElement => {
       </div>
 
       {/* Portfolio Automation — one source of truth for scan, entry, exit and automation */}
-      <section className="agent-preferences-panel agent-mandate-panel" aria-labelledby="strategy-mandate-title">
+      <section id="portfolio-mandate" className="agent-preferences-panel agent-mandate-panel" aria-labelledby="strategy-mandate-title">
         <header className="agent-mandate-header">
           <div>
             <span className="agent-mandate-kicker">02 / {agentText('TRADING POLICY', '交易策略')}</span>
@@ -7076,7 +7176,7 @@ const Agent: React.FC = (): React.ReactElement => {
               {([
                 ['manual', t.agent.modeManual, agentText('Review only', '仅供查看'), agentText('You decide', '全部由你决定')],
                 ['hybrid', t.agent.modeHybrid, agentText('AI research', 'AI 研究'), agentText('Approval required', '下单需确认')],
-                ['ai', t.agent.modeAI, agentText('Buy + sell', '自动买卖'), agentText('Hard gates remain', '仍受硬风控')],
+                ['ai', t.agent.modeAI, agentText('Buy + add + sell', '买入 + 补仓 + 卖出'), agentText('Hard gates remain', '仍受硬风控')],
               ] as const).map(([value, label, metric, detail]) => (
                 <button type="button" key={value} className={`agent-choice-card ${pipelineMode === value ? 'is-selected' : ''}`} aria-pressed={pipelineMode === value} onClick={() => handlePipelineModeChange(value)}>
                   <span>{label}</span><strong>{metric}</strong><small>{detail}</small>
@@ -7091,7 +7191,7 @@ const Agent: React.FC = (): React.ReactElement => {
           <div><span>{agentText('Risk budget', '风险预算')}</span><strong>{strategyMandate.riskPerTradePct}%</strong><small>{agentText(`${strategyMandate.dailyStopPct}% daily stop`, `单日止损 ${strategyMandate.dailyStopPct}%`)}</small></div>
           <div><span>{agentText('Holding mandate', '持有规则')}</span><strong>{strategyMandate.holding}</strong><small>{strategyMandate.focus}</small></div>
           <div><span>{agentText('Exit geometry', '退出参数')}</span><strong>{strategyMandate.maxStopPct}% / {strategyMandate.targetR}R</strong><small>{agentText(`Review day ${strategyMandate.reviewDays}`, `第 ${strategyMandate.reviewDays} 天复核`)}</small></div>
-          <div><span>{agentText('AI order authority', 'AI 下单权限')}</span><strong>{strategyMandate.buy && strategyMandate.sell ? agentText('BUY + SELL', '买入 + 卖出') : agentText('LOCKED', '已锁定')}</strong><small>{strategyMandate.approval ? agentText('Human approval required', '需要人工确认') : agentText('Hard gates remain final', '硬风控拥有最终权限')}</small></div>
+          <div><span>{agentText('AI order authority', 'AI 下单权限')}</span><strong>{strategyMandate.buy && strategyMandate.sell ? agentText('BUY + ADD + REDUCE + EXIT', '买入 + 补仓 + 减仓 + 清仓') : agentText('LOCKED', '已锁定')}</strong><small>{strategyMandate.approval ? agentText('Human approval required', '需要人工确认') : agentText('Hard gates remain final', '硬风控拥有最终权限')}</small></div>
         </div>
 
         <div className="agent-mandate-safety-row">
@@ -8709,8 +8809,8 @@ const Agent: React.FC = (): React.ReactElement => {
         progressText={detailedScanStatus.currentStatus === 'scanning' ? `${scannerStageIndex}/${scannerStageCount} · ${scannerStageLabel}` : undefined}
         summaryChips={marketScannerResults.length > 0 ? [
           { label: agentText('Ranked', '已排名'), value: marketScannerResults.length },
-          { label: agentText('Priority A', '优先级 A'), value: marketScannerResults.filter((r: any) => r.selectionLabel === 'Priority A').length, color: '#16a34a' },
-          { label: agentText('AI Reviewed', 'AI 已审核'), value: marketScannerResults.filter((r: any) => r.aiCalled && r.aiSuccess !== false).length, color: '#1890ff' },
+          { label: agentText('Priority A', '优先级 A'), value: marketScannerResults.filter((r: any) => r.selectionLabel === 'Priority A').length, color: 'var(--app-positive)' },
+          { label: agentText('AI Reviewed', 'AI 已审核'), value: marketScannerResults.filter((r: any) => r.aiCalled && r.aiSuccess !== false).length, color: 'var(--app-accent)' },
           { label: agentText('AI Challenge', 'AI 已质询'), value: marketScannerResults.filter((r: any) => r.aiChallenged || r.aiTraderDecision === 'Watch' || r.aiTraderDecision === 'Avoid').length, color: '#d97706' },
           ...(marketScannerResults.filter((r: any) => r.analysisStatus === 'failed').length > 0
             ? [{ label: t.agent.needDataLabel.replace(':', ''), value: marketScannerResults.filter((r: any) => r.analysisStatus === 'failed').length, color: '#ff4d4f' }]
@@ -8781,7 +8881,7 @@ const Agent: React.FC = (): React.ReactElement => {
         progressValue={(fineScanStatus === 'running' || fineScanStatus === 'stopped') && fineScanProgress > 0 ? fineScanProgress : null}
         summaryChips={fineScanResults.length > 0 ? [
           { label: t.agent.scanned, value: fineScanResults.length },
-          { label: t.agent.continueLabel.replace(':', ''), value: fineScanResults.filter((r: any) => r.decision === 'Continue').length, color: '#52c41a' },
+          { label: t.agent.continueLabel.replace(':', ''), value: fineScanResults.filter((r: any) => r.decision === 'Continue').length, color: 'var(--app-positive)' },
           { label: t.agent.watchLabel.replace(':', ''), value: fineScanResults.filter((r: any) => r.decision === 'Watch').length, color: '#faad14' },
           { label: t.agent.rejectLabel.replace(':', ''), value: fineScanResults.filter((r: any) => r.decision === 'Reject').length, color: '#ff4d4f' },
           { label: t.agent.needDataLabel.replace(':', ''), value: fineScanResults.filter((r: any) => r.decision === 'NeedMoreData').length, color: '#fa8c16' },
@@ -8853,15 +8953,15 @@ const Agent: React.FC = (): React.ReactElement => {
           if (deeperValidationResults) {
             return [
               { label: agentText('Tested', '已测试'), value: deeperValidationResults.length },
-              { label: agentText('Pass DV', '验证通过'), value: deeperValidationResults.filter((r: any) => r.dvDecision === 'PASS_DV' || r.verdict === 'Confirmed').length, color: '#52c41a' },
+              { label: agentText('Pass DV', '验证通过'), value: deeperValidationResults.filter((r: any) => r.dvDecision === 'PASS_DV' || r.verdict === 'Confirmed').length, color: 'var(--app-positive)' },
               { label: agentText('Watch', '观察'), value: deeperValidationResults.filter((r: any) => r.dvDecision === 'WATCH' || r.verdict === 'Watch').length, color: '#faad14' },
               { label: agentText('Rejected', '已拒绝'), value: deeperValidationResults.filter((r: any) => r.dvDecision === 'REJECT' || r.dvDecision === 'NEED_DATA' || r.verdict === 'Rejected' || r.verdict === 'Reject').length, color: '#ff4d4f' },
-              { label: 'AI', value: deeperValidationResults.filter((r: any) => r.aiValidationUsed).length, color: '#13c2c2' },
+              { label: 'AI', value: deeperValidationResults.filter((r: any) => r.aiValidationUsed).length, color: 'var(--app-accent-secondary)' },
             ];
           }
           if (bd.total > 0) {
             const chips: any[] = [
-              { label: t.agent.continueAction, value: bd.continueCount, color: '#52c41a' },
+              { label: t.agent.continueAction, value: bd.continueCount, color: 'var(--app-positive)' },
             ];
             if (bd.watchCount > 0) {
               chips.push({ label: t.agent.watchToValidate, value: bd.watchCount, color: '#faad14' });
@@ -8933,8 +9033,8 @@ const Agent: React.FC = (): React.ReactElement => {
         }
         summaryChips={entryPlanResults && entryPlanResults.length > 0 ? [
           { label: t.agent.entryPlan, value: entryPlanResults.length },
-          { label: t.agent.buyLabel, value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'BUY_READY').length, color: '#52c41a' },
-          { label: agentText('Review', '待审核'), value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'READY_REVIEW').length, color: '#1890ff' },
+          { label: t.agent.buyLabel, value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'BUY_READY').length, color: 'var(--app-positive)' },
+          { label: agentText('Review', '待审核'), value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'READY_REVIEW').length, color: 'var(--app-accent-secondary)' },
           { label: agentText('Wait', '等待入场'), value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'WAIT_FOR_ENTRY').length, color: '#faad14' },
           { label: agentText('Need Data', '需要数据'), value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'NEED_DATA').length, color: '#ff7a45' },
           ...(entryPlanResults.filter((p: any) => ['BLOCKED_BY_RISK', 'SKIP'].includes(getEntryPlanEffectiveAction(p))).length > 0 ? [{ label: agentText('Blocked', '已阻断'), value: entryPlanResults.filter((p: any) => ['BLOCKED_BY_RISK', 'SKIP'].includes(getEntryPlanEffectiveAction(p))).length, color: '#ff4d4f' }] : []),

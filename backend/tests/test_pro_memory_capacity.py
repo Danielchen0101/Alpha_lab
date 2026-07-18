@@ -7,6 +7,11 @@ def test_health_reports_memory_budget_and_scan_capacity(monkeypatch):
     limiter = backend._InstitutionalScanCapacity(2)
     monkeypatch.setattr(backend, "_INST_SCANNER_CAPACITY", limiter)
     monkeypatch.setattr(backend, "_backend_current_rss_mb", lambda: 512.25)
+    monkeypatch.setattr(
+        backend,
+        "_pa_scheduler_health_snapshot",
+        lambda: {"running": True},
+    )
 
     response = backend.app.test_client().get("/api/health")
     payload = response.get_json()
@@ -14,6 +19,7 @@ def test_health_reports_memory_budget_and_scan_capacity(monkeypatch):
     assert response.status_code == 200
     assert payload["status"] == "ok"
     assert payload["memory"]["rssMb"] == 512.2
+    assert payload["memory"]["measurement"] == "current_rss"
     assert payload["memory"]["planMb"] == backend._BACKEND_PLAN_MEMORY_MB
     assert payload["memory"]["pressure"] is False
     assert payload["scannerCapacity"] == {"active": 0, "capacity": 2, "available": 2}
@@ -162,6 +168,7 @@ def test_scanner_returns_retryable_429_when_pro_capacity_is_full(monkeypatch):
     assert limiter.acquire(0) is True
     monkeypatch.setattr(backend, "_INST_SCANNER_CAPACITY", limiter)
     monkeypatch.setattr(backend, "_INST_SCANNER_INTERACTIVE_WAIT_SECONDS", 0)
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "capacity-busy-user"})
 
     with backend.app.test_request_context("/api/market/scanner", method="POST", json={}):
         response, status, headers = backend.institutional_market_scanner()
@@ -179,6 +186,7 @@ def test_scanner_releases_slot_and_memory_on_pressure(monkeypatch):
     limiter = backend._InstitutionalScanCapacity(1)
     release_calls = []
     monkeypatch.setattr(backend, "_INST_SCANNER_CAPACITY", limiter)
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "memory-pressure-user"})
     monkeypatch.setattr(
         backend,
         "_backend_enforce_memory_budget",

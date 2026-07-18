@@ -104,6 +104,9 @@
 .config-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; min-height: 89px; padding: 20px 26px; border-bottom: 1px solid var(--config-rule); background: #f0eee6; }
 .config-card-header__identity { display: flex; align-items: flex-start; min-width: 0; gap: 14px; }
 .config-card-header__identity > div { min-width: 0; }
+.config-card-header__actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; flex: 0 0 auto; }
+.config-provider-link { display: inline-flex; align-items: center; gap: 6px; min-height: 31px; padding: 0 9px; border: 1px solid var(--config-rule-strong); color: var(--config-green-mid); font-size: 10.5px; font-weight: 700; text-decoration: none; white-space: nowrap; }
+.config-provider-link:hover { border-color: #66806d; color: #244e34; }
 .config-card-header__icon { display: grid; width: 42px; height: 42px; flex: 0 0 auto; place-items: center; border: 1px solid var(--config-rule); background: var(--config-surface); color: var(--config-green-mid); font-size: 18px; }
 .config-card-header h3 { margin: 1px 0 3px; color: var(--config-ink); font-size: 16px; font-weight: 680; letter-spacing: -.01em; }
 .config-card-header p { max-width: 720px; margin: 0; color: var(--config-muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
@@ -111,6 +114,7 @@
 .config-provider-card--live .config-card-header__icon { color: var(--config-green-mid); }
 .config-provider-card--ai .config-card-header__icon { color: #345f85; }
 .config-provider-card--notifications .config-card-header__icon { color: #66548b; }
+
 
 .config-status { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: 0 0 auto; min-width: 98px; padding: 6px 9px; border: 1px solid; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; }
 .config-status--connected { border-color: #a9c2aa; background: #eaf2e7; color: #356942; }
@@ -171,37 +175,37 @@
 .configuration-footer { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 20px; border-top: 1px solid var(--config-rule-strong); color: var(--config-muted); font-size: 11px; text-align: center; overflow-wrap: anywhere; }
 
 :root[data-theme='dark'] .configuration-page {
-  --config-paper: #0c1813;
-  --config-surface: #101e18;
-  --config-ink: #eef2eb;
-  --config-muted: #99a79d;
-  --config-rule: rgba(204,222,207,.14);
-  --config-rule-strong: rgba(204,222,207,.23);
-  --config-green: #0a1711;
+  --config-paper: var(--app-bg, #121114);
+  --config-surface: var(--app-card-bg, #1c1a20);
+  --config-ink: var(--app-text-strong, #fffaf0);
+  --config-muted: var(--app-text-muted, #aaa3ae);
+  --config-rule: var(--app-border-soft, rgba(226,214,196,.1));
+  --config-rule-strong: var(--app-border, rgba(226,214,196,.2));
+  --config-green: #18161b;
 }
 :root[data-theme='dark'] .config-card-header,
-:root[data-theme='dark'] .config-policy-card { background: #14231c; }
+:root[data-theme='dark'] .config-policy-card { background: #242129; }
 :root[data-theme='dark'] .config-card-header__icon,
 :root[data-theme='dark'] .configuration-page .ant-input,
 :root[data-theme='dark'] .configuration-page .ant-input-affix-wrapper,
-:root[data-theme='dark'] .configuration-page .ant-select-selector { background: #0d1914 !important; }
-:root[data-theme='dark'] .config-security-note { background: #14231c; }
+:root[data-theme='dark'] .configuration-page .ant-select-selector { background: #18161b !important; }
+:root[data-theme='dark'] .config-security-note { background: #242129; }
 :root[data-theme='dark'] .configuration-eyebrow,
-:root[data-theme='dark'] .configuration-group__header > span { color: #91aa96; }
+:root[data-theme='dark'] .configuration-group__header > span { color: #d6a45f; }
 :root[data-theme='dark'] .configuration-nav__security,
-:root[data-theme='dark'] .config-security-note { color: #aac0ae; }
+:root[data-theme='dark'] .config-security-note { color: #b6a0c9; }
 :root[data-theme='dark'] .configuration-page .ant-form-item-label > label,
-:root[data-theme='dark'] .configuration-page .config-policy-title { color: #a9b7ad; }
+:root[data-theme='dark'] .configuration-page .config-policy-title { color: #aaa3ae; }
 :root[data-theme='dark'] .configuration-page .ant-input[disabled],
 :root[data-theme='dark'] .configuration-page .ant-input-affix-wrapper-disabled,
-:root[data-theme='dark'] .configuration-page .ant-select-disabled .ant-select-selector { color: #78887d !important; background: #111d18 !important; }
-:root[data-theme='dark'] .configuration-page .config-risk-alert { border-color: #66523b; background: #2b251b; }
-:root[data-theme='dark'] .configuration-page .config-key-alert { border-color: #68473c; background: #2b1e1a; }
-:root[data-theme='dark'] .configuration-page .config-info-alert { border-color: #3e5960; background: #17262a; }
-:root[data-theme='dark'] .configuration-page .config-status--connected { border-color: #45644c; color: #a7c3a9; background: #172b1f; }
-:root[data-theme='dark'] .configuration-page .config-status--saved { border-color: #405c68; color: #a3bdc8; background: #18272d; }
-:root[data-theme='dark'] .configuration-page .config-status--error { border-color: #69473c; color: #d4a08e; background: #2b1e1a; }
-:root[data-theme='dark'] .configuration-page .config-status--idle { border-color: #414e47; color: #a5b1a8; background: #18231e; }
+:root[data-theme='dark'] .configuration-page .ant-select-disabled .ant-select-selector { color: #7f7782 !important; background: #211e25 !important; }
+:root[data-theme='dark'] .configuration-page .config-risk-alert { border-color: rgba(214,164,95,.35); background: rgba(214,164,95,.1); }
+:root[data-theme='dark'] .configuration-page .config-key-alert { border-color: rgba(223,123,104,.35); background: rgba(223,123,104,.1); }
+:root[data-theme='dark'] .configuration-page .config-info-alert { border-color: rgba(182,160,201,.35); background: rgba(182,160,201,.1); }
+:root[data-theme='dark'] .configuration-page .config-status--connected { border-color: rgba(157,181,140,.4); color: #b8cba9; background: rgba(157,181,140,.1); }
+:root[data-theme='dark'] .configuration-page .config-status--saved { border-color: rgba(182,160,201,.4); color: #c8b8d4; background: rgba(182,160,201,.1); }
+:root[data-theme='dark'] .configuration-page .config-status--error { border-color: rgba(223,123,104,.4); color: #e69a8b; background: rgba(223,123,104,.1); }
+:root[data-theme='dark'] .configuration-page .config-status--idle { border-color: rgba(226,214,196,.2); color: #b5adb7; background: #211e25; }
 
 @media (max-width: 1050px) {
   .configuration-page { width: min(100% - 30px, 900px); }
@@ -232,6 +236,7 @@
   .configuration-group__header { grid-template-columns: 1fr; gap: 7px; min-height: 0; padding: 4px 3px 15px; }
   .configuration-group__header h2 { font-size: 25px; }
   .config-card-header { align-items: flex-start; padding: 17px; }
+  .config-card-header__actions { align-items: flex-end; flex-direction: column-reverse; }
   .config-card-header__identity { gap: 11px; }
   .config-card-header__icon { width: 37px; height: 37px; }
   .config-card-header h3 { font-size: 14px; }

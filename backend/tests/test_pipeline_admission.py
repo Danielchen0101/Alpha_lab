@@ -94,9 +94,36 @@ def test_admission_blocks_existing_position_and_open_order():
     )
 
     assert rows[0]["admissionDecision"] == "BLOCK"
-    assert "Existing position already held" in rows[0]["blockers"]
+    assert "Existing-position profit is unavailable" in rows[0]["blockers"]
     assert "Open buy order already exists" in rows[0]["blockers"]
     assert summary["counts"]["BLOCK"] == 1
+
+
+def test_admission_routes_a_profitable_existing_position_to_scale_in():
+    rows, summary = backend._pa_run_admission(
+        "test-user",
+        [_candidate()],
+        fine_results=[_fine()],
+        market_results=[_market()],
+        account_state=_account(
+            holdingSymbols=["AAPL"],
+            positions=[{
+                "symbol": "AAPL",
+                "qty": "10",
+                "market_value": "1030",
+                "unrealized_plpc": "0.03",
+            }],
+            positionCount=1,
+            tradeMode="paper",
+        ),
+        pipeline_mode="ai",
+        ai_enabled=False,
+    )
+
+    assert rows[0]["admissionDecision"] == "ADMIT"
+    assert rows[0]["entryIntent"] == "SCALE_IN"
+    assert rows[0]["scaleInAssessment"]["eligible"] is True
+    assert summary["counts"]["ADMIT"] == 1
 
 
 def test_admission_holds_strategy_mismatch_and_price_drift():
@@ -205,3 +232,20 @@ def test_admission_ai_can_downgrade_but_never_promote(monkeypatch):
     assert rows[0]["admissionDecision"] == "HOLD"
     assert "AI challenge" in rows[0]["warnings"][0]
     assert rows[1]["admissionDecision"] == "BLOCK"
+
+
+def test_admission_blocks_when_platform_daily_order_cap_is_reached():
+    rows, summary = backend._pa_run_admission(
+        "test-user",
+        [_candidate()],
+        fine_results=[_fine()],
+        market_results=[_market()],
+        account_state=_account(dailyFilledOrderCount=20),
+        risk_profile="high",
+        ai_enabled=False,
+    )
+
+    assert rows[0]["admissionDecision"] == "BLOCK"
+    assert "Daily filled-order limit reached (20/20)" in rows[0]["blockers"]
+    assert summary["maxDailyFilledOrders"] == 20
+    assert summary["strategyPolicy"]["platformHardLimits"] == backend.PLATFORM_HARD_LIMITS

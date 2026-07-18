@@ -323,6 +323,24 @@ button.auth-brand-logo-text {
 .auth-link-forgot:hover {
   text-decoration: underline !important;
 }
+.auth-link-forgot--button {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border: 1px solid currentColor;
+  line-height: 1.2;
+}
+.auth-link-forgot--button:hover {
+  background: rgba(24, 144, 255, .07);
+  text-decoration: none !important;
+}
+.auth-link-forgot--button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
 
 .auth-captcha-wrapper {
   margin-bottom: 14px;
@@ -777,7 +795,7 @@ button.auth-brand-logo-text {
 
 @media (max-width: 430px) {
   .auth-nav-top { min-height: 60px; padding: 0 12px; }
-  .auth-back-link-top { max-width: calc(100% - 62px); font-size: .65rem !important; overflow-wrap: anywhere; }
+  .auth-back-link-top { max-width: calc(100% - 62px); font-size: .78rem !important; overflow-wrap: anywhere; }
   .lang-toggle-btn { flex: 0 0 auto; padding-right: 9px; padding-left: 9px; }
   .auth-shell { padding-right: 10px; padding-left: 10px; }
   .auth-card.signin,
@@ -828,3 +846,7 @@ button.auth-brand-logo-text {
   }
   .auth-btn { color: HighlightText !important; background: Highlight !important; }
 }
+.mfa-challenge-card { max-width: 520px; margin: 0 auto; padding: clamp(28px, 5vw, 52px); }
+.mfa-challenge-card .ant-alert { margin: 22px 0; }
+.mfa-challenge-card .ant-form { margin-top: 26px; }
+.mfa-challenge-loading { display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 132px; color: var(--app-text-muted); }

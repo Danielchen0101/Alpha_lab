@@ -17,10 +17,12 @@ After deploying the code changes from P1, complete these manual configuration st
 ## 2. Supabase Dashboard
 
 - [ ] **Enable CAPTCHA protection**: Supabase Dashboard → Authentication → Settings → Security → enable "CAPTCHA protection"
+- [ ] **Enable leaked-password protection**: Supabase Dashboard → Authentication → Settings → Password Security → reject passwords found in known breach corpora
 - [ ] **Set CAPTCHA site key**: paste the Turnstile Site Key into the "CAPTCHA secret key" field in Supabase Auth settings
 - [ ] **Rate limiting on auth endpoints**: Supabase Dashboard → Authentication → Rate Limiting — set appropriate limits for `signup`, `login`, `reset-password` (defaults are reasonable; lower if needed)
 - [ ] **Disable unused auth providers**: Supabase Dashboard → Authentication → Providers — disable any provider you do not use (e.g. Apple, Twitter, etc.)
 - [ ] **SMTP configuration**: ensure a custom SMTP sender is configured (not the default Supabase email) to improve deliverability and avoid spoofing
+- [ ] **Production URL configuration**: set the Site URL to the canonical production origin and allow only the required production callbacks (`/signin`, `/dashboard`, `/auth/confirmed`, and `/reset-password`); keep preview origins out of the production allow list unless they are intentionally trusted
 
 ---
 
@@ -29,8 +31,8 @@ After deploying the code changes from P1, complete these manual configuration st
 ### Google OAuth
 - [ ] **Google Cloud Console** → APIs & Services → Credentials
 - [ ] **Authorized JavaScript origins**: add your production domain (e.g. `https://yourdomain.com`)
-- [ ] **Authorized redirect URIs**: add `https://yourdomain.com/dashboard`
-- [ ] **Verify redirect URI matches** the Supabase OAuth redirect URL format: `https://<project>.supabase.co/auth/v1/callback`
+- [ ] **Authorized redirect URI**: add the Supabase callback exactly once: `https://<project-ref>.supabase.co/auth/v1/callback`
+- [ ] **Do not use the application dashboard URL as the provider callback**: Supabase receives the provider callback, then returns the user to an allowed application URL
 
 ### GitHub OAuth
 - [ ] **GitHub Settings** → Developer Settings → OAuth Apps
@@ -52,6 +54,13 @@ Ensure the following are set in production:
 | `APP_SECRET_KEY` | Backend secret key (change from default) |
 | `SUPABASE_URL` | Supabase URL for backend |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (keep secret) |
+| `FERNET_KEY` | Stable encryption key for saved provider credentials |
+
+Before release:
+
+- [ ] **Rotate every credential that was ever committed, pasted into an issue, or exposed in a build log**, even if the file has since been deleted
+- [ ] **Invalidate the previous provider key first**, then update the backend secret store and verify the affected integration
+- [ ] **Review Git history separately**: deleting a file from the current branch does not remove its contents from earlier commits; rewrite shared history only through a planned, coordinated maintenance window
 
 ---
 

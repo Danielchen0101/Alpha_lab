@@ -160,6 +160,9 @@ const AITrading: React.FC = () => {
   useEffect(() => {
     loadInitialData();
     loadWatchlist();
+    // This legacy screen intentionally hydrates once; both loaders update the
+    // same initial workspace snapshot and are not stable callback identities.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadInitialData = async () => {

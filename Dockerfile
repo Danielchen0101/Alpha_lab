@@ -45,9 +45,10 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements
 COPY backend/requirements.txt ./
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt || \
-    pip install --no-cache-dir flask flask-cors requests pandas numpy yfinance pytz gunicorn
+# Install the complete backend dependency set. A missing or incompatible
+# requirement must fail the image build instead of producing a partial runtime.
+RUN python -m pip install --no-cache-dir --disable-pip-version-check \
+    --requirement requirements.txt
 
 # Copy backend source
 COPY backend/ ./

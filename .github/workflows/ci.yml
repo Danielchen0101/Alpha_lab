@@ -19,10 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
     
     - name: Setup Node.js
-      uses: actions/setup-node@v7
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
       with:
         node-version: '20'
         cache: 'npm'
@@ -47,13 +47,14 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
     
     - name: Setup Python
-      uses: actions/setup-python@v6
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
       with:
         python-version: '3.11'
         cache: 'pip'
+        cache-dependency-path: backend/requirements.txt
     
     - name: Install backend dependencies
       run: |
@@ -72,14 +73,39 @@ jobs:
         flake8 start_quant_backend.py config.py technical_indicators.py --count --select=E9,F63,F7,F82 --show-source --statistics
         black --check start_quant_backend.py config.py technical_indicators.py || echo "Black formatting report is advisory for legacy files"
 
+  test-e2e:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+    - name: Setup Node.js
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install frontend dependencies
+      working-directory: frontend
+      run: npm ci
+
+    - name: Install Chromium
+      working-directory: frontend
+      run: npx playwright install --with-deps chromium
+
+    - name: Run public and authentication smoke tests
+      working-directory: frontend
+      run: npm run test:e2e
+
   lint-frontend:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
     
     - name: Setup Node.js
-      uses: actions/setup-node@v7
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
       with:
         node-version: '20'
 
@@ -102,39 +128,51 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
     - name: Setup Node.js
-      uses: actions/setup-node@v7
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
       with:
         node-version: '20'
 
     - name: Setup Python
-      uses: actions/setup-python@v6
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
       with:
         python-version: '3.11'
     
-    - name: Report frontend dependency audit
-      run: |
-        cd frontend
-        npm audit --package-lock-only --audit-level=high || true
+    - name: Enforce frontend high and critical dependency audit
+      working-directory: frontend
+      # Known build-tool findings should be fixed with a package override or a
+      # time-bounded, reviewed security exception; new findings fail this job.
+      run: npm audit --package-lock-only --audit-level=high
     
     - name: Audit backend dependencies
       run: |
         pip install pip-audit
         pip-audit -r backend/requirements.txt
 
+  secret-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+    - name: Reject credentials and provider tokens in the release tree
+      uses: docker://ghcr.io/gitleaks/gitleaks:v8.30.0
+      with:
+        args: dir /github/workspace --config /github/workspace/.gitleaks.toml --redact --no-banner --exit-code 1
+
   validate-docker:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v4
+      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
     - name: Build production image
-      uses: docker/build-push-action@v7
+      uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
       with:
         context: .
         file: ./Dockerfile
@@ -149,28 +187,28 @@ jobs:
   build-docker:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [test-frontend, test-backend, lint-frontend, validate-docker]
+    needs: [test-frontend, test-backend, test-e2e, lint-frontend, security-scan, secret-scan, validate-docker]
     env:
       DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
     
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
     
     - name: Set up Docker Buildx
       if: env.DOCKER_USERNAME != '' && env.DOCKER_PASSWORD != ''
-      uses: docker/setup-buildx-action@v4
+      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
     
     - name: Login to DockerHub
       if: env.DOCKER_USERNAME != '' && env.DOCKER_PASSWORD != ''
-      uses: docker/login-action@v4
+      uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
       with:
         username: ${{ env.DOCKER_USERNAME }}
         password: ${{ env.DOCKER_PASSWORD }}
     
     - name: Build and push
       if: env.DOCKER_USERNAME != '' && env.DOCKER_PASSWORD != ''
-      uses: docker/build-push-action@v7
+      uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
       with:
         context: .
         file: ./Dockerfile

@@ -1,0 +1,39 @@
+.mfa-enrollment {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid rgba(31, 49, 39, .18);
+  background: rgba(255, 255, 255, .38);
+}
+
+.mfa-enrollment__heading { display: flex; align-items: flex-start; gap: 12px; }
+.mfa-enrollment__icon { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border: 1px solid #b7c8b8; color: #315d40; }
+.mfa-enrollment__heading > div { min-width: 0; flex: 1; }
+.mfa-enrollment__title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.mfa-enrollment__title-row strong { color: #1b241e; font-size: 13px; }
+.mfa-enrollment__heading p, .mfa-enrollment__setup > p { margin: 5px 0 14px; color: #647068; font-size: 12px; line-height: 1.55; }
+.mfa-enrollment__status { display: inline-flex; align-items: center; gap: 5px; color: #7a6252; font: 700 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .05em; text-transform: uppercase; }
+.mfa-enrollment__status.is-enabled { color: #3c6a48; }
+.mfa-enrollment > .ant-alert { margin: 14px 0; border-radius: 0; }
+.mfa-enrollment__loading { display: grid; min-height: 48px; place-items: center; }
+.mfa-enrollment__setup { margin-top: 16px; padding-top: 16px; border-top: 1px solid rgba(31, 49, 39, .14); }
+.mfa-enrollment__qr { display: grid; grid-template-columns: 150px minmax(0, 1fr); align-items: center; gap: 18px; }
+.mfa-enrollment__qr img { display: block; width: 150px; height: 150px; padding: 8px; border: 1px solid rgba(31, 49, 39, .16); background: #fff; }
+.mfa-enrollment__qr div { min-width: 0; }
+.mfa-enrollment__qr span { display: block; margin-bottom: 7px; color: #697069; font-size: 11px; }
+.mfa-enrollment__qr code { display: block; padding: 10px; overflow-wrap: anywhere; border: 1px solid rgba(31, 49, 39, .14); background: #ece9df; color: #21352a; font-size: 11px; }
+.mfa-enrollment__verify { display: grid; grid-template-columns: minmax(140px, 1fr) auto auto; gap: 8px; margin-top: 16px; }
+.mfa-enrollment__verify .ant-input-affix-wrapper, .mfa-enrollment__verify .ant-btn { min-height: 38px; border-radius: 1px; }
+
+:root[data-theme='dark'] .mfa-enrollment { border-color: var(--app-border, rgba(226, 214, 196, .2)); background: rgba(0, 0, 0, .12); }
+:root[data-theme='dark'] .mfa-enrollment__icon { border-color: rgba(182,160,201,.4); color: #b6a0c9; }
+:root[data-theme='dark'] .mfa-enrollment__title-row strong { color: #fffaf0; }
+:root[data-theme='dark'] .mfa-enrollment__heading p,
+:root[data-theme='dark'] .mfa-enrollment__setup > p,
+:root[data-theme='dark'] .mfa-enrollment__qr span { color: #aaa3ae; }
+:root[data-theme='dark'] .mfa-enrollment__qr code { border-color: rgba(226, 214, 196, .16); background: #242129; color: #eee9df; }
+
+@media (max-width: 620px) {
+  .mfa-enrollment__qr { grid-template-columns: 1fr; }
+  .mfa-enrollment__verify { grid-template-columns: 1fr; }
+  .mfa-enrollment__verify .ant-btn { width: 100%; }
+}

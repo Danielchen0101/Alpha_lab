@@ -5,45 +5,11 @@ import enUSAntd from 'antd/locale/en_US';
 import zhCNAntd from 'antd/locale/zh_CN';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
-import Landing from './pages/Landing';
-import Platform from './pages/Platform';
-import Workflow from './pages/Workflow';
-import Features from './pages/Features';
-import Examples from './pages/Examples';
-import DataMethod from './pages/DataMethod';
-import Technology from './pages/Technology';
-import About from './pages/About';
-import SignIn from './pages/SignIn';
-import SignUp from './pages/SignUp';
-import Terms from './pages/Terms';
-import Privacy from './pages/Privacy';
-import AuthConfirmed from './pages/AuthConfirmed';
-import ForgotPassword from './pages/ForgotPassword';
-import ResetPassword from './pages/ResetPassword';
-import Dashboard from './pages/Dashboard';
-import Activity from './pages/Activity';
-import Market from './pages/Market';
-import Backtest from './pages/Backtest';
-import BacktestDetail from './pages/BacktestDetail';
-import StrategyComparison from './pages/StrategyComparison';
-import Watchlist from './pages/Watchlist';
-import StrategyRanking from './pages/StrategyRanking';
-import ParameterOptimization from './pages/ParameterOptimization.jsx';
-import Trade from './pages/Trade';
-import Portfolio from './pages/Portfolio';
-import Settings from './pages/Settings';
-import SystemHealth from './pages/SystemHealth';
-import Configuration from './pages/Configuration';
-import SymbolAnalysis from './pages/SymbolAnalysis';
-import LanguageTest from './pages/LanguageTest';
-import NotFound from './pages/NotFound';
-import Security from './pages/Security';
-import LanguageButtonPreview from './components/LanguageButtonPreview';
 import { LanguageProvider, useLanguage } from './contexts/LanguageContext';
 import { TradeModeProvider } from './contexts/TradeModeContext';
 import { ThemeProvider, useTheme } from './contexts/ThemeContext';
+import { WorkspacePreferencesProvider } from './contexts/WorkspacePreferencesContext';
 import AuthenticatedShell from './components/AuthenticatedShell';
-import { CandidateUniversePage, ReviewWorkspacePage } from './pages/ResearchWorkspace';
 import {
   LEGACY_MARKET_SYMBOL_ROOT,
   MARKET_SCANNER_PATH,
@@ -57,7 +23,45 @@ import {
 } from './routes/researchRoutes';
 import './App.css';
 
+const Landing = React.lazy(() => import('./pages/Landing'));
+const Platform = React.lazy(() => import('./pages/Platform'));
+const Workflow = React.lazy(() => import('./pages/Workflow'));
+const Features = React.lazy(() => import('./pages/Features'));
+const Examples = React.lazy(() => import('./pages/Examples'));
+const DataMethod = React.lazy(() => import('./pages/DataMethod'));
+const Technology = React.lazy(() => import('./pages/Technology'));
+const About = React.lazy(() => import('./pages/About'));
+const Security = React.lazy(() => import('./pages/Security'));
+const SignIn = React.lazy(() => import('./pages/SignIn'));
+const SignUp = React.lazy(() => import('./pages/SignUp'));
+const Terms = React.lazy(() => import('./pages/Terms'));
+const Privacy = React.lazy(() => import('./pages/Privacy'));
+const AuthConfirmed = React.lazy(() => import('./pages/AuthConfirmed'));
+const ForgotPassword = React.lazy(() => import('./pages/ForgotPassword'));
+const ResetPassword = React.lazy(() => import('./pages/ResetPassword'));
+const MfaChallenge = React.lazy(() => import('./pages/MfaChallenge'));
+const Dashboard = React.lazy(() => import('./pages/Dashboard'));
+const Activity = React.lazy(() => import('./pages/Activity'));
+const Market = React.lazy(() => import('./pages/Market'));
+const Backtest = React.lazy(() => import('./pages/Backtest'));
+const BacktestDetail = React.lazy(() => import('./pages/BacktestDetail'));
+const StrategyComparison = React.lazy(() => import('./pages/StrategyComparison'));
+const Watchlist = React.lazy(() => import('./pages/Watchlist'));
+const StrategyRanking = React.lazy(() => import('./pages/StrategyRanking'));
+const ParameterOptimization = React.lazy(() => import('./pages/ParameterOptimization.jsx'));
+const Trade = React.lazy(() => import('./pages/Trade'));
+const Portfolio = React.lazy(() => import('./pages/Portfolio'));
+const Settings = React.lazy(() => import('./pages/Settings'));
+const SystemHealth = React.lazy(() => import('./pages/SystemHealth'));
+const SafetyCenter = React.lazy(() => import('./pages/SafetyCenter'));
+const Configuration = React.lazy(() => import('./pages/Configuration'));
+const SymbolAnalysis = React.lazy(() => import('./pages/SymbolAnalysis'));
+const LanguageTest = React.lazy(() => import('./pages/LanguageTest'));
+const LanguageButtonPreview = React.lazy(() => import('./components/LanguageButtonPreview'));
+const NotFound = React.lazy(() => import('./pages/NotFound'));
 const Agent = React.lazy(() => import('./pages/Agent'));
+const CandidateUniversePage = React.lazy(() => import('./pages/ResearchWorkspace').then((module) => ({ default: module.CandidateUniversePage })));
+const ReviewWorkspacePage = React.lazy(() => import('./pages/ResearchWorkspace').then((module) => ({ default: module.ReviewWorkspacePage })));
 
 type RedirectTarget = {
   pathname: string;
@@ -79,21 +83,22 @@ const PreservingRedirect: React.FC<{ to: string }> = ({ to }) => {
   return <Navigate to={buildRedirectTarget(to, location)} replace />;
 };
 
+const AppRouteLoader: React.FC<{ label?: string }> = ({ label }) => {
+  const { language } = useLanguage();
+  const accessibleLabel = label || (language === 'zh-CN' ? '正在加载页面' : 'Loading page');
+  return (
+    <div className="app-route-loader" role="status" aria-live="polite" aria-label={accessibleLabel}>
+      <Spin size="large" />
+      <span className="sr-only">{accessibleLabel}</span>
+    </div>
+  );
+};
+
 const AgentRoute: React.FC = () => {
   const { language } = useLanguage();
 
   return (
-    <React.Suspense
-      fallback={(
-        <div
-          className="app-route-loader"
-          role="status"
-          aria-label={language === 'zh-CN' ? '正在加载 AI 研究工作台' : 'Loading AI research workspace'}
-        >
-          <Spin size="large" />
-        </div>
-      )}
-    >
+    <React.Suspense fallback={<AppRouteLoader label={language === 'zh-CN' ? '正在加载 AI 研究工作台' : 'Loading AI research workspace'} />}>
       <Agent />
     </React.Suspense>
   );
@@ -123,6 +128,7 @@ const RouteTitleManager: React.FC = () => {
       : pathname.startsWith('/dashboard') ? (zh ? '市场总览' : 'Market Overview')
         : pathname.startsWith('/activity') ? (zh ? '活动记录' : 'Activity')
           : pathname.startsWith('/system-health') ? (zh ? '系统状态' : 'System Health')
+            : pathname.startsWith('/safety') ? (zh ? '交易安全中心' : 'Trading Safety Center')
             : pathname.startsWith('/watchlist') ? (zh ? '自选列表' : 'Watchlist')
               : pathname.startsWith('/market') ? (zh ? '市场研究' : 'Markets')
                 : pathname.startsWith('/agent/review') ? (zh ? '研究审核' : 'Review Workspace')
@@ -136,6 +142,7 @@ const RouteTitleManager: React.FC = () => {
                               : pathname.startsWith('/settings') ? (zh ? '设置' : 'Settings')
                               : pathname.startsWith('/signin') ? (zh ? '登录' : 'Sign In')
                                 : pathname.startsWith('/signup') ? (zh ? '注册' : 'Create Account')
+                                  : pathname.startsWith('/mfa') ? (zh ? '双重验证' : 'Two-Factor Verification')
                                   : pathname.startsWith('/forgot-password') || pathname.startsWith('/reset-password')
                                     ? (zh ? '账户恢复' : 'Account Recovery')
                                     : pathname.startsWith('/platform') ? (zh ? '平台' : 'Platform')
@@ -158,11 +165,12 @@ const RouteTitleManager: React.FC = () => {
 };
 
 const AuthAwareNotFound: React.FC = () => {
-  const { user, loading } = useAuth();
+  const { user, loading, mfaStatus, mfaRequired } = useAuth();
   const { language } = useLanguage();
+  const location = useLocation();
   const zh = language === 'zh-CN';
 
-  if (loading) {
+  if (loading || (user && mfaStatus === 'checking')) {
     return (
       <div className="app-route-loader" role="status" aria-label={zh ? '正在检查登录状态' : 'Checking session'}>
         <Spin size="large" />
@@ -171,6 +179,10 @@ const AuthAwareNotFound: React.FC = () => {
   }
 
   if (!user) return <NotFound />;
+  if (mfaRequired) {
+    const next = `${location.pathname}${location.search}${location.hash}`;
+    return <Navigate to={`/mfa?next=${encodeURIComponent(next)}`} replace />;
+  }
 
   return (
     <AuthenticatedShell>
@@ -197,7 +209,14 @@ const ThemedApp: React.FC = () => {
       theme={{
       algorithm: resolvedTheme === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm,
       token: { 
-        colorPrimary: '#1890ff', 
+        colorPrimary: resolvedTheme === 'dark' ? '#d6a45f' : '#1890ff',
+        colorInfo: resolvedTheme === 'dark' ? '#b6a0c9' : '#1677ff',
+        colorSuccess: resolvedTheme === 'dark' ? '#9db58c' : '#52c41a',
+        colorWarning: resolvedTheme === 'dark' ? '#d6a45f' : '#faad14',
+        colorError: resolvedTheme === 'dark' ? '#df7b68' : '#ff4d4f',
+        colorBgBase: resolvedTheme === 'dark' ? '#121114' : '#ffffff',
+        colorBgContainer: resolvedTheme === 'dark' ? '#1c1a20' : '#ffffff',
+        colorTextBase: resolvedTheme === 'dark' ? '#eee9df' : 'rgba(0, 0, 0, 0.88)',
         borderRadius: 6,
         fontSize: 14,
         fontSizeSM: 12,
@@ -213,7 +232,9 @@ const ThemedApp: React.FC = () => {
       <Router>
         <RouteTitleManager />
         <AuthProvider>
+          <WorkspacePreferencesProvider>
           <TradeModeProvider>
+            <React.Suspense fallback={<AppRouteLoader />}>
             <Routes>
             {/* Public routes - no sidebar */}
             <Route path="/" element={<Landing />} />
@@ -233,6 +254,7 @@ const ThemedApp: React.FC = () => {
             <Route path="/auth/confirmed" element={<AuthConfirmed />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPassword />} />
+            <Route path="/mfa" element={<MfaChallenge />} />
             <Route path="/scanner" element={<PreservingRedirect to={MARKET_SCANNER_PATH} />} />
             <Route path="/security" element={<Security />} />
 
@@ -241,6 +263,7 @@ const ThemedApp: React.FC = () => {
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/activity" element={<Activity />} />
               <Route path="/system-health" element={<SystemHealth />} />
+              <Route path="/safety" element={<SafetyCenter />} />
               <Route path="/system-status" element={<PreservingRedirect to="/system-health" />} />
               <Route path="/signals" element={<PreservingRedirect to="/activity" />} />
               <Route path={MARKET_SCANNER_PATH} element={<Market />} />
@@ -272,7 +295,9 @@ const ThemedApp: React.FC = () => {
             {/* Fallback 404 — must be last */}
             <Route path="*" element={<AuthAwareNotFound />} />
             </Routes>
+            </React.Suspense>
           </TradeModeProvider>
+          </WorkspacePreferencesProvider>
         </AuthProvider>
       </Router>
     </ConfigProvider>

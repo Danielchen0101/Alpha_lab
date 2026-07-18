@@ -799,7 +799,7 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'pap
           {/* Resources */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <div className="footer-col-title" style={{ color: '#e2e8f0', fontWeight: 700, marginBottom: 14, fontSize: '0.82rem', letterSpacing: '0.03em', textTransform: 'uppercase' }}>{t.landing.footerResources}</div>
-            <a className="footer-link" style={{ color: '#94a3b8', fontSize: '0.83rem', cursor: 'pointer', display: 'block', padding: '3px 0', textDecoration: 'none' }} href="https://github.com/Danielchen0101/quant_platform" target="_blank" rel="noopener noreferrer">{t.landing.footerGithub}</a>
+            <a className="footer-link" style={{ color: '#94a3b8', fontSize: '0.83rem', cursor: 'pointer', display: 'block', padding: '3px 0', textDecoration: 'none' }} href="https://github.com/Danielchen0101/Alpha_lab" target="_blank" rel="noopener noreferrer">{t.landing.footerGithub}</a>
             <div className="footer-system-status"><SystemStatusIndicator /></div>
           </div>
         </div>

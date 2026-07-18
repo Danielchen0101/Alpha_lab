@@ -342,22 +342,22 @@
 }
 
 .comparison-evidence-board {
-  --app-card-bg: #102019;
-  --app-card-bg-soft: #1a2c23;
-  --app-text: #f1efe7;
-  --app-text-strong: #f1efe7;
-  --app-text-muted: #aab4a9;
-  --app-border: rgba(229, 235, 226, 0.24);
-  --app-border-soft: rgba(229, 235, 226, 0.12);
+  --app-card-bg: #151318;
+  --app-card-bg-soft: #211e25;
+  --app-text: #eee9df;
+  --app-text-strong: #fffaf0;
+  --app-text-muted: #aaa3ae;
+  --app-border: rgba(226, 214, 196, 0.22);
+  --app-border-soft: rgba(226, 214, 196, 0.1);
   margin-bottom: 26px;
   padding: 29px;
   color: var(--app-text);
-  background-color: #102019;
+  background-color: #151318;
   background-image:
-    linear-gradient(rgba(223, 231, 220, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(223, 231, 220, 0.035) 1px, transparent 1px);
+    linear-gradient(rgba(226, 214, 196, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(226, 214, 196, 0.035) 1px, transparent 1px);
   background-size: 38px 38px;
-  border: 1px solid #20352a;
+  border: 1px solid #332c37;
 }
 
 .comparison-evidence-heading {
@@ -371,7 +371,7 @@
 }
 
 .comparison-evidence-heading span {
-  color: #98ad95;
+  color: #d6a45f;
 }
 
 .comparison-evidence-heading h2 {
@@ -387,7 +387,7 @@
 
 .comparison-evidence-heading p {
   margin: 0;
-  color: #aab4a9;
+  color: #aaa3ae;
   font-size: 12.5px;
   line-height: 1.55;
 }
@@ -402,7 +402,7 @@
 }
 
 .strategy-comparison-shell .comparison-analysis-card {
-  background: #102019 !important;
+  background: #151318 !important;
   border: 0 !important;
   border-radius: 0 !important;
 }

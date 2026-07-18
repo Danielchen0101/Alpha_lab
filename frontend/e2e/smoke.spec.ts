@@ -1,58 +1,83 @@
-import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import { test, expect, Page } from '@playwright/test';
 
-const BASE = 'https://www.alphalabquant.com';
+const assertNoCriticalAccessibilityViolations = async (page: Page) => {
+  const result = await new AxeBuilder({ page }).analyze();
+  const critical = result.violations
+    .filter((violation) => violation.impact === 'critical')
+    .map(({ id, help, nodes }) => ({ id, help, targets: nodes.map((node) => node.target) }));
+  expect(critical).toEqual([]);
+};
 
-test.describe('Smoke Tests — Public Pages', () => {
-
-  test('homepage loads', async ({ page }) => {
-    await page.goto(BASE);
+test.describe('Public application smoke tests', () => {
+  test('homepage renders meaningful content without a horizontal overflow', async ({ page }) => {
+    await page.goto('/');
     await expect(page.locator('#root')).toBeAttached();
-    await page.waitForTimeout(1500);
-    // Verify React rendered content (not just the noscript fallback)
-    await expect(page.locator('button').first()).toBeVisible();
+    await expect(page.locator('main')).toBeVisible();
+    await expect(page).toHaveTitle(/AlphaLab|Quant Research Platform/);
+    await expect.poll(() => page.evaluate(() => document.body.scrollWidth <= window.innerWidth + 1)).toBe(true);
   });
 
-  test('signin page loads', async ({ page }) => {
-    await page.goto(`${BASE}/signin`);
-    await expect(page.locator('#root')).toBeAttached();
-    await page.waitForTimeout(2000);
-    // Locale-agnostic: check for email input or sign-in button
-    const hasInput = await page.locator('input[type="email"], input[placeholder*="mail"], input[id*="email"]').count();
-    expect(hasInput).toBeGreaterThanOrEqual(1);
+  test('sign-in form is keyboard-labelled and links to account creation', async ({ page }) => {
+    await page.goto('/signin');
+    const email = page.locator('input[type="email"]');
+    const password = page.locator('input[type="password"]');
+    await expect(email).toBeVisible();
+    await expect(password).toBeVisible();
+    await expect(email).toHaveAttribute('id', /email/i);
+    await expect(password).toHaveAttribute('id', /password/i);
+    await expect(page.locator('a[href="/signup"]')).toBeVisible();
+    await expect(page.locator('a[href="/forgot-password"]')).toBeVisible();
   });
 
-  test('signup page loads', async ({ page }) => {
-    await page.goto(`${BASE}/signup`);
-    await expect(page.locator('#root')).toBeAttached();
-    await page.waitForTimeout(2000);
-    // Check for password field (locale-agnostic)
-    const hasPasswordInput = await page.locator('input[type="password"]').count();
-    expect(hasPasswordInput).toBeGreaterThanOrEqual(1);
+  test('account creation and recovery forms remain available without credentials', async ({ page }) => {
+    await page.goto('/signup');
+    await expect(page.locator('input[type="email"]')).toBeVisible();
+    await expect(page.locator('input[type="password"]')).toHaveCount(2);
+    await expect(page.locator('a[href="/signin"]')).toBeVisible();
+
+    await page.goto('/forgot-password');
+    await expect(page.locator('input[type="email"]')).toBeVisible();
+    await expect(page.locator('form')).toBeVisible();
+
+    await page.goto('/reset-password');
+    await expect(page.locator('a[href="/forgot-password"]')).toBeVisible();
+    await expect(page.locator('input[type="password"]')).toHaveCount(0);
   });
 
-  test('forgot-password page loads', async ({ page }) => {
-    await page.goto(`${BASE}/forgot-password`);
-    await expect(page.locator('#root')).toBeAttached();
-    await page.waitForTimeout(2000);
-    // Check for email input
-    const hasEmailInput = await page.locator('input[type="email"], input[placeholder*="mail"]').count();
-    expect(hasEmailInput).toBeGreaterThanOrEqual(1);
+  test('unknown routes show the public 404 recovery page', async ({ page }) => {
+    await page.goto('/some-nonexistent-page-xyz');
+    await expect(page.locator('main')).toContainText('404');
+    await expect(page.locator('a, button').filter({ hasText: /home|首页/i }).first()).toBeVisible();
   });
 
-  test('unknown route shows 404 page', async ({ page }) => {
-    await page.goto(`${BASE}/some-nonexistent-page-xyz`);
-    await expect(page.locator('#root')).toBeAttached();
-    await page.waitForTimeout(2500);
-    // Should render 404 content (not the app layout)
-    const body = await page.textContent('body');
-    expect(body).toContain('404');
+  for (const route of ['/dashboard', '/market', '/agent', '/portfolio', '/settings/configuration']) {
+    test(`protected route ${route} redirects to sign in`, async ({ page }) => {
+      await page.goto(route);
+      await expect(page).toHaveURL(/\/signin(?:\?|$)/);
+      await expect(page.locator('input[type="email"]')).toBeVisible();
+      await expect(page.locator('input[type="password"]')).toBeVisible();
+    });
+  }
+
+  test('unsafe redirect targets cannot escape the application', async ({ page }) => {
+    await page.goto('/signin?next=//malicious.example/path');
+    await expect(page).toHaveURL(/\/signin\?/);
+    await expect(page.locator('input[type="email"]')).toBeVisible();
   });
 
-  test('protected route redirects to signin', async ({ page }) => {
-    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
-    await expect(page).toHaveURL(/\/signin/);
-    await expect(page.locator('#root')).toBeAttached();
-    // Confirm sign-in form rendered — check for any input field (locale-agnostic)
-    await expect(page.locator('input').first()).toBeVisible({ timeout: 5000 });
+  test('homepage and sign-in have no critical axe violations', async ({ page }) => {
+    await page.goto('/');
+    await assertNoCriticalAccessibilityViolations(page);
+    await page.goto('/signin');
+    await assertNoCriticalAccessibilityViolations(page);
+  });
+
+  test('sign-in remains usable on a narrow mobile viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 780 });
+    await page.goto('/signin');
+    await expect(page.locator('input[type="email"]')).toBeVisible();
+    await expect(page.locator('input[type="password"]')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => document.body.scrollWidth <= window.innerWidth + 1)).toBe(true);
   });
 });

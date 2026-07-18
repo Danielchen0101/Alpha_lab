@@ -139,6 +139,65 @@ export interface StockData {
   earningsDate?: string | null;
 }
 
+export interface MarketRiskConstituent {
+  symbol: string;
+  name: string;
+  exchange: string;
+  price: number;
+  previousClose: number;
+  changePct: number;
+  dollarVolume: number;
+  dayBarTime?: string | null;
+}
+
+export interface MarketRiskSnapshotResponse {
+  success: boolean;
+  snapshot: {
+    riskScore: number;
+    riskLevel: 'normal' | 'guarded' | 'elevated' | 'high';
+    regime: 'risk_on' | 'constructive' | 'mixed' | 'defensive' | 'risk_off';
+    universeCount: number;
+    validCount: number;
+    coveragePct: number;
+    advancing: number;
+    declining: number;
+    unchanged: number;
+    advancingPct: number;
+    decliningPct: number;
+    advanceDeclineRatio: number;
+    equalWeightChangePct: number;
+    liquidityWeightedChangePct: number;
+    medianChangePct: number;
+    downTwoPct: number;
+    upTwoPct: number;
+    dispersionPct: number;
+    p10ChangePct: number;
+    p90ChangePct: number;
+    distribution: Array<{ label: string; count: number }>;
+    method: string;
+    source: string;
+    components: Record<string, number>;
+  };
+  benchmarks: MarketRiskConstituent[];
+  sectorEtfs: MarketRiskConstituent[];
+  exchangeBreadth: Array<{
+    name: string;
+    total: number;
+    advancing: number;
+    declining: number;
+    unchanged: number;
+  }>;
+  movers: MarketRiskConstituent[];
+  asOf: string;
+  generatedAt: string;
+  universeSource: string;
+  rawAssetCount: number;
+  snapshotAvailable: number;
+  snapshotErrorCount: number;
+  cache?: { status: string; ageSeconds: number };
+  warning?: string;
+}
+
 export interface HistoricalDataPoint {
   timestamp: number;
   time: string;
@@ -376,11 +435,26 @@ export const getDashboardStatus = async (): Promise<{
   }
 };
 
+export const getMarketRiskSnapshot = async (forceRefresh = false): Promise<MarketRiskSnapshotResponse> => {
+  const response = await api.get('/market/risk-snapshot', {
+    params: forceRefresh ? { refresh: 'true', limit: 1500 } : { limit: 1500 },
+    timeout: 120000,
+  });
+  if (!response.data?.success || !response.data?.snapshot) {
+    throw new Error(response.data?.error || 'Broad-market risk snapshot is unavailable.');
+  }
+  return response.data as MarketRiskSnapshotResponse;
+};
+
 /**
  * Get list of stocks for Market page
  * @param symbols Optional array of symbols to filter (if provided, returns data for those symbols only)
  */
-export const getStocks = async (symbols?: string[], dashboard?: boolean): Promise<StockData[]> => {
+export const getStocks = async (
+  symbols?: string[],
+  dashboard?: boolean,
+  forceRefresh?: boolean,
+): Promise<StockData[]> => {
   try {
     const params: any = {};
     
@@ -392,6 +466,10 @@ export const getStocks = async (symbols?: string[], dashboard?: boolean): Promis
     // Dashboard请求使用轻量级模式
     if (dashboard) {
       params.dashboard = 'true';
+    }
+
+    if (forceRefresh) {
+      params.refresh = 'true';
     }
     
     if (process.env.NODE_ENV !== 'production') {
@@ -502,7 +580,8 @@ export const getStockData = async (symbol: string): Promise<StockData> => {
  */
 export const getStockHistory = async (
   symbol: string,
-  timeframe: string = '1M'
+  timeframe: string = '1M',
+  options?: { adjustedData?: boolean; session?: 'regular' | 'extended' },
 ): Promise<HistoricalDataResponse> => {
   try {
     const config = TIMEFRAMES[timeframe] || TIMEFRAMES['1M'];
@@ -511,6 +590,8 @@ export const getStockHistory = async (
       params: {
         interval: config.interval,
         range: config.range,
+        adjustment: options?.adjustedData === false ? 'raw' : 'all',
+        session: options?.session || 'regular',
       },
     });
 

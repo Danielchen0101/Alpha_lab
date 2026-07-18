@@ -24,16 +24,20 @@
 }
 
 :root[data-theme='dark'] .workspace-shell {
-  --shell-paper: #111712;
-  --shell-paper-bright: #171f19;
-  --shell-paper-deep: #202920;
-  --shell-ink: #f1eee5;
-  --shell-muted: #a3aba1;
-  --shell-rule: rgba(241, 238, 229, 0.22);
-  --shell-rule-soft: rgba(241, 238, 229, 0.1);
-  --shell-blue: #79a6e7;
-  --shell-green: #86ae82;
-  --shell-red: #df8065;
+  --shell-paper: var(--app-bg, #121114);
+  --shell-paper-bright: var(--app-surface, #18161b);
+  --shell-paper-deep: var(--app-surface-elevated, #242129);
+  --shell-ink: var(--app-text-strong, #fffaf0);
+  --shell-muted: var(--app-text-muted, #aaa3ae);
+  --shell-rule: var(--app-border, rgba(226, 214, 196, 0.2));
+  --shell-rule-soft: var(--app-border-soft, rgba(226, 214, 196, 0.1));
+  --shell-blue: var(--app-accent, #d6a45f);
+  --shell-green: var(--app-positive, #9db58c);
+  --shell-red: var(--app-danger, #df7b68);
+  background-image:
+    radial-gradient(circle at 16% 20%, rgba(214, 164, 95, 0.045) 0 1px, transparent 1.4px),
+    radial-gradient(circle at 72% 58%, rgba(182, 160, 201, 0.04) 0 1px, transparent 1.5px),
+    repeating-radial-gradient(circle at 0 0, transparent 0 7px, rgba(238, 233, 223, 0.014) 7.5px 8px);
 }
 
 .auth-shell__chrome {
@@ -294,6 +298,7 @@
 }
 
 .auth-shell__utility-button:hover { background: var(--shell-rule-soft); }
+.auth-shell__utility-button.is-active { color: var(--shell-blue); background: color-mix(in srgb, var(--shell-blue) 9%, transparent); }
 .auth-shell__language-button { min-width: 48px; }
 .auth-shell__utility-rule {
   width: 1px;
@@ -436,14 +441,14 @@
 }
 
 :root[data-theme='dark'] .auth-shell__drawer {
-  --drawer-paper: #111712;
-  --drawer-paper-bright: #171f19;
-  --drawer-ink: #f1eee5;
-  --drawer-muted: #a3aba1;
-  --drawer-rule: rgba(241, 238, 229, 0.22);
-  --drawer-rule-soft: rgba(241, 238, 229, 0.12);
-  --drawer-blue: #79a6e7;
-  --drawer-moss: #86ae82;
+  --drawer-paper: var(--app-bg, #121114);
+  --drawer-paper-bright: var(--app-surface, #18161b);
+  --drawer-ink: var(--app-text-strong, #fffaf0);
+  --drawer-muted: var(--app-text-muted, #aaa3ae);
+  --drawer-rule: var(--app-border, rgba(226, 214, 196, 0.2));
+  --drawer-rule-soft: var(--app-border-soft, rgba(226, 214, 196, 0.1));
+  --drawer-blue: var(--app-accent, #d6a45f);
+  --drawer-moss: var(--app-positive, #9db58c);
 }
 
 .auth-shell__drawer .ant-drawer-body {
@@ -803,20 +808,20 @@
 
 :root[data-theme='dark'] .auth-shell__real-modal .ant-modal-content,
 :root[data-theme='dark'] .auth-shell__real-modal .ant-modal-header {
-  color: #f1eee5 !important;
-  background: #171f19 !important;
-  border-color: rgba(241, 238, 229, 0.22) !important;
+  color: #fffaf0 !important;
+  background: #1c1a20 !important;
+  border-color: rgba(226, 214, 196, 0.2) !important;
 }
 :root[data-theme='dark'] .auth-shell__real-modal .ant-modal-footer {
-  background: #111712;
-  border-color: rgba(241, 238, 229, 0.18);
+  background: #18161b;
+  border-color: rgba(226, 214, 196, 0.18);
 }
 :root[data-theme='dark'] .auth-shell__real-modal-title > strong,
-:root[data-theme='dark'] .auth-shell__mode-transition strong { color: #f1eee5; }
-:root[data-theme='dark'] .auth-shell__real-modal-title > span { color: #9fbd98; }
-:root[data-theme='dark'] .auth-shell__mode-transition { border-color: rgba(241, 238, 229, 0.22); }
+:root[data-theme='dark'] .auth-shell__mode-transition strong { color: #fffaf0; }
+:root[data-theme='dark'] .auth-shell__real-modal-title > span { color: #d6a45f; }
+:root[data-theme='dark'] .auth-shell__mode-transition { border-color: rgba(226, 214, 196, 0.2); }
 :root[data-theme='dark'] .auth-shell__mode-transition > i {
-  color: #a3aba1;
+  color: #aaa3ae;
   background: rgba(255,255,255,0.035);
   border-color: rgba(241, 238, 229, 0.15);
 }

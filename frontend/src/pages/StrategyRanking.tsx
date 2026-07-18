@@ -38,6 +38,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { backtraderAPI } from '../services/api';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useAuth } from '../contexts/AuthContext';
 import './StrategyRanking.css';
 
 const { Title, Text } = Typography;
@@ -153,6 +154,7 @@ const normalizeHistoryItem = (item: any, index: number, source: 'local' | 'api')
 const StrategyRanking: React.FC = () => {
   const navigate = useNavigate();
   const { t, language } = useLanguage();
+  const { user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [rankingData, setRankingData] = useState<RankingItem[]>([]);
   const [loadIssue, setLoadIssue] = useState<'remote' | 'local' | 'load' | null>(null);
@@ -163,7 +165,8 @@ const StrategyRanking: React.FC = () => {
 
   const loadLocalBacktestHistory = (): { records: RankingItem[]; failed: boolean } => {
     try {
-      const saved = localStorage.getItem('quant_backtest_history');
+      if (!user?.id) return { records: [], failed: false };
+      const saved = localStorage.getItem(`quant_backtest_history:${user.id}`);
       if (!saved) return { records: [], failed: false };
       const history = JSON.parse(saved);
       const records = Array.isArray(history)
@@ -216,7 +219,7 @@ const StrategyRanking: React.FC = () => {
     void fetchRankingData();
     // Ranking data is refreshed manually after the initial load.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [user?.id]);
 
   const filteredAndSortedData = useMemo(() => {
     let data = [...rankingData];

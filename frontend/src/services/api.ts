@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { supabase, supabaseConfigError } from '../lib/supabaseClient';
+import { hasSessionAwayExpired, readAwaySince, refreshSessionOnce } from './authSession';
 
 const rawApiBaseUrl = process.env.REACT_APP_API_BASE_URL || '';
 
@@ -31,9 +32,11 @@ const api = axios.create({
   },
 });
 
-// 为scanner AI分析创建专用实例，没有timeout限制
+// Heavy scans have a longer boundary than ordinary reads, while still failing
+// cleanly if a connection is lost instead of leaving the interface waiting forever.
 const scannerApi = axios.create({
   baseURL: API_BASE_URL,
+  timeout: 10 * 60 * 1000,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -63,10 +66,8 @@ const attachSupabaseToken = async (config: any) => {
   // If token is expired, attempt refresh
   if (session?.access_token && isTokenExpired(session.access_token)) {
     try {
-      const { data: refreshed } = await supabase.auth.refreshSession();
-      if (refreshed.session) {
-        session = refreshed.session;
-      }
+      const refreshedSession = await refreshSessionOnce();
+      if (refreshedSession) session = refreshedSession;
     } catch (e) {
       console.warn('[Auth] Session refresh failed, will use existing token:', e);
     }
@@ -83,16 +84,35 @@ statusApi.interceptors.request.use(attachSupabaseToken);
 // Attach Supabase token to all requests
 api.interceptors.request.use(attachSupabaseToken);
 
-// Global 401 interceptor: clear session and redirect to signin
+// Recover once from an expired access token. A brief background-tab refresh
+// failure should not destroy an otherwise persisted Supabase session.
 const handle401 = async (error: any) => {
-  if (error.response?.status === 401) {
-    window.dispatchEvent(new Event('alphalab:auth-lost'));
+  if (error.response?.status !== 401) return Promise.reject(error);
+
+  const requestConfig = error.config as any;
+  if (requestConfig && !requestConfig._authRetry) {
+    requestConfig._authRetry = true;
     try {
-      const { supabase } = await import('../lib/supabaseClient');
-      await supabase.auth.signOut();
-    } catch {}
-    window.location.href = '/signin';
+      const refreshedSession = await refreshSessionOnce();
+      if (refreshedSession?.access_token) {
+        requestConfig.headers = requestConfig.headers || {};
+        requestConfig.headers.Authorization = `Bearer ${refreshedSession.access_token}`;
+        return axios.request(requestConfig);
+      }
+    } catch {
+      // The session check below decides whether this is a real sign-out.
+    }
   }
+
+  const { data: { session } } = await supabase.auth.getSession();
+  const awayExpired = hasSessionAwayExpired(readAwaySince());
+  if (session && !awayExpired) {
+    return Promise.reject(error);
+  }
+
+  window.dispatchEvent(new Event('alphalab:auth-lost'));
+  try { await supabase.auth.signOut(); } catch {}
+  window.location.href = '/signin';
   return Promise.reject(error);
 };
 
@@ -632,14 +652,86 @@ export interface WorkspacePreferences {
   scheduleEnabled: boolean;
   intervalMinutes: number;
   liveAutoTradingEnabled: boolean;
+  language?: 'en-US' | 'zh-CN' | null;
   strategyPolicy?: any;
   updatedAt?: string;
+  general: {
+    timezone: string;
+    currency: string;
+    numberFormat: 'standard' | 'compact';
+    defaultLandingPage: '/dashboard' | '/market' | '/agent' | '/trade' | '/portfolio';
+    fontScale: 'compact' | 'comfortable' | 'large';
+    density: 'compact' | 'comfortable' | 'spacious';
+    reduceMotion: boolean;
+    themeMode: 'light' | 'dark' | 'system';
+  };
+  trading: {
+    defaultOrderType: 'market' | 'limit' | 'stop' | 'stop_limit' | 'trailing_stop';
+    timeInForce: 'day' | 'gtc' | 'opg' | 'cls' | 'ioc' | 'fok';
+    extendedHours: boolean;
+    orderSizeMode: 'shares' | 'dollars';
+    limitOffsetBps: number;
+    confirmationPolicy: 'always' | 'live_only';
+  };
+  risk: {
+    maxOrderNotional: number;
+    maxPositionPct: number;
+    dailyLossLimitPct: number;
+    sectorConcentrationPct: number;
+    maxOpenPositions: number;
+    staleQuoteSeconds: number;
+    blockOnStaleQuote: boolean;
+    circuitBreakerEnabled: boolean;
+  };
+  research: {
+    universe: 'alpaca_market' | 'sp500' | 'nasdaq100' | 'watchlist';
+    excludedSymbols: string[];
+    excludedSectors: string[];
+    minPrice: number;
+    minMarketCap: number;
+    minDollarVolume: number;
+    maxSymbols: number;
+    outputSize: number;
+    aiReviewLimit: number;
+    dataFreshnessSeconds: number;
+    includeExtendedHours: boolean;
+  };
+  charts: {
+    timeframe: '1D' | '1W' | '1M' | '3M' | '1Y';
+    chartType: 'candles' | 'line' | 'area';
+    adjustedData: boolean;
+    session: 'regular' | 'extended';
+    benchmark: string;
+    precision: number;
+    showEvents: boolean;
+  };
+  notifications: {
+    inApp: boolean;
+    discord: boolean;
+    tradeActivity: boolean;
+    recommendations: boolean;
+    riskAlerts: boolean;
+    pipelineDigest: boolean;
+    dataQuality: boolean;
+    securityAlerts: boolean;
+    deliveryMode: 'instant' | 'digest';
+    quietHoursEnabled: boolean;
+    quietStart: string;
+    quietEnd: string;
+  };
+  security: {
+    inactivityTimeoutMinutes: number;
+    newDeviceAlerts: boolean;
+    sensitiveActionConfirmation: boolean;
+  };
 }
 
 export const workspacePreferencesAPI = {
   get: () => api.get<{ success: boolean; preferences: WorkspacePreferences }>('/user/preferences'),
-  update: (data: Partial<Pick<WorkspacePreferences, 'tradeMode' | 'pipelineMode' | 'riskProfile' | 'timeHorizon' | 'leverageEnabled'>>) =>
+  update: (data: Partial<Pick<WorkspacePreferences, 'tradeMode' | 'pipelineMode' | 'riskProfile' | 'timeHorizon' | 'leverageEnabled' | 'language' | 'general' | 'trading' | 'risk' | 'research' | 'charts' | 'notifications' | 'security'>>) =>
     api.patch<{ success: boolean; preferences: WorkspacePreferences }>('/user/preferences', data),
+  registerDevice: (data: { deviceId: string; deviceLabel: string; timezone: string }) =>
+    api.post<{ success: boolean; isNew: boolean; registered: boolean }>('/user/security/device', data),
 };
 
 // Pipeline Auto API (market-hours auto pipeline scheduler)
@@ -662,7 +754,22 @@ export const pipelineAutoAPI = {
   runHeadlessTest: (data?: { dryRun?: boolean; mode?: string; intervalMinutes?: number }) =>
     api.post('/ai-agent/pipeline-auto/run-headless-test', data || { dryRun: true }),
   runNow: (data?: {}) =>
-    api.post<{ success: boolean; runId?: string; status?: string; error?: string; message?: string }>('/ai-agent/pipeline-auto/run-now', data || {}),
+    api.post<{
+      success: boolean;
+      runId?: string;
+      status?: string;
+      error?: string;
+      message?: string;
+      orderAuthority?: {
+        authorized: boolean;
+        buyAuthorized: boolean;
+        sellAuthorized: boolean;
+        code: string;
+        message: string;
+        pipelineMode: string;
+        tradeMode: string;
+      };
+    }>('/ai-agent/pipeline-auto/run-now', data || {}),
   runPipeline: (data: { trigger?: string; mode?: string; intervalMinutes?: number; riskProfile?: string; timeHorizon?: string; tradeMode?: string; leverageEnabled?: boolean }) =>
     api.post('/ai-agent/pipeline/run', data),
   getPipelineResult: (runId?: string, kind?: 'manual' | 'auto') =>
@@ -691,7 +798,7 @@ export const notificationAPI = {
   saveDiscordConfig: (data: any) => api.post('/notifications/discord/config', data),
   testDiscord: (data?: any) => api.post('/notifications/discord/test', data || {}),
   sendDiscordEvent: (
-    eventType: 'cycle_digest' | 'risk_alert' | 'order' | 'scan_summary' | 'entry_plan' | 'exit_scan' | 'error',
+    eventType: 'cycle_digest' | 'risk_alert' | 'recommendation' | 'order' | 'scan_summary' | 'entry_plan' | 'exit_scan' | 'error',
     payload: any
   ) => api.post('/notifications/discord/event', { eventType, payload }),
 };

@@ -1,0 +1,10 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Ignore the Settings service-status ternary, which the Finnhub rule mistakes for a token assignment."
+targetRules = ["finnhub-access-token"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''frontend/src/pages/Settings\.tsx$''']
+regexes = ['''finnhub:\s*marketDataConfigured\s*\?\s*['"]connected['"]\s*:\s*providerStatusToServiceStatus\(result\.data\.finnhub\?\.status\),''']
