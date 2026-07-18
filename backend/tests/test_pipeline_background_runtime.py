@@ -1292,6 +1292,7 @@ def test_scheduler_health_requires_a_live_thread_and_fresh_heartbeat(monkeypatch
     monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_HEARTBEAT", 990.0)
     monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_COMPLETED_AT", 980.0)
     monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_ERROR", "")
+    monkeypatch.setattr(backend, "_pa_read_shared_scheduler_heartbeat", lambda: {})
 
     healthy = backend._pa_scheduler_health_snapshot(now_ts=1000.0)
     stale = backend._pa_scheduler_health_snapshot(now_ts=1200.0)
@@ -1302,6 +1303,39 @@ def test_scheduler_health_requires_a_live_thread_and_fresh_heartbeat(monkeypatch
     assert healthy["lastCompletedTickAt"]
     assert stale["running"] is False
     assert stale["threadAlive"] is True
+
+
+def test_scheduler_health_reads_master_process_heartbeat(monkeypatch):
+    class StaleWorkerThread:
+        @staticmethod
+        def is_alive():
+            return False
+
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_THREAD", StaleWorkerThread())
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_HEARTBEAT", 0)
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_COMPLETED_AT", 0)
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_ERROR", "")
+    monkeypatch.setattr(
+        backend,
+        "_pa_read_shared_scheduler_heartbeat",
+        lambda: {
+            "heartbeat": 990.0,
+            "completedAt": 980.0,
+            "lastError": "",
+            "loopCount": 12,
+        },
+    )
+
+    healthy = backend._pa_scheduler_health_snapshot(now_ts=1000.0)
+    stale = backend._pa_scheduler_health_snapshot(now_ts=1200.0)
+
+    assert healthy["running"] is True
+    assert healthy["threadAlive"] is True
+    assert healthy["source"] == "shared_heartbeat"
+    assert healthy["heartbeatAgeSeconds"] == 10.0
+    assert healthy["loopCount"] == 12
+    assert stale["running"] is False
+    assert stale["threadAlive"] is False
 
 
 def test_scheduler_start_is_singleton(monkeypatch):
