@@ -123,6 +123,7 @@ const Dashboard: React.FC = () => {
   const { t, translateSector, language } = useLanguage();
   const watchlistStorageKey = user?.id ? `${STORAGE_KEY_PREFIX}:${user.id}` : null;
   const fetchingRef = useRef(false);
+  const riskFetchingRef = useRef(false);
   const refreshRef = useRef<() => void>(() => undefined);
 
   const [marketData, setMarketData] = useState<StockData[]>([]);
@@ -224,7 +225,9 @@ const Dashboard: React.FC = () => {
   };
 
   const fetchMarketRisk = async (forceRefresh = false) => {
+    if (riskFetchingRef.current) return;
     try {
+      riskFetchingRef.current = true;
       setRiskLoading(true);
       setRiskError('');
       const snapshot = await getMarketRiskSnapshot(forceRefresh);
@@ -232,12 +235,13 @@ const Dashboard: React.FC = () => {
     } catch (requestError: any) {
       setRiskError(requestError?.response?.data?.error || requestError?.message || 'Broad-market risk snapshot unavailable.');
     } finally {
+      riskFetchingRef.current = false;
       setRiskLoading(false);
     }
   };
 
   const fetchMarketData = async (forceRefresh = false) => {
-    if (fetchingRef.current && !forceRefresh) return;
+    if (fetchingRef.current) return;
     try {
       fetchingRef.current = true;
       setLoading(true);
@@ -312,9 +316,9 @@ const Dashboard: React.FC = () => {
 
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('alphalab:data-sync', {
-      detail: { loading, timestamp: lastFetched },
+      detail: { loading: loading || riskLoading, timestamp: lastFetched },
     }));
-  }, [loading, lastFetched]);
+  }, [loading, riskLoading, lastFetched]);
 
   const watchlistSymbols = useMemo(() => {
     // The version counter invalidates this snapshot when another tab edits localStorage.
