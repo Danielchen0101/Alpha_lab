@@ -1,0 +1,115 @@
+.app-error-boundary {
+  display: grid;
+  min-height: 100svh;
+  padding: clamp(20px, 5vw, 72px);
+  place-items: center;
+  background:
+    radial-gradient(circle at 15% 15%, rgba(43, 95, 174, 0.08), transparent 30%),
+    var(--app-bg, #f7f6f1);
+  color: var(--app-text-strong, #171a17);
+}
+
+.app-error-boundary__card {
+  width: min(100%, 650px);
+  padding: clamp(28px, 5vw, 54px);
+  border: 1px solid var(--app-border, #d3d2ca);
+  background: var(--app-surface, #fffdf8);
+  box-shadow: 0 22px 70px rgba(20, 28, 22, 0.08);
+}
+
+.app-error-boundary__eyebrow {
+  color: #466b4f;
+  font: 700 12px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0.16em;
+}
+
+.app-error-boundary__mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  margin: 24px 0 20px;
+  border: 1px solid #bc5a42;
+  border-radius: 50%;
+  color: #a84531;
+  font: 600 24px/1 Georgia, serif;
+  place-items: center;
+}
+
+.app-error-boundary h1 {
+  margin: 0;
+  font: 500 clamp(30px, 6vw, 48px)/1.05 Georgia, 'Times New Roman', serif;
+  letter-spacing: -0.035em;
+}
+
+.app-error-boundary p {
+  max-width: 520px;
+  margin: 16px 0 0;
+  color: var(--app-text-muted, #626760);
+  font-size: clamp(15px, 2vw, 17px);
+  line-height: 1.65;
+}
+
+.app-error-boundary__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 28px;
+}
+
+.app-error-boundary__actions button,
+.app-error-boundary__actions a {
+  min-height: 44px;
+  padding: 11px 18px;
+  border: 1px solid #17261d;
+  border-radius: 0;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.app-error-boundary__actions button {
+  background: #102219;
+  color: #fffdf8;
+}
+
+.app-error-boundary__actions a {
+  background: transparent;
+  color: var(--app-text-strong, #171a17);
+}
+
+.app-error-boundary__actions button:focus-visible,
+.app-error-boundary__actions a:focus-visible {
+  outline: 3px solid #2b5fae;
+  outline-offset: 3px;
+}
+
+.app-error-boundary small {
+  display: block;
+  margin-top: 30px;
+  color: var(--app-text-muted, #626760);
+  font: 600 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0.05em;
+}
+
+.app-error-boundary code {
+  color: inherit;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 520px) {
+  .app-error-boundary__actions {
+    display: grid;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-error-boundary *,
+  .app-error-boundary *::before,
+  .app-error-boundary *::after {
+    scroll-behavior: auto !important;
+    transition: none !important;
+  }
+}

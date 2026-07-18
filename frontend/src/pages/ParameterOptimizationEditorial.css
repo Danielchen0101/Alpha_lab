@@ -10,9 +10,9 @@
   --op-green: var(--shell-green, #345d3d);
   --op-red: var(--shell-red, #a74730);
   --op-gold: color-mix(in srgb, var(--op-green) 42%, #b97818);
-  --op-dark: #102018;
+  --op-dark: #151318;
   --op-dark-ink: #f3efe5;
-  --op-dark-muted: #9ba99d;
+  --op-dark-muted: #aaa3ae;
   --op-number: Inter, "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   width: min(100%, 1660px);
   min-width: 0;

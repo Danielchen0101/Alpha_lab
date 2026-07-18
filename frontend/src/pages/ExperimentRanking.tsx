@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Table, Card, Spin, Alert, Empty, Tag, Tooltip } from 'antd';
 import { TrophyOutlined, InfoCircleOutlined, ExperimentOutlined } from '@ant-design/icons';
+import { useAuth } from '../contexts/AuthContext';
 
 // Helper functions
 const safeNumber = (value: any): number => {
@@ -49,6 +50,7 @@ interface ExperimentRankingItem {
 }
 
 const ExperimentRanking: React.FC = () => {
+  const { user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [rankingData, setRankingData] = useState<ExperimentRankingItem[]>([]);
   const [presetSummary, setPresetSummary] = useState<any[]>([]);
@@ -56,7 +58,9 @@ const ExperimentRanking: React.FC = () => {
 
   useEffect(() => {
     fetchRankingData();
-  }, []);
+    // Reload the device cache when the authenticated account changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   const fetchRankingData = async () => {
     setLoading(true);
@@ -64,7 +68,9 @@ const ExperimentRanking: React.FC = () => {
     
     try {
       // 从 localStorage 获取 session history
-      const sessionHistoryStr = localStorage.getItem('quant_session_history');
+      const sessionHistoryStr = user?.id
+        ? localStorage.getItem(`paper_trading_session_history:${user.id}`)
+        : null;
       if (!sessionHistoryStr) {
         setRankingData([]);
         return;

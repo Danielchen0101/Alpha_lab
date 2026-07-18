@@ -16,8 +16,24 @@ import pytest
 PROTECTED_ENDPOINTS = [
     ('GET', '/api/config/status'),
     ('GET', '/api/dashboard/status'),
+    ('GET', '/api/market/risk-snapshot'),
     ('GET', '/api/ai/provider/config'),
     ('POST', '/api/ai/provider/config'),
+    ('GET', '/api/operations/safety'),
+    ('PATCH', '/api/operations/safety'),
+    ('GET', '/api/operations/audit'),
+    ('GET', '/api/operations/orders/events'),
+    ('GET', '/api/operations/notifications/history'),
+    ('GET', '/api/operations/readiness'),
+    ('GET', '/api/operations/artifacts'),
+    ('POST', '/api/user/security/device'),
+    ('POST', '/api/market/scanner'),
+    ('POST', '/api/backtest/run'),
+    ('POST', '/api/backtest/optimize'),
+    ('GET', '/api/ai/trade/history'),
+    ('POST', '/api/ai/trade/toggle'),
+    ('POST', '/api/ai/trade/execute'),
+    ('GET', '/api/ai/trading/environment'),
 ]
 
 

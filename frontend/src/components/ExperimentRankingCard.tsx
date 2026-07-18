@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Card, Table, Tag, Tooltip, Empty, Button } from 'antd';
 import { TrophyOutlined, InfoCircleOutlined, ExperimentOutlined, ReloadOutlined } from '@ant-design/icons';
+import { useAuth } from '../contexts/AuthContext';
 
 // Helper functions
 const safeNumber = (value: any): number => {
@@ -46,20 +47,19 @@ const ExperimentRankingCard: React.FC<ExperimentRankingCardProps> = ({
   onRefresh,
   compact = false 
 }) => {
+  const { user } = useAuth();
   const [rankingData, setRankingData] = useState<ExperimentRankingItem[]>([]);
 
-  useEffect(() => {
-    updateRankingData();
-  }, [sessionHistory]);
-
-  const updateRankingData = () => {
+  const updateRankingData = useCallback(() => {
     try {
       // 如果提供了 sessionHistory，使用它
       let historyData = sessionHistory;
       
       // 否则从 localStorage 获取
       if (!historyData) {
-        const sessionHistoryStr = localStorage.getItem('quant_session_history');
+        const sessionHistoryStr = user?.id
+          ? localStorage.getItem(`paper_trading_session_history:${user.id}`)
+          : null;
         if (!sessionHistoryStr) {
           setRankingData([]);
           return;
@@ -105,7 +105,11 @@ const ExperimentRankingCard: React.FC<ExperimentRankingCardProps> = ({
       console.error('Failed to update ranking data:', err);
       setRankingData([]);
     }
-  };
+  }, [compact, sessionHistory, user?.id]);
+
+  useEffect(() => {
+    updateRankingData();
+  }, [updateRankingData]);
 
   const handleRefresh = () => {
     updateRankingData();

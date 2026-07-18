@@ -18,14 +18,14 @@
 }
 
 :global(:root[data-theme='dark']) .navigationMenuContainer {
-  --nav-paper: #111712;
-  --nav-paper-muted: #171f19;
-  --nav-ink: #f1eee5;
-  --nav-muted: #a3aba1;
-  --nav-rule: rgba(241, 238, 229, 0.12);
-  --nav-blue: #79a6e7;
-  --nav-blue-soft: rgba(121, 166, 231, 0.12);
-  --nav-warning: #e2b35f;
+  --nav-paper: var(--app-bg, #121114);
+  --nav-paper-muted: var(--app-surface, #18161b);
+  --nav-ink: var(--app-text-strong, #fffaf0);
+  --nav-muted: var(--app-text-muted, #aaa3ae);
+  --nav-rule: var(--app-border-soft, rgba(226, 214, 196, 0.1));
+  --nav-blue: var(--app-accent, #d6a45f);
+  --nav-blue-soft: var(--app-accent-soft, rgba(214, 164, 95, 0.13));
+  --nav-warning: var(--app-accent-secondary, #b6a0c9);
 }
 
 .menuScrollArea {

@@ -1,48 +1,50 @@
-# P3 Roadmap
+# AlphaLab Product Roadmap
 
-## Phase 1 — Complete
+Last reviewed: 2026-07-16
 
-| Item | Status | Description |
-|------|--------|-------------|
-| System Status Indicator | ✅ | `SystemStatusIndicator.tsx` — fetches `/api/health` every 60s, shows online/degraded with last-checked tooltip. Placed in MarketingLayout footer. |
-| FAQ / Trust Section | ✅ | 6 FAQ items on homepage (after walkthrough, before CTA) covering: investment advice disclaimer, API key protection, paper vs real trading, AI authorization, data providers, open source. i18n en-US + zh-CN. |
-| Product Demo Walkthrough | ✅ | 5-step workflow on homepage: Connect Providers → Scan Market → Validate Candidates → Generate Entry Plan → Execute. Vertical timeline with icons and progress line. |
-| Security Center (public) | ✅ | `/security` page with 6 security feature cards: auth protection, email verification, Turnstile CAPTCHA, API key encryption, rate limiting, security headers. Uses MarketingLayout. |
-| E2E Test Foundation | ✅ | Playwright with chromium. 7 smoke tests: homepage, signin, signup, forgot-password, security, 404, protected redirect. Script `npm run test:e2e`. |
-| Documentation | ✅ | This file. |
+## Completed in the current release line
 
-### Files Changed
+- Unified responsive navigation and bilingual public/authenticated workspaces
+- Public security and methodology pages
+- Supabase authentication, OAuth callbacks, password recovery, Turnstile integration points, and TOTP MFA
+- Account-scoped language, Paper/Live mode, risk, horizon, authority, leverage, and automation preferences
+- Authenticated Safety Center with durable pause/resume, readiness, audit, order, and notification records
+- Deterministic Entry Plan requirement for real new entries and preservation of protective exits
+- Cross-device watchlists, scanner settings, and saved strategy artifacts
+- Evidence provenance, secret redaction, portfolio diagnostics, and CSV/JSON exports
+- Bilingual Discord recommendation, order, risk, pipeline, and failure notifications
+- Route-level code splitting and top-level render recovery
+- CI unit, lint, TypeScript, build, Playwright, dependency, Docker, and release-tree secret checks
+- 59 frontend tests, 241 backend tests, and 12 Playwright checks
 
-- `frontend/src/locales/en-US.ts` — added `systemStatus`, `faq`, `walkthrough`, `security` sections + `navSecurity` key
-- `frontend/src/locales/zh-CN.ts` — Chinese translations for all new keys
-- `frontend/src/components/SystemStatusIndicator.tsx` — new component
-- `frontend/src/components/MarketingLayout.tsx` — added status indicator + security link in footer
-- `frontend/src/pages/Landing.tsx` — added walkthrough + FAQ sections
-- `frontend/src/pages/Security.tsx` — new public security/trust page
-- `frontend/src/App.tsx` — added `/security` route
-- `frontend/src/pages/SignUp.tsx` — bugfix (orphaned `confirmMessage` reference)
-- `frontend/package.json` — added `test:e2e` / `test:e2e:headed` scripts
-- `frontend/playwright.config.ts` — new Playwright config
-- `frontend/e2e/smoke.spec.ts` — 7 smoke tests
-- `docs/p3-roadmap.md` — this file
+## Next architecture milestones
 
-## Phase 2 — Planned
+These are not release blockers, but they are the next meaningful improvements:
 
-- [ ] **Security Center (authenticated)** — real login history, active sessions list, logout-all-devices
-- [ ] **Abnormal login alerts** — detect and flag unusual IP/location auth events
-- [ ] **Uptime monitoring integration** — connect status indicator to a lightweight uptime dashboard
-- [ ] **Pricing / Waitlist page** — basic tier info and signup interest form
-- [ ] **Full CI E2E** — integrate Playwright into GitHub Actions (allow manual trigger or schedule, not required for PR merge)
-- [ ] **Advanced audit logging** — structured audit log viewer (backend + frontend)
+1. **Dedicated scheduler and position-guard worker**
+   Move unattended scheduling and guard reconciliation out of the web process, with distributed ownership and durable heartbeats. This enables safe horizontal web scaling.
 
-## Manual Verification Checklist
+2. **Frontend build-stack migration**
+   Replace Create React App with a maintained build stack, then remove the remaining low/moderate legacy transitive advisories and improve chunk-level control.
 
-### Before deploying P3 Phase 1
-- [ ] `npm run build` passes with no errors
-- [ ] Homepage renders with walkthrough + FAQ sections
-- [ ] `/security` page renders with 6 feature cards
-- [ ] Status indicator shows in footer on all marketing pages
-- [ ] All auth pages still work (signin, signup, forgot-password)
-- [ ] Protected routes still redirect to /signin
-- [ ] Language switch works on new sections
-- [ ] Playwright smoke tests pass against production
+3. **Production observability destination**
+   Connect sanitized Web Vitals, backend request IDs, structured audit events, uptime checks, and resource alerts to a monitored telemetry service with alert thresholds and retention.
+
+4. **Historical secret remediation**
+   Rotate any credential previously committed and coordinate a Git history rewrite only if all collaborators and deployments can safely re-clone.
+
+5. **Disaster-recovery drill**
+   Test Supabase restore, Render redeploy, secret rotation, scheduler recovery, broker reconciliation, and Safety Center state recovery as a documented exercise.
+
+6. **OpenAPI and integration contract**
+   Publish a generated API contract for supported backend routes and use it for typed client generation and compatibility checks.
+
+## Release gate
+
+Before every production release:
+
+- all automated suites pass;
+- Supabase advisors have no unaccepted security warning;
+- Render and Cloudflare configurations match [DEPLOYMENT.md](../DEPLOYMENT.md);
+- Paper scan and authentication smoke tests pass on the deployed origin;
+- Live mode remains locked until MFA, broker verification, risk settings, Safety Center readiness, and protective-order behavior are manually confirmed.

@@ -19,6 +19,7 @@ interface ActiveRun {
 }
 
 export interface ScannerStrategyContext {
+  accountUserId?: string;
   riskProfile: 'low' | 'medium' | 'high';
   timeHorizon: 'short' | 'mid' | 'long';
   pipelineMode: 'manual' | 'hybrid' | 'ai';
@@ -138,7 +139,7 @@ function generateRunId(): string {
   return `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function getInstitutionalScannerSettings(): any {
+function getInstitutionalScannerSettings(accountUserId?: string): any {
   const defaults = {
     universe: 'alpaca_market',
     maxSymbols: 1500,
@@ -156,7 +157,9 @@ function getInstitutionalScannerSettings(): any {
   };
 
   try {
-    const raw = localStorage.getItem(INSTITUTIONAL_SCANNER_SETTINGS_KEY);
+    const raw = accountUserId
+      ? localStorage.getItem(`${INSTITUTIONAL_SCANNER_SETTINGS_KEY}:${accountUserId}`)
+      : null;
     if (!raw) return defaults;
     const parsed = JSON.parse(raw);
     return {
@@ -484,7 +487,7 @@ async function runMarketScannerLoop(run: ActiveRun): Promise<void> {
       if (process.env.NODE_ENV !== 'production') console.warn('[ScannerRunner] Config pre-flight failed, continuing:', e);
     }
 
-    const settings = getInstitutionalScannerSettings();
+    const settings = getInstitutionalScannerSettings(run.strategyContext?.accountUserId);
     const requestedTotal = Number(settings.maxSymbols || 1500);
     const universeLabel = 'ALPACA_MARKET';
     progressStartedAt = Date.now();

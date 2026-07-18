@@ -16,6 +16,7 @@ import {
 } from 'recharts';
 import { backtraderAPI } from '../services/api';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useAuth } from '../contexts/AuthContext';
 import './BacktestEditorial.css';
 
 interface EquityPoint {
@@ -116,6 +117,7 @@ const normalizeRecord = (record: any, id?: string): BacktestResult => {
 const BacktestDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const { language, t } = useLanguage();
   const isZh = language === 'zh-CN';
@@ -182,7 +184,9 @@ const BacktestDetail: React.FC = () => {
       }
 
       try {
-        const saved = window.localStorage.getItem('quant_backtest_history');
+        const saved = user?.id
+          ? window.localStorage.getItem(`quant_backtest_history:${user.id}`)
+          : null;
         const localHistory = saved ? JSON.parse(saved) : [];
         const localRecord = Array.isArray(localHistory)
           ? localHistory.find((item: any) => String(item?.backtestId || item?.id) === id)
@@ -210,7 +214,7 @@ const BacktestDetail: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [copy.loadError, copy.notFound, id]);
+  }, [copy.loadError, copy.notFound, id, user?.id]);
 
   React.useEffect(() => {
     void loadRecord();

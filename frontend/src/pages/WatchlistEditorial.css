@@ -10,9 +10,9 @@
   --wl-green: var(--shell-green, #345d3d);
   --wl-red: var(--shell-red, #a74730);
   --wl-copper: #bf744c;
-  --wl-dark: #142019;
-  --wl-dark-rule: rgba(231, 235, 221, 0.18);
-  --wl-dark-muted: #aab3a7;
+  --wl-dark: #151318;
+  --wl-dark-rule: rgba(226, 214, 196, 0.18);
+  --wl-dark-muted: #aaa3ae;
   --wl-number-font: "SF Pro Display", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --wl-mono-font: "SFMono-Regular", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
   width: 100%;

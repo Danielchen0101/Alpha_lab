@@ -87,6 +87,34 @@ def test_nested_oco_is_recognized_as_protection():
     assert state["isProtective"] is True
 
 
+def test_scale_in_keeps_managed_protection_and_schedules_coverage_refresh():
+    gate = backend._pa_scale_in_protection_gate([{
+        "id": "stop-1",
+        "symbol": "AAPL",
+        "side": "sell",
+        "type": "stop",
+        "stop_price": "95",
+        "client_order_id": "alphalab-position-stop",
+    }])
+
+    assert gate["eligible"] is True
+    assert gate["refreshRequired"] is True
+
+
+def test_scale_in_never_cancels_or_bypasses_external_sell_order():
+    gate = backend._pa_scale_in_protection_gate([{
+        "id": "manual-stop",
+        "symbol": "AAPL",
+        "side": "sell",
+        "type": "stop",
+        "stop_price": "95",
+        "client_order_id": "user-manual-order",
+    }])
+
+    assert gate["eligible"] is False
+    assert "external sell order" in gate["blockers"][0]
+
+
 def test_order_tree_flattening_retains_parent_identity():
     rows = backend._pa_flatten_alpaca_order_tree([
         {
@@ -205,6 +233,7 @@ def test_ai_execution_blocks_sell_quantity_above_verified_position(monkeypatch):
             return {"symbol": "AAPL", "qty": "5"}
 
     monkeypatch.setattr(backend, "get_supabase_user", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: {"mode": "ai"})
     monkeypatch.setattr(
         backend,
         "resolve_alpaca_config_strict_user",
@@ -262,6 +291,7 @@ def test_ai_execution_blocks_duplicate_open_sell_order(monkeypatch):
         raise AssertionError("unexpected URL %s" % url)
 
     monkeypatch.setattr(backend, "get_supabase_user", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: {"mode": "ai"})
     monkeypatch.setattr(
         backend,
         "resolve_alpaca_config_strict_user",
@@ -294,6 +324,128 @@ def test_ai_execution_blocks_duplicate_open_sell_order(monkeypatch):
     assert payload["success"] is False
     assert payload["code"] == "open_sell_order_exists"
     assert payload["openOrderIds"] == ["existing-stop"]
+
+
+def test_ai_execution_requires_saved_full_ai_authority(monkeypatch):
+    monkeypatch.setattr(backend, "get_supabase_user", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: {"mode": "hybrid"})
+    monkeypatch.setattr(
+        backend,
+        "resolve_alpaca_config_strict_user",
+        lambda mode: (_ for _ in ()).throw(AssertionError("authority must fail before broker access")),
+    )
+    monkeypatch.setattr(backend, "send_discord_notification", lambda *args, **kwargs: {"sent": True})
+
+    response = backend.app.test_client().post('/api/ai/execution/order', json={
+        "symbol": "AAPL",
+        "side": "sell",
+        "qty": 1,
+        "type": "market",
+        "tradingMode": "paper",
+        "automationMode": "full-ai",
+        "confirmed": True,
+        "executionSource": "exit_scan_hard_stop",
+    })
+    payload = response.get_json()
+
+    assert response.status_code == 403
+    assert payload["code"] == "full_ai_required"
+
+
+def test_scale_in_submission_does_not_consume_fill_limit(monkeypatch):
+    key = backend._pa_managed_position_key("user-1", "paper", "AAPL")
+    with backend._PA_MANAGED_POSITIONS_LOCK:
+        backend._PA_MANAGED_POSITIONS[key] = {
+            "symbol": "AAPL",
+            "scaleInCount": 1,
+            "currentStop": 95,
+            "initialStop": 95,
+            "highWaterMark": 110,
+        }
+    monkeypatch.setattr(backend, "_pa_save_managed_positions", lambda: None)
+    monkeypatch.setattr(
+        backend,
+        "_pa_persist_managed_position_to_config",
+        lambda *args, **kwargs: True,
+    )
+
+    backend._pa_record_managed_position_plan(
+        "user-1",
+        "paper",
+        "AAPL",
+        {
+            "entryIntent": "SCALE_IN",
+            "entryZoneLow": 108,
+            "entryZoneHigh": 110,
+            "stopLoss": 98,
+            "takeProfit1": 125,
+        },
+        order={"id": "add-order-2", "client_order_id": "alphalab-add-2", "status": "new"},
+    )
+
+    record = backend._pa_get_managed_position_plan("user-1", "paper", "AAPL")
+    assert record["scaleInCount"] == 1
+    assert record["pendingScaleIn"] is True
+    assert record["currentStop"] == 98
+
+
+def test_scale_in_count_advances_once_when_broker_reports_fill(monkeypatch):
+    filled_at = datetime.now(timezone.utc).isoformat()
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return [{
+                "id": "add-order-2",
+                "client_order_id": "alphalab-add-2",
+                "symbol": "AAPL",
+                "side": "buy",
+                "type": "limit",
+                "status": "filled",
+                "filled_qty": "2",
+                "filled_avg_price": "110",
+                "filled_at": filled_at,
+            }]
+
+    managed_record = {
+        "symbol": "AAPL",
+        "entryOrderId": "add-order-2",
+        "clientOrderId": "alphalab-add-2",
+        "entryIntent": "SCALE_IN",
+        "pendingScaleIn": True,
+        "scaleInCount": 1,
+        "initialStop": 95,
+        "currentStop": 100,
+    }
+    monkeypatch.setattr(
+        backend,
+        "resolve_alpaca_config_for_user",
+        lambda uid, mode: {
+            "api_key": "P" * 24,
+            "api_secret": "S" * 40,
+            "base_url": "https://paper.example.com",
+        },
+    )
+    monkeypatch.setattr(backend.requests, "get", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(
+        backend,
+        "_pa_managed_records_for_user",
+        lambda uid, mode: {"user-1:paper:AAPL": managed_record},
+    )
+    updates = []
+    monkeypatch.setattr(
+        backend,
+        "_pa_update_managed_position",
+        lambda uid, mode, symbol, **values: updates.append(values),
+    )
+
+    backend._pa_reconcile_order_lifecycle("user-1", "paper", notify=False)
+
+    fill_update = next(update for update in updates if update.get("lastOrderId") == "add-order-2")
+    assert fill_update["scaleInCount"] == 2
+    assert fill_update["pendingScaleIn"] is False
+    assert fill_update["protectionRefreshRequired"] is True
 
 
 def test_exit_risk_stop_is_binding():

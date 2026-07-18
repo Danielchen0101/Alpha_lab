@@ -8,10 +8,12 @@ import {
   SaveOutlined, ApiOutlined, ExperimentOutlined, BankOutlined, CloudOutlined,
   ArrowLeftOutlined, SafetyCertificateOutlined,
   InfoCircleOutlined, RobotOutlined, ThunderboltOutlined, BellOutlined, ReloadOutlined,
+  LinkOutlined,
 } from '@ant-design/icons';
 import axios from 'axios';
 import { supabase } from '../lib/supabaseClient';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useTradeMode } from '../contexts/TradeModeContext';
 import './ConfigurationEditorial.css';
 
 const { Text } = Typography;
@@ -73,7 +75,7 @@ const StatusBadge: React.FC<{ status: string; texts?: { connected?: string; save
 };
 
 // --- Section Header ---
-const SectionHeader: React.FC<{ icon: React.ReactNode; title: string; subtitle: string; status?: string; statusTexts?: { connected?: string; saved?: string; error?: string; notTested?: string } }> = ({ icon, title, subtitle, status, statusTexts }) => (
+const SectionHeader: React.FC<{ icon: React.ReactNode; title: string; subtitle: string; status?: string; statusTexts?: { connected?: string; saved?: string; error?: string; notTested?: string }; websiteUrl?: string; websiteLabel?: string }> = ({ icon, title, subtitle, status, statusTexts, websiteUrl, websiteLabel }) => (
   <div className="config-card-header">
     <div className="config-card-header__identity">
       <span className="config-card-header__icon">{icon}</span>
@@ -82,7 +84,14 @@ const SectionHeader: React.FC<{ icon: React.ReactNode; title: string; subtitle: 
         <p>{subtitle}</p>
       </div>
     </div>
-    {status && <StatusBadge status={status} texts={statusTexts} />}
+    <div className="config-card-header__actions">
+      {websiteUrl && (
+        <a className="config-provider-link" href={websiteUrl} target="_blank" rel="noreferrer">
+          <LinkOutlined />{websiteLabel || 'Provider website'}
+        </a>
+      )}
+      {status && <StatusBadge status={status} texts={statusTexts} />}
+    </div>
   </div>
 );
 
@@ -182,6 +191,8 @@ const AlpacaPaperSection: React.FC<{ t: any }> = ({ t }) => {
         subtitle={t.config.paperSubtitle}
         status={status}
         statusTexts={statusTexts}
+        websiteUrl="https://app.alpaca.markets/"
+        websiteLabel={t.config.alpacaWebsite}
       />
       <Form form={form} layout="vertical">
         <Row gutter={16}>
@@ -305,6 +316,8 @@ const AlpacaRealSection: React.FC<{ onMarketDataSynced?: (keys: { apiKey: string
         subtitle={t.config.liveSubtitle}
         status={status}
         statusTexts={statusTexts}
+        websiteUrl="https://app.alpaca.markets/"
+        websiteLabel={t.config.alpacaWebsite}
       />
       <Alert
         message={t.config.securityWarning}
@@ -427,6 +440,8 @@ const MarketDataSection: React.FC<{ reloadKey?: number; t: any; isZh?: boolean }
         subtitle={t.config.marketDataSubtitle}
         status={status}
         statusTexts={statusTexts}
+        websiteUrl="https://app.alpaca.markets/"
+        websiteLabel={t.config.alpacaWebsite}
       />
       <div style={{ marginBottom: 20 }}>
         {hasKeys ? (
@@ -506,6 +521,15 @@ const PROVIDER_MODELS: Record<string, { baseUrl: string; models: string[] }> = {
   },
 };
 const PROVIDER_NAMES = Object.keys(PROVIDER_MODELS);
+const PROVIDER_WEBSITES: Record<string, string> = {
+  DeepSeek: 'https://platform.deepseek.com/api_keys',
+  OpenAI: 'https://platform.openai.com/api-keys',
+  Claude: 'https://console.anthropic.com/settings/keys',
+  Gemini: 'https://aistudio.google.com/app/apikey',
+  'NVIDIA NIM': 'https://build.nvidia.com/',
+  Mimo: 'https://platform.mimo.ai/',
+  Custom: '',
+};
 
 const AIProviderSection: React.FC<{ t: any }> = ({ t }) => {
   const [form] = Form.useForm();
@@ -614,6 +638,8 @@ const AIProviderSection: React.FC<{ t: any }> = ({ t }) => {
         subtitle={t.config.aiSubtitle}
         status={status}
         statusTexts={statusTexts}
+        websiteUrl={PROVIDER_WEBSITES[currentProvider]}
+        websiteLabel={`${currentProvider} API`}
       />
       {keyIsMasked && (
         <Alert
@@ -744,6 +770,8 @@ const FinnhubSection: React.FC<{ t: any }> = ({ t }) => {
         subtitle={t.config.finnhubSubtitle}
         status={status}
         statusTexts={statusTexts}
+        websiteUrl="https://finnhub.io/dashboard"
+        websiteLabel={t.config.finnhubWebsite}
       />
       <Form form={form} layout="vertical">
         <Row gutter={16}>
@@ -771,6 +799,7 @@ const FinnhubSection: React.FC<{ t: any }> = ({ t }) => {
 // Section F: Discord Notifications
 // =====================================================================
 const DiscordNotificationsSection: React.FC<{ t: any; isZh: boolean }> = ({ t, isZh }) => {
+  const { tradeMode } = useTradeMode();
   const [form] = Form.useForm();
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -798,7 +827,9 @@ const DiscordNotificationsSection: React.FC<{ t: any; isZh: boolean }> = ({ t, i
     risk: '重要风险',
     riskDesc: '保护缺口、紧急退出与流程失败；重复状态会自动抑制。',
     digest: '操作摘要',
-    digestDesc: '手动完整周期结束后发送一条摘要；无变化的计划任务保持静默。',
+    digestDesc: '立即自动运行结束后发送摘要；定时任务只有发生交易或保护操作时才发送。',
+    recommendations: '推荐股票',
+    recommendationsDesc: '研究流程产生可买入、待复核或等待入场的候选时发送一份精简清单。',
     test: '发送测试摘要',
     save: '保存通知设置',
     connected: '已连接',
@@ -826,7 +857,9 @@ const DiscordNotificationsSection: React.FC<{ t: any; isZh: boolean }> = ({ t, i
     risk: 'Material risk alerts',
     riskDesc: 'Protection gaps, emergency exits, and pipeline failures. Repeated conditions are muted.',
     digest: 'Action digest',
-    digestDesc: 'One compact summary after a manual full cycle; scheduled cycles stay quiet when nothing changed.',
+    digestDesc: 'One compact summary after Run Now; scheduled cycles stay quiet unless trading or protection changed.',
+    recommendations: 'Recommended stocks',
+    recommendationsDesc: 'A concise list when research produces buy-ready, review, or wait-for-entry candidates.',
     test: 'Send test digest',
     save: 'Save notification settings',
     connected: 'Connected',
@@ -846,6 +879,7 @@ const DiscordNotificationsSection: React.FC<{ t: any; isZh: boolean }> = ({ t, i
           notifyTradeActivity: cfg.notifyTradeActivity !== false,
           notifyRiskAlerts: cfg.notifyRiskAlerts !== false,
           notifyCycleDigest: cfg.notifyCycleDigest !== false,
+          notifyRecommendations: cfg.notifyRecommendations !== false,
         });
         setHasSaved(!!cfg.hasWebhookUrl);
         setStatus(cfg.testStatus === 'connected' ? 'connected' : cfg.hasWebhookUrl ? 'saved' : 'not_tested');
@@ -872,6 +906,7 @@ const DiscordNotificationsSection: React.FC<{ t: any; isZh: boolean }> = ({ t, i
         notifyTradeActivity: values.notifyTradeActivity !== false,
         notifyRiskAlerts: values.notifyRiskAlerts !== false,
         notifyCycleDigest: values.notifyCycleDigest !== false,
+        notifyRecommendations: values.notifyRecommendations !== false,
       };
       if (values.webhookUrl && !values.webhookUrl.includes('****')) {
         payload.webhookUrl = values.webhookUrl.trim();
@@ -900,8 +935,14 @@ const DiscordNotificationsSection: React.FC<{ t: any; isZh: boolean }> = ({ t, i
       const token = await requireSession(t.config.pleaseSignIn);
       if (!token) return;
       setTesting(true);
-      const mode = localStorage.getItem('tradingMode') || localStorage.getItem('tradeMode') || 'paper';
-      const res = await userApi.post('/notifications/discord/test', { mode, eventType: 'cycle_digest' });
+      const res = await userApi.post('/notifications/discord/test', {
+        mode: tradeMode,
+        eventType: 'cycle_digest',
+        // Use the language visible on this page immediately. Persisting the
+        // workspace preference is asynchronous, so relying only on the saved
+        // preference can make a test sent right after a switch use stale copy.
+        language: isZh ? 'zh-CN' : 'en-US',
+      });
       if (res.data?.success) {
         setStatus('connected');
         message.success(copy.testSent);
@@ -935,6 +976,8 @@ const DiscordNotificationsSection: React.FC<{ t: any; isZh: boolean }> = ({ t, i
           subtitle={copy.subtitle}
           status="not_tested"
           statusTexts={{ notTested: isZh ? '读取中' : 'Loading' }}
+          websiteUrl="https://discord.com/developers/docs/resources/webhook"
+          websiteLabel={isZh ? 'Discord Webhook 官网' : 'Discord Webhook docs'}
         />
         <div className="config-loading-state"><ReloadOutlined spin />{copy.loading}</div>
       </Card>
@@ -949,6 +992,8 @@ const DiscordNotificationsSection: React.FC<{ t: any; isZh: boolean }> = ({ t, i
         subtitle={copy.subtitle}
         status={status}
         statusTexts={statusTexts}
+        websiteUrl="https://discord.com/developers/docs/resources/webhook"
+        websiteLabel={isZh ? 'Discord Webhook 官网' : 'Discord Webhook docs'}
       />
       <Alert
         type="info"
@@ -980,8 +1025,9 @@ const DiscordNotificationsSection: React.FC<{ t: any; isZh: boolean }> = ({ t, i
             ['notifyTradeActivity', copy.trade, copy.tradeDesc],
             ['notifyRiskAlerts', copy.risk, copy.riskDesc],
             ['notifyCycleDigest', copy.digest, copy.digestDesc],
+            ['notifyRecommendations', copy.recommendations, copy.recommendationsDesc],
           ].map(([name, title, description]) => (
-            <Col xs={24} md={8} key={name}>
+            <Col xs={24} md={12} key={name}>
               <div className="config-policy-card">
                 <Form.Item name={name} valuePropName="checked" noStyle>
                   <Checkbox><Text strong>{title}</Text></Checkbox>
@@ -1122,7 +1168,7 @@ const Configuration: React.FC = () => {
               <span>{copy.brokerIndex}</span>
               <div><h2>{copy.brokerTitle}</h2><p>{copy.brokerDesc}</p></div>
             </header>
-            <div className="configuration-anchor" id="paper"><AlpacaPaperSection t={t} /></div>
+            <div className="configuration-anchor" id="paper" data-tour="config-paper"><AlpacaPaperSection t={t} /></div>
             <div className="configuration-anchor" id="live"><AlpacaRealSection onMarketDataSynced={() => setMarketDataReloadKey((key) => key + 1)} t={t} /></div>
           </section>
 
@@ -1131,8 +1177,8 @@ const Configuration: React.FC = () => {
               <span>{copy.marketIndex}</span>
               <div><h2>{copy.marketTitle}</h2><p>{copy.marketDesc}</p></div>
             </header>
-            <MarketDataSection reloadKey={marketDataReloadKey} t={t} isZh={isZh} />
-            <div className="configuration-anchor" id="finnhub"><FinnhubSection t={t} /></div>
+            <div className="configuration-anchor" id="market-provider" data-tour="config-market"><MarketDataSection reloadKey={marketDataReloadKey} t={t} isZh={isZh} /></div>
+            <div className="configuration-anchor" id="finnhub" data-tour="config-finnhub"><FinnhubSection t={t} /></div>
           </section>
 
           <section className="configuration-group" id="ai">
@@ -1140,7 +1186,7 @@ const Configuration: React.FC = () => {
               <span>{copy.aiIndex}</span>
               <div><h2>{copy.aiTitle}</h2><p>{copy.aiDesc}</p></div>
             </header>
-            <AIProviderSection t={t} />
+            <div className="configuration-anchor" id="ai-provider" data-tour="config-ai"><AIProviderSection t={t} /></div>
           </section>
 
           <section className="configuration-group" id="notifications">

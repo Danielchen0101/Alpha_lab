@@ -278,12 +278,12 @@
   margin-bottom: 26px;
   padding: 29px;
   color: #f1efe7;
-  background-color: #102019;
+  background-color: #151318;
   background-image:
-    linear-gradient(rgba(223, 231, 220, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(223, 231, 220, 0.035) 1px, transparent 1px);
+    linear-gradient(rgba(226, 214, 196, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(226, 214, 196, 0.035) 1px, transparent 1px);
   background-size: 38px 38px;
-  border: 1px solid #20352a;
+  border: 1px solid #332c37;
 }
 
 .strategy-ranking-intelligence > header,
@@ -301,7 +301,7 @@
 }
 
 .strategy-ranking-intelligence > header span {
-  color: #98ad95;
+  color: #d6a45f;
 }
 
 .strategy-ranking-intelligence h2,
@@ -327,7 +327,7 @@
 }
 
 .strategy-ranking-intelligence > header p {
-  color: #aab4a9;
+  color: #aaa3ae;
 }
 
 .strategy-ranking-chart-grid {
@@ -341,7 +341,7 @@
 
 .strategy-ranking-chart-grid > article {
   min-width: 0;
-  background: #102019;
+  background: #151318;
 }
 
 .strategy-ranking-chart-label {

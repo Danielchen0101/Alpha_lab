@@ -1248,9 +1248,9 @@ code {
 .scanner-next-step {
   margin-top: 12px;
   padding: 10px 12px;
-  border: 1px solid rgba(59, 130, 246, 0.25);
+  border: 1px solid var(--app-blue-border);
   border-radius: 8px;
-  background: rgba(59, 130, 246, 0.08);
+  background: var(--app-blue-bg-soft);
   color: var(--app-text);
   display: flex;
   flex-direction: column;
@@ -2929,15 +2929,15 @@ code {
 }
 
 .agent-trend-tab-inactive:hover {
-  background: rgba(59, 130, 246, 0.10);
+  background: var(--app-blue-bg-soft);
   color: var(--app-text-strong);
 }
 
 .agent-trend-tab-active {
   font-weight: 600;
-  background: rgba(59, 130, 246, 0.16);
-  color: #60a5fa;
-  border: 1px solid rgba(59, 130, 246, 0.28);
+  background: var(--app-blue-bg);
+  color: var(--app-blue-text);
+  border: 1px solid var(--app-blue-border);
 }
 :root[data-theme="light"] .agent-trend-tab-active {
   color: #2563eb;
@@ -3296,9 +3296,9 @@ code {
 }
 
 .fine-scan-v2-chip-list span {
-  background: rgba(59, 130, 246, 0.10);
-  border: 1px solid rgba(59, 130, 246, 0.20);
-  color: #2563eb;
+  background: var(--app-blue-bg-soft);
+  border: 1px solid var(--app-blue-border);
+  color: var(--app-blue-text);
 }
 
 .fine-scan-v2-chip-list .fine-scan-v2-warning {
@@ -3371,7 +3371,7 @@ code {
 
 :root[data-theme="dark"] .ant-table-tbody > tr.ant-table-row:hover > td,
 :root[data-theme="dark"] .ant-table-tbody > tr > td.ant-table-cell-row-hover {
-  background: rgba(59, 130, 246, 0.08) !important;
+  background: rgba(214, 164, 95, 0.08) !important;
 }
 
 /* 2. Scrollbars (Thinner, Darker, More Professional) */
@@ -3412,14 +3412,14 @@ code {
   padding: 0 6px;
 }
 :root[data-theme="dark"] .ant-tag-success, :root[data-theme="dark"] .ant-tag-green {
-  background: rgba(16, 185, 129, 0.12) !important;
-  color: #34d399 !important;
-  border-color: rgba(16, 185, 129, 0.25) !important;
+  background: rgba(157, 181, 140, 0.12) !important;
+  color: #b8cba9 !important;
+  border-color: rgba(157, 181, 140, 0.3) !important;
 }
 :root[data-theme="dark"] .ant-tag-processing, :root[data-theme="dark"] .ant-tag-blue {
-  background: rgba(59, 130, 246, 0.12) !important;
-  color: #60a5fa !important;
-  border-color: rgba(59, 130, 246, 0.25) !important;
+  background: rgba(182, 160, 201, 0.12) !important;
+  color: #c8b8d4 !important;
+  border-color: rgba(182, 160, 201, 0.3) !important;
 }
 :root[data-theme="dark"] .ant-tag-warning, :root[data-theme="dark"] .ant-tag-orange {
   background: rgba(245, 158, 11, 0.12) !important;
@@ -3516,19 +3516,19 @@ code {
 }
 
 :root[data-theme="dark"] .dashboard-alert-info {
-  background: rgba(59, 130, 246, 0.12) !important;
-  border: 1px solid rgba(59, 130, 246, 0.35) !important;
+  background: rgba(182, 160, 201, 0.12) !important;
+  border: 1px solid rgba(182, 160, 201, 0.35) !important;
 }
 :root[data-theme="dark"] .dashboard-alert-info .ant-alert-icon {
-  color: #60a5fa !important;
+  color: #b6a0c9 !important;
 }
 
 :root[data-theme="dark"] .dashboard-alert-success {
-  background: rgba(16, 185, 129, 0.12) !important;
-  border: 1px solid rgba(16, 185, 129, 0.35) !important;
+  background: rgba(157, 181, 140, 0.12) !important;
+  border: 1px solid rgba(157, 181, 140, 0.35) !important;
 }
 :root[data-theme="dark"] .dashboard-alert-success .ant-alert-icon {
-  color: #34d399 !important;
+  color: #9db58c !important;
 }
 
 /* Fine Scan v4: setup and pre-trade execution workbench */

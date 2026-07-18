@@ -1,73 +1,48 @@
-# Python Environment Setup Guide
+# Python Backend Setup
 
-## Current Issue
-Python is not installed on the system, causing the backend to fail to run.
+AlphaLab requires Python 3.11 or newer. Use an isolated virtual environment; do not install backend packages into the system Python.
 
-## Solution
+## macOS / Linux
 
-### 1. Install Python
-1. Visit https://www.python.org/downloads/
-2. Download the latest Python installer
-3. Run the installer, **make sure to check "Add Python to PATH"**
-4. Restart terminal after installation completes
-
-### 2. Verify Installation
-Open a new terminal window and run:
-```cmd
-python --version
-```
-Should display Python version (e.g., Python 3.11.4)
-
-### 3. Install Backend Dependencies
-```cmd
+```bash
 cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-```
-
-### 4. Start Backend
-```cmd
-cd backend
 python start_quant_backend.py
 ```
 
-## Alternative Solutions
-If you don't want to install full Python, consider:
-1. Using Docker containers to run backend
-2. Using online Python environments
-3. Migrating backend to Node.js (if frontend is already React)
+## Windows PowerShell
 
-## Project Dependencies
-Python packages required by backend:
-- Flask
-- Flask-CORS
-- python-dotenv
-- yfinance
-- pandas
-- numpy
+```powershell
+cd backend
+py -3.11 -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python start_quant_backend.py
+```
 
----
+If PowerShell blocks activation, use a process-scoped policy instead of changing the whole machine:
 
-## 中文翻译备注
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.venv\Scripts\Activate.ps1
+```
 
-### 问题描述
-系统未安装Python，导致后端无法运行。
+## Verify
 
-### 解决方案步骤
-1. **安装Python**：从官网下载并安装，务必勾选"Add Python to PATH"
-2. **验证安装**：运行 `python --version` 确认安装成功
-3. **安装依赖**：进入backend目录，运行 `pip install -r requirements.txt`
-4. **启动后端**：运行 `python start_quant_backend.py`
+```bash
+python --version
+curl http://127.0.0.1:8889/api/health
+python -m pytest -q
+```
 
-### 备选方案
-1. 使用Docker容器运行后端
-2. 使用在线Python环境
-3. 将后端迁移到Node.js
+## Important environment variables
 
-### 项目依赖
-后端需要的Python包：
-- Flask：Web框架
-- Flask-CORS：跨域支持
-- python-dotenv：环境变量管理
-- yfinance：股票数据获取
-- pandas：数据处理
-- numpy：数值计算
+Copy `backend/.env.example` to `backend/.env`. Production requires valid values for `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `FERNET_KEY`, `APP_SECRET_KEY`, an exact frontend origin, and `FLASK_ENV=production`.
+
+Never expose the service-role key, Fernet key, application secret, broker secrets, or AI-provider secrets to the React build or Git.
+
+The full local workflow is in [QUICK_START.md](QUICK_START.md); deployment settings are in [DEPLOYMENT.md](../DEPLOYMENT.md).

@@ -61,6 +61,79 @@ def test_circuit_breaker_state_uses_persisted_deadline_not_status_text():
     }, now) is False
 
 
+def test_supabase_execute_retries_transient_transport_failure(monkeypatch):
+    attempts = []
+
+    def operation():
+        attempts.append(True)
+        if len(attempts) < 3:
+            raise RuntimeError("Resource temporarily unavailable")
+        return "ok"
+
+    monkeypatch.setattr(backend.time, "sleep", lambda _seconds: None)
+
+    assert backend._supabase_execute(operation, "test read") == "ok"
+    assert len(attempts) == 3
+
+
+def test_order_authority_explains_why_auto_orders_are_locked():
+    locked = backend._pa_order_authority({
+        "mode": "ai",
+        "trade_mode": "real",
+        "live_auto_trading_enabled": False,
+    })
+    paper = backend._pa_order_authority({
+        "mode": "ai",
+        "trade_mode": "paper",
+        "live_auto_trading_enabled": False,
+    })
+
+    assert locked["authorized"] is False
+    assert locked["code"] == "live_auto_not_enabled"
+    assert paper["authorized"] is True
+    assert paper["code"] == "paper_authorized"
+
+
+def test_pipeline_config_preserves_live_authority_when_mode_temporarily_changes(monkeypatch):
+    saved = []
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1", "aal": "aal2"})
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: {
+        "enabled": False,
+        "interval_minutes": 0,
+        "mode": "ai",
+        "trade_mode": "real",
+        "live_auto_trading_enabled": True,
+    })
+    monkeypatch.setattr(
+        backend,
+        "_pa_validate_live_auto_authority",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("incompatible authority must be revoked without broker validation")
+        ),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_save_config",
+        lambda uid, value: saved.append(dict(value)) or (True, ""),
+    )
+    monkeypatch.setattr(backend, "_pa_ensure_scheduler", lambda: None)
+
+    response = backend.app.test_client().post(
+        "/api/ai-agent/pipeline-auto/config",
+        json={
+            "enabled": False,
+            "mode": "hybrid",
+            "tradeMode": "real",
+            "liveAutoTradingEnabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["success"] is True
+    assert response.get_json()["orderAuthority"]["code"] == "full_ai_required"
+    assert saved[-1]["live_auto_trading_enabled"] is True
+
+
 def test_workspace_preferences_restore_saved_operational_context(monkeypatch):
     config = {
         "enabled": True,
@@ -104,7 +177,7 @@ def test_workspace_preferences_merge_without_resetting_schedule(monkeypatch):
         "next_run_at": "2026-07-16T10:30:00-04:00",
     }
     saved = []
-    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1", "aal": "aal2"})
     monkeypatch.setattr(backend, "_pa_get_config", lambda uid: dict(config))
     monkeypatch.setattr(
         backend,
@@ -124,7 +197,7 @@ def test_workspace_preferences_merge_without_resetting_schedule(monkeypatch):
     assert saved[-1]["next_run_at"] == "2026-07-16T10:30:00-04:00"
     assert saved[-1]["trade_mode"] == "paper"
     assert saved[-1]["risk_profile"] == "low"
-    assert saved[-1]["live_auto_trading_enabled"] is False
+    assert saved[-1]["live_auto_trading_enabled"] is True
     assert payload["preferences"]["scheduleEnabled"] is True
 
 
@@ -160,6 +233,99 @@ def test_workspace_preferences_persist_leverage_without_resetting_context(monkey
     assert preferences["strategyPolicy"]["optionsAllowed"] is False
 
 
+def test_workspace_preferences_persist_notification_language(monkeypatch):
+    saved = []
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: {"enabled": True})
+    monkeypatch.setattr(
+        backend,
+        "_pa_save_config",
+        lambda uid, value: saved.append(dict(value)) or (True, ""),
+    )
+
+    response = backend.app.test_client().patch(
+        "/api/user/preferences", json={"language": "zh-CN"}
+    )
+
+    assert response.status_code == 200
+    assert saved[-1]["language"] == "zh-CN"
+    assert response.get_json()["preferences"]["language"] == "zh-CN"
+
+
+def test_new_browser_device_is_registered_once_and_alerted(monkeypatch):
+    config = {
+        "user_preferences": {
+            "security": {"newDeviceAlerts": True},
+            "notifications": {"securityAlerts": True, "discord": True},
+        }
+    }
+    saves = []
+    alerts = []
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: dict(config))
+
+    def save_config(uid, value):
+        saves.append(dict(value))
+        config.clear()
+        config.update(value)
+        return True, ""
+
+    monkeypatch.setattr(backend, "_pa_save_config", save_config)
+    monkeypatch.setattr(
+        backend,
+        "send_discord_notification",
+        lambda uid, event_type, payload: alerts.append((event_type, payload)) or {"sent": True},
+    )
+    client = backend.app.test_client()
+    request_body = {
+        "deviceId": "browser-device-1234567890",
+        "deviceLabel": "Test Browser on macOS",
+        "timezone": "America/New_York",
+    }
+
+    first = client.post("/api/user/security/device", json=request_body)
+    second = client.post("/api/user/security/device", json=request_body)
+
+    assert first.status_code == 200
+    assert first.get_json()["isNew"] is True
+    assert second.status_code == 200
+    assert second.get_json()["isNew"] is False
+    assert len(saves) == 1
+    assert len(alerts) == 1
+    assert alerts[0][0] == "security"
+    assert saves[0]["known_devices"][0]["idHash"] != request_body["deviceId"]
+
+
+def test_workspace_preferences_persist_nested_operational_defaults(monkeypatch):
+    saved = []
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: {"enabled": True})
+    monkeypatch.setattr(
+        backend,
+        "_pa_save_config",
+        lambda uid, value: saved.append(dict(value)) or (True, ""),
+    )
+
+    response = backend.app.test_client().patch(
+        "/api/user/preferences",
+        json={
+            "general": {"timezone": "America/Los_Angeles", "density": "compact"},
+            "risk": {"maxOrderNotional": 2500, "maxPositionPct": 7},
+            "notifications": {"recommendations": False, "quietStart": "21:30"},
+        },
+    )
+
+    assert response.status_code == 200
+    stored = saved[-1]["user_preferences"]
+    assert stored["general"]["timezone"] == "America/Los_Angeles"
+    assert stored["general"]["density"] == "compact"
+    assert stored["risk"]["maxOrderNotional"] == 2500
+    assert stored["risk"]["maxPositionPct"] == 7
+    assert stored["notifications"]["recommendations"] is False
+    assert stored["notifications"]["quietStart"] == "21:30"
+    assert saved[-1]["enabled"] is True
+
+
 def test_workspace_preferences_reject_unknown_or_invalid_fields(monkeypatch):
     monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
     monkeypatch.setattr(backend, "_pa_get_config", lambda uid: {})
@@ -189,7 +355,7 @@ def test_live_auto_authority_updates_only_authority_and_preserves_schedule(monke
         "live_auto_trading_enabled": False,
     }
     saved = []
-    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1", "aal": "aal2"})
     monkeypatch.setattr(backend, "_pa_get_config", lambda uid: dict(config))
     monkeypatch.setattr(backend, "_pa_validate_live_auto_authority", lambda uid, cfg: None)
     monkeypatch.setattr(
@@ -220,7 +386,7 @@ def test_live_auto_authority_keeps_existing_value_when_validation_fails(monkeypa
         "live_auto_trading_enabled": False,
     }
     saved = []
-    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1", "aal": "aal2"})
     monkeypatch.setattr(backend, "_pa_get_config", lambda uid: config)
     monkeypatch.setattr(
         backend,
@@ -255,7 +421,7 @@ def test_live_auto_authority_revocation_never_requires_broker_verification(monke
         "live_auto_trading_enabled": True,
     }
     saved = []
-    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1", "aal": "aal2"})
     monkeypatch.setattr(backend, "_pa_get_config", lambda uid: dict(config))
     monkeypatch.setattr(
         backend,
@@ -288,7 +454,7 @@ def test_live_auto_authority_does_not_change_ui_state_when_save_fails(monkeypatc
         "trade_mode": "real",
         "live_auto_trading_enabled": False,
     }
-    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1", "aal": "aal2"})
     monkeypatch.setattr(backend, "_pa_get_config", lambda uid: dict(config))
     monkeypatch.setattr(backend, "_pa_validate_live_auto_authority", lambda uid, cfg: None)
     monkeypatch.setattr(
@@ -302,7 +468,8 @@ def test_live_auto_authority_does_not_change_ui_state_when_save_fails(monkeypatc
     )
 
     assert response.status_code == 503
-    assert response.get_json()["reason"] == "supabase_write_failed"
+    assert response.get_json()["status"] == "service_unavailable"
+    assert "supabase_write_failed" not in response.get_data(as_text=True)
 
 
 def test_discord_pipeline_event_is_deduped_only_after_success(monkeypatch):
@@ -342,12 +509,94 @@ def test_discord_quiet_policy_uses_trade_risk_and_digest_flags():
         "notifyTradeActivity": True,
         "notifyRiskAlerts": False,
         "notifyCycleDigest": True,
+        "notifyRecommendations": True,
     }
 
     assert backend._discord_event_enabled(config, "order_AAPL") is True
     assert backend._discord_event_enabled(config, "risk_alert") is False
     assert backend._discord_event_enabled(config, "error") is False
     assert backend._discord_event_enabled(config, "cycle_digest") is True
+    assert backend._discord_event_enabled(config, "recommendation") is True
+
+
+def test_discord_embed_uses_saved_website_language(monkeypatch):
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: {"language": "zh-CN"})
+    language = backend._discord_notification_language("user-1")
+    embed = backend._discord_embed("order", {
+        "_language": language,
+        "mode": "real",
+        "side": "buy",
+        "symbol": "AAPL",
+        "qty": 2,
+        "orderType": "limit",
+        "limitPrice": 200,
+        "status": "submitted",
+        "orderId": "order-123",
+    })
+
+    assert embed["title"] == "买入 · 已提交"
+    assert [field["name"] for field in embed["fields"]][:3] == ["账户模式", "方向", "股票代码"]
+
+
+def test_discord_test_uses_current_page_language(monkeypatch):
+    sent = []
+    saved_config = {
+        "enabled": True,
+        "webhookUrl": "https://discord.invalid/test",
+        "notifyCycleDigest": True,
+    }
+
+    monkeypatch.setattr(backend, "get_supabase_user", lambda: {"id": "user-1"})
+    monkeypatch.setattr(backend, "get_discord_config", lambda uid: dict(saved_config))
+    monkeypatch.setattr(backend, "save_user_config", lambda *args: (True, ""))
+    monkeypatch.setattr(
+        backend,
+        "send_discord_notification",
+        lambda uid, event_type, payload: sent.append((event_type, dict(payload))) or {"sent": True},
+    )
+
+    response = backend.app.test_client().post(
+        "/api/notifications/discord/test",
+        json={"eventType": "cycle_digest", "language": "zh-CN", "mode": "paper"},
+    )
+
+    assert response.status_code == 200
+    assert sent[0][0] == "cycle_digest"
+    assert sent[0][1]["language"] == "zh-CN"
+    assert sent[0][1]["descriptionZh"] == "这是 Discord 中文通知测试摘要。"
+
+
+def test_discord_recommendation_dedupe_tracks_unchanged_candidate_set():
+    backend._discord_notify_dedupe.clear()
+    first = {"event_id": "run-1", "fingerprint": "aapl-buy", "symbol": "AAPL"}
+    second = dict(first, event_id="run-2")
+
+    assert backend._discord_should_send("user-1", "recommendation", first) is True
+    assert backend._discord_should_send("user-1", "recommendation", second) is False
+
+
+def test_recommendation_notification_contains_final_trade_levels(monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        backend,
+        "send_discord_notification",
+        lambda uid, event_type, payload: sent.append((event_type, payload)) or {"sent": True},
+    )
+
+    result = backend._pa_send_recommendations("user-1", "run-1", "auto_run_now", "ai", "real", [{
+        "symbol": "AAPL",
+        "finalAction": "BUY_READY",
+        "entryZoneDesc": "$198–$200",
+        "stopLoss": 190,
+        "takeProfit1": 220,
+        "riskReward1": 2.5,
+        "decisionReason": "Confirmed setup",
+    }])
+
+    assert result["sent"] is True
+    assert sent[0][0] == "recommendation"
+    assert sent[0][1]["recommendations"][0]["symbol"] == "AAPL"
+    assert sent[0][1]["recommendations"][0]["stop"] == 190
 
 
 def test_discord_risk_dedupe_tracks_condition_not_changing_event_id():
@@ -506,6 +755,7 @@ def test_pipeline_status_exposes_active_stage_progress_and_quiet_discord_policy(
         "notifyTradeActivity": True,
         "notifyRiskAlerts": True,
         "notifyCycleDigest": False,
+        "notifyRecommendations": True,
     })
     monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_HEARTBEAT", backend.time.time())
     with backend._PA_RUNNING_USERS_LOCK:
@@ -526,6 +776,7 @@ def test_pipeline_status_exposes_active_stage_progress_and_quiet_discord_policy(
         "tradeActivity": True,
         "riskAlerts": True,
         "cycleDigest": False,
+        "recommendations": True,
         "quietMode": True,
     }
 
@@ -855,7 +1106,7 @@ def test_position_guard_runs_deterministic_protection_and_notifies(monkeypatch):
 
     started = backend._pa_maybe_start_position_guard(
         "user-1",
-        {"enabled": True},
+        {"enabled": False},
         datetime(2026, 7, 13, 10, 0, tzinfo=timezone.utc),
         "ai",
         "medium",
@@ -872,8 +1123,8 @@ def test_position_guard_runs_deterministic_protection_and_notifies(monkeypatch):
     assert notifications[0][2]["step"] == "Position Protection"
     assert notifications[0][2]["status"] == "review_required"
     assert notifications[0][2]["symbol"] == "AAPL"
-    assert saved_configs[0]["position_guard_alert_fingerprint"]
-    assert releases == ["user-1"]
+    assert any(config.get("position_guard_alert_fingerprint") for config in saved_configs)
+    assert releases == []
     assert backend._PA_POSITION_GUARD_STATE["user-1"]["running"] is False
 
 
@@ -1029,6 +1280,28 @@ def test_runtime_restore_marks_inflight_pipeline_interrupted(monkeypatch, tmp_pa
     finally:
         with backend._PA_ACTIVE_RUNS_LOCK:
             backend._PA_ACTIVE_RUNS.pop("restart-user", None)
+
+
+def test_scheduler_health_requires_a_live_thread_and_fresh_heartbeat(monkeypatch):
+    class AliveThread:
+        @staticmethod
+        def is_alive():
+            return True
+
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_THREAD", AliveThread())
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_HEARTBEAT", 990.0)
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_COMPLETED_AT", 980.0)
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_ERROR", "")
+
+    healthy = backend._pa_scheduler_health_snapshot(now_ts=1000.0)
+    stale = backend._pa_scheduler_health_snapshot(now_ts=1200.0)
+
+    assert healthy["running"] is True
+    assert healthy["threadAlive"] is True
+    assert healthy["heartbeatAgeSeconds"] == 10.0
+    assert healthy["lastCompletedTickAt"]
+    assert stale["running"] is False
+    assert stale["threadAlive"] is True
 
 
 def test_scheduler_start_is_singleton(monkeypatch):

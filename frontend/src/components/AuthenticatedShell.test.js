@@ -18,6 +18,7 @@ describe('authenticated workspace navigation', () => {
     ['/activity', 'overview', 'activity'],
     ['/signals?source=legacy', 'overview', 'activity'],
     ['/system-status/', 'overview', 'system-health'],
+    ['/safety', 'overview', 'safety-center'],
     ['/market', 'markets', 'market-scanner'],
     ['/market/symbol/AAPL', 'markets', 'symbol-analysis'],
     ['/analysis/TSLA/', 'markets', 'symbol-analysis'],

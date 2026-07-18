@@ -4,9 +4,9 @@ All notable AlphaLab changes are recorded here. The project follows [Semantic Ve
 
 ## [Unreleased]
 
-No unreleased changes are currently documented.
+No unreleased changes.
 
-## [3.0.0] - 2026-07-14
+## [3.0.0] - 2026-07-18
 
 AlphaLab 3.0 is a product-wide release. It replaces the previous collection of screens with a consistent bilingual research and execution workspace, expands the saved research pipeline, and tightens the distinction between configured, verified, paper, and live states.
 
@@ -23,6 +23,13 @@ AlphaLab 3.0 is a product-wide release. It replaces the previous collection of s
 - English and Simplified Chinese copy for both the public site and signed-in product.
 - Curated light and dark themes, responsive typography, compact data tables, and mobile layouts.
 - Supabase-backed authentication, user configuration, pipeline state, and protected application routing.
+- Secure email password recovery with a dedicated request page, recovery-session validation, and guarded password update route.
+- A bilingual Trading Safety Center with durable pause/resume state, optimistic version checks, optional cancellation of managed entry orders, readiness checks, order lifecycle, delivery history, and audit context.
+- Supabase TOTP multi-factor enrollment, removal, assurance checks, and an AAL2 challenge route for enrolled accounts.
+- Owner-scoped scanner settings, watchlists, and saved strategy blueprints with version-conflict handling and local-state migration.
+- Read-only candidate evidence drawers with structured provenance, sensitive-field redaction, and versioned JSON export.
+- Portfolio concentration, exposure, cash-weight, drawdown, and unrealized P/L diagnostics with CSV and audit-report exports.
+- A bilingual render error boundary and opt-in, privacy-minimized Web Vitals telemetry.
 
 ### Changed
 
@@ -35,8 +42,13 @@ AlphaLab 3.0 is a product-wide release. It replaces the previous collection of s
 - Moved user provider and broker credentials into authenticated settings backed by Supabase; browser code no longer expects broker secrets.
 - Updated the frontend package version and backend status response to `3.0.0`.
 - Updated the production image to Node.js 20 and a non-root Nginx runtime.
-- Standardized the production backend on one Gunicorn worker with eight threads so the in-process scheduler has one authoritative owner.
+- Standardized the production backend on one Gunicorn worker with four threads so the in-process scheduler has one authoritative owner.
 - Rewrote environment templates, deployment guidance, contribution guidance, pull-request metadata, and release automation for the v3 architecture.
+- Made paper/live mode, pipeline mode, risk profile, time horizon, leverage, language, scanner filters, order confirmation, and execution offsets account-scoped settings that affect backend behavior.
+- Made supported Discord recommendations, order, risk, and pipeline notifications follow the user's saved English or Simplified Chinese preference.
+- Added route-level lazy loading and production-build Playwright serving to reduce initial work and make browser tests deterministic.
+- Changed historical backtests to use corporate-action-adjusted prices by default and execute completed-bar signals at the next tradable open.
+- Added bounded scanner timeouts, current-RSS memory reporting, and automatic retention cleanup for persisted pipeline history.
 
 ### Fixed
 
@@ -48,6 +60,9 @@ AlphaLab 3.0 is a product-wide release. It replaces the previous collection of s
 - Route and secondary-tab behavior across public, market, research, strategy, trade, and settings workspaces.
 - Inconsistent status language that could present a configured service as connected or verified.
 - Public-page mobile overflow, authentication-page spacing, and legal-page readability.
+- Password-reset pages accepting ordinary authenticated sessions without recovery evidence.
+- Zero-result and zero-value states that previously rendered partial fills or misleading operational status.
+- Scanner capacity checks that could allocate work before authentication and legacy endpoints that returned synthetic trading success.
 
 ### Security
 
@@ -57,6 +72,10 @@ AlphaLab 3.0 is a product-wide release. It replaces the previous collection of s
 - Optimized Supabase Row Level Security policies and grants for authenticated and service-role access.
 - Added a security policy, CODEOWNERS coverage for high-risk surfaces, and dependency update configuration.
 - Updated direct runtime clients to Axios 1.18.1 and React Router 6.30.4, and refreshed compatible transitive packages without using a forced breaking audit migration.
+- Required authenticated ownership for scanner, backtest, optimization, trading-environment, operations, and legacy trade routes.
+- Added bounded process-local rate-limit state and safer proxy-aware client-address handling.
+- Made real new-entry execution fail closed when durable Safety Center state cannot be read; protective exits remain available when new entries are paused.
+- Added idempotency keys, owner scoping, optimistic version conflicts, and sensitive-field redaction to durable operations artifacts.
 
 ### Deployment
 
@@ -64,12 +83,15 @@ AlphaLab 3.0 is a product-wide release. It replaces the previous collection of s
 - Added a repository `.dockerignore` to keep local secrets, dependencies, build outputs, and runtime state out of container context.
 - Preserved separate frontend/backend deployment support for Cloudflare Pages and Render.
 - Documented that Render free instances are not suitable for an unattended in-process schedule.
+- Added operations-store and security-hardening migrations; hosted production does not silently fall back to process-local operational state.
 
 ### Upgrade notes
 
 - Install Node.js 20 or newer and Python 3.11 or newer.
 - Copy the new frontend and backend environment examples; add the public Supabase URL and anonymous key to the frontend.
 - Apply `backend/supabase_schema.sql` before enabling saved pipeline state or authenticated per-user configuration.
+- Apply `backend/supabase_operations_store.sql` after the base schema before enabling Safety Center controls, cross-device artifacts, or real new-entry execution.
+- Apply `backend/supabase_security_hardening.sql` last so authenticated browser sessions are read-only and validated mutations stay behind the backend.
 - Keep Supabase service-role, Fernet, Flask, and provider secrets on the server.
 - Run a single web process when using the built-in scheduler. Multiple processes require moving scheduling to a dedicated worker with a distributed lock.
 - Recheck Alpaca paper/live selection and every risk limit before enabling order submission.
@@ -77,8 +99,8 @@ AlphaLab 3.0 is a product-wide release. It replaces the previous collection of s
 ### Validation
 
 - Frontend Jest suite, ESLint, TypeScript checking, and production build.
-- 26 frontend Jest tests and 117 backend pytest tests covering authentication, scanning, validation, admission, scheduling, execution, and position protection.
-- Full frontend ESLint completed with no errors; five existing Hook dependency warnings remain in legacy pages outside this release's changed route set.
+- The release baseline is 64 frontend Jest tests, 293 backend pytest tests, and 12 Chromium Playwright tests covering authentication, password recovery, accessibility, durable operations, scanning, validation, admission, scheduling, execution, position protection, recovery, and export behavior.
+- CI also enforces high/critical npm audit boundaries, Python dependency auditing, secret scanning, Docker validation, and production-route smoke checks.
 - Desktop and mobile review of public and authenticated routes.
 - Browser route checks for all public and protected page entry points.
 
@@ -86,8 +108,8 @@ AlphaLab 3.0 is a product-wide release. It replaces the previous collection of s
 
 - Live broker, market-data, AI-provider, and notification behavior requires user-supplied provider accounts and credentials.
 - The built-in scheduler is process-local and must have a single authoritative process in production.
-- Create React App 5 retains 25 npm audit findings in its legacy build, Jest/jsdom, SVG, and development-server dependency tree. The release does not apply npm's proposed forced `react-scripts@0.0.0` replacement; direct Axios and React Router findings were upgraded separately.
-- The main browser bundle is about 927 kB compressed and remains a candidate for route-level code splitting.
+- Create React App 5 remains a legacy build toolchain. Audit totals vary with each lockfile update; CI enforces the current high/critical frontend boundary and separately audits Python dependencies.
+- Route-level code splitting is implemented. Individual charting and data-workspace chunks can still be optimized further as their dependencies evolve.
 - AlphaLab assists research and execution; it does not provide investment advice or guarantee strategy performance.
 
 ## [2.9.2] - 2026-06-16
@@ -112,10 +134,10 @@ Maintenance release for the v2 research and execution workflow.
 
 Earlier release history remains available through the repository's Git tags and compare view.
 
-[Unreleased]: https://github.com/Danielchen0101/quant_platform/compare/v3.0.0...HEAD
-[3.0.0]: https://github.com/Danielchen0101/quant_platform/compare/v2.9.2...v3.0.0
-[2.9.2]: https://github.com/Danielchen0101/quant_platform/compare/v2.9.1...v2.9.2
-[2.9.1]: https://github.com/Danielchen0101/quant_platform/compare/v2.9.0...v2.9.1
-[2.9.0]: https://github.com/Danielchen0101/quant_platform/compare/v2.8.0...v2.9.0
-[2.8.0]: https://github.com/Danielchen0101/quant_platform/compare/v2.7.7...v2.8.0
-[2.7.7]: https://github.com/Danielchen0101/quant_platform/releases/tag/v2.7.7
+[Unreleased]: https://github.com/Danielchen0101/Alpha_lab/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/Danielchen0101/Alpha_lab/compare/v2.9.2...v3.0.0
+[2.9.2]: https://github.com/Danielchen0101/Alpha_lab/compare/v2.9.1...v2.9.2
+[2.9.1]: https://github.com/Danielchen0101/Alpha_lab/compare/v2.9.0...v2.9.1
+[2.9.0]: https://github.com/Danielchen0101/Alpha_lab/compare/v2.8.0...v2.9.0
+[2.8.0]: https://github.com/Danielchen0101/Alpha_lab/compare/v2.7.7...v2.8.0
+[2.7.7]: https://github.com/Danielchen0101/Alpha_lab/releases/tag/v2.7.7

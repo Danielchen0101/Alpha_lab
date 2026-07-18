@@ -3,6 +3,7 @@ import { Card, Form, Input, InputNumber, Button, Select, DatePicker, Row, Col, S
 import { PlayCircleOutlined, HistoryOutlined, LineChartOutlined, ReloadOutlined, EyeOutlined, SaveOutlined, FolderOpenOutlined, DeleteOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { backtraderAPI } from '../services/api';
+import { isOperationsArtifactConflict, operationsArtifactsAPI } from '../services/operationsArtifactsService';
 import dayjs from 'dayjs';
 
 import TradingChart from '../components/TradingChart';
@@ -16,11 +17,19 @@ import {
   sortByDateAsc
 } from '../utils/dateUtils';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useAuth } from '../contexts/AuthContext';
 import './BacktestEditorial.css';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
 const { RangePicker } = DatePicker;
+
+const SAVED_STRATEGIES_KEY_PREFIX = 'quant_saved_strategies';
+const BACKTEST_HISTORY_KEY_PREFIX = 'quant_backtest_history';
+const LAST_BACKTEST_PARAMS_KEY_PREFIX = 'quant_last_backtest_params';
+const savedStrategiesStorageKey = (userId: string): string => `${SAVED_STRATEGIES_KEY_PREFIX}:${userId}`;
+const backtestHistoryKey = (userId: string): string => `${BACKTEST_HISTORY_KEY_PREFIX}:${userId}`;
+const lastBacktestParamsKey = (userId: string): string => `${LAST_BACKTEST_PARAMS_KEY_PREFIX}:${userId}`;
 
 interface BacktestFormValues {
   symbol: string;
@@ -340,18 +349,20 @@ const formatBacktestError = (
   return `${friendly} ${copy.detail}: ${detail}`;
 };
 
-const saveLocalBacktestHistory = (history: BacktestHistoryItem[]) => {
+const saveLocalBacktestHistory = (storageKey: string, history: BacktestHistoryItem[]) => {
+  if (!storageKey) return;
   try {
     const limitedHistory = history.slice(0, 20);
-    localStorage.setItem('quant_backtest_history', JSON.stringify(limitedHistory));
+    localStorage.setItem(storageKey, JSON.stringify(limitedHistory));
   } catch (err) {
     console.error('Failed to save local backtest history:', err);
   }
 };
 
-const loadLocalBacktestHistory = (): BacktestHistoryItem[] => {
+const loadLocalBacktestHistory = (storageKey: string): BacktestHistoryItem[] => {
+  if (!storageKey) return [];
   try {
-    const saved = localStorage.getItem('quant_backtest_history');
+    const saved = localStorage.getItem(storageKey);
     if (saved) {
       const history = JSON.parse(saved);
 
@@ -379,7 +390,7 @@ const loadLocalBacktestHistory = (): BacktestHistoryItem[] => {
 
       if (cleanedHistory.length !== history.length) {
         console.log(`Cleaned backtest history: removed ${history.length - cleanedHistory.length} invalid records`);
-        saveLocalBacktestHistory(cleanedHistory);
+        saveLocalBacktestHistory(storageKey, cleanedHistory);
       }
 
       return cleanedHistory;
@@ -392,6 +403,9 @@ const loadLocalBacktestHistory = (): BacktestHistoryItem[] => {
 
 const Backtest: React.FC = () => {
   const { t, language } = useLanguage();
+  const { user } = useAuth();
+  const accountHistoryKey = user?.id ? backtestHistoryKey(user.id) : '';
+  const accountLastParamsKey = user?.id ? lastBacktestParamsKey(user.id) : '';
   const [form] = Form.useForm();
   const location = useLocation();
   const navigate = useNavigate();
@@ -407,6 +421,8 @@ const Backtest: React.FC = () => {
   const [selectedBacktests, setSelectedBacktests] = useState<string[]>([]);
   const [selectedStrategy, setSelectedStrategy] = useState<string>('moving_average');
   const [savedStrategies, setSavedStrategies] = useState<any[]>([]);
+  const savedStrategiesVersionRef = useRef<number | undefined>(undefined);
+  const savedStrategiesMutationRef = useRef<Promise<void>>(Promise.resolve());
   const [showSavedStrategies, setShowSavedStrategies] = useState(false);
   const [portfolioSymbols, setPortfolioSymbols] = useState<string[]>([]);
   const queryParams = new URLSearchParams(location.search);
@@ -430,7 +446,7 @@ const Backtest: React.FC = () => {
       setHistoryLoading(true);
       setHistoryError('');
 
-      const localHistory = loadLocalBacktestHistory();
+      const localHistory = loadLocalBacktestHistory(accountHistoryKey);
       let combinedHistory = [...localHistory];
 
       try {
@@ -502,7 +518,7 @@ const Backtest: React.FC = () => {
       setBacktestHistory(combinedHistory);
     } catch (err) {
       console.error('Failed to fetch backtest history:', err);
-      setBacktestHistory(loadLocalBacktestHistory());
+      setBacktestHistory(loadLocalBacktestHistory(accountHistoryKey));
       setHistoryError(formatBacktestError(
         err,
         localizedCopyRef.current.language,
@@ -513,7 +529,7 @@ const Backtest: React.FC = () => {
     } finally {
       setHistoryLoading(false);
     }
-  }, []);
+  }, [accountHistoryKey]);
 
   const loadBacktestResult = useCallback(async (backtestId: string) => {
     try {
@@ -571,7 +587,7 @@ const Backtest: React.FC = () => {
     try {
       console.log('Viewing backtest:', record.backtestId);
 
-      const currentHistory = loadLocalBacktestHistory();
+      const currentHistory = loadLocalBacktestHistory(accountHistoryKey);
       const foundRecord = currentHistory.find(item => item.backtestId === record.backtestId);
 
       if (foundRecord) {
@@ -664,7 +680,7 @@ const Backtest: React.FC = () => {
       ));
       message.error(localizedCopyRef.current.language === 'zh-CN' ? '加载回测结果失败' : 'Failed to load backtest results');
     }
-  }, [loadBacktestResult]);
+  }, [accountHistoryKey, loadBacktestResult]);
 
   // 从URL参数或location state获取symbol
   useEffect(() => {
@@ -832,7 +848,7 @@ const Backtest: React.FC = () => {
     } else if (targetBacktestId) {
       console.log('Received selectedBacktestId from navigation state:', targetBacktestId);
       // 如果只有 ID，尝试加载
-      const localHistory = loadLocalBacktestHistory();
+      const localHistory = loadLocalBacktestHistory(accountHistoryKey);
       const found = localHistory.find(item => item.backtestId === targetBacktestId);
       if (found) {
         handleViewBacktest(found);
@@ -840,7 +856,7 @@ const Backtest: React.FC = () => {
         loadBacktestResult(targetBacktestId);
       }
     }
-  }, [form, handleViewBacktest, loadBacktestResult, location.state]);
+  }, [accountHistoryKey, form, handleViewBacktest, loadBacktestResult, location.state]);
 
   // 生成唯一的请求ID
   const generateRequestId = () => {
@@ -878,9 +894,9 @@ const Backtest: React.FC = () => {
   // 删除本地回测历史记录
   const deleteLocalBacktestHistory = (backtestId: string) => {
     try {
-      const currentHistory = loadLocalBacktestHistory();
+      const currentHistory = loadLocalBacktestHistory(accountHistoryKey);
       const updatedHistory = currentHistory.filter(item => item.backtestId !== backtestId);
-      saveLocalBacktestHistory(updatedHistory);
+      saveLocalBacktestHistory(accountHistoryKey, updatedHistory);
       setBacktestHistory(updatedHistory);
       
       // 如果删除的是当前选中的backtest，清空选中状态
@@ -903,7 +919,7 @@ const Backtest: React.FC = () => {
   // 添加回测结果到历史记录
   const addToBacktestHistory = (backtestResult: BacktestResult) => {
     try {
-      const currentHistory = loadLocalBacktestHistory();
+      const currentHistory = loadLocalBacktestHistory(accountHistoryKey);
 
       // 创建历史记录项
       const symbol = backtestResult.parameters?.symbols?.[0] || 'N/A';
@@ -940,7 +956,7 @@ const Backtest: React.FC = () => {
       const updatedHistory = [historyItem, ...currentHistory];
 
       // 保存到本地存储
-      saveLocalBacktestHistory(updatedHistory);
+      saveLocalBacktestHistory(accountHistoryKey, updatedHistory);
 
       // 更新状态
       setBacktestHistory(updatedHistory);
@@ -953,23 +969,75 @@ const Backtest: React.FC = () => {
     }
   };
 
-  // 加载已保存的策略
-  useEffect(() => {
-    const loadSavedStrategies = () => {
+  const persistSavedStrategies = useCallback((strategies: any[]): Promise<void> => {
+    if (!user?.id) return Promise.reject(new Error('No authenticated account'));
+    const storageKey = savedStrategiesStorageKey(user.id);
+    const mutate = async () => {
       try {
-        const saved = localStorage.getItem('quant_saved_strategies');
+        const artifact = await operationsArtifactsAPI.put(
+          'strategy-blueprints',
+          'saved',
+          { strategies },
+          savedStrategiesVersionRef.current,
+        );
+        if (artifact) savedStrategiesVersionRef.current = artifact.version;
+        localStorage.setItem(storageKey, JSON.stringify(strategies));
+      } catch (err) {
+        if (isOperationsArtifactConflict(err)) {
+          const latest = await operationsArtifactsAPI.get<{ strategies?: any[] }>('strategy-blueprints', 'saved');
+          savedStrategiesVersionRef.current = latest?.version;
+          throw new Error('Saved plans changed in another tab or device. Reload the page before trying again.');
+        }
+        throw err;
+      }
+    };
+    const queued = savedStrategiesMutationRef.current.then(mutate);
+    savedStrategiesMutationRef.current = queued.catch(() => undefined);
+    return queued;
+  }, [user?.id]);
+
+  // 加载已保存的策略。服务端副本优先；浏览器缓存保留为离线回退。
+  useEffect(() => {
+    if (!user?.id) {
+      savedStrategiesVersionRef.current = undefined;
+      savedStrategiesMutationRef.current = Promise.resolve();
+      setSavedStrategies([]);
+      return undefined;
+    }
+
+    let active = true;
+    const loadSavedStrategies = async () => {
+      const storageKey = savedStrategiesStorageKey(user.id);
+      let localStrategies: any[] = [];
+      try {
+        const saved = localStorage.getItem(storageKey);
         if (saved) {
-          setSavedStrategies(JSON.parse(saved));
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) localStrategies = parsed;
         }
       } catch (err) {
         console.error('Failed to load saved strategies:', err);
       }
+      try {
+        const artifact = await operationsArtifactsAPI.get<{ strategies?: any[] }>('strategy-blueprints', 'saved');
+        if (!active) return;
+        if (artifact) savedStrategiesVersionRef.current = artifact.version;
+        const remote = artifact?.payload?.strategies;
+        const resolved = Array.isArray(remote) ? remote : localStrategies;
+        setSavedStrategies(resolved);
+        localStorage.setItem(storageKey, JSON.stringify(resolved));
+        if (!artifact && localStrategies.length > 0) await persistSavedStrategies(localStrategies);
+      } catch (err) {
+        if (active) setSavedStrategies(localStrategies);
+        console.warn('Saved strategies are using this device cache:', err);
+      }
     };
-    loadSavedStrategies();
-  }, []);
+    void loadSavedStrategies();
+    return () => { active = false; };
+  }, [persistSavedStrategies, user?.id]);
 
   // 保存策略到localStorage
-  const saveCurrentStrategy = () => {
+  const saveCurrentStrategy = async () => {
     try {
       const formValues = form.getFieldsValue();
       if (!formValues.strategy || !formValues.symbol) {
@@ -1009,8 +1077,8 @@ const Backtest: React.FC = () => {
       };
 
       const updatedStrategies = [...savedStrategies, newStrategy];
+      await persistSavedStrategies(updatedStrategies);
       setSavedStrategies(updatedStrategies);
-      localStorage.setItem('quant_saved_strategies', JSON.stringify(updatedStrategies));
       message.success(language === 'zh-CN' ? `策略 "${strategyName}" 保存成功！` : `Strategy "${strategyName}" saved successfully!`);
     } catch (err) {
       console.error('Failed to save strategy:', err);
@@ -1052,11 +1120,11 @@ const Backtest: React.FC = () => {
   };
 
   // 删除策略
-  const deleteStrategy = (id: string) => {
+  const deleteStrategy = async (id: string) => {
     try {
       const updatedStrategies = savedStrategies.filter(s => s.id !== id);
+      await persistSavedStrategies(updatedStrategies);
       setSavedStrategies(updatedStrategies);
-      localStorage.setItem('quant_saved_strategies', JSON.stringify(updatedStrategies));
       message.success(language === 'zh-CN' ? '策略已删除！' : 'Strategy deleted successfully!');
     } catch (err) {
       console.error('Failed to delete strategy:', err);
@@ -1263,10 +1331,12 @@ const Backtest: React.FC = () => {
           }
           setLoading(false);
 
-          // 如果有status字段，根据状态显示相应消息
-          if (result.status === 'completed') {
+          // Only report success when the run is both successful and contains
+          // usable output. A nominal "completed" status with an empty/failed
+          // payload is not a successful backtest.
+          if (!runFailed && hasResults && result.status === 'completed') {
             message.success(t.backtest.backtestCompleted);
-          } else if (result.status === 'failed') {
+          } else if (runFailed || !hasResults || result.status === 'failed') {
             message.error(language === 'zh-CN' ? '回测失败，请检查参数后重试。' : 'Backtest failed. Please check parameters and try again.');
           } else if (result.status) {
             message.info(language === 'zh-CN' ? `回测状态：${result.status}` : `Backtest status: ${result.status}`);
@@ -1281,10 +1351,9 @@ const Backtest: React.FC = () => {
             }, 100);
           }
 
-          // 保存到历史记录
-          if (mergedResult) {
-            addToBacktestHistory(mergedResult);
-          }
+          // Never persist an empty or failed payload as a completed historical
+          // report. Doing so would make later views look successfully verified.
+          if (!runFailed && hasResults) addToBacktestHistory(mergedResult);
 
           // 刷新历史记录
           fetchBacktestHistory();
@@ -2021,7 +2090,7 @@ const Backtest: React.FC = () => {
                     const formValues = form.getFieldsValue();
                     if (formValues.strategy === 'moving_average') {
                       const backtestParams = { strategy: 'MA_CROSSOVER', symbol: formValues.symbol, shortMaPeriod: formValues.shortMaPeriod || 20, longMaPeriod: formValues.longMaPeriod || 50, timestamp: new Date().toISOString() };
-                      localStorage.setItem('quant_last_backtest_params', JSON.stringify(backtestParams));
+                      if (accountLastParamsKey) localStorage.setItem(accountLastParamsKey, JSON.stringify(backtestParams));
                       message.success(t.backtest.strategyStaged);
                     } else { message.info(t.backtest.stageLimited); }
                   }}>{t.backtest.stageForPaper}</Button>

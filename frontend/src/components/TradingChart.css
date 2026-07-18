@@ -1,16 +1,16 @@
 .trading-chart {
-  --tc-panel: #102219;
-  --tc-panel-soft: #14291f;
-  --tc-border: rgba(183, 205, 189, 0.18);
-  --tc-grid: rgba(183, 205, 189, 0.12);
-  --tc-muted: #91a096;
-  --tc-ink: #edf2eb;
-  --tc-positive: #91b987;
-  --tc-negative: #d37c64;
-  --tc-volume: #718078;
-  --tc-cursor: rgba(235, 242, 233, 0.54);
-  --tc-baseline: rgba(235, 242, 233, 0.23);
-  --tc-hover: rgba(235, 242, 233, 0.04);
+  --tc-panel: #151318;
+  --tc-panel-soft: #211e25;
+  --tc-border: rgba(226, 214, 196, 0.18);
+  --tc-grid: rgba(226, 214, 196, 0.1);
+  --tc-muted: #aaa3ae;
+  --tc-ink: #eee9df;
+  --tc-positive: #9db58c;
+  --tc-negative: #df7b68;
+  --tc-volume: #8d8490;
+  --tc-cursor: rgba(214, 164, 95, 0.62);
+  --tc-baseline: rgba(226, 214, 196, 0.22);
+  --tc-hover: rgba(182, 160, 201, 0.05);
   box-sizing: border-box;
   width: 100%;
   min-width: 0;

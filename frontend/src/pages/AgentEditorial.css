@@ -79,21 +79,21 @@
 .ai-agent-page-container.agent-workspace > .agent-watchlist-panel { order: 23; }
 
 :root[data-theme='dark'] .ai-agent-page-container.agent-workspace {
-  --research-paper: var(--shell-paper, #111712);
-  --research-surface: var(--shell-paper-bright, #171f19);
-  --research-surface-deep: var(--shell-paper-deep, #202920);
-  --research-ink: var(--shell-ink, #f1eee5);
-  --research-muted: var(--shell-muted, #a3aba1);
-  --research-rule: var(--shell-rule, rgba(241, 238, 229, 0.22));
-  --research-rule-soft: var(--shell-rule-soft, rgba(241, 238, 229, 0.1));
-  --research-blue: var(--shell-blue, #79a6e7);
-  --research-green: var(--shell-green, #86ae82);
-  --research-red: var(--shell-red, #df8065);
-  --research-amber: #d6aa64;
-  --research-dark: #0b120e;
-  --research-dark-raised: #111b15;
-  --research-dark-rule: rgba(241, 238, 229, 0.17);
-  --research-dark-muted: #aab4aa;
+  --research-paper: var(--shell-paper, #121114);
+  --research-surface: var(--shell-paper-bright, #18161b);
+  --research-surface-deep: var(--shell-paper-deep, #242129);
+  --research-ink: var(--shell-ink, #fffaf0);
+  --research-muted: var(--shell-muted, #aaa3ae);
+  --research-rule: var(--shell-rule, rgba(226, 214, 196, 0.2));
+  --research-rule-soft: var(--shell-rule-soft, rgba(226, 214, 196, 0.1));
+  --research-blue: var(--shell-blue, #d6a45f);
+  --research-green: var(--shell-green, #9db58c);
+  --research-red: var(--shell-red, #df7b68);
+  --research-amber: var(--app-warning, #d6a45f);
+  --research-dark: #151318;
+  --research-dark-raised: #211e25;
+  --research-dark-rule: rgba(226, 214, 196, 0.17);
+  --research-dark-muted: #aaa3ae;
 }
 
 .ai-agent-page-container.agent-workspace,
@@ -682,13 +682,13 @@
   inset: 0 auto 0 0;
   display: block;
   max-width: 100%;
-  background: #79a6e7;
+  background: var(--research-blue);
   border-radius: 0;
   transition: width 500ms ease;
 }
 
 .ai-agent-page-container.agent-workspace .agent-full-cycle-progress.is-completed .agent-full-cycle-rail-fill {
-  background: #86ae82;
+  background: var(--research-green);
 }
 
 .ai-agent-page-container.agent-workspace .agent-full-cycle-progress.is-failed .agent-full-cycle-rail-fill {
@@ -707,8 +707,8 @@
   display: none;
   width: 2px;
   height: 16px;
-  background: #dceaff;
-  box-shadow: 0 0 0 3px rgba(121, 166, 231, 0.16);
+  background: #f4d7aa;
+  box-shadow: 0 0 0 3px rgba(214, 164, 95, 0.18);
   transform: translateX(-1px);
 }
 
@@ -806,24 +806,24 @@
 .ai-agent-page-container.agent-workspace .agent-full-cycle-stage-bar i {
   display: block;
   height: 100%;
-  background: #79a6e7;
+  background: var(--research-blue);
   transition: width 500ms ease;
 }
 
 .ai-agent-page-container.agent-workspace .agent-full-cycle-stage.is-running {
-  background: rgba(121, 166, 231, 0.12);
-  box-shadow: inset 0 2px 0 #79a6e7;
+  background: rgba(214, 164, 95, 0.12);
+  box-shadow: inset 0 2px 0 var(--research-blue);
 }
 
 .ai-agent-page-container.agent-workspace .agent-full-cycle-stage.is-completed {
-  background: rgba(134, 174, 130, 0.045);
+  background: rgba(157, 181, 140, 0.055);
 }
 
 .ai-agent-page-container.agent-workspace .agent-full-cycle-stage.is-completed .agent-full-cycle-stage-index,
 .ai-agent-page-container.agent-workspace .agent-full-cycle-stage.is-completed .agent-full-cycle-stage-bar i {
   color: #9ac596;
   border-color: rgba(154, 197, 150, 0.35);
-  background: #86ae82;
+  background: var(--research-green);
 }
 
 .ai-agent-page-container.agent-workspace .agent-full-cycle-stage.is-failed {
@@ -2895,8 +2895,8 @@
 }
 
 :root[data-theme='dark'] .agent-confirm-modal .agent-confirm-dialog .ant-modal-content {
-  background: #16231b;
-  border-color: rgba(235, 240, 231, 0.2);
+  background: var(--app-card-bg, #1c1a20);
+  border-color: var(--app-border, rgba(226, 214, 196, 0.2));
 }
 
 @media (max-width: 560px) {
@@ -2923,15 +2923,15 @@
 }
 
 :root[data-theme='dark'] .agent-live-auto-modal .agent-live-auto-dialog {
-  --live-auto-surface: var(--shell-paper-bright, #171f19);
-  --live-auto-surface-deep: var(--shell-paper-deep, #202920);
-  --live-auto-ink: var(--shell-ink, #f1eee5);
-  --live-auto-muted: var(--shell-muted, #a3aba1);
-  --live-auto-rule: var(--shell-rule, rgba(241, 238, 229, 0.22));
-  --live-auto-rule-soft: var(--shell-rule-soft, rgba(241, 238, 229, 0.1));
-  --live-auto-blue: var(--shell-blue, #79a6e7);
-  --live-auto-red: var(--shell-red, #df8065);
-  --live-auto-green: var(--shell-green, #86ae82);
+  --live-auto-surface: var(--shell-paper-bright, #18161b);
+  --live-auto-surface-deep: var(--shell-paper-deep, #242129);
+  --live-auto-ink: var(--shell-ink, #fffaf0);
+  --live-auto-muted: var(--shell-muted, #aaa3ae);
+  --live-auto-rule: var(--shell-rule, rgba(226, 214, 196, 0.2));
+  --live-auto-rule-soft: var(--shell-rule-soft, rgba(226, 214, 196, 0.1));
+  --live-auto-blue: var(--shell-blue, #d6a45f);
+  --live-auto-red: var(--shell-red, #df7b68);
+  --live-auto-green: var(--shell-green, #9db58c);
 }
 
 .agent-live-auto-dialog .ant-modal-content {
@@ -3486,19 +3486,19 @@
 .agent-plan-execution-modal .ant-modal-footer .ant-btn + .ant-btn { margin-inline-start: 0; }
 
 :root[data-theme='dark'] .agent-execution-modal {
-  --execution-dialog-surface: #111b18;
-  --execution-dialog-surface-soft: #17231f;
-  --execution-dialog-ink: #edf1e9;
-  --execution-dialog-muted: #9eaaa1;
-  --execution-dialog-rule: rgba(217, 230, 219, 0.22);
-  --execution-dialog-rule-soft: rgba(217, 230, 219, 0.11);
-  --execution-dialog-green: #87ad89;
-  --execution-dialog-red: #d48771;
-  --execution-dialog-blue: #7ba8df;
-  --execution-dialog-amber: #cfac70;
+  --execution-dialog-surface: #1c1a20;
+  --execution-dialog-surface-soft: #242129;
+  --execution-dialog-ink: #fffaf0;
+  --execution-dialog-muted: #aaa3ae;
+  --execution-dialog-rule: rgba(226, 214, 196, 0.2);
+  --execution-dialog-rule-soft: rgba(226, 214, 196, 0.1);
+  --execution-dialog-green: #9db58c;
+  --execution-dialog-red: #df7b68;
+  --execution-dialog-blue: #d6a45f;
+  --execution-dialog-amber: #b6a0c9;
 }
 :root[data-theme='dark'] .agent-execution-modal__heading span,
-:root[data-theme='dark'] .agent-execution-modal__simple-title span { color: #94ab99; }
+:root[data-theme='dark'] .agent-execution-modal__simple-title span { color: #b6a0c9; }
 
 @media (max-width: 620px) {
   .agent-execution-modal { top: 9px; width: calc(100vw - 18px) !important; max-width: calc(100vw - 18px) !important; margin: 0 9px !important; padding-bottom: 9px; }

@@ -24,10 +24,14 @@ import {
   type EquityHistory,
   type PriceHistory,
 } from '../utils/paperTradingEngine';
+import { useAuth } from '../contexts/AuthContext';
 
 const { Title, Text } = Typography;
 
 const LocalPaperTrading: React.FC = () => {
+  const { user } = useAuth();
+  const sessionHistoryStorageKey = user?.id ? `paper_trading_session_history:${user.id}` : '';
+  const lastBacktestResultStorageKey = user?.id ? `quant_last_backtest_result:${user.id}` : '';
   // 初始状态
   const [portfolio, setPortfolio] = useState<PortfolioState>(DEFAULT_PORTFOLIO);
 
@@ -111,13 +115,26 @@ const LocalPaperTrading: React.FC = () => {
   const [sessionHistory, setSessionHistory] = useState<SessionHistoryItem[]>(() => {
     // 从localStorage加载历史记录
     try {
-      const saved = localStorage.getItem('paper_trading_session_history');
+      const saved = sessionHistoryStorageKey ? localStorage.getItem(sessionHistoryStorageKey) : null;
       return saved ? JSON.parse(saved) : [];
     } catch (error) {
       console.error('Failed to load session history:', error);
       return [];
     }
   });
+
+  useEffect(() => {
+    if (!sessionHistoryStorageKey) {
+      setSessionHistory([]);
+      return;
+    }
+    try {
+      const saved = localStorage.getItem(sessionHistoryStorageKey);
+      setSessionHistory(saved ? JSON.parse(saved) : []);
+    } catch {
+      setSessionHistory([]);
+    }
+  }, [sessionHistoryStorageKey]);
 
   // Equity History 状态
   const [equityHistory, setEquityHistory] = useState<EquityHistory[]>([]);
@@ -194,11 +211,13 @@ const LocalPaperTrading: React.FC = () => {
         setEquityHistory(prevHistory => recordEquityHistory(prevHistory, updatedPortfolio, marketValue));
 
         // 更新最新价格映射
-        const newLatestPrices = { ...latestPrices };
-        updatedPositions.forEach(position => {
-          newLatestPrices[position.symbol] = position.currentPrice;
+        setLatestPrices((currentPrices) => {
+          const nextPrices = { ...currentPrices };
+          updatedPositions.forEach(position => {
+            nextPrices[position.symbol] = position.currentPrice;
+          });
+          return nextPrices;
         });
-        setLatestPrices(newLatestPrices);
 
         return updatedPortfolio;
       });
@@ -283,14 +302,14 @@ const LocalPaperTrading: React.FC = () => {
     setSessionHistory(prev => {
       const newHistory = [historyItem, ...prev];
       const limitedHistory = newHistory.slice(0, 10);
-      localStorage.setItem('paper_trading_session_history', JSON.stringify(limitedHistory));
+      if (sessionHistoryStorageKey) localStorage.setItem(sessionHistoryStorageKey, JSON.stringify(limitedHistory));
       return limitedHistory;
     });
 
     // 标记为已保存
     savedBatchIndexRef.current = currentBatchIndex;
     return true;
-  }, [currentBatchIndex, paperTradingConfig]);
+  }, [currentBatchIndex, paperTradingConfig, sessionHistoryStorageKey]);
 
   // 启动单个 preset
   const startBatchPreset = useCallback((index: number) => {
@@ -713,6 +732,9 @@ const LocalPaperTrading: React.FC = () => {
         clearInterval(intervalId);
       }
     };
+    // The timer is rebuilt from the persisted configuration and position set.
+    // Price history and signal handlers are read inside the scheduled cycle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paperTradingConfig, portfolio.positions]);
 
   const positionsColumns = [
@@ -1833,7 +1855,9 @@ const LocalPaperTrading: React.FC = () => {
               onClick={() => {
                 // 加载Backtest参数
                 try {
-                  const savedParams = localStorage.getItem('quant_last_backtest_params');
+                  const savedParams = user?.id
+                    ? localStorage.getItem(`quant_last_backtest_params:${user.id}`)
+                    : null;
                   if (!savedParams) {
                     message.info('No backtest parameters found. Run a backtest first.');
                     return;
@@ -1981,7 +2005,7 @@ const LocalPaperTrading: React.FC = () => {
                     const newHistory = [historyItem, ...prev].slice(0, 10);
                     // 保存到localStorage
                     try {
-                      localStorage.setItem('paper_trading_session_history', JSON.stringify(newHistory));
+                      if (sessionHistoryStorageKey) localStorage.setItem(sessionHistoryStorageKey, JSON.stringify(newHistory));
                     } catch (error) {
                       console.error('Failed to save session history:', error);
                     }
@@ -2224,7 +2248,9 @@ const LocalPaperTrading: React.FC = () => {
           {(() => {
             // 从localStorage获取backtest结果
             try {
-              const backtestResultStr = localStorage.getItem('quant_last_backtest_result');
+              const backtestResultStr = lastBacktestResultStorageKey
+                ? localStorage.getItem(lastBacktestResultStorageKey)
+                : null;
               if (!backtestResultStr) {
                 return (
                   <div style={{ textAlign: 'center', padding: '20px' }}>
@@ -2574,7 +2600,7 @@ const LocalPaperTrading: React.FC = () => {
                 onClick={() => {
                   if (window.confirm('Clear all session history? This cannot be undone.')) {
                     setSessionHistory([]);
-                    localStorage.removeItem('paper_trading_session_history');
+                    if (sessionHistoryStorageKey) localStorage.removeItem(sessionHistoryStorageKey);
                     message.info('Session history cleared');
                   }
                 }}

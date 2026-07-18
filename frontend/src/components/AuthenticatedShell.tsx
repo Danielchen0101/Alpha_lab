@@ -6,6 +6,7 @@ import {
   AppstoreOutlined,
   BarChartOutlined,
   CloseOutlined,
+  CompassOutlined,
   DesktopOutlined,
   DownOutlined,
   ExperimentOutlined,
@@ -16,6 +17,7 @@ import {
   LogoutOutlined,
   MenuOutlined,
   PieChartOutlined,
+  QuestionCircleOutlined,
   ReloadOutlined,
   RobotOutlined,
   SafetyCertificateOutlined,
@@ -39,6 +41,8 @@ import type { ThemeMode } from '../contexts/ThemeContext';
 import { loadConfigStatus } from '../services/api';
 import { searchStocks } from '../services/marketDataService';
 import type { SearchResult } from '../services/marketDataService';
+import BeginnerGuide from './BeginnerGuide';
+import PageGuide from './PageGuide';
 import {
   DEFAULT_MARKET_SYMBOL,
   LEGACY_MARKET_SYMBOL_ROOT,
@@ -102,7 +106,8 @@ const sections: ShellSectionConfig[] = [
       isShellPath(pathname, '/activity') ||
       isShellPath(pathname, '/signals') ||
       isShellPath(pathname, '/system-health') ||
-      isShellPath(pathname, '/system-status')
+      isShellPath(pathname, '/system-status') ||
+      isShellPath(pathname, '/safety')
     ),
     links: [
       { key: 'daily-brief', label: 'Daily brief', labelZh: '每日概览', path: '/dashboard', icon: <AppstoreOutlined /> },
@@ -121,6 +126,14 @@ const sections: ShellSectionConfig[] = [
         path: '/system-health',
         icon: <SafetyCertificateOutlined />,
         match: (pathname) => isShellPath(pathname, '/system-health') || isShellPath(pathname, '/system-status'),
+      },
+      {
+        key: 'safety-center',
+        label: 'Safety center',
+        labelZh: '交易安全',
+        path: '/safety',
+        icon: <SafetyCertificateOutlined />,
+        match: (pathname) => isShellPath(pathname, '/safety'),
       },
     ],
   },
@@ -314,6 +327,8 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
   const [realModalOpen, setRealModalOpen] = React.useState(false);
   const [realRiskAccepted, setRealRiskAccepted] = React.useState(false);
   const [signingOut, setSigningOut] = React.useState(false);
+  const [guideOpenSignal, setGuideOpenSignal] = React.useState(0);
+  const [pageGuideOpenSignal, setPageGuideOpenSignal] = React.useState(0);
   const [dashboardSync, setDashboardSync] = React.useState<{ loading: boolean; timestamp: number | null }>({
     loading: false,
     timestamp: null,
@@ -640,6 +655,7 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
               <Link
                 key={section.key}
                 to={section.path}
+                data-tour={`nav-${section.key}`}
                 className={activeSection?.key === section.key ? 'is-active' : undefined}
                 aria-current={activeSection?.key === section.key ? 'page' : undefined}
               >
@@ -650,7 +666,7 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
 
           <div className="auth-shell__desktop-search">{renderSearch()}</div>
 
-          <div className="auth-shell__environment" aria-label={isChinese ? '交易环境' : 'Trading environment'}>
+          <div className="auth-shell__environment" data-tour="trade-environment" aria-label={isChinese ? '交易环境' : 'Trading environment'}>
             <span className={`auth-shell__connection auth-shell__connection--${alpacaStatus}`}>
               <i aria-hidden="true" />
               <span>
@@ -679,6 +695,25 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
           </div>
 
           <div className="auth-shell__utilities">
+            <Tooltip title={isChinese ? '新手教程' : 'Beginner guide'}>
+              <button
+                type="button"
+                className="auth-shell__utility-button"
+                aria-label={isChinese ? '打开新手教程' : 'Open beginner guide'}
+                onClick={() => setGuideOpenSignal((value) => value + 1)}
+              >
+                <QuestionCircleOutlined />
+              </button>
+            </Tooltip>
+            <Tooltip title={isChinese ? '打开交易安全中心' : 'Open trading safety center'}>
+              <Link
+                to="/safety"
+                className={`auth-shell__utility-button${navigationPath === '/safety' ? ' is-active' : ''}`}
+                aria-label={isChinese ? '交易安全中心' : 'Trading safety center'}
+              >
+                <SafetyCertificateOutlined />
+              </Link>
+            </Tooltip>
             <Dropdown
               menu={{
                 items: themeItems,
@@ -762,6 +797,15 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
                 </Link>
               </>
             )}
+            <i aria-hidden="true" />
+            <button
+              type="button"
+              className="auth-shell__page-guide-button"
+              onClick={() => setPageGuideOpenSignal((value) => value + 1)}
+            >
+              <QuestionCircleOutlined />
+              {isChinese ? '本页指南' : 'PAGE GUIDE'}
+            </button>
           </div>
         </div>
       </header>
@@ -854,6 +898,15 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
         </nav>
         <div className="auth-shell__drawer-preferences">
           <Link
+            to="/safety"
+            className={navigationState.linkKey === 'safety-center' ? 'is-active' : undefined}
+            aria-current={navigationState.linkKey === 'safety-center' ? 'page' : undefined}
+            onClick={() => setMobileMenuOpen(false)}
+          >
+            <span><SafetyCertificateOutlined /> {isChinese ? '交易安全中心' : 'Safety center'}</span>
+            <small>{isChinese ? '暂停新入场并保持持仓保护' : 'Pause entries, keep protection active'}</small>
+          </Link>
+          <Link
             to="/settings"
             className={navigationState.linkKey === 'preferences' ? 'is-active' : undefined}
             aria-current={navigationState.linkKey === 'preferences' ? 'page' : undefined}
@@ -898,6 +951,28 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
           >
             <span><GlobalOutlined /> {isChinese ? '语言' : 'Language'}</span>
             <strong>{isChinese ? '中文 / EN' : 'English / 中'}</strong>
+          </button>
+          <button
+            type="button"
+            className="auth-shell__drawer-language"
+            onClick={() => {
+              setMobileMenuOpen(false);
+              setGuideOpenSignal((value) => value + 1);
+            }}
+          >
+            <span><QuestionCircleOutlined /> {isChinese ? '新手教程' : 'Beginner guide'}</span>
+            <strong>{isChinese ? '打开' : 'OPEN'}</strong>
+          </button>
+          <button
+            type="button"
+            className="auth-shell__drawer-language"
+            onClick={() => {
+              setMobileMenuOpen(false);
+              setPageGuideOpenSignal((value) => value + 1);
+            }}
+          >
+            <span><CompassOutlined /> {isChinese ? '本页指南' : 'Page guide'}</span>
+            <strong>{isChinese ? '打开' : 'OPEN'}</strong>
           </button>
         </div>
         <div className="auth-shell__drawer-account">
@@ -959,6 +1034,8 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
           <span>{t.navigation.liveRiskAcceptance}</span>
         </label>
       </Modal>
+      <BeginnerGuide language={language} userId={user?.id} openSignal={guideOpenSignal} />
+      <PageGuide language={language} userId={user?.id} openSignal={pageGuideOpenSignal} />
     </div>
   );
 };

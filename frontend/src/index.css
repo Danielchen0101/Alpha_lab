@@ -7,6 +7,18 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
 html {
   min-width: 0;
   min-height: 100%;
@@ -48,9 +60,13 @@ code {
 :root {
   --app-font-base: 14.5px;
   --app-font-small: 12.5px;
+  --app-font-data: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
   --app-card-padding: 18px 22px;
   --app-section-gap: 18px;
   --app-sidebar-width: 220px;
+  --app-data-fresh: #3d704d;
+  --app-data-delayed: #9a6b16;
+  --app-data-stale: #ad4934;
 }
 
 /* Base resets leveraging the tokens */
@@ -85,6 +101,23 @@ h1, h2, h3, h4, h5, h6 {
   }
 }
 
+:root[data-font-scale='compact'] { --app-font-base: 13.5px; --app-font-small: 11.5px; }
+:root[data-font-scale='large'] { --app-font-base: 15.5px; --app-font-small: 13.5px; }
+:root[data-workspace-density='compact'] { --app-card-padding: 12px 16px; --app-section-gap: 10px; }
+:root[data-workspace-density='spacious'] { --app-card-padding: 22px 26px; --app-section-gap: 24px; }
+:root[data-workspace-density='compact'] .ant-table-wrapper .ant-table-thead > tr > th,
+:root[data-workspace-density='compact'] .ant-table-wrapper .ant-table-tbody > tr > td { padding: 7px 9px !important; }
+:root[data-workspace-density='spacious'] .ant-table-wrapper .ant-table-thead > tr > th,
+:root[data-workspace-density='spacious'] .ant-table-wrapper .ant-table-tbody > tr > td { padding: 13px 15px !important; }
+:root[data-reduce-motion='true'] *,
+:root[data-reduce-motion='true'] *::before,
+:root[data-reduce-motion='true'] *::after {
+  scroll-behavior: auto !important;
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+}
+
 /* Density overrides for Ant Design generic containers used globally */
 .ant-card.premium-card .ant-card-body {
   padding: var(--app-card-padding) !important;
@@ -108,8 +141,16 @@ h1, h2, h3, h4, h5, h6 {
 
 .ant-statistic-content,
 .ant-table-cell,
-input[type="number"] {
+input[type="number"],
+.numeric-value,
+[data-numeric="true"] {
   font-variant-numeric: tabular-nums lining-nums;
+}
+
+.numeric-value,
+[data-numeric="true"] {
+  font-family: var(--app-font-data);
+  letter-spacing: -0.025em;
 }
 
 :root, :root[data-theme="light"] {
@@ -136,6 +177,12 @@ input[type="number"] {
   --app-blue-bg-soft: #eff6ff;
   --app-blue-text: #3b82f6;
   --app-blue-border: transparent;
+  --app-accent: #3b82f6;
+  --app-accent-soft: #eff6ff;
+  --app-accent-secondary: #6366f1;
+  --app-positive: #3d704d;
+  --app-warning: #9a6b16;
+  --app-danger: #ad4934;
   --app-risk-reward-bg: #f0f9ff;
   --app-risk-reward-border: #e0f2fe;
   --app-risk-reward-value: #0c4a6e;
@@ -146,34 +193,42 @@ input[type="number"] {
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --app-bg: #07111f;
-  --app-surface: #0b1220;
-  --app-surface-elevated: #111827;
-  --app-card-bg: #0f172a;
-  --app-card-bg-soft: #111c2f;
-  --app-header-bg: #0b1220;
-  --app-text: #e5e7eb;
-  --app-text-strong: #f8fafc;
-  --app-text-muted: #94a3b8;
-  --app-border: rgba(148, 163, 184, 0.22);
-  --app-border-soft: rgba(148, 163, 184, 0.12);
+  /* Dark theme v2: warm graphite, restrained brass and soft plum. */
+  --app-bg: #121114;
+  --app-surface: #18161b;
+  --app-surface-elevated: #242129;
+  --app-card-bg: #1c1a20;
+  --app-card-bg-soft: #211e25;
+  --app-header-bg: #18161b;
+  --app-text: #eee9df;
+  --app-text-strong: #fffaf0;
+  --app-text-muted: #aaa3ae;
+  --app-border: rgba(226, 214, 196, 0.2);
+  --app-border-soft: rgba(226, 214, 196, 0.1);
+  --app-accent: #d6a45f;
+  --app-accent-soft: rgba(214, 164, 95, 0.13);
+  --app-accent-secondary: #b6a0c9;
+  --app-positive: #9db58c;
+  --app-warning: #d6a45f;
+  --app-danger: #df7b68;
   --app-header-shadow: 0 1px 4px rgba(0,0,0,0.48);
   --app-card-shadow: 0 1px 3px rgba(0,0,0,0.45);
   --app-shadow-sm: 0 2px 8px rgba(0,0,0,0.32);
   --app-shadow: 0 18px 50px rgba(0,0,0,0.35);
-  --app-table-header-bg: #111827;
-  --app-table-row-bg: #0f172a;
-  --app-input-bg: #111827;
-  --app-blue-bg: rgba(59, 130, 246, 0.12);
-  --app-blue-bg-soft: rgba(59, 130, 246, 0.12);
-  --app-blue-text: #60a5fa;
-  --app-blue-border: rgba(59, 130, 246, 0.25);
-  --app-risk-reward-bg: linear-gradient(180deg, rgba(15,23,42,0.96), rgba(17,24,39,0.92));
-  --app-risk-reward-border: rgba(59, 130, 246, 0.2);
-  --app-risk-reward-value: #22d3ee;
-  --app-risk-reward-label: #38bdf8;
-  --app-scrollbar-thumb: rgba(148, 163, 184, 0.24);
-  --app-scrollbar-thumb-hover: rgba(148, 163, 184, 0.42);
+  --app-table-header-bg: #242129;
+  --app-table-row-bg: #1c1a20;
+  --app-input-bg: #211e25;
+  /* Legacy blue tokens now resolve to the single dark-mode accent. */
+  --app-blue-bg: rgba(214, 164, 95, 0.13);
+  --app-blue-bg-soft: rgba(214, 164, 95, 0.09);
+  --app-blue-text: #d6a45f;
+  --app-blue-border: rgba(214, 164, 95, 0.3);
+  --app-risk-reward-bg: linear-gradient(180deg, rgba(28,26,32,0.98), rgba(36,33,41,0.94));
+  --app-risk-reward-border: rgba(182, 160, 201, 0.26);
+  --app-risk-reward-value: #d6a45f;
+  --app-risk-reward-label: #b6a0c9;
+  --app-scrollbar-thumb: rgba(226, 214, 196, 0.22);
+  --app-scrollbar-thumb-hover: rgba(214, 164, 95, 0.46);
 }
 
 ::-webkit-scrollbar-track {
@@ -259,7 +314,17 @@ input[type="number"] {
 
 :root[data-theme="dark"] .ant-select-item-option-active,
 :root[data-theme="dark"] .ant-select-item-option-selected {
-  background-color: var(--app-surface-elevated) !important;
+  background-color: var(--app-accent-soft) !important;
+}
+
+:root[data-theme="dark"] .ant-input:focus,
+:root[data-theme="dark"] .ant-input-focused,
+:root[data-theme="dark"] .ant-input-affix-wrapper-focused,
+:root[data-theme="dark"] .ant-select-focused .ant-select-selector,
+:root[data-theme="dark"] .ant-picker-focused,
+:root[data-theme="dark"] .ant-input-number-focused {
+  border-color: var(--app-accent) !important;
+  box-shadow: 0 0 0 2px rgba(214, 164, 95, 0.14) !important;
 }
 
 :root[data-theme="dark"] .ant-input::placeholder,

@@ -112,6 +112,19 @@ def test_entry_preflight_uses_passive_limit_when_ask_exceeds_slippage_cap():
     assert result['limitPrice'] <= 101
 
 
+def test_entry_preflight_applies_account_limit_offset_as_a_stricter_cap():
+    result = backend._build_entry_limit_preflight(
+        _plan(slippageCapBps=18),
+        {'bid': 99.50, 'ask': 100.50, 'last': 100.00},
+        buying_power=100_000,
+        limit_offset_bps=5,
+    )
+
+    assert result['ok'] is True
+    assert result['limitPrice'] == 100.05
+    assert result['marketable'] is False
+
+
 def test_entry_preflight_keeps_small_fractional_plan_limit_only():
     result = backend._build_entry_limit_preflight(
         _plan(shares=0.5, maxAllocationDollars=100),
@@ -279,8 +292,12 @@ def test_entry_execute_ai_buy_cannot_override_risk_gate(monkeypatch):
 
 
 def test_live_auto_requires_explicit_backend_authorization(monkeypatch):
-    monkeypatch.setattr(backend, 'get_supabase_user', lambda: {'id': 'test-user'})
-    monkeypatch.setattr(backend, '_pa_get_config', lambda uid: {'live_auto_trading_enabled': False})
+    monkeypatch.setattr(backend, 'get_supabase_user', lambda: {'id': 'test-user', 'aal': 'aal2'})
+    monkeypatch.setattr(
+        backend,
+        '_pa_get_config',
+        lambda uid: {'mode': 'ai', 'live_auto_trading_enabled': False},
+    )
     monkeypatch.setattr(backend, 'send_discord_notification', lambda *args, **kwargs: {'sent': True})
 
     response = backend.app.test_client().post('/api/entry-plan/execute', json={
@@ -319,3 +336,20 @@ def test_entry_execute_rejects_options_before_broker_submission(monkeypatch):
 
     assert payload['action'] == 'BLOCKED'
     assert any('Options are prohibited' in blocker for blocker in payload['blockers'])
+
+
+def test_alpaca_order_error_preserves_actionable_broker_reason():
+    class Response:
+        status_code = 422
+        text = '{"code":40310000,"message":"insufficient buying power"}'
+
+        def json(self):
+            return {"code": 40310000, "message": "insufficient buying power"}
+
+    error = backend._alpaca_order_error(Response())
+
+    assert error['code'] == 'insufficient_buying_power'
+    assert error['brokerCode'] == 40310000
+    assert error['brokerMessage'] == 'insufficient buying power'
+    assert error['httpStatus'] == 422
+    assert error['retryable'] is False

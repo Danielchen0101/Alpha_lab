@@ -12,6 +12,7 @@ import marketDataService, {
   calculateRSI
 } from '../services/marketDataService';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useWorkspacePreferences } from '../contexts/WorkspacePreferencesContext';
 import { backtestForSymbolPath } from '../routes/marketRoutes';
 import './SymbolAnalysisEditorial.css';
 
@@ -466,6 +467,8 @@ const SymbolAnalysis: React.FC = () => {
   const { symbol } = useParams<{ symbol: string }>();
   const navigate = useNavigate();
   const { t, language, translateSector } = useLanguage();
+  const { preferences } = useWorkspacePreferences();
+  const chartPricePrecision = Math.max(0, Math.min(Number(preferences.charts.precision) || 0, 8));
   const zh = language === 'zh-CN';
   const stateCopy = React.useMemo(() => zh ? ({
     unknownError: '未知错误', stockLoadError: '无法加载标的行情', stockToast: '行情加载失败',
@@ -605,7 +608,8 @@ const SymbolAnalysis: React.FC = () => {
   const [historicalErrorType, setHistoricalErrorType] = useState<string | null>(null);
 
   // 图表相关状态 - 默认显示1 Day图表
-  const [selectedTimeframe, setSelectedTimeframe] = useState<string>('1D');
+  const [selectedTimeframe, setSelectedTimeframe] = useState<string>(preferences.charts.timeframe);
+  const timeframeManuallySelectedRef = useRef(false);
   const [, setHistoricalData] = useState<HistoricalDataPoint[]>([]);
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
@@ -617,6 +621,12 @@ const SymbolAnalysis: React.FC = () => {
 
   // Message deduplication key
   const HISTORY_ERROR_KEY = 'historical_data_error';
+
+  useEffect(() => {
+    if (!timeframeManuallySelectedRef.current) {
+      setSelectedTimeframe(preferences.charts.timeframe);
+    }
+  }, [preferences.charts.timeframe]);
 
   // 加载股票数据
   const loadStockData = useCallback(async () => {
@@ -754,7 +764,11 @@ const SymbolAnalysis: React.FC = () => {
 
       console.log(`[${selectedTimeframe}] Requesting historical bars for ${symbol}...`);
 
-      const response = await marketDataService.getStockHistory(symbol, selectedTimeframe);
+      const chartRequestOptions = {
+        adjustedData: preferences.charts.adjustedData,
+        session: preferences.charts.session,
+      } as const;
+      const response = await marketDataService.getStockHistory(symbol, selectedTimeframe, chartRequestOptions);
 
       if (!isCurrentRequest()) return;
 
@@ -789,7 +803,7 @@ const SymbolAnalysis: React.FC = () => {
       for (const fbTimeframe of fallbacks) {
         console.log(`[Fallback] Trying ${fbTimeframe} for ${symbol}...`);
         try {
-          const fbResponse = await marketDataService.getStockHistory(symbol, fbTimeframe);
+          const fbResponse = await marketDataService.getStockHistory(symbol, fbTimeframe, chartRequestOptions);
           if (!isCurrentRequest()) return;
           if (fbResponse.data && fbResponse.data.length > 0) {
             // Fallback succeeded
@@ -841,7 +855,7 @@ const SymbolAnalysis: React.FC = () => {
     } finally {
       if (isCurrentRequest()) setChartLoading(false);
     }
-  }, [symbol, selectedTimeframe, HISTORY_ERROR_KEY, processHistoricalResponse, stateCopy, zh]);
+  }, [symbol, selectedTimeframe, preferences.charts.adjustedData, preferences.charts.session, HISTORY_ERROR_KEY, processHistoricalResponse, stateCopy, zh]);
 
   // Load 1Y data for computing Recent Performance returns
   const loadPerformanceData = useCallback(async () => {
@@ -958,14 +972,14 @@ const SymbolAnalysis: React.FC = () => {
             <div className="sa-chart-tooltip__row">
             <span>{stateCopy.price}:</span>
               <span style={{ fontWeight: '700', color: '#1677ff', fontSize: '14px' }}>
-                ${data.close.toFixed(2)}
+                ${data.close.toFixed(chartPricePrecision)}
               </span>
             </div>
             {!isDaily && (
               <div className="sa-chart-tooltip__ohlc">
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: "var(--app-text-muted)" }}>O:</span><span>{data.open.toFixed(2)}</span></div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: "var(--app-text-muted)" }}>H:</span><span style={{ color: '#10b981' }}>{data.high.toFixed(2)}</span></div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: "var(--app-text-muted)" }}>L:</span><span style={{ color: '#ef4444' }}>{data.low.toFixed(2)}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: "var(--app-text-muted)" }}>O:</span><span>{data.open.toFixed(chartPricePrecision)}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: "var(--app-text-muted)" }}>H:</span><span style={{ color: '#10b981' }}>{data.high.toFixed(chartPricePrecision)}</span></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: "var(--app-text-muted)" }}>L:</span><span style={{ color: '#ef4444' }}>{data.low.toFixed(chartPricePrecision)}</span></div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: "var(--app-text-muted)" }}>V:</span><span>{data.volume > 1e6 ? (data.volume/1e6).toFixed(1)+'M' : (data.volume/1e3).toFixed(0)+'K'}</span></div>
               </div>
             )}
@@ -977,8 +991,8 @@ const SymbolAnalysis: React.FC = () => {
                 </span>
               </div>
             )}
-            {data.sma20 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: "var(--app-text-muted)" }}>SMA20:</span><span style={{ color: '#10b981', fontWeight: '500' }}>${data.sma20.toFixed(2)}</span></div>}
-            {data.sma50 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: "var(--app-text-muted)" }}>SMA50:</span><span style={{ color: '#f59e0b', fontWeight: '500' }}>${data.sma50.toFixed(2)}</span></div>}
+            {data.sma20 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: "var(--app-text-muted)" }}>SMA20:</span><span style={{ color: '#10b981', fontWeight: '500' }}>${data.sma20.toFixed(chartPricePrecision)}</span></div>}
+            {data.sma50 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: "var(--app-text-muted)" }}>SMA50:</span><span style={{ color: '#f59e0b', fontWeight: '500' }}>${data.sma50.toFixed(chartPricePrecision)}</span></div>}
           </div>
         )}
       </div>
@@ -1065,20 +1079,20 @@ const SymbolAnalysis: React.FC = () => {
             axisLine={false} 
             tickLine={false} 
             width={65} 
-            tickFormatter={(v) => `$${v.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`} 
+            tickFormatter={(v) => `$${v.toLocaleString(undefined, {minimumFractionDigits: chartPricePrecision, maximumFractionDigits: chartPricePrecision})}`}
           />
           <Tooltip 
             content={<CustomTooltip />} 
-            cursor={{ stroke: '#3b82f6', strokeWidth: 1.5, strokeDasharray: '4 4', strokeOpacity: 0.6 }} 
+            cursor={{ stroke: 'var(--app-accent)', strokeWidth: 1.5, strokeDasharray: '4 4', strokeOpacity: 0.65 }}
           />
           
           <Line 
             type="monotone" 
             dataKey="close" 
-            stroke="#2563eb" 
+            stroke="var(--app-accent)"
             strokeWidth={2.5} 
             dot={false} 
-            activeDot={{ r: 6, strokeWidth: 0, fill: '#2563eb' }} 
+            activeDot={{ r: 6, strokeWidth: 0, fill: 'var(--app-accent)' }}
             name="Price" 
             connectNulls={true} 
             animationDuration={1000}
@@ -1088,7 +1102,7 @@ const SymbolAnalysis: React.FC = () => {
             <Line 
               type="monotone" 
               dataKey="sma20" 
-              stroke="#10b981" 
+              stroke="var(--app-positive)"
               strokeWidth={1.5} 
               strokeDasharray="5 3" 
               strokeOpacity={0.7} 
@@ -1216,10 +1230,10 @@ const SymbolAnalysis: React.FC = () => {
           />
           <ReferenceLine 
             y={30} 
-            stroke="#10b981" 
+            stroke="var(--app-positive)"
             strokeDasharray="4 2" 
             strokeOpacity={0.6} 
-            label={{ value: 'OS', position: 'insideBottomRight', fill: '#345d3d', fontSize: 12, fontWeight: 700 }}
+            label={{ value: 'OS', position: 'insideBottomRight', fill: 'var(--app-positive)', fontSize: 12, fontWeight: 700 }}
           />
           <ReferenceLine 
             y={50} 
@@ -1492,7 +1506,10 @@ const SymbolAnalysis: React.FC = () => {
                 <div><span>{copy.daily}</span><strong className={tone(stockData.changePercent)}>{move(stockData.changePercent)}</strong></div>
                 <div><span>{copy.period}</span><strong className={tone(periodMove)}>{move(periodMove)}</strong></div>
               </div>
-              <Radio.Group className="sa-timeframe" value={selectedTimeframe} onChange={event => setSelectedTimeframe(event.target.value)}>
+              <Radio.Group className="sa-timeframe" value={selectedTimeframe} onChange={event => {
+                timeframeManuallySelectedRef.current = true;
+                setSelectedTimeframe(event.target.value);
+              }}>
                 {Object.keys(TIMEFRAMES).map(tf => <Radio.Button key={tf} value={tf}>{tf}</Radio.Button>)}
               </Radio.Group>
             </div>
