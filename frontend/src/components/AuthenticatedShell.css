@@ -299,7 +299,8 @@
 
 .auth-shell__utility-button:hover { background: var(--shell-rule-soft); }
 .auth-shell__utility-button.is-active { color: var(--shell-blue); background: color-mix(in srgb, var(--shell-blue) 9%, transparent); }
-.auth-shell__language-button { min-width: 48px; }
+.auth-shell__language-button { width: 48px; min-width: 48px; }
+.auth-shell__language-button:disabled { cursor: wait; opacity: 0.68; }
 .auth-shell__utility-rule {
   width: 1px;
   height: 26px;

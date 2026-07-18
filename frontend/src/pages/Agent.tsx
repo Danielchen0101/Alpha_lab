@@ -1751,11 +1751,15 @@ const Agent: React.FC = (): React.ReactElement => {
       backendEnabled, pipelineAutoStatus.intervalMinutes, newSchedule);
   }, [accountUserId, pipelineAutoStatus]);
 
-  // Poll slowly while scheduled and quickly during a one-shot/background run.
+  // Backend automation continues independently. The UI only polls for display,
+  // so keep it gentle and pause network work while the tab is hidden.
   useEffect(() => {
     if (pipelineSchedule === 'off' && !autoRunActive && !autoRunRequestedId) return;
     fetchPipelineAutoStatus();
-    const id = setInterval(fetchPipelineAutoStatus, autoRunActive || autoRunRequestedId ? 1500 : 15000);
+    const pollStatus = () => {
+      if (!document.hidden) fetchPipelineAutoStatus();
+    };
+    const id = setInterval(pollStatus, autoRunActive || autoRunRequestedId ? 3000 : 60000);
     return () => clearInterval(id);
   }, [pipelineSchedule, autoRunActive, autoRunRequestedId, fetchPipelineAutoStatus]);
 
@@ -1789,7 +1793,7 @@ const Agent: React.FC = (): React.ReactElement => {
   useEffect(() => {
     if (!autoRunActive) return;
     setAutoRunClock(Date.now());
-    const id = setInterval(() => setAutoRunClock(Date.now()), 1000);
+    const id = setInterval(() => setAutoRunClock(Date.now()), 5000);
     return () => clearInterval(id);
   }, [autoRunActive]);
 
@@ -3936,13 +3940,13 @@ const Agent: React.FC = (): React.ReactElement => {
     setAiWatchlistCountdown(60);
     aiWatchlistTimerRef.current = setInterval(() => {
       setAiWatchlistCountdown(prev => {
-        if (prev <= 1) {
-          refreshWatchlistPrices();
+        if (prev <= 5) {
+          if (!document.hidden) refreshWatchlistPrices();
           return 60;
         }
-        return prev - 1;
+        return prev - 5;
       });
-    }, 1000);
+    }, 5000);
   }, [refreshWatchlistPrices]);
 
   const stopWatchlistAutoRefresh = useCallback(() => {
@@ -4570,8 +4574,10 @@ const Agent: React.FC = (): React.ReactElement => {
 
   // Auto-sync submitted orders on mount and periodically
   useEffect(() => {
-    syncExecutionOrders();
-    const interval = setInterval(syncExecutionOrders, 30000); // every 30s
+    if (!document.hidden) syncExecutionOrders();
+    const interval = setInterval(() => {
+      if (!document.hidden) syncExecutionOrders();
+    }, 60000);
     return () => clearInterval(interval);
   }, [syncExecutionOrders]);
 

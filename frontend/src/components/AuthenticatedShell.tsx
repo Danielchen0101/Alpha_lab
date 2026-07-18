@@ -329,6 +329,7 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
   const [signingOut, setSigningOut] = React.useState(false);
   const [guideOpenSignal, setGuideOpenSignal] = React.useState(0);
   const [pageGuideOpenSignal, setPageGuideOpenSignal] = React.useState(0);
+  const [languageSwitchLocked, setLanguageSwitchLocked] = React.useState(false);
   const [dashboardSync, setDashboardSync] = React.useState<{ loading: boolean; timestamp: number | null }>({
     loading: false,
     timestamp: null,
@@ -337,8 +338,25 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
   const mobileSearchInputRef = React.useRef<InputRef>(null);
   const searchRequestRef = React.useRef(0);
   const secondaryNavRef = React.useRef<HTMLElement>(null);
+  const languageSwitchTimerRef = React.useRef<number | null>(null);
 
   const isChinese = language === 'zh-CN';
+
+  const handleLanguageSwitch = React.useCallback(() => {
+    if (languageSwitchTimerRef.current !== null) return;
+    setLanguageSwitchLocked(true);
+    setLanguage(language === 'en-US' ? 'zh-CN' : 'en-US');
+    languageSwitchTimerRef.current = window.setTimeout(() => {
+      languageSwitchTimerRef.current = null;
+      setLanguageSwitchLocked(false);
+    }, 600);
+  }, [language, setLanguage]);
+
+  React.useEffect(() => () => {
+    if (languageSwitchTimerRef.current !== null) {
+      window.clearTimeout(languageSwitchTimerRef.current);
+    }
+  }, []);
   const navigationState = getShellNavigationState(location.pathname);
   const navigationPath = navigationState.pathname;
   const onConfigurationRoute = isShellPath(navigationPath, '/settings/configuration');
@@ -730,7 +748,9 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
             <button
               type="button"
               className="auth-shell__utility-button auth-shell__language-button"
-              onClick={() => setLanguage(language === 'en-US' ? 'zh-CN' : 'en-US')}
+              onClick={handleLanguageSwitch}
+              disabled={languageSwitchLocked}
+              aria-busy={languageSwitchLocked}
               aria-label={t.common.switchLanguage}
             >
               <GlobalOutlined />

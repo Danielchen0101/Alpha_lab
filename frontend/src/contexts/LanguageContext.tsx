@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, ReactNode } from 'react';
 
 // 导入语言包
 import enUS from '../locales/en-US';
@@ -61,22 +61,39 @@ interface LanguageProviderProps {
 
 export const LanguageProvider: React.FC<LanguageProviderProps> = ({ children }) => {
   const [language, setLanguageState] = useState<Language>(getInitialLanguage);
-  const [t, setT] = useState<Translation>(translations[language]);
+  const languageRef = useRef<Language>(language);
+  const preferenceSyncTimerRef = useRef<number | null>(null);
+  const t = translations[language];
 
-  // 更新语言
-  const setLanguage = (lang: Language) => {
-    setLanguageState(lang);
+  // Apply the visual change immediately, but debounce the remote preference
+  // write so a language toggle never causes a burst of auth + settings calls.
+  const setLanguage = useCallback((lang: Language) => {
+    if (lang !== 'en-US' && lang !== 'zh-CN') return;
+    const changed = languageRef.current !== lang;
+    languageRef.current = lang;
+    setLanguageState(current => current === lang ? current : lang);
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, lang);
     window.localStorage.setItem(LANGUAGE_PREFERENCE_VERSION_KEY, LANGUAGE_PREFERENCE_VERSION);
-    void supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) {
-        return workspacePreferencesAPI.update({ language: lang });
-      }
-      return undefined;
-    }).catch(() => {
-      // Local language switching must keep working even if preference sync is unavailable.
-    });
-  };
+    if (!changed) return;
+    if (preferenceSyncTimerRef.current !== null) {
+      window.clearTimeout(preferenceSyncTimerRef.current);
+    }
+    preferenceSyncTimerRef.current = window.setTimeout(() => {
+      preferenceSyncTimerRef.current = null;
+      void supabase.auth.getSession().then(({ data: { session } }) => {
+        if (session) return workspacePreferencesAPI.update({ language: lang });
+        return undefined;
+      }).catch(() => {
+        // Local language switching must keep working even if preference sync is unavailable.
+      });
+    }, 500);
+  }, []);
+
+  useEffect(() => () => {
+    if (preferenceSyncTimerRef.current !== null) {
+      window.clearTimeout(preferenceSyncTimerRef.current);
+    }
+  }, []);
 
   // Keep the authenticated user's website and Discord notification language
   // aligned across devices. Older accounts without a saved language retain the
@@ -93,6 +110,7 @@ export const LanguageProvider: React.FC<LanguageProviderProps> = ({ children }) 
         const response = await workspacePreferencesAPI.get();
         const saved = response.data?.preferences?.language;
         if (active && (saved === 'en-US' || saved === 'zh-CN')) {
+          languageRef.current = saved;
           setLanguageState(saved);
         } else if (active) {
           const local = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
@@ -124,16 +142,15 @@ export const LanguageProvider: React.FC<LanguageProviderProps> = ({ children }) 
 
   // 当语言改变时更新翻译
   useEffect(() => {
+    languageRef.current = language;
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
     window.localStorage.setItem(LANGUAGE_PREFERENCE_VERSION_KEY, LANGUAGE_PREFERENCE_VERSION);
-    setT(translations[language]);
-    
     // Set document html lang attribute
     document.documentElement.lang = language === 'zh-CN' ? 'zh' : 'en';
   }, [language]);
 
   // Translate sector/industry name using the sectors mapping
-  const translateSector = (name: string): string => {
+  const translateSector = useCallback((name: string): string => {
     if (!name) return name;
     const mapped = t.sectors[name];
     if (mapped) return mapped;
@@ -143,16 +160,20 @@ export const LanguageProvider: React.FC<LanguageProviderProps> = ({ children }) 
       if (key.toLowerCase() === lower) return val;
     }
     return name;
-  };
+  }, [t]);
 
   // Translate signal label using the signals mapping
-  const translateSignal = (name: string): string => {
+  const translateSignal = useCallback((name: string): string => {
     if (!name) return name;
     return t.signals[name] || name;
-  };
+  }, [t]);
+
+  const contextValue = useMemo(() => ({
+    language, setLanguage, t, translateSector, translateSignal,
+  }), [language, setLanguage, t, translateSector, translateSignal]);
 
   return (
-    <LanguageContext.Provider value={{ language, setLanguage, t, translateSector, translateSignal }}>
+    <LanguageContext.Provider value={contextValue}>
       {children}
     </LanguageContext.Provider>
   );
