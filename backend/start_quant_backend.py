@@ -153,6 +153,24 @@ _validate_production_secrets()
 supabase_admin = None
 fernet = None
 _SUPABASE_IO_LOCK = threading.RLock()
+_SUPABASE_HTTP_CLIENT = None
+
+
+def _bounded_float_env(name, default, minimum, maximum):
+    """Read a numeric environment setting without allowing unsafe extremes."""
+    try:
+        value = float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        value = float(default)
+    return max(float(minimum), min(float(maximum), value))
+
+
+SUPABASE_HTTP_TIMEOUT_SECONDS = _bounded_float_env(
+    'SUPABASE_HTTP_TIMEOUT_SECONDS', 5, 2, 15,
+)
+SUPABASE_CONNECT_TIMEOUT_SECONDS = _bounded_float_env(
+    'SUPABASE_CONNECT_TIMEOUT_SECONDS', 2.5, 1, 5,
+)
 
 
 def _supabase_execute(operation, label='query', attempts=3):
@@ -182,8 +200,32 @@ def _supabase_execute(operation, label='query', attempts=3):
     raise last_error
 
 try:
+    import httpx
+    from supabase import ClientOptions as SupabaseClientOptions
     from supabase import create_client as create_supabase_client
-    supabase_admin = create_supabase_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+    # supabase-py otherwise permits PostgREST calls to wait for up to 120s.
+    # A shared bounded client keeps transient Supabase latency from exhausting
+    # every Gunicorn request thread and starving Render's health check.
+    _SUPABASE_HTTP_CLIENT = httpx.Client(
+        timeout=httpx.Timeout(
+            SUPABASE_HTTP_TIMEOUT_SECONDS,
+            connect=SUPABASE_CONNECT_TIMEOUT_SECONDS,
+        ),
+        limits=httpx.Limits(max_connections=16, max_keepalive_connections=8),
+    )
+    supabase_admin = create_supabase_client(
+        SUPABASE_URL,
+        SUPABASE_SERVICE_ROLE_KEY,
+        options=SupabaseClientOptions(
+            auto_refresh_token=False,
+            persist_session=False,
+            postgrest_client_timeout=SUPABASE_HTTP_TIMEOUT_SECONDS,
+            storage_client_timeout=SUPABASE_HTTP_TIMEOUT_SECONDS,
+            function_client_timeout=SUPABASE_HTTP_TIMEOUT_SECONDS,
+            httpx_client=_SUPABASE_HTTP_CLIENT,
+        ),
+    )
     print(f"[Supabase] Service role client initialized (URL: {SUPABASE_URL[:40]}...)")
 except ImportError:
     print("[Supabase] supabase package not installed — per-user config disabled")
@@ -514,6 +556,9 @@ SUPABASE_AUTH_CACHE_TTL_SECONDS = 300   # 5 minutes
 SUPABASE_CONFIG_CACHE_TTL_SECONDS = 60  # 1 minute
 SUPABASE_AUTH_CACHE_MAX_ENTRIES = 512
 SUPABASE_CONFIG_CACHE_MAX_ENTRIES = 256
+SUPABASE_AUTH_SINGLEFLIGHT_WAIT_SECONDS = _bounded_float_env(
+    'SUPABASE_AUTH_SINGLEFLIGHT_WAIT_SECONDS', 6, 2, 15,
+)
 PIPELINE_AI_CACHE_TTL_SECONDS = 30 * 60
 PIPELINE_AI_CACHE_MAX_ENTRIES = 256
 
@@ -521,6 +566,8 @@ _auth_cache = {}    # token_hash -> (user_dict, timestamp)
 _config_cache = {}  # (user_id, config_type) -> (config_dict, timestamp)
 _pipeline_ai_result_cache = {}
 _cache_lock = threading.Lock()
+_auth_inflight_lock = threading.Lock()
+_auth_inflight = {}
 _headless_auth_context = threading.local()
 _config_status_executor = ThreadPoolExecutor(max_workers=4)
 CONFIG_STATUS_TIMEOUT_SECONDS = 8
@@ -592,6 +639,23 @@ def _hash_token(token):
     return hashlib.sha256(token.encode()).hexdigest()[:16]
 
 
+def _verified_claims_dict(claims_response):
+    """Normalize the verified ClaimsResponse returned by supabase-py."""
+    if isinstance(claims_response, dict):
+        claims = claims_response.get('claims') or {}
+    else:
+        claims = getattr(claims_response, 'claims', None) or {}
+    if isinstance(claims, dict):
+        return dict(claims)
+    if hasattr(claims, 'model_dump'):
+        dumped = claims.model_dump()
+        return dumped if isinstance(dumped, dict) else {}
+    try:
+        return dict(claims)
+    except Exception:
+        return {}
+
+
 def get_supabase_user_from_token(token):
     """Verify a Supabase access token without relying on Flask request context."""
     if not supabase_admin:
@@ -603,41 +667,49 @@ def get_supabase_user_from_token(token):
     token_hash = _hash_token(token)
     cached_user = _cache_get(_auth_cache, token_hash, SUPABASE_AUTH_CACHE_TTL_SECONDS)
     if cached_user is not None:
-        return cached_user
+        try:
+            if float(cached_user.get('exp') or 0) > time.time():
+                return cached_user
+        except (TypeError, ValueError, AttributeError):
+            pass
+        _cache_invalidate(_auth_cache, token_hash)
+
+    # Page startup issues several authenticated requests in parallel. Only one
+    # thread should verify a previously unseen token; all peers reuse its result.
+    with _auth_inflight_lock:
+        verification_event = _auth_inflight.get(token_hash)
+        verification_owner = verification_event is None
+        if verification_owner:
+            verification_event = threading.Event()
+            _auth_inflight[token_hash] = verification_event
+
+    if not verification_owner:
+        verification_event.wait(SUPABASE_AUTH_SINGLEFLIGHT_WAIT_SECONDS)
+        cached_user = _cache_get(_auth_cache, token_hash, SUPABASE_AUTH_CACHE_TTL_SECONDS)
+        if cached_user is not None:
+            try:
+                if float(cached_user.get('exp') or 0) > time.time():
+                    return cached_user
+            except (TypeError, ValueError, AttributeError):
+                pass
+        return None
 
     try:
-        resp = supabase_admin.auth.get_user(token)
-        if resp and resp.user:
-            # ``get_user`` and ``get_claims`` both verify the JWT through the
-            # Supabase client.  Never base an authorization decision on a raw
-            # client-side JWT decode: AAL is security-sensitive state.
-            claims_response = supabase_admin.auth.get_claims(token)
-            if isinstance(claims_response, dict):
-                claims = claims_response.get('claims') or {}
-            else:
-                claims = getattr(claims_response, 'claims', None) or {}
-            if not isinstance(claims, dict):
-                if hasattr(claims, 'model_dump'):
-                    claims = claims.model_dump()
-                else:
-                    try:
-                        claims = dict(claims)
-                    except Exception:
-                        claims = {}
-            if not isinstance(claims, dict):
-                try:
-                    claims = dict(claims)
-                except Exception:
-                    claims = {}
-            verified_sub = str(claims.get('sub') or '')
-            if verified_sub and verified_sub != str(resp.user.id):
-                raise ValueError('Verified JWT subject does not match authenticated user')
+        # get_claims verifies asymmetric tokens locally against Supabase JWKS
+        # (cached by supabase-py). Unlike get_user it does not require one Auth
+        # network request per API call. Symmetric legacy tokens still fail
+        # closed through supabase-py's documented get_user fallback.
+        claims = _verified_claims_dict(supabase_admin.auth.get_claims(token))
+        verified_sub = str(claims.get('sub') or '').strip()
+        expires_at = float(claims.get('exp') or 0)
+        if verified_sub and expires_at > time.time():
             user = {
-                'id': resp.user.id,
-                'email': resp.user.email,
+                'id': verified_sub,
+                'email': claims.get('email'),
                 'aal': str(claims.get('aal') or '').strip().lower(),
                 'amr': claims.get('amr') if isinstance(claims.get('amr'), list) else [],
                 'source': 'verified_jwt',
+                'exp': expires_at,
             }
             _cache_set(
                 _auth_cache,
@@ -647,10 +719,15 @@ def get_supabase_user_from_token(token):
                 SUPABASE_AUTH_CACHE_MAX_ENTRIES,
             )
             return user
+        raise ValueError('Verified JWT is missing a valid subject or expiration')
     except Exception as e:
         safe_print(f'[Auth] Supabase token verification failed: {type(e).__name__}: {e}')
         _cache_invalidate(_auth_cache, token_hash)
-    return None
+        return None
+    finally:
+        with _auth_inflight_lock:
+            _auth_inflight.pop(token_hash, None)
+            verification_event.set()
 
 
 def _pipeline_ai_cache_key(namespace, payload):

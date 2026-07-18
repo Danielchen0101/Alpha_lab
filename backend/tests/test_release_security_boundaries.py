@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -18,14 +20,15 @@ class _BrokerResponse:
 def test_verified_supabase_claims_are_the_only_source_of_aal(monkeypatch):
     class Claims:
         def model_dump(self):
-            return {"sub": "user-1", "aal": "aal2", "amr": [{"method": "totp"}]}
+            return {
+                "sub": "user-1",
+                "email": "user@example.com",
+                "aal": "aal2",
+                "amr": [{"method": "totp"}],
+                "exp": time.time() + 300,
+            }
 
-    auth = SimpleNamespace(
-        get_user=lambda _token: SimpleNamespace(
-            user=SimpleNamespace(id="user-1", email="user@example.com")
-        ),
-        get_claims=lambda _token: SimpleNamespace(claims=Claims()),
-    )
+    auth = SimpleNamespace(get_claims=lambda _token: SimpleNamespace(claims=Claims()))
     monkeypatch.setattr(backend, "supabase_admin", SimpleNamespace(auth=auth))
     backend._auth_cache.clear()
 
@@ -36,17 +39,47 @@ def test_verified_supabase_claims_are_the_only_source_of_aal(monkeypatch):
     assert user["source"] == "verified_jwt"
 
 
-def test_verified_claim_subject_mismatch_fails_closed(monkeypatch):
+def test_verified_claim_missing_subject_fails_closed(monkeypatch):
     auth = SimpleNamespace(
-        get_user=lambda _token: SimpleNamespace(
-            user=SimpleNamespace(id="user-1", email="user@example.com")
-        ),
-        get_claims=lambda _token: {"claims": {"sub": "different-user", "aal": "aal2"}},
+        get_claims=lambda _token: {
+            "claims": {"sub": "", "aal": "aal2", "exp": time.time() + 300}
+        },
     )
     monkeypatch.setattr(backend, "supabase_admin", SimpleNamespace(auth=auth))
     backend._auth_cache.clear()
 
-    assert backend.get_supabase_user_from_token("mismatched-subject-token") is None
+    assert backend.get_supabase_user_from_token("missing-subject-token") is None
+
+
+def test_parallel_requests_verify_one_token_once(monkeypatch):
+    calls = []
+
+    def get_claims(_token):
+        calls.append(1)
+        time.sleep(0.05)
+        return {"claims": {
+            "sub": "user-1",
+            "email": "user@example.com",
+            "aal": "aal1",
+            "exp": time.time() + 300,
+        }}
+
+    monkeypatch.setattr(
+        backend,
+        "supabase_admin",
+        SimpleNamespace(auth=SimpleNamespace(get_claims=get_claims)),
+    )
+    backend._auth_cache.clear()
+    backend._auth_inflight.clear()
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        users = list(executor.map(
+            backend.get_supabase_user_from_token,
+            ["same-valid-token"] * 8,
+        ))
+
+    assert len(calls) == 1
+    assert {user["id"] for user in users} == {"user-1"}
 
 
 def test_headless_live_execution_requires_explicit_durable_authority(monkeypatch):
