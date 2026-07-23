@@ -2,21 +2,17 @@ import cryptoAPI, {
   CRYPTO_LEDGER_LIMIT,
   sanitizeCryptoConfigUpdate,
 } from './cryptoApi';
-
-const mockApiGet = jest.fn();
-const mockApiPost = jest.fn();
-const mockApiPut = jest.fn();
-const mockScannerPost = jest.fn();
+import api, { scannerApi } from './api';
 
 jest.mock('./api', () => ({
   __esModule: true,
   default: {
-    get: mockApiGet,
-    post: mockApiPost,
-    put: mockApiPut,
+    get: jest.fn(),
+    post: jest.fn(),
+    put: jest.fn(),
   },
   scannerApi: {
-    post: mockScannerPost,
+    post: jest.fn(),
   },
 }));
 
@@ -47,7 +43,7 @@ describe('crypto API contracts', () => {
       confirmLiveRisk: true,
     });
 
-    expect(mockApiPut).toHaveBeenCalledWith('/crypto/config', {
+    expect(api.put).toHaveBeenCalledWith('/crypto/config', {
       mode: 'live',
       confirmLiveRisk: true,
     });
@@ -57,10 +53,10 @@ describe('crypto API contracts', () => {
     cryptoAPI.ledger(0);
     cryptoAPI.ledger(CRYPTO_LEDGER_LIMIT + 250);
 
-    expect(mockApiGet).toHaveBeenNthCalledWith(1, '/crypto/ledger', {
+    expect(api.get).toHaveBeenNthCalledWith(1, '/crypto/ledger', {
       params: { limit: 1 },
     });
-    expect(mockApiGet).toHaveBeenNthCalledWith(2, '/crypto/ledger', {
+    expect(api.get).toHaveBeenNthCalledWith(2, '/crypto/ledger', {
       params: { limit: CRYPTO_LEDGER_LIMIT },
     });
   });
@@ -69,11 +65,11 @@ describe('crypto API contracts', () => {
     cryptoAPI.startAutomation('live', true);
     cryptoAPI.runCycle('paper', true);
 
-    expect(mockApiPost).toHaveBeenCalledWith('/crypto/automation/start', {
+    expect(api.post).toHaveBeenCalledWith('/crypto/automation/start', {
       mode: 'live',
       acknowledgeRisk: true,
     });
-    expect(mockScannerPost).toHaveBeenCalledWith(
+    expect(scannerApi.post).toHaveBeenCalledWith(
       '/crypto/run-cycle',
       { mode: 'paper', dryRun: true },
       { timeout: 4 * 60 * 1000 },
@@ -83,7 +79,7 @@ describe('crypto API contracts', () => {
   it('requires explicit confirmation when resetting simulator capital', () => {
     cryptoAPI.simReset(25_000);
 
-    expect(mockApiPost).toHaveBeenCalledWith('/crypto/sim/reset', {
+    expect(api.post).toHaveBeenCalledWith('/crypto/sim/reset', {
       confirm: true,
       initialCapital: 25_000,
     });
