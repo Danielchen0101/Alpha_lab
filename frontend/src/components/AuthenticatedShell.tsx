@@ -8,6 +8,7 @@ import {
   CloseOutlined,
   CompassOutlined,
   DesktopOutlined,
+  DollarCircleOutlined,
   DownOutlined,
   ExperimentOutlined,
   FundOutlined,
@@ -39,6 +40,13 @@ import { useTradeMode } from '../contexts/TradeModeContext';
 import { useTheme } from '../contexts/ThemeContext';
 import type { ThemeMode } from '../contexts/ThemeContext';
 import { loadConfigStatus } from '../services/api';
+import kalshiAPI, {
+  DEFAULT_KALSHI_BOT_CONFIG,
+  KALSHI_CONFIG_CHANGED_EVENT,
+  KALSHI_CONFIG_STORAGE_KEY,
+  type KalshiBotConfig,
+  type KalshiExecutionMode,
+} from '../services/kalshiApi';
 import { searchStocks } from '../services/marketDataService';
 import type { SearchResult } from '../services/marketDataService';
 import BeginnerGuide from './BeginnerGuide';
@@ -61,7 +69,17 @@ import {
 } from '../routes/researchRoutes';
 import './AuthenticatedShell.css';
 
-export type ShellSection = 'overview' | 'markets' | 'research' | 'strategies' | 'trade' | 'settings';
+export type ShellSection =
+  | 'overview'
+  | 'markets'
+  | 'crypto'
+  | 'research'
+  | 'strategies'
+  | 'trade'
+  | 'settings'
+  | 'kalshi-market'
+  | 'kalshi-bots'
+  | 'kalshi-portfolio';
 
 interface ShellLink {
   key: string;
@@ -175,6 +193,47 @@ const sections: ShellSectionConfig[] = [
     ],
   },
   {
+    key: 'crypto',
+    label: 'Crypto',
+    labelZh: '虚拟币',
+    path: '/crypto',
+    matches: (pathname) => isShellPath(pathname, '/crypto'),
+    links: [
+      {
+        key: 'crypto-overview',
+        label: 'Command center',
+        labelZh: '交易中枢',
+        path: '/crypto',
+        icon: <DollarCircleOutlined />,
+        match: (pathname) => pathname === '/crypto',
+      },
+      {
+        key: 'crypto-strategy',
+        label: 'Strategy evidence',
+        labelZh: '策略证据',
+        path: '/crypto/strategy',
+        icon: <LineChartOutlined />,
+        match: (pathname) => pathname === '/crypto/strategy',
+      },
+      {
+        key: 'crypto-automation',
+        label: '24/7 automation',
+        labelZh: '24/7 自动化',
+        path: '/crypto/automation',
+        icon: <RobotOutlined />,
+        match: (pathname) => pathname === '/crypto/automation',
+      },
+      {
+        key: 'crypto-ledger',
+        label: 'Decision ledger',
+        labelZh: '决策账本',
+        path: '/crypto/ledger',
+        icon: <HistoryOutlined />,
+        match: (pathname) => pathname === '/crypto/ledger',
+      },
+    ],
+  },
+  {
     key: 'research',
     label: 'Research',
     labelZh: '研究',
@@ -282,6 +341,56 @@ const settingsSection: ShellSectionConfig = {
   ],
 };
 
+const kalshiSections: ShellSectionConfig[] = [
+  {
+    key: 'kalshi-market',
+    label: 'Market',
+    labelZh: '市场',
+    path: '/kalshi',
+    matches: (pathname) => pathname === '/kalshi' || isShellPath(pathname, '/kalshi/markets'),
+    links: [
+      {
+        key: 'kalshi-btc15-market',
+        label: 'Live contract',
+        labelZh: '实时合约',
+        path: '/kalshi/markets/btc-15m',
+        icon: <LineChartOutlined />,
+        match: (pathname) => pathname === '/kalshi' || pathname === '/kalshi/markets/btc-15m',
+      },
+      {
+        key: 'kalshi-contract-rules',
+        label: 'Contract rules',
+        labelZh: '合约规则',
+        path: '/kalshi/markets/rules',
+        icon: <SafetyCertificateOutlined />,
+      },
+    ],
+  },
+  {
+    key: 'kalshi-bots',
+    label: 'Robots',
+    labelZh: '机器人',
+    path: '/kalshi/bots/btc-15m',
+    matches: (pathname) => isShellPath(pathname, '/kalshi/bots'),
+    links: [
+      { key: 'kalshi-btc15-bot', label: 'Live monitor', labelZh: '实时监控', path: '/kalshi/bots/btc-15m', icon: <RobotOutlined /> },
+      { key: 'kalshi-decisions', label: 'Decision log', labelZh: '决策记录', path: '/kalshi/bots/decisions', icon: <HistoryOutlined /> },
+      { key: 'kalshi-risk', label: 'Strategy & risk', labelZh: '策略与风控', path: '/kalshi/bots/risk', icon: <SafetyCertificateOutlined /> },
+    ],
+  },
+  {
+    key: 'kalshi-portfolio',
+    label: 'Portfolio',
+    labelZh: '组合',
+    path: '/kalshi/portfolio/positions',
+    matches: (pathname) => isShellPath(pathname, '/kalshi/portfolio'),
+    links: [
+      { key: 'kalshi-positions', label: 'Overview', labelZh: '组合总览', path: '/kalshi/portfolio/positions', icon: <PieChartOutlined /> },
+      { key: 'kalshi-orders', label: 'Execution', labelZh: '订单执行', path: '/kalshi/portfolio/orders', icon: <UnorderedListOutlined /> },
+    ],
+  },
+];
+
 export interface ShellNavigationState {
   pathname: string;
   sectionKey: ShellSection | null;
@@ -289,13 +398,32 @@ export interface ShellNavigationState {
 }
 
 const findActiveSection = (pathname: string): ShellSectionConfig | undefined => (
-  sections.find((section) => section.matches(pathname))
+  kalshiSections.find((section) => section.matches(pathname))
+  ?? sections.find((section) => section.matches(pathname))
   ?? (settingsSection.matches(pathname) ? settingsSection : undefined)
 );
 
 const isShellLinkActive = (pathname: string, link: ShellLink): boolean => (
   link.match ? link.match(pathname) : isShellPath(pathname, link.path)
 );
+
+const readKalshiStoredConfig = (): KalshiBotConfig => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(KALSHI_CONFIG_STORAGE_KEY) || '{}');
+    return { ...DEFAULT_KALSHI_BOT_CONFIG, ...(parsed && typeof parsed === 'object' ? parsed : {}) };
+  } catch {
+    return { ...DEFAULT_KALSHI_BOT_CONFIG };
+  }
+};
+
+const writeKalshiStoredConfig = (config: KalshiBotConfig) => {
+  try {
+    localStorage.setItem(KALSHI_CONFIG_STORAGE_KEY, JSON.stringify(config));
+    window.dispatchEvent(new CustomEvent(KALSHI_CONFIG_CHANGED_EVENT, { detail: config }));
+  } catch {
+    // Local persistence is best-effort; backend config remains authoritative.
+  }
+};
 
 export const getShellNavigationState = (pathname: string): ShellNavigationState => {
   const normalizedPath = normalizeShellPath(pathname);
@@ -324,6 +452,11 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [searchLoading, setSearchLoading] = React.useState(false);
   const [alpacaStatus, setAlpacaStatus] = React.useState<'checking' | 'connected' | 'attention'>('checking');
+  const [kalshiExecutionMode, setKalshiExecutionMode] = React.useState<KalshiExecutionMode>(() => (
+    readKalshiStoredConfig().executionMode === 'real' ? 'real' : 'paper'
+  ));
+  const [kalshiConfigured, setKalshiConfigured] = React.useState(false);
+  const [kalshiModeBusy, setKalshiModeBusy] = React.useState(false);
   const [realModalOpen, setRealModalOpen] = React.useState(false);
   const [realRiskAccepted, setRealRiskAccepted] = React.useState(false);
   const [signingOut, setSigningOut] = React.useState(false);
@@ -361,19 +494,29 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
   const navigationPath = navigationState.pathname;
   const onConfigurationRoute = isShellPath(navigationPath, '/settings/configuration');
   const activeSection = findActiveSection(navigationPath);
+  const onCryptoRoute = activeSection?.key === 'crypto';
+  const onKalshiRoute = isShellPath(navigationPath, '/kalshi');
+  const workspaceSections = onKalshiRoute ? kalshiSections : sections;
+  const workspaceHome = onKalshiRoute ? '/kalshi' : '/dashboard';
+  const workspaceSafetyPath = onKalshiRoute ? '/kalshi/bots/risk' : '/safety';
+  const workspaceConnectionPath = '/settings/configuration';
   const workspaceContext = activeSection?.key === 'overview'
     ? (isChinese ? '总览工作台' : 'OVERVIEW DESK')
-    : activeSection?.key === 'markets'
-      ? (isChinese ? '市场工作区' : 'MARKET WORKSPACE')
-      : activeSection?.key === 'research'
-        ? (isChinese ? '研究工作区' : 'RESEARCH WORKSPACE')
-        : activeSection?.key === 'strategies'
-          ? (isChinese ? '策略实验室' : 'STRATEGY LAB')
-          : activeSection?.key === 'trade'
-            ? (isChinese ? '执行工作区' : 'EXECUTION WORKSPACE')
-            : activeSection?.key === 'settings'
-              ? (isChinese ? '账户设置' : 'ACCOUNT SETTINGS')
-              : (isChinese ? '工作区' : 'WORKSPACE');
+      : activeSection?.key === 'markets'
+        ? (isChinese ? '市场工作区' : 'MARKET WORKSPACE')
+        : activeSection?.key === 'crypto'
+          ? (isChinese ? '虚拟币工作区' : 'CRYPTO WORKSPACE')
+          : activeSection?.key === 'research'
+            ? (isChinese ? '研究工作区' : 'RESEARCH WORKSPACE')
+            : activeSection?.key === 'strategies'
+              ? (isChinese ? '策略实验室' : 'STRATEGY LAB')
+              : activeSection?.key === 'trade'
+                ? (isChinese ? '执行工作区' : 'EXECUTION WORKSPACE')
+                : activeSection?.key === 'settings'
+                  ? (isChinese ? '账户设置' : 'ACCOUNT SETTINGS')
+                  : onKalshiRoute
+                    ? (isChinese ? 'KALSHI 工作区' : 'KALSHI WORKSPACE')
+                    : (isChinese ? '工作区' : 'WORKSPACE');
 
   React.useEffect(() => {
     setMobileMenuOpen(false);
@@ -436,7 +579,49 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
   }, [mobileMenuOpen]);
 
   React.useEffect(() => {
+    const syncStoredKalshiMode = (event?: Event) => {
+      const detail = (event as CustomEvent<Partial<KalshiBotConfig> | undefined>)?.detail;
+      const nextConfig = detail && typeof detail === 'object'
+        ? { ...readKalshiStoredConfig(), ...detail }
+        : readKalshiStoredConfig();
+      setKalshiExecutionMode(nextConfig.executionMode === 'real' ? 'real' : 'paper');
+    };
+    window.addEventListener(KALSHI_CONFIG_CHANGED_EVENT, syncStoredKalshiMode);
+    window.addEventListener('storage', syncStoredKalshiMode);
+    return () => {
+      window.removeEventListener(KALSHI_CONFIG_CHANGED_EVENT, syncStoredKalshiMode);
+      window.removeEventListener('storage', syncStoredKalshiMode);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (!onKalshiRoute) return undefined;
     let active = true;
+    const storedMode = readKalshiStoredConfig().executionMode === 'real' ? 'real' : 'paper';
+    setKalshiExecutionMode(storedMode);
+    void kalshiAPI.status()
+      .then((response) => {
+        if (!active) return;
+        setKalshiConfigured(Boolean(response.data?.personalApiConfigured || response.data?.liveTradingConfigured));
+        const backendMode = response.data?.activeEnvironment === 'real' ? 'real' : 'paper';
+        setKalshiExecutionMode(backendMode);
+        const stored = readKalshiStoredConfig();
+        if (stored.executionMode !== backendMode) {
+          writeKalshiStoredConfig({ ...stored, executionMode: backendMode });
+        }
+      })
+      .catch(() => {
+        if (active) setKalshiConfigured(false);
+      });
+    return () => { active = false; };
+  }, [onKalshiRoute, onConfigurationRoute]);
+
+  React.useEffect(() => {
+    let active = true;
+    if (onKalshiRoute) {
+      setAlpacaStatus('connected');
+      return () => { active = false; };
+    }
     setAlpacaStatus('checking');
     void loadConfigStatus({ timeoutMs: 6000, force: true }).then((result) => {
       if (!active) return;
@@ -445,7 +630,7 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
       setAlpacaStatus(result.ok && configured ? 'connected' : 'attention');
     });
     return () => { active = false; };
-  }, [tradeMode, onConfigurationRoute]);
+  }, [tradeMode, onConfigurationRoute, onKalshiRoute]);
 
   React.useEffect(() => {
     const handleDataSync = (event: Event) => {
@@ -469,6 +654,36 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
       return undefined;
     }
 
+    if (onKalshiRoute) {
+      const normalized = query.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const kalshiUniverse: SearchResult[] = [
+        { symbol: 'KXBTC15M', name: 'Bitcoin up in next 15 minutes', type: 'EVENT', region: 'Kalshi', currency: 'USD' },
+      ];
+      setSymbolResults(kalshiUniverse.filter((item) => (
+        item.symbol.includes(normalized)
+        || item.name.toUpperCase().includes(query.toUpperCase())
+        || normalized.includes('BTC')
+      )));
+      setSearchOpen(true);
+      setSearchLoading(false);
+      return undefined;
+    }
+
+    if (onCryptoRoute) {
+      const normalized = query.toUpperCase().replace(/[^A-Z]/g, '');
+      const cryptoUniverse: SearchResult[] = [
+        { symbol: 'BTC/USD', name: 'Bitcoin', type: 'CRYPTO', region: '24/7', currency: 'USD' },
+        { symbol: 'ETH/USD', name: 'Ethereum', type: 'CRYPTO', region: '24/7', currency: 'USD' },
+      ];
+      setSymbolResults(cryptoUniverse.filter((item) => (
+        item.symbol.replace('/', '').includes(normalized)
+        || item.name.toUpperCase().includes(query.toUpperCase())
+      )));
+      setSearchOpen(true);
+      setSearchLoading(false);
+      return undefined;
+    }
+
     setSearchLoading(true);
     const timer = window.setTimeout(() => {
       void searchStocks(query, 6)
@@ -486,7 +701,7 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
     }, 280);
 
     return () => window.clearTimeout(timer);
-  }, [symbolQuery]);
+  }, [onCryptoRoute, onKalshiRoute, symbolQuery]);
 
   const localize = (item: { label: string; labelZh: string }) => (
     isChinese ? item.labelZh : item.label
@@ -498,6 +713,31 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
 
   const handleSearch = (event?: React.FormEvent, compact = false) => {
     event?.preventDefault();
+    if (onKalshiRoute) {
+      const normalized = symbolQuery.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (!normalized.includes('BTC') && !normalized.includes('KXBTC15M')) {
+        (compact ? mobileSearchInputRef : searchInputRef).current?.focus();
+        return;
+      }
+      setSymbolQuery('KXBTC15M');
+      setSearchOpen(false);
+      setMobileMenuOpen(false);
+      navigate('/kalshi/markets/btc-15m');
+      return;
+    }
+    if (onCryptoRoute) {
+      const normalized = symbolQuery.toUpperCase().replace(/[^A-Z]/g, '');
+      const pair = normalized.startsWith('ETH') ? 'ETH/USD' : normalized.startsWith('BTC') ? 'BTC/USD' : '';
+      if (!pair) {
+        (compact ? mobileSearchInputRef : searchInputRef).current?.focus();
+        return;
+      }
+      setSymbolQuery(pair);
+      setSearchOpen(false);
+      setMobileMenuOpen(false);
+      navigate(`/crypto?symbol=${encodeURIComponent(pair)}`);
+      return;
+    }
     const symbol = normalizeMarketSymbol(symbolQuery);
     if (!symbol) {
       (compact ? mobileSearchInputRef : searchInputRef).current?.focus();
@@ -517,6 +757,23 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
   };
 
   const selectSymbol = (symbol: string) => {
+    if (onKalshiRoute) {
+      if (symbol.toUpperCase() !== 'KXBTC15M') return;
+      setSymbolQuery('KXBTC15M');
+      setSearchOpen(false);
+      setMobileMenuOpen(false);
+      navigate('/kalshi/markets/btc-15m');
+      return;
+    }
+    if (onCryptoRoute) {
+      const pair = symbol.toUpperCase();
+      if (pair !== 'BTC/USD' && pair !== 'ETH/USD') return;
+      setSymbolQuery(pair);
+      setSearchOpen(false);
+      setMobileMenuOpen(false);
+      navigate(`/crypto?symbol=${encodeURIComponent(pair)}`);
+      return;
+    }
     const normalized = normalizeMarketSymbol(symbol);
     if (!normalized) return;
     rememberMarketSymbol(normalized);
@@ -539,6 +796,54 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
   const handleMobileModeToggle = () => {
     setMobileMenuOpen(false);
     handleModeToggle();
+  };
+
+  const handleKalshiModeToggle = async () => {
+    if (kalshiModeBusy) return;
+    const currentMode = kalshiExecutionMode === 'real' ? 'real' : 'paper';
+    const nextMode: KalshiExecutionMode = currentMode === 'real' ? 'paper' : 'real';
+    const currentConfig = readKalshiStoredConfig();
+    const nextConfig: KalshiBotConfig = { ...currentConfig, executionMode: nextMode };
+    setKalshiModeBusy(true);
+    try {
+      if (nextMode === 'real') {
+        const status = await kalshiAPI.status();
+        const configured = Boolean(status.data?.personalApiConfigured || status.data?.liveTradingConfigured);
+        setKalshiConfigured(configured);
+        if (!configured) {
+          Modal.warning({
+            title: isChinese ? 'Kalshi 实盘 API 还没配置' : 'Kalshi Real API is not configured',
+            content: isChinese
+              ? '请先在 Connections / 设置里保存并测试 Kalshi production API key。没有签名密钥时，AlphaLab 不会假装切到真钱交易。'
+              : 'Save and test your Kalshi production API key in Connections / Settings first. AlphaLab will not pretend to enable real-money trading without signed credentials.',
+            okText: isChinese ? '去设置' : 'Open settings',
+            onOk: () => navigate('/settings/configuration'),
+          });
+          return;
+        }
+      }
+      setKalshiExecutionMode(nextMode);
+      writeKalshiStoredConfig(nextConfig);
+      await kalshiAPI.savePaperRobotConfig(nextConfig, nextMode);
+      window.dispatchEvent(new CustomEvent(KALSHI_CONFIG_CHANGED_EVENT, { detail: nextConfig }));
+      window.dispatchEvent(new Event('alphalab:refresh'));
+    } catch (error: any) {
+      setKalshiExecutionMode(currentMode);
+      writeKalshiStoredConfig(currentConfig);
+      Modal.error({
+        title: isChinese ? 'Kalshi 模式切换失败' : 'Kalshi mode switch failed',
+        content: error?.response?.data?.message || error?.message || (isChinese ? '请检查 Kalshi 连接设置后重试。' : 'Check Kalshi connection settings and try again.'),
+      });
+    } finally {
+      setKalshiModeBusy(false);
+    }
+  };
+
+  const handlePlatformSwitch = () => {
+    setMobileMenuOpen(false);
+    setSearchOpen(false);
+    setSymbolQuery('');
+    navigate(onKalshiRoute ? '/dashboard' : '/kalshi');
   };
 
   const handleRealConfirm = () => {
@@ -621,8 +926,16 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
         value={symbolQuery}
         onChange={(event) => setSymbolQuery(event.target.value)}
         onFocus={() => setSearchOpen(symbolResults.length > 0)}
-        placeholder={isChinese ? '搜索股票代码或命令' : 'Search symbols or commands'}
-        aria-label={isChinese ? '搜索股票代码' : 'Search stock symbols'}
+        placeholder={onKalshiRoute
+          ? (isChinese ? '搜索 KXBTC15M' : 'Search KXBTC15M')
+          : onCryptoRoute
+            ? (isChinese ? '搜索 BTC 或 ETH' : 'Search BTC or ETH')
+            : (isChinese ? '搜索股票代码或命令' : 'Search symbols or commands')}
+        aria-label={onKalshiRoute
+          ? (isChinese ? '搜索 Kalshi 合约' : 'Search Kalshi contracts')
+          : onCryptoRoute
+            ? (isChinese ? '搜索虚拟币交易对' : 'Search crypto pairs')
+            : (isChinese ? '搜索股票代码' : 'Search stock symbols')}
         bordered={false}
         autoCapitalize="characters"
         autoComplete="off"
@@ -630,7 +943,11 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
       />
       {!compact && (searchLoading ? <span className="auth-shell__search-loading" aria-hidden="true" /> : <kbd>⌘K</kbd>)}
       {searchOpen && symbolResults.length > 0 && (
-        <div className="auth-shell__search-results" role="listbox" aria-label={isChinese ? '股票搜索结果' : 'Symbol search results'}>
+        <div className="auth-shell__search-results" role="listbox" aria-label={onKalshiRoute
+          ? (isChinese ? 'Kalshi 合约搜索结果' : 'Kalshi contract results')
+          : onCryptoRoute
+            ? (isChinese ? '虚拟币搜索结果' : 'Crypto search results')
+            : (isChinese ? '股票搜索结果' : 'Symbol search results')}>
           {symbolResults.map((result) => (
             <button
               key={`${result.symbol}-${result.region || 'market'}`}
@@ -662,14 +979,31 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
             <MenuOutlined />
           </button>
 
-          <Link to="/dashboard" className="auth-shell__wordmark" aria-label={isChinese ? 'AlphaLab 市场总览' : 'AlphaLab overview'}>
-            <span className="auth-shell__wordmark-symbol">A</span>
-            <span>lphaLab</span>
-            <i aria-hidden="true" />
-          </Link>
+          <div className="auth-shell__brand-cluster">
+            <Link to={workspaceHome} className="auth-shell__wordmark" aria-label={onKalshiRoute ? 'AlphaLab Kalshi' : (isChinese ? 'AlphaLab 市场总览' : 'AlphaLab overview')}>
+              <span className="auth-shell__wordmark-symbol">A</span>
+              <span>lphaLab</span>
+              <i aria-hidden="true" />
+            </Link>
+            <Tooltip title={onKalshiRoute
+              ? (isChinese ? '切换到股票与量化工作区' : 'Switch to equities workspace')
+              : (isChinese ? '切换到 Kalshi 事件合约工作区' : 'Switch to Kalshi workspace')}>
+              <button
+                type="button"
+                className={`auth-shell__platform-switch${onKalshiRoute ? ' is-kalshi' : ''}`}
+                onClick={handlePlatformSwitch}
+                aria-label={onKalshiRoute
+                  ? (isChinese ? '切换到 AlphaLab 股票平台' : 'Switch to AlphaLab equities')
+                  : (isChinese ? '切换到 Kalshi 平台' : 'Switch to Kalshi')}
+              >
+                <SwapOutlined />
+                <span>{onKalshiRoute ? 'KALSHI' : 'ALPACA'}</span>
+              </button>
+            </Tooltip>
+          </div>
 
           <nav className="auth-shell__primary-nav" aria-label={isChinese ? '主导航' : 'Primary navigation'}>
-            {sections.map((section) => (
+            {workspaceSections.map((section) => (
               <Link
                 key={section.key}
                 to={section.path}
@@ -685,31 +1019,65 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
           <div className="auth-shell__desktop-search">{renderSearch()}</div>
 
           <div className="auth-shell__environment" data-tour="trade-environment" aria-label={isChinese ? '交易环境' : 'Trading environment'}>
-            <span className={`auth-shell__connection auth-shell__connection--${alpacaStatus}`}>
-              <i aria-hidden="true" />
-              <span>
-                {alpacaStatus === 'checking'
-                  ? (isChinese ? 'ALPACA 检查中' : 'ALPACA CHECKING')
-                  : alpacaStatus === 'connected'
-                    ? (isChinese ? 'ALPACA 已配置' : 'ALPACA CONFIGURED')
-                    : (isChinese ? 'ALPACA 待配置' : 'ALPACA SETUP')}
-              </span>
-            </span>
-            <Tooltip
-              title={tradeMode === 'paper'
-                ? (isChinese ? '点击切换至实盘模式' : 'Switch to real trading')
-                : (isChinese ? '点击返回模拟模式' : 'Return to paper trading')}
-            >
-              <button
-                type="button"
-                className={`auth-shell__mode auth-shell__mode--${tradeMode}`}
-                onClick={handleModeToggle}
-              >
-                {tradeMode === 'paper'
-                  ? (isChinese ? '模拟模式' : 'PAPER MODE')
-                  : (isChinese ? '实盘' : 'LIVE')}
-              </button>
-            </Tooltip>
+            {onKalshiRoute ? (
+              <>
+                <span className="auth-shell__connection auth-shell__connection--connected">
+                  <i aria-hidden="true" />
+                  <span>
+                    {kalshiExecutionMode === 'real'
+                      ? (isChinese ? 'KALSHI 实盘账户' : 'KALSHI REAL ACCOUNT')
+                      : (isChinese ? 'KALSHI 公共行情' : 'KALSHI PUBLIC DATA')}
+                  </span>
+                </span>
+                <Tooltip title={kalshiExecutionMode === 'real'
+                  ? (isChinese ? '切换到 AlphaLab Paper 模拟盘' : 'Switch to AlphaLab Paper mode')
+                  : kalshiConfigured
+                    ? (isChinese ? '切换到 Kalshi Real mode' : 'Switch to Kalshi Real mode')
+                    : (isChinese ? '配置 Kalshi API 后才能切到 Real mode' : 'Configure Kalshi API before enabling Real mode')}>
+                  <button
+                    type="button"
+                    className={`auth-shell__mode ${kalshiExecutionMode === 'real' ? 'auth-shell__mode--real' : 'auth-shell__mode--paper'}`}
+                    onClick={handleKalshiModeToggle}
+                    disabled={kalshiModeBusy}
+                    aria-label={isChinese ? '切换 Kalshi 执行模式' : 'Toggle Kalshi execution mode'}
+                  >
+                    {kalshiExecutionMode === 'real'
+                      ? (isChinese ? '实盘模式' : 'REAL MODE')
+                      : kalshiConfigured
+                        ? (isChinese ? '模拟模式' : 'PAPER MODE')
+                        : (isChinese ? '仅模拟' : 'PAPER ONLY')}
+                  </button>
+                </Tooltip>
+              </>
+            ) : (
+              <>
+                <span className={`auth-shell__connection auth-shell__connection--${alpacaStatus}`}>
+                  <i aria-hidden="true" />
+                  <span>
+                    {alpacaStatus === 'checking'
+                      ? (isChinese ? 'ALPACA 检查中' : 'ALPACA CHECKING')
+                      : alpacaStatus === 'connected'
+                        ? (isChinese ? 'ALPACA 已配置' : 'ALPACA CONFIGURED')
+                        : (isChinese ? 'ALPACA 待配置' : 'ALPACA SETUP')}
+                  </span>
+                </span>
+                <Tooltip
+                  title={tradeMode === 'paper'
+                    ? (isChinese ? '点击切换至实盘模式' : 'Switch to real trading')
+                    : (isChinese ? '点击返回模拟模式' : 'Return to paper trading')}
+                >
+                  <button
+                    type="button"
+                    className={`auth-shell__mode auth-shell__mode--${tradeMode}`}
+                    onClick={handleModeToggle}
+                  >
+                    {tradeMode === 'paper'
+                      ? (isChinese ? '模拟模式' : 'PAPER MODE')
+                      : (isChinese ? '实盘' : 'LIVE')}
+                  </button>
+                </Tooltip>
+              </>
+            )}
           </div>
 
           <div className="auth-shell__utilities">
@@ -725,9 +1093,11 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
             </Tooltip>
             <Tooltip title={isChinese ? '打开交易安全中心' : 'Open trading safety center'}>
               <Link
-                to="/safety"
-                className={`auth-shell__utility-button${navigationPath === '/safety' ? ' is-active' : ''}`}
-                aria-label={isChinese ? '交易安全中心' : 'Trading safety center'}
+                to={workspaceSafetyPath}
+                className={`auth-shell__utility-button${navigationPath === workspaceSafetyPath ? ' is-active' : ''}`}
+                aria-label={onKalshiRoute
+                  ? (isChinese ? 'Kalshi 机器人风控' : 'Kalshi bot risk limits')
+                  : (isChinese ? '交易安全中心' : 'Trading safety center')}
               >
                 <SafetyCertificateOutlined />
               </Link>
@@ -810,7 +1180,7 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
                 <span>{workspaceContext}</span>
                 <i aria-hidden="true" />
                 <Link
-                  to="/settings/configuration"
+                  to={workspaceConnectionPath}
                   state={{ returnTo: `${navigationPath}${location.search}${location.hash}` }}
                 >
                   {isChinese ? '连接设置' : 'CONNECTIONS'}
@@ -845,7 +1215,7 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
       >
         <div className="auth-shell__drawer-head">
           <Link
-            to="/dashboard"
+            to={workspaceHome}
             className="auth-shell__wordmark"
             aria-label={isChinese ? '返回市场总览' : 'Return to market overview'}
             onClick={() => setMobileMenuOpen(false)}
@@ -863,29 +1233,64 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
           </button>
         </div>
         <div className="auth-shell__drawer-search">{renderSearch(true)}</div>
+        <button
+          type="button"
+          className={`auth-shell__drawer-platform-switch${onKalshiRoute ? ' is-kalshi' : ''}`}
+          onClick={handlePlatformSwitch}
+        >
+          <span><SwapOutlined /> {isChinese ? '当前平台' : 'Current platform'}</span>
+          <strong>{onKalshiRoute ? 'KALSHI' : 'ALPACA'} · {isChinese ? '点击切换' : 'SWITCH'}</strong>
+        </button>
         <div className="auth-shell__drawer-environment">
-          <span className={`auth-shell__connection auth-shell__connection--${alpacaStatus}`}>
-            <i aria-hidden="true" />
-            <span>
-              {alpacaStatus === 'checking'
-                ? (isChinese ? 'ALPACA 检查中' : 'ALPACA CHECKING')
-                : alpacaStatus === 'connected'
-                  ? (isChinese ? 'ALPACA 已配置' : 'ALPACA CONFIGURED')
-                  : (isChinese ? 'ALPACA 待配置' : 'ALPACA SETUP')}
-            </span>
-          </span>
-          <button
-            type="button"
-            className={`auth-shell__mode auth-shell__mode--${tradeMode}`}
-            onClick={handleMobileModeToggle}
-          >
-            {tradeMode === 'paper'
-              ? (isChinese ? '模拟模式' : 'PAPER MODE')
-              : (isChinese ? '实盘' : 'LIVE')}
-          </button>
+          {onKalshiRoute ? (
+            <>
+              <span className="auth-shell__connection auth-shell__connection--connected">
+                <i aria-hidden="true" />
+                <span>
+                  {kalshiExecutionMode === 'real'
+                    ? (isChinese ? 'KALSHI 实盘账户' : 'KALSHI REAL ACCOUNT')
+                    : (isChinese ? 'KALSHI 公共行情' : 'KALSHI PUBLIC DATA')}
+                </span>
+              </span>
+              <button
+                type="button"
+                className={`auth-shell__mode ${kalshiExecutionMode === 'real' ? 'auth-shell__mode--real' : 'auth-shell__mode--paper'}`}
+                onClick={handleKalshiModeToggle}
+                disabled={kalshiModeBusy}
+              >
+                {kalshiExecutionMode === 'real'
+                  ? (isChinese ? '实盘模式' : 'REAL MODE')
+                  : kalshiConfigured
+                    ? (isChinese ? '模拟模式' : 'PAPER MODE')
+                    : (isChinese ? '仅模拟' : 'PAPER ONLY')}
+              </button>
+            </>
+          ) : (
+            <>
+              <span className={`auth-shell__connection auth-shell__connection--${alpacaStatus}`}>
+                <i aria-hidden="true" />
+                <span>
+                  {alpacaStatus === 'checking'
+                    ? (isChinese ? 'ALPACA 检查中' : 'ALPACA CHECKING')
+                    : alpacaStatus === 'connected'
+                      ? (isChinese ? 'ALPACA 已配置' : 'ALPACA CONFIGURED')
+                      : (isChinese ? 'ALPACA 待配置' : 'ALPACA SETUP')}
+                </span>
+              </span>
+              <button
+                type="button"
+                className={`auth-shell__mode auth-shell__mode--${tradeMode}`}
+                onClick={handleMobileModeToggle}
+              >
+                {tradeMode === 'paper'
+                  ? (isChinese ? '模拟模式' : 'PAPER MODE')
+                  : (isChinese ? '实盘' : 'LIVE')}
+              </button>
+            </>
+          )}
         </div>
         <nav className="auth-shell__drawer-nav" aria-label={isChinese ? '移动端导航' : 'Mobile navigation'}>
-          {sections.map((section) => (
+          {workspaceSections.map((section, sectionIndex) => (
             <section key={section.key}>
               <Link
                 to={section.path}
@@ -894,7 +1299,7 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
                 onClick={() => setMobileMenuOpen(false)}
               >
                 <span>{localize(section)}</span>
-                <span>0{sections.indexOf(section) + 1}</span>
+                <span>0{sectionIndex + 1}</span>
               </Link>
               <div>
                 {section.links.map((link) => {
@@ -918,13 +1323,17 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
         </nav>
         <div className="auth-shell__drawer-preferences">
           <Link
-            to="/safety"
-            className={navigationState.linkKey === 'safety-center' ? 'is-active' : undefined}
-            aria-current={navigationState.linkKey === 'safety-center' ? 'page' : undefined}
+            to={workspaceSafetyPath}
+            className={navigationPath === workspaceSafetyPath ? 'is-active' : undefined}
+            aria-current={navigationPath === workspaceSafetyPath ? 'page' : undefined}
             onClick={() => setMobileMenuOpen(false)}
           >
-            <span><SafetyCertificateOutlined /> {isChinese ? '交易安全中心' : 'Safety center'}</span>
-            <small>{isChinese ? '暂停新入场并保持持仓保护' : 'Pause entries, keep protection active'}</small>
+            <span><SafetyCertificateOutlined /> {onKalshiRoute
+              ? (isChinese ? '机器人风控' : 'Bot risk limits')
+              : (isChinese ? '交易安全中心' : 'Safety center')}</span>
+            <small>{onKalshiRoute
+              ? (isChinese ? '概率、优势、流动性与仓位限制' : 'Probability, edge, liquidity and sizing limits')
+              : (isChinese ? '暂停新入场并保持持仓保护' : 'Pause entries, keep protection active')}</small>
           </Link>
           <Link
             to="/settings"
@@ -936,13 +1345,15 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
             <small>{isChinese ? '账户与偏好' : 'Account & preferences'}</small>
           </Link>
           <Link
-            to="/settings/configuration"
-            className={navigationState.linkKey === 'connections' ? 'is-active' : undefined}
-            aria-current={navigationState.linkKey === 'connections' ? 'page' : undefined}
+            to={workspaceConnectionPath}
+            className={navigationPath === workspaceConnectionPath ? 'is-active' : undefined}
+            aria-current={navigationPath === workspaceConnectionPath ? 'page' : undefined}
             onClick={() => setMobileMenuOpen(false)}
           >
             <span><SlidersOutlined /> {isChinese ? '连接管理' : 'Connections'}</span>
-            <small>{isChinese ? '数据与交易连接' : 'Data & trading access'}</small>
+            <small>{onKalshiRoute
+              ? (isChinese ? 'Kalshi 与参考价格源状态' : 'Kalshi and reference price status')
+              : (isChinese ? '数据与交易连接' : 'Data & trading access')}</small>
           </Link>
           <div className="auth-shell__drawer-theme">
             <span>{isChinese ? '外观' : 'Appearance'}</span>

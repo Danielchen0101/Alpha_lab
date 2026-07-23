@@ -1,9 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Button, Typography } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import { Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 import { useLanguage } from '../contexts/LanguageContext';
+import type { EmailOtpType } from '@supabase/supabase-js';
 import '../styles/Auth.css';
 
 const { Title, Text } = Typography;
@@ -13,26 +14,64 @@ const AuthConfirmed: React.FC = () => {
   const { t, language, setLanguage } = useLanguage();
   const [checking, setChecking] = useState(true);
   const [confirmed, setConfirmed] = useState(false);
-  const hasCallback = useMemo(() => {
-    const query = new URLSearchParams(window.location.search);
-    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
-    return !!(query.get('code') || query.get('token_hash') || hash.get('access_token') || hash.get('type'));
-  }, []);
+  const [hasSession, setHasSession] = useState(false);
 
   useEffect(() => {
+    let active = true;
     const query = new URLSearchParams(window.location.search);
     const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
-    if (query.get('error') || hash.get('error') || !hasCallback) { setChecking(false); return undefined; }
+    const callbackError = query.get('error_description') || query.get('error') || hash.get('error_description') || hash.get('error');
+    const code = query.get('code');
+    const tokenHash = query.get('token_hash');
+    const otpType = query.get('type') as EmailOtpType | null;
+    const hasImplicitToken = Boolean(hash.get('access_token'));
+
+    const finish = (sessionAvailable: boolean) => {
+      if (!active) return;
+      setConfirmed(true);
+      setHasSession(sessionAvailable);
+      setChecking(false);
+      window.history.replaceState({}, document.title, '/auth/confirmed');
+    };
+
+    const verify = async () => {
+      if (callbackError) {
+        if (active) setChecking(false);
+        return;
+      }
+
+      if (tokenHash && otpType) {
+        const { data, error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type: otpType });
+        if (!error) finish(Boolean(data.session));
+        else if (active) setChecking(false);
+        return;
+      }
+
+      const current = await supabase.auth.getSession();
+      if (current.data.session) {
+        finish(true);
+        return;
+      }
+
+      if (code) {
+        const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+        if (!error) finish(Boolean(data.session));
+        else if (active) setChecking(false);
+        return;
+      }
+
+      if (!hasImplicitToken && active) setChecking(false);
+    };
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if ((event === 'SIGNED_IN' || event === 'USER_UPDATED' || event === 'INITIAL_SESSION') && session && hasCallback) {
-        setConfirmed(true);
-        setChecking(false);
-        window.history.replaceState({}, document.title, '/auth/confirmed');
+      if ((event === 'SIGNED_IN' || event === 'USER_UPDATED' || event === 'INITIAL_SESSION') && session) {
+        finish(true);
       }
     });
-    const timeout = window.setTimeout(() => setChecking(false), 3500);
-    return () => { window.clearTimeout(timeout); subscription.unsubscribe(); };
-  }, [hasCallback]);
+    void verify();
+    const timeout = window.setTimeout(() => { if (active) setChecking(false); }, 7000);
+    return () => { active = false; window.clearTimeout(timeout); subscription.unsubscribe(); };
+  }, []);
 
   return (
     <main className="auth-shell">
@@ -54,7 +93,9 @@ const AuthConfirmed: React.FC = () => {
               <div className="auth-status-mark is-success" aria-hidden="true">✓</div>
               <Title level={1} className="auth-title">{t.authConfirmed.title}</Title>
               <Text className="auth-subtitle">{t.authConfirmed.description}</Text>
-              <Button type="primary" className="auth-btn" block onClick={() => navigate('/signin')}>{t.authConfirmed.continueToSignIn}</Button>
+              <Button type="primary" className="auth-btn" block onClick={() => navigate(hasSession ? '/dashboard' : '/signin')}>
+                {hasSession ? t.auth.continueToWorkspace : t.authConfirmed.continueToSignIn}
+              </Button>
             </div>
           ) : (
             <div className="auth-status-panel" role="alert">

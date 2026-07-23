@@ -8,9 +8,14 @@ WORKDIR /app/frontend
 # Copy package files
 COPY frontend/package*.json ./
 
-# Install the complete build toolchain in the disposable builder stage.
+# Install the complete build toolchain in the disposable builder stage. The
+# retry budget absorbs short registry interruptions seen on hosted CI runners.
 # Frontend node_modules are not copied into the final runtime image.
-RUN npm ci
+RUN npm config set fetch-retries 5 \
+    && npm config set fetch-retry-mintimeout 20000 \
+    && npm config set fetch-retry-maxtimeout 120000 \
+    && npm config set fetch-timeout 300000 \
+    && npm ci --no-audit --no-fund
 
 # Copy source code
 COPY frontend/ ./

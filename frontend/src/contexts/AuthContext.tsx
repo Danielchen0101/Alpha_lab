@@ -7,7 +7,6 @@ import {
   hasSessionAwayExpired,
   markSessionAway,
   readAwaySince,
-  refreshSessionOnce,
 } from '../services/authSession';
 
 interface AuthContextType {
@@ -19,7 +18,7 @@ interface AuthContextType {
   mfaRequired: boolean;
   refreshMfaAssurance: () => Promise<boolean>;
   login: (email: string, password: string, captchaToken?: string) => Promise<{ success: boolean; message?: string; mfaRequired?: boolean }>;
-  signUp: (email: string, password: string, captchaToken?: string, fullName?: string, emailRedirectTo?: string) => Promise<{ success: boolean; message?: string }>;
+  signUp: (email: string, password: string, captchaToken?: string, fullName?: string, emailRedirectTo?: string) => Promise<{ success: boolean; message?: string; confirmationRequired?: boolean }>;
   logout: () => Promise<void>;
 }
 
@@ -51,6 +50,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
   const [mfaStatus, setMfaStatus] = useState<MfaAssuranceStatus>('checking');
   const assuranceRequestRef = React.useRef(0);
+  const sessionUserIdRef = React.useRef<string | null>(null);
+  const authenticatedUserId = session?.user.id ?? null;
 
   const setSignedOutState = useCallback(() => {
     assuranceRequestRef.current += 1;
@@ -90,6 +91,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let active = true;
     supabase.auth.getSession().then(({ data: { session: currentSession } }: { data: { session: Session | null } }) => {
       if (!active) return;
+      sessionUserIdRef.current = currentSession?.user.id ?? null;
       setSession(currentSession);
       setUser(mapSupabaseUser(currentSession?.user ?? null));
       if (!currentSession) setSignedOutState();
@@ -103,11 +105,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event: AuthChangeEvent, newSession: Session | null) => {
+      (event: AuthChangeEvent, newSession: Session | null) => {
+        const previousUserId = sessionUserIdRef.current;
+        const nextUserId = newSession?.user.id ?? null;
+        sessionUserIdRef.current = nextUserId;
         setSession(newSession);
         setUser(mapSupabaseUser(newSession?.user ?? null));
-        setMfaStatus(newSession ? 'checking' : 'not_required');
-        if (!newSession) assuranceRequestRef.current += 1;
+        if (!newSession) {
+          setMfaStatus('not_required');
+          assuranceRequestRef.current += 1;
+        } else if (previousUserId !== nextUserId || event === 'MFA_CHALLENGE_VERIFIED') {
+          // Token refreshes happen in the background and must not blank the app
+          // behind a fresh MFA check when the signed-in identity is unchanged.
+          setMfaStatus('checking');
+        }
         setLoading(false);
       }
     );
@@ -119,9 +130,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [setSignedOutState]);
 
   useEffect(() => {
-    if (!session) return;
+    if (!authenticatedUserId) return;
     void refreshMfaAssurance();
-  }, [refreshMfaAssurance, session]);
+  }, [authenticatedUserId, refreshMfaAssurance]);
 
   useEffect(() => {
     let disposed = false;
@@ -180,11 +191,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       clearSessionAway();
       inMemoryAwaySince = null;
-      try {
-        await refreshSessionOnce();
-      } catch {
-        // A temporary refresh failure must not turn a brief tab switch into a logout.
-      }
     };
 
     const handleVisibility = () => {
@@ -242,13 +248,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { success: false, message: error.message };
       }
       if (data.user && !data.session) {
-        return { success: true, message: 'Check your email to confirm your account.' };
+        return { success: true, confirmationRequired: true, message: 'Check your email to confirm your account.' };
       }
       if (data.session) {
         setSession(data.session);
         setUser(mapSupabaseUser(data.user));
       }
-      return { success: true };
+      return { success: true, confirmationRequired: false };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Sign up failed';
       return { success: false, message: msg };

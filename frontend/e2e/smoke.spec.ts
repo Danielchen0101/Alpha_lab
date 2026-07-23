@@ -51,7 +51,7 @@ test.describe('Public application smoke tests', () => {
     await expect(page.locator('a, button').filter({ hasText: /home|首页/i }).first()).toBeVisible();
   });
 
-  for (const route of ['/dashboard', '/market', '/agent', '/portfolio', '/settings/configuration']) {
+  for (const route of ['/dashboard', '/market', '/crypto', '/kalshi', '/agent', '/portfolio', '/settings/configuration']) {
     test(`protected route ${route} redirects to sign in`, async ({ page }) => {
       await page.goto(route);
       await expect(page).toHaveURL(/\/signin(?:\?|$)/);

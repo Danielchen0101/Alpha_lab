@@ -15,6 +15,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { supabase } from '../lib/supabaseClient';
+import { getEmailConfirmationRedirect } from '../lib/authRedirect';
 import type { Provider } from '@supabase/supabase-js';
 import '../styles/Auth.css';
 
@@ -68,6 +69,9 @@ const SignIn: React.FC = () => {
   const [submitting, setSubmitting] = useState(false);
   const [oauthLoading, setOauthLoading] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [unconfirmedEmail, setUnconfirmedEmail] = useState('');
+  const [resendingConfirmation, setResendingConfirmation] = useState(false);
+  const [confirmationMessage, setConfirmationMessage] = useState('');
   const [captchaToken, setCaptchaToken] = useState('');
   const turnstileRef = useRef<BoundTurnstileObject | null>(null);
   const compactCaptcha = useCompactCaptcha();
@@ -119,6 +123,8 @@ const SignIn: React.FC = () => {
   const handleLogin = async (values: { email: string; password: string; remember?: boolean }) => {
     setSubmitting(true);
     setError('');
+    setUnconfirmedEmail('');
+    setConfirmationMessage('');
     const result = await login(values.email, values.password, captchaToken);
     setSubmitting(false);
     if (result.success) {
@@ -138,6 +144,7 @@ const SignIn: React.FC = () => {
         setError(t.auth.invalidCredentials);
       } else if (errMsg.includes('email not confirmed')) {
         setError(t.auth.checkEmailConfirmation);
+        setUnconfirmedEmail(values.email.trim());
       } else if (errMsg.includes('network') || errMsg.includes('fetch')) {
         setError(t.auth.errorNetworkIssue);
       } else if (errMsg.includes('session_expired') || errMsg.includes('session not found')) {
@@ -145,6 +152,30 @@ const SignIn: React.FC = () => {
       } else {
         setError(t.auth.errorUnexpected);
       }
+    }
+  };
+
+  const handleResendConfirmation = async () => {
+    if (!unconfirmedEmail || resendingConfirmation) return;
+    setResendingConfirmation(true);
+    setConfirmationMessage('');
+    try {
+      const { error: resendError } = await supabase.auth.resend({
+        type: 'signup',
+        email: unconfirmedEmail,
+        options: { emailRedirectTo: getEmailConfirmationRedirect() },
+      });
+      if (resendError) throw resendError;
+      setConfirmationMessage(t.auth.confirmationResent);
+    } catch (resendError: unknown) {
+      const message = resendError instanceof Error ? resendError.message.toLowerCase() : '';
+      setConfirmationMessage(
+        message.includes('rate') || message.includes('too many')
+          ? t.auth.confirmationResendRateLimit
+          : t.auth.confirmationResendFailed,
+      );
+    } finally {
+      setResendingConfirmation(false);
     }
   };
 
@@ -241,6 +272,14 @@ const SignIn: React.FC = () => {
               
               {error && (
                 <Alert message={error} type="error" showIcon closable onClose={() => setError('')} style={{ marginBottom: 14, borderRadius: 12 }} />
+              )}
+              {unconfirmedEmail && (
+                <div className="auth-inline-action" role="status" aria-live="polite">
+                  <Button onClick={handleResendConfirmation} loading={resendingConfirmation} disabled={resendingConfirmation}>
+                    {resendingConfirmation ? t.auth.resendingConfirmation : t.auth.resendConfirmation}
+                  </Button>
+                  {confirmationMessage && <Text>{confirmationMessage}</Text>}
+                </div>
               )}
 
               <Form form={form} layout="vertical" onFinish={handleLogin} autoComplete="on" aria-busy={submitting}>

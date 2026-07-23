@@ -15,5 +15,6 @@ check (config_type in (
   'ai_provider',
   'alpaca',
   'finnhub',
-  'discord'
+  'discord',
+  'kalshi'
 ));
