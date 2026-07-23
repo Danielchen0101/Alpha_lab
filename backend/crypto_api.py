@@ -168,6 +168,55 @@ STRATEGY_RESEARCH_LIBRARY: Tuple[Dict[str, Any], ...] = (
             "concept": "Require a stronger edge and lower turnover when transaction costs dominate weak hourly forecasts.",
         },
     },
+    {
+        "id": "range_meanrev_tilt",
+        "name": "Range mean-reversion tilt",
+        "patch": {
+            "weight_trend": 0.20, "weight_breakout": 0.15,
+            "weight_momentum": 0.20, "weight_meanrev": 0.45,
+            "meanrev_entry_z": -1.5, "meanrev_rsi_buy": 25.0,
+            "meanrev_size_fraction": 0.5,
+            "adx_trend_threshold": 25.0,
+        },
+        "source": {
+            "title": "Revisiting Trend-following and Mean-reversion Strategies in Bitcoin — Beluská and Vojtko",
+            "url": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4955617",
+            "concept": "Mean reversion earns better risk-adjusted returns than trend in range-bound, volume-compressed regimes.",
+        },
+    },
+    {
+        "id": "regime_balanced_ensemble",
+        "name": "Regime-balanced ensemble",
+        "patch": {
+            "weight_trend": 0.25, "weight_breakout": 0.25,
+            "weight_momentum": 0.25, "weight_meanrev": 0.25,
+            "adx_trend_threshold": 20.0,
+            "panic_vol_ratio": 1.6,
+            "trail_atr_multiple": 2.5,
+        },
+        "source": {
+            "title": "Regime-Switching Factor Investing with Hidden Markov Models — Wang, Lin and Mikkelsen",
+            "url": "https://www.mdpi.com/1911-8074/13/12/311",
+            "concept": "Switch factor weights with the detected market regime instead of holding one static model.",
+        },
+    },
+    {
+        "id": "defensive_vol_panic",
+        "name": "Defensive volatility brake",
+        "patch": {
+            "annual_volatility_target": 0.12,
+            "high_volatility_threshold": 0.85,
+            "panic_vol_ratio": 1.5,
+            "trail_atr_multiple": 2.0,
+            "stop_atr_multiple": 2.0,
+            "entry_score": 62.0,
+        },
+        "source": {
+            "title": "Volatility-Managed Portfolios — Moreira and Muir",
+            "url": "https://onlinelibrary.wiley.com/doi/10.1111/jofi.12513",
+            "concept": "Cut exposure quickly when realized volatility expands; volatility clusters while returns do not.",
+        },
+    },
 )
 ALPACA_TRADING_BASE_URLS = {
     "paper": "https://paper-api.alpaca.markets",
@@ -955,6 +1004,8 @@ def _decision_public(row: Mapping[str, Any]) -> Dict[str, Any]:
         "dryRun",
         "mode",
         "source",
+        "ensemble",
+        "indicators",
     ):
         if field in payload:
             public[field] = payload.get(field)
@@ -4146,6 +4197,8 @@ def register_crypto_api(
                     "regime": snapshot["regime"],
                     "targetWeight": decision.get("targetWeight", 0),
                     "reasons": list(decision.get("reasons") or []),
+                    "ensemble": decision.get("ensemble"),
+                    "indicators": decision.get("indicators"),
                 }
                 assets.append(snapshot)
             equity = _number(account.get("equity"), _number(account.get("portfolio_value")))

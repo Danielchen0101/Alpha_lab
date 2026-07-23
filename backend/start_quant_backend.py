@@ -48707,6 +48707,17 @@ _CRYPTO_API_CONTROLS = register_crypto_api(
 )
 
 try:
+    from crypto_paper_trader import register_crypto_paper_api
+except ImportError:  # pragma: no cover - package-style test imports
+    from .crypto_paper_trader import register_crypto_paper_api
+
+_CRYPTO_SIM_CONTROLS = register_crypto_paper_api(
+    app,
+    require_auth=require_auth,
+    safe_print=safe_print,
+)
+
+try:
     from kalshi_api import register_kalshi_api
 except ImportError:  # pragma: no cover - package-style test imports
     from .kalshi_api import register_kalshi_api
@@ -48729,11 +48740,19 @@ def _kalshi_ai_candidate_review(uid, evidence):
         }
     system_prompt = (
         'You are AlphaLab Kalshi Pre-Trade Challenger for one KXBTC15M new-entry candidate. '
-        'The deterministic probability engine, market-data validation, fees, sizing, account limits, '
+        'The strategy is Favorite Carry v3: it buys only the model-confirmed FAVORITE side '
+        '(priced 50-93c) in the final minutes and holds to settlement, so a normal candidate '
+        'has high model probability (~0.75-0.95), a small positive fee-adjusted edge, and a '
+        'short remaining horizon. Do not challenge a candidate merely for a high entry price '
+        'or a small edge; that is the design. The deterministic probability engine, '
+        'market-data validation, fees, sizing, account limits, '
         'and hard gates have final authority. Review only the supplied structured evidence. '
-        'Look for a material contradiction among strike distance, 3m/5m/15m momentum, volatility '
-        'regime, jump risk, model uncertainty, model-versus-market probability, book imbalance, '
-        'spread, depth, quote age, time remaining, and account context. Do not invent news or data. '
+        'Challenge-worthy contradictions include: the selected side is NOT the model favorite; '
+        'model and market disagree by an unusually large gap for a favorite; a jump or '
+        'volatility-ratio spike suggests the calibrated regime does not hold; momentum has '
+        'sharply reversed against the favorite within the last 3 minutes while the strike '
+        'distance is marginal; quotes or the reference price are stale; or the book is one-sided '
+        'against the entry. Do not invent news or data. '
         'You cannot create a trade, change YES/NO, price, size, thresholds, or override a hard gate. '
         'Use CHALLENGE only for a specific material contradiction that justifies waiting for a fresh '
         'snapshot; otherwise use CLEAR. Return one JSON object only with keys verdict (CLEAR or '
@@ -48831,12 +48850,25 @@ def _kalshi_ai_learning_review(uid, evidence):
         'independent shadow and traded cohorts: hold direction unless the strict '
         'contrarian thresholds are met; (5) profitable and calibrated evidence: '
         'prefer no AI expansion because deterministic controls own risk growth. '
-        'Treat Brier scores above 0.26 as poor calibration: '
+        'The active strategy is BTC15 Favorite Carry v3: it buys only the '
+        'model-confirmed favorite side (50-93c) in the final minutes of each '
+        '15-minute window and holds to settlement, so its structural benchmark is a '
+        'HIGH win rate (~85-90% calibrated) with small per-trade margins. Judge '
+        'performance against that benchmark, not against a coin flip: a 60% win '
+        'rate here is a failure. Treat Brier scores above 0.19 as poor calibration: '
         'do not increase probabilityLogitScale when calibration is poor. Do not increase '
         'executionPriceTolerance or learningExplorationRate while fee-adjusted realized '
-        'P/L is negative or realized win rate is below 42%. Never conflate shadow accuracy '
+        'P/L is negative or realized win rate is below 72%. If losses cluster on '
+        'entries near the minimum model probability, raise minModelProbability; never '
+        'lower it while realized performance is weak. Never conflate shadow accuracy '
         'with filled-trade profitability, and require shadow and traded-settlement cohorts '
-        'to agree before recommending a direction reversal. You do not place orders '
+        'to agree before recommending a direction reversal. Use evidenceSummary.v3Cohorts to '
+        'target the right lever: a weak modelProbability.below070 or 070to080 cohort supports '
+        'raising minModelProbability; decay concentrated in one secondsToClose bucket supports '
+        'shifting confidence via probabilityLogitScale rather than loosening timing; a weak '
+        'volatilityRatio.elevated cohort supports reducing probabilityLogitScale or '
+        'momentumProjectionScale; utcHourBand differences are informational only. '
+        'You do not place orders '
         'and may not change riskPerTradePct, credentials, environment, '
         'cash, exposure limits, loss stops, spread/depth gates, cooldowns, execution '
         'mode, or order routing. A contrarian recommendation is a hypothesis, not a profit '
@@ -48852,7 +48884,8 @@ def _kalshi_ai_learning_review(uid, evidence):
         'adjustments (object of DELTAS, not absolute values). Allowed adjustment '
         'keys and maximum absolute deltas are: marketBlendWeight 0.05, minNetEdge '
         '0.0025, probabilityLogitScale 0.05, momentumProjectionScale 0.02, '
-        'basisReserveBps 1.0, minConservativeEdge 0.0015, executionPriceTolerance 0.002, '
+        'basisReserveBps 1.0, minConservativeEdge 0.0015, minModelProbability 0.02, '
+        'executionPriceTolerance 0.002, '
         'learningExplorationRate 0.05. Prefer no adjustment when '
         'evidence is weak. Prefer increasing bounded exploration over lowering hard '
         'market-quality gates. Never infer expected profit from directional accuracy alone.'

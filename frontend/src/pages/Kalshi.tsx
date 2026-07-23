@@ -49,48 +49,43 @@ export const buildPresetConfig = (preset: StrategyPreset, paperBankroll: number,
   learningAiMode: preset.config.learningMode ? preset.config.learningAiMode !== false : false,
 });
 
+// All presets are variations of the v3 Favorite Carry strategy: buy only the
+// model-confirmed favorite side (50-93c) in the final minutes and hold to
+// settlement. Backtested win rate ~86-92% (53,936 real windows, 18.5 months).
 export const STRATEGY_PRESETS: StrategyPreset[] = [
   {
-    id: 'capital-guard',
-    name: 'Capital Guard',
-    nameZh: '低风险 · 资金保护',
-    description: 'Fewer entries, deeper books, and tighter position limits.',
-    descriptionZh: '减少进场，只接受更深盘口，并收紧仓位上限。',
-    config: { riskPerTradePct: 0.20, minNetEdge: 0.055, minConservativeEdge: 0.025, maxSpread: 0.04, minDepthContracts: 25, maxBookParticipation: 0.10, maxPortfolioExposurePct: 10, executionPriceTolerance: 0.005, exitProbabilityThreshold: 0.47, fractionalKelly: 0.15, learningMode: false },
+    id: 'fortress',
+    name: 'Fortress · Highest Win Rate',
+    nameZh: '堡垒 · 最高胜率',
+    description: 'Only very strong favorites (75%+ model confidence) with strict edge and book gates. Fewest trades, highest expected hit rate.',
+    descriptionZh: '只买模型置信度 75% 以上的强势方，边际与盘口门槛最严。交易最少，预期胜率最高。',
+    config: { riskPerTradePct: 0.40, minModelProbability: 0.75, minNetEdge: 0.02, minConservativeEdge: 0.01, maxSpread: 0.04, minDepthContracts: 20, maxBookParticipation: 0.10, maxPortfolioExposurePct: 12, minPrice: 0.60, maxPrice: 0.93, minSecondsToClose: 100, maxSecondsToClose: 280, executionPriceTolerance: 0.005, fractionalKelly: 0.15, learningMode: false },
   },
   {
-    id: 'balanced',
-    name: 'Balanced Evidence',
-    nameZh: '均衡 · 证据优先',
-    description: 'The recommended baseline for reliable mode-scoped evaluation.',
-    descriptionZh: '用于当前模式下可靠评估的推荐基准。',
+    id: 'favorite-carry',
+    name: 'Favorite Carry · Calibrated Baseline',
+    nameZh: '优势侧携带 · 校准基准',
+    description: 'The backtested v3 baseline: calibrated favorite entries in the last 100-320 seconds, hold to settlement.',
+    descriptionZh: '回测校准的 v3 基准：最后 100-320 秒进场买优势侧，持有到结算。',
     recommended: true,
-    config: { riskPerTradePct: 0.35, minNetEdge: 0.04, minConservativeEdge: 0.015, maxSpread: 0.06, minDepthContracts: 15, maxBookParticipation: 0.20, maxPortfolioExposurePct: 20, executionPriceTolerance: 0.01, exitProbabilityThreshold: 0.46, fractionalKelly: 0.25, learningMode: false },
-  },
-  {
-    id: 'active-sampling',
-    name: 'Active Sampling',
-    nameZh: '积极采样 · 更多样本',
-    description: 'Wider participation for more fill and settlement samples.',
-    descriptionZh: '扩大参与度，收集更多成交与结算样本。',
-    config: { riskPerTradePct: 0.40, minNetEdge: 0.03, minConservativeEdge: 0.01, maxSpread: 0.08, minDepthContracts: 10, maxBookParticipation: 0.25, maxPortfolioExposurePct: 25, executionPriceTolerance: 0.015, exitProbabilityThreshold: 0.45, fractionalKelly: 0.20, learningMode: false },
+    config: { learningMode: false },
   },
   {
     id: 'adaptive-learning',
-    name: 'Adaptive Learning Lab',
-    nameZh: '推荐 · 自适应学习实验室',
-    description: 'Bounded exploration plus evidence-based parameter reviews.',
-    descriptionZh: '受控探索，并依据结算证据分批调整参数。',
+    name: 'AI Learning · 24/7 Recommended',
+    nameZh: '推荐 · AI 自适应 24 小时',
+    description: 'Favorite Carry baseline plus bounded exploration and evidence-gated AI parameter reviews. Best for continuous unattended trading.',
+    descriptionZh: '在校准基准上叠加受控探索与证据门槛的 AI 参数复核，最适合 24 小时无人值守运行。',
     recommended: true,
-    config: { riskPerTradePct: 0.20, minNetEdge: 0.05, minConservativeEdge: 0.025, maxSpread: 0.04, minDepthContracts: 25, maxBookParticipation: 0.10, maxPortfolioExposurePct: 10, executionPriceTolerance: 0.005, exitProbabilityThreshold: 0.47, fractionalKelly: 0.10, learningMode: true, learningAiMode: true, learningExplorationRate: 0.10, learningReviewEvery: 8, learningWindowSize: 32, learningMaxRiskPct: 0.35 },
+    config: { learningMode: true, learningAiMode: true, learningExplorationRate: 0.15, learningReviewEvery: 6, learningWindowSize: 40, learningMaxRiskPct: 1.0 },
   },
   {
-    id: 'stress-test',
-    name: 'High-Risk Stress Test',
-    nameZh: '高风险 · 压力测试',
-    description: 'High sample throughput for controlled stress testing.',
-    descriptionZh: '用于受控压力测试的高样本吞吐配置。',
-    config: { riskPerTradePct: 0.60, minNetEdge: 0.02, minConservativeEdge: 0.005, maxSpread: 0.10, minDepthContracts: 5, maxBookParticipation: 0.30, maxPortfolioExposurePct: 30, executionPriceTolerance: 0.02, exitProbabilityThreshold: 0.44, fractionalKelly: 0.20, learningMode: false },
+    id: 'active-sampling',
+    name: 'Active Sampling · More Trades',
+    nameZh: '积极采样 · 更多交易',
+    description: 'Looser edge gates and a wider entry window for more fills per day; win rate stays structurally high via the favorite gate.',
+    descriptionZh: '放宽边际门槛并拉宽进场窗口以增加成交；优势侧门槛仍保证结构性高胜率。',
+    config: { riskPerTradePct: 0.60, minModelProbability: 0.58, minNetEdge: 0.008, minConservativeEdge: 0.0, maxSpread: 0.07, minDepthContracts: 8, maxBookParticipation: 0.25, minSecondsToClose: 90, maxSecondsToClose: 360, executionPriceTolerance: 0.015, learningMode: true, learningAiMode: true, learningExplorationRate: 0.25, learningReviewEvery: 6, learningWindowSize: 40 },
   },
 ];
 
@@ -612,7 +607,7 @@ const Kalshi: React.FC = () => {
     <section className="kalshi-metric-strip" aria-label={copy('Contract snapshot', '合约快照')}>
       <div><span>{copy('CONTRACT', '合约')}</span><strong>{decision?.market.ticker || 'KXBTC15M'}</strong><small>{active ? copy('Trading now', '正在交易') : copy('Next available interval', '下一个可用时段')}</small></div>
       <div><span>{copy('TIME LEFT', '剩余时间')}</span><strong>{countdown}</strong><small>{copy('Entry closes before settlement', '进场早于结算')}</small></div>
-      <div><span>{copy('BRTI START', 'BRTI 起始值')}</span><strong>{money(decision?.market.strike)}</strong><small>{copy('Kalshi strike', 'Kalshi 基准')}</small></div>
+      <div><span>{copy('STRIKE', '结算基准')}</span><strong>{money(decision?.market.strike)}</strong><small>{copy('Reference at window open', '开盘参考价')}</small></div>
       <div><span>{copy('BTC REFERENCE', 'BTC 参考价')}</span><strong>{money(decision?.model.spot)}</strong><small>Coinbase BTC-USD</small></div>
       <div><span>{copy('YES / NO ASK', 'YES / NO 卖价')}</span><strong>{cents(decision?.market.yesAsk)} / {cents(decision?.market.noAsk)}</strong><small>{copy('Executable quotes', '可成交报价')}</small></div>
       <div><span>{copy('VOLUME / OI', '成交量 / 持仓量')}</span><strong>{compact(decision?.market.volume)} / {compact(decision?.market.openInterest)}</strong><small>{copy('Contract units', '合约份数')}</small></div>
@@ -658,9 +653,9 @@ const Kalshi: React.FC = () => {
         </div>
         <p>{actionSummary(decision, chinese, isRealMode)}</p>
         <dl className="kalshi-decision-numbers">
+          <div className="is-highlight"><dt>{copy('Favorite confidence', '优势侧胜率')}</dt><dd>{probability(decision?.edge.modelProbability ?? decision?.model.selectedModelProbability)}<em>{copy('min', '下限')} {probability(decision?.edge.minimumModelProbability, 0)}</em></dd></div>
           <div><dt>{copy('Executable price', '可成交价格')}</dt><dd>{cents(decision?.edge.price)}</dd></div>
           <div><dt>{copy('Conservative probability', '保守概率')}</dt><dd>{probability(decision?.edge.conservativeProbability)}</dd></div>
-          <div><dt>{copy('Gross edge', '毛边际')}</dt><dd>{probability(decision?.edge.grossEdge)}</dd></div>
           <div><dt>{copy('Fee estimate', '费用估算')}</dt><dd>{cents(decision?.edge.feePerContract, 2)}</dd></div>
           <div><dt>{copy('Net / conservative edge', '净边际 / 保守边际')}</dt><dd>{probability(decision?.edge.netEdge)} / {probability(decision?.edge.conservativeEdge)}</dd></div>
           <div><dt>{copy('Required conservative edge', '最低保守边际')}</dt><dd>{probability(decision?.edge.minimumConservativeEdge)}</dd></div>
@@ -731,6 +726,9 @@ const Kalshi: React.FC = () => {
       riskPerTradePct: ['Risk per interval', '每时段风险'],
       minNetEdge: ['Minimum net edge', '最低净边际'],
       minConservativeEdge: ['Conservative edge', '最低保守边际'],
+      minModelProbability: ['Favorite confidence floor', '优势侧置信下限'],
+      minPrice: ['Price band floor', '价格区间下限'],
+      maxPrice: ['Price band ceiling', '价格区间上限'],
       marketBlendWeight: ['Market blend weight', '市场价格权重'],
       probabilityLogitScale: ['Probability confidence', '概率置信强度'],
       momentumProjectionScale: ['Momentum weight', '动量权重'],
@@ -744,7 +742,8 @@ const Kalshi: React.FC = () => {
       maxPortfolioExposurePct: ['Portfolio exposure', '组合敞口'],
     };
     const percentParameters = new Set([
-      'riskPerTradePct', 'minNetEdge', 'minConservativeEdge', 'marketBlendWeight',
+      'riskPerTradePct', 'minNetEdge', 'minConservativeEdge', 'minModelProbability',
+      'minPrice', 'maxPrice', 'marketBlendWeight',
       'momentumProjectionScale', 'executionPriceTolerance', 'learningExplorationRate',
       'maxSpread', 'maxBookParticipation', 'maxPortfolioExposurePct',
     ]);
@@ -808,35 +807,39 @@ const Kalshi: React.FC = () => {
       </div>
       <div className="kalshi-presets" aria-label={copy('Strategy presets', '策略预设')}>
         <div className="kalshi-presets-intro">
-          <span>{copy('ONE-CLICK PRESETS', '一键策略预设')}</span>
-          <h3>{copy('Choose the evidence window and risk', '选择证据窗口与风险强度')}</h3>
-          <p>{copy('Applying a preset replaces the complete parameter set and immediately re-evaluates the current contract.', '应用预设会替换整套参数，并立即重新评估当前合约。')}</p>
+          <span>{copy('ONE-CLICK PRESETS · FAVORITE CARRY v3', '一键策略预设 · 优势侧携带 v3')}</span>
+          <h3>{copy('Pick selectivity vs. trade count', '在胜率强度与交易数量之间选择')}</h3>
+          <p>{copy('Every preset buys only the model-confirmed favorite side in the final minutes and holds to settlement — the structure behind the 86-92% backtested win rate. Applying replaces the full parameter set and re-evaluates immediately.', '所有预设都只在最后几分钟买入模型确认的优势侧并持有到结算——这正是回测 86-92% 胜率的结构来源。应用后会替换整套参数并立即重新评估。')}</p>
         </div>
         <div className="kalshi-preset-grid">
-          {STRATEGY_PRESETS.map((preset) => (
+          {STRATEGY_PRESETS.map((preset) => {
+            const merged = { ...DEFAULT_KALSHI_BOT_CONFIG, ...preset.config };
+            return (
             <article key={preset.id} className={preset.id === 'adaptive-learning' ? 'is-learning' : ''}>
               <div><span>{preset.recommended ? copy('RECOMMENDED', '推荐') : copy('PRESET', '预设')}</span><h4>{chinese ? preset.nameZh : preset.name}</h4><p>{chinese ? preset.descriptionZh : preset.description}</p></div>
               <dl>
-                <div><dt>{copy('Risk', '单次风险')}</dt><dd>{preset.config.riskPerTradePct}%</dd></div>
-                <div><dt>{copy('Edge', '净边际')}</dt><dd>{Number(preset.config.minNetEdge || 0) * 100}%</dd></div>
-                <div><dt>{copy('Exposure', '敞口')}</dt><dd>{preset.config.maxPortfolioExposurePct}%</dd></div>
+                <div><dt>{copy('Risk', '单次风险')}</dt><dd>{merged.riskPerTradePct}%</dd></div>
+                <div><dt>{copy('Confidence', '置信下限')}</dt><dd>{Math.round(merged.minModelProbability * 100)}%</dd></div>
+                <div><dt>{copy('Edge', '净边际')}</dt><dd>{(merged.minNetEdge * 100).toFixed(1)}%</dd></div>
               </dl>
               <details className="kalshi-preset-details">
                 <summary>{copy('View all parameters', '查看完整参数')}</summary>
                 <div>
-                  <span>{copy('Spread', '最大点差')}<b>{Number(preset.config.maxSpread || 0) * 100}c</b></span>
-                  <span>{copy('Depth', '最低深度')}<b>{preset.config.minDepthContracts}</b></span>
-                  <span>{copy('Participation', '参与率')}<b>{Number(preset.config.maxBookParticipation || 0) * 100}%</b></span>
-                  <span>{copy('Book cap', '盘口参与率')}<b>{Number(preset.config.maxBookParticipation || 0) * 100}%</b></span>
-                  <span>{copy('IOC tolerance', '成交容差')}<b>{Number(preset.config.executionPriceTolerance || 0) * 100}c</b></span>
-                  <span>{copy('Exit threshold', '平仓阈值')}<b>{Number(preset.config.exitProbabilityThreshold || 0) * 100}%</b></span>
-                  <span>{copy('Kelly fraction', '凯利比例')}<b>{Number(preset.config.fractionalKelly || 0) * 100}%</b></span>
-                  {preset.config.learningMode && <span>{copy('Review every', '复盘间隔')}<b>{preset.config.learningReviewEvery}</b></span>}
+                  <span>{copy('Price band', '价格区间')}<b>{Math.round(merged.minPrice * 100)}-{Math.round(merged.maxPrice * 100)}c</b></span>
+                  <span>{copy('Entry window', '进场窗口')}<b>{merged.minSecondsToClose}-{merged.maxSecondsToClose}s</b></span>
+                  <span>{copy('Spread', '最大点差')}<b>{(merged.maxSpread * 100).toFixed(0)}c</b></span>
+                  <span>{copy('Depth', '最低深度')}<b>{merged.minDepthContracts}</b></span>
+                  <span>{copy('Participation', '参与率')}<b>{Math.round(merged.maxBookParticipation * 100)}%</b></span>
+                  <span>{copy('IOC tolerance', '成交容差')}<b>{(merged.executionPriceTolerance * 100).toFixed(1)}c</b></span>
+                  <span>{copy('Exposure', '敞口上限')}<b>{merged.maxPortfolioExposurePct}%</b></span>
+                  <span>{copy('Kelly fraction', '凯利比例')}<b>{Math.round(merged.fractionalKelly * 100)}%</b></span>
+                  {merged.learningMode && <span>{copy('Review every', '复盘间隔')}<b>{merged.learningReviewEvery}</b></span>}
                 </div>
               </details>
-              <button type="button" disabled={applyBusy} onClick={() => applyPreset(preset)}>{preset.config.learningMode ? <RobotOutlined /> : <ThunderboltOutlined />}{copy('Apply preset', '直接应用')}</button>
+              <button type="button" disabled={applyBusy} onClick={() => applyPreset(preset)}>{merged.learningMode ? <RobotOutlined /> : <ThunderboltOutlined />}{copy('Apply preset', '直接应用')}</button>
             </article>
-          ))}
+            );
+          })}
         </div>
       </div>
       <div className="kalshi-strategy-library">
@@ -969,8 +972,13 @@ const Kalshi: React.FC = () => {
       <div className="kalshi-control-grid">
         <label><span>{isRealMode ? copy('Real account equity', '实盘账户权益') : copy('Paper account equity', 'Paper 账户权益')}<small>{isRealMode ? copy('from signed Kalshi account', '来自 Kalshi 签名账户') : copy('maintained by AlphaLab', '由 AlphaLab 内置账本维护')}</small></span><input type="number" value={Number.isFinite(modeEquity) ? modeEquity.toFixed(2) : config.paperBankroll} disabled readOnly /></label>
         <label><span>{copy('Risk per interval', '每时段风险')}<small>%</small></span><input type="number" min="0.1" max="2" step="0.1" value={config.riskPerTradePct} onChange={(event) => updateConfig('riskPerTradePct', event.target.valueAsNumber)} /></label>
-        <label><span>{copy('Minimum net edge', '最低净边际')}<small>{copy('percentage points', '百分点')}</small></span><input type="number" min="2" max="15" step="0.5" value={config.minNetEdge * 100} onChange={(event) => updateConfig('minNetEdge', event.target.valueAsNumber, 100)} /></label>
-        <label><span>{copy('Conservative edge', '最低保守边际')}<small>{copy('after uncertainty', '扣除不确定性后')}</small></span><input type="number" min="0.5" max="8" step="0.5" value={config.minConservativeEdge * 100} onChange={(event) => updateConfig('minConservativeEdge', event.target.valueAsNumber, 100)} /></label>
+        <label><span>{copy('Favorite confidence floor', '优势侧置信下限')}<small>{copy('model win probability, %', '模型胜率下限，%')}</small></span><input type="number" min="50" max="90" step="1" value={config.minModelProbability * 100} onChange={(event) => updateConfig('minModelProbability', event.target.valueAsNumber, 100)} /></label>
+        <label><span>{copy('Price band', '价格区间下限')}<small>{copy('minimum entry price, cents', '最低进场价，美分')}</small></span><input type="number" min="30" max="60" step="1" value={config.minPrice * 100} onChange={(event) => updateConfig('minPrice', event.target.valueAsNumber, 100)} /></label>
+        <label><span>{copy('Price ceiling', '价格区间上限')}<small>{copy('maximum entry price, cents', '最高进场价，美分')}</small></span><input type="number" min="55" max="99" step="1" value={config.maxPrice * 100} onChange={(event) => updateConfig('maxPrice', event.target.valueAsNumber, 100)} /></label>
+        <label><span>{copy('Entry window start', '进场窗口起点')}<small>{copy('min seconds to close', '距结算最少秒数')}</small></span><input type="number" min="45" max="360" step="5" value={config.minSecondsToClose} onChange={(event) => updateConfig('minSecondsToClose', event.target.valueAsNumber)} /></label>
+        <label><span>{copy('Entry window end', '进场窗口终点')}<small>{copy('max seconds to close', '距结算最多秒数')}</small></span><input type="number" min="180" max="840" step="10" value={config.maxSecondsToClose} onChange={(event) => updateConfig('maxSecondsToClose', event.target.valueAsNumber)} /></label>
+        <label><span>{copy('Minimum net edge', '最低净边际')}<small>{copy('percentage points', '百分点')}</small></span><input type="number" min="0.5" max="15" step="0.25" value={config.minNetEdge * 100} onChange={(event) => updateConfig('minNetEdge', event.target.valueAsNumber, 100)} /></label>
+        <label><span>{copy('Conservative edge', '最低保守边际')}<small>{copy('after uncertainty', '扣除不确定性后')}</small></span><input type="number" min="0" max="8" step="0.25" value={config.minConservativeEdge * 100} onChange={(event) => updateConfig('minConservativeEdge', event.target.valueAsNumber, 100)} /></label>
         <label><span>{copy('Maximum spread', '最大点差')}<small>{copy('cents', '美分')}</small></span><input type="number" min="1" max="20" step="0.5" value={config.maxSpread * 100} onChange={(event) => updateConfig('maxSpread', event.target.valueAsNumber, 100)} /></label>
         <label><span>{copy('Maximum relative spread', '最大相对点差')}<small>{copy('spread / contract price', '点差 / 合约价格')}</small></span><input type="number" min="5" max="50" step="1" value={config.maxRelativeSpread * 100} onChange={(event) => updateConfig('maxRelativeSpread', event.target.valueAsNumber, 100)} /></label>
         <label><span>{copy('Minimum ask depth', '最低卖方深度')}<small>{copy('contracts', '份')}</small></span><input type="number" min="1" max="10000" step="5" value={config.minDepthContracts} onChange={(event) => updateConfig('minDepthContracts', event.target.valueAsNumber)} /></label>
@@ -978,7 +986,7 @@ const Kalshi: React.FC = () => {
         <label><span>{copy('Portfolio exposure cap', '组合敞口上限')}<small>%</small></span><input type="number" min="2" max="50" step="1" value={config.maxPortfolioExposurePct} onChange={(event) => updateConfig('maxPortfolioExposurePct', event.target.valueAsNumber)} /></label>
         <label><span>{copy('IOC crossing allowance', 'IOC 成交容差')}<small>{copy('cents, edge-capped', '美分，受边际约束')}</small></span><input type="number" min="0" max="3" step="0.5" value={config.executionPriceTolerance * 100} onChange={(event) => updateConfig('executionPriceTolerance', event.target.valueAsNumber, 100)} /></label>
         <label><span>{copy('Model-market gap limit', '模型市场分歧上限')}<small>{copy('percentage points', '百分点')}</small></span><input type="number" min="10" max="40" step="1" value={config.maxModelMarketGap * 100} onChange={(event) => updateConfig('maxModelMarketGap', event.target.valueAsNumber, 100)} /></label>
-        <label><span>{copy('Protective probability gate', '保护性概率门槛')}<small>{copy('must also clear the loss gate', '必须同时满足亏损门槛')}</small></span><input type="number" min="35" max="49" step="1" value={config.exitProbabilityThreshold * 100} onChange={(event) => updateConfig('exitProbabilityThreshold', event.target.valueAsNumber, 100)} /></label>
+        <label><span>{copy('Protective probability gate', '保护性概率门槛')}<small>{copy('must also clear the loss gate', '必须同时满足亏损门槛')}</small></span><input type="number" min="10" max="49" step="1" value={config.exitProbabilityThreshold * 100} onChange={(event) => updateConfig('exitProbabilityThreshold', event.target.valueAsNumber, 100)} /></label>
         <label><span>{copy('Minimum net exit profit', '最低净平仓盈利')}<small>{copy('dollars per contract, after both fees', '每份美元，已扣除两侧手续费')}</small></span><input type="number" min="0" max="10" step="0.5" value={config.minimumExitProfit * 100} onChange={(event) => updateConfig('minimumExitProfit', event.target.valueAsNumber, 100)} /></label>
         <label><span>{copy('Protective stop-loss gate', '保护性止损门槛')}<small>{copy('loss from fee-adjusted break-even', '相对含费盈亏平衡点的亏损')}</small></span><input type="number" min="15" max="80" step="5" value={config.stopLossPct * 100} onChange={(event) => updateConfig('stopLossPct', event.target.valueAsNumber, 100)} /></label>
         <label><span>{copy('Emergency stop-loss gate', '紧急止损门槛')}<small>{copy('only after probability collapse', '仅在概率严重恶化后启用')}</small></span><input type="number" min="10" max="60" step="5" value={config.emergencyStopLossPct * 100} onChange={(event) => updateConfig('emergencyStopLossPct', event.target.valueAsNumber, 100)} /></label>
@@ -1000,6 +1008,9 @@ const Kalshi: React.FC = () => {
       history_sample: copy('Not enough price history', '价格历史样本不足'),
       volatility_regime: copy('Volatility is outside the strategy range', '波动率超出策略范围'),
       model_market_agreement: copy('Model and market disagree too much', '模型与市场分歧过大'),
+      model_probability: copy('Favorite-side confidence is below the floor', '优势侧模型胜率低于下限'),
+      price_band: copy('Executable price is outside the favorite band', '可成交价不在优势侧价格区间'),
+      book_pressure: copy('Order-book pressure is adverse', '盘口压力不利'),
       trend_confirmation: copy('Trend confirmation is insufficient', '趋势确认不足'),
       two_sided_quote: copy('No executable two-sided quote', '缺少可成交双边报价'),
       spread: copy('Spread is too wide', '点差过宽'),
@@ -1037,8 +1048,8 @@ const Kalshi: React.FC = () => {
   const renderRules = () => (
     <section className="kalshi-reference-page">
       <div className="kalshi-reference-column"><span>01</span><h2>{copy('Resolution rule', '结算规则')}</h2><p>{rulesPrimary || copy('Waiting for the active contract rule.', '正在等待当前合约规则。')}</p></div>
-      <div className="kalshi-reference-column"><span>02</span><h2>{copy('Reference methodology', '参考方法')}</h2><p>{rulesSecondary || copy('The official result uses CF Benchmarks BRTI, not the last Coinbase trade.', '官方结果使用 CF Benchmarks BRTI，而不是 Coinbase 最后一笔成交。')}</p></div>
-      <div className="kalshi-reference-column"><span>03</span><h2>{copy('Model boundary', '模型边界')}</h2><p>{copy('Coinbase is an independent spot proxy. Basis differences against BRTI remain inside the uncertainty and edge buffers.', 'Coinbase 仅作为独立现货代理；它与 BRTI 的基准差被保留在不确定性和边际缓冲中。')}</p></div>
+      <div className="kalshi-reference-column"><span>02</span><h2>{copy('Reference methodology', '参考方法')}</h2><p>{rulesSecondary || copy('The official result is a 60-second average of the CF Benchmarks Real-Time Index over the final minute, not the last Coinbase trade.', '官方结果为结算前最后一分钟 CF Benchmarks 实时指数的 60 秒均价，而不是 Coinbase 最后一笔成交。')}</p></div>
+      <div className="kalshi-reference-column"><span>03</span><h2>{copy('Model boundary', '模型边界')}</h2><p>{copy('Coinbase is an independent spot proxy. Basis differences against the CF Benchmarks index remain inside the uncertainty and edge buffers.', 'Coinbase 仅作为独立现货代理；它与 CF Benchmarks 指数的基准差被保留在不确定性和边际缓冲中。')}</p></div>
     </section>
   );
 
@@ -1079,6 +1090,18 @@ const Kalshi: React.FC = () => {
     const filledOrders = orderRows.filter((item: any) => Number(item.fill_count_fp || 0) > 0);
     const rejectedOrders = orderRows.filter((item: any) => String(item.status || '').toLowerCase() === 'rejected');
     const totalFees = orderRows.reduce((sum: number, item: any) => sum + Number(orderFee(item) || 0), 0);
+    // Portfolio analytics ---------------------------------------------------
+    const startingBalance = Number(paperPortfolio.balance?.starting_balance || 0) / 100;
+    const unrealizedPnl = positionRows.reduce((sum: number, item: any) => sum + Number(item.unrealized_pnl_dollars || 0), 0);
+    const openExposure = positionRows.reduce((sum: number, item: any) => sum + Number(item.market_exposure_dollars || 0), 0);
+    const totalReturnPct = startingBalance > 0 ? (accountEquity - startingBalance) / startingBalance : null;
+    const pnlValues = realizedRecords.map((record: any) => Number(record.pnl || 0));
+    const bestTrade = analytics.realizedBestTrade ?? (pnlValues.length ? Math.max(...pnlValues) : null);
+    const worstTrade = analytics.realizedWorstTrade ?? (pnlValues.length ? Math.min(...pnlValues) : null);
+    const losses = Math.max(0, realizedSamples - Number(wins || 0));
+    const grossWin = pnlValues.filter((value) => value > 0).reduce((sum, value) => sum + value, 0);
+    const grossLoss = pnlValues.filter((value) => value < 0).reduce((sum, value) => sum + Math.abs(value), 0);
+    const profitFactor = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? Infinity : null);
 
     if (view === 'orders') {
       return (
@@ -1113,25 +1136,35 @@ const Kalshi: React.FC = () => {
           </section>
           <section className="kalshi-ledger-section">
             <div className="kalshi-section-head"><div><span>{copy('EXECUTION EVENTS', '执行事件')}</span><h2>{copy('Fills and settlements', '成交与结算')}</h2><small>{copy('Raw account events for execution audit.', '用于执行审计的原始账户事件。')}</small></div><strong>{paperPortfolio.fills.length + paperPortfolio.settlements.length}</strong></div>
-            <div className="kalshi-activity-list">{[...paperPortfolio.fills.map((item) => ({ ...item, kind: 'FILL' })), ...paperPortfolio.settlements.map((item) => ({ ...item, kind: 'SETTLEMENT' }))].map((item: any, index) => <div key={item.fill_id || `${item.ticker}-${index}`}><b>{item.kind}</b><strong>{item.ticker || item.market_ticker}</strong><span>{item.outcome_side || item.market_result || item.side || '--'}</span><span>{item.count_fp || item.yes_count_fp || item.no_count_fp || '--'}</span><small>{item.created_time || item.settled_time || '--'}</small></div>)}</div>
+            <div className="kalshi-activity-list">{[...paperPortfolio.fills.map((item) => ({ ...item, kind: 'FILL' })), ...paperPortfolio.settlements.map((item) => ({ ...item, kind: 'SETTLEMENT' }))].map((item: any, index) => {
+              const eventTime = item.created_time || item.settled_time;
+              return <div key={item.fill_id || item.settlement_id || `${item.ticker}-${index}`}><b className={item.kind === 'SETTLEMENT' ? 'is-settlement' : ''}>{item.kind}</b><strong>{item.ticker || item.market_ticker || '--'}</strong><span>{String(item.outcome_side || item.market_result || item.side || '--').toUpperCase()}</span><span>{item.count_fp || item.yes_count_fp || item.no_count_fp || '--'}</span><small>{eventTime ? new Date(eventTime).toLocaleString(chinese ? 'zh-CN' : 'en-US') : '--'}</small></div>;
+            })}</div>
           </section>
         </>
       );
     }
 
+    const returnClass = totalReturnPct === null ? '' : totalReturnPct >= 0 ? 'is-profit' : 'is-loss';
     return (
       <>
         <section className="kalshi-account-strip">
+          <div className="is-headline">
+            <span>{copy('ACCOUNT EQUITY', '账户权益')}</span>
+            <strong>{money(accountEquity)}</strong>
+            <small>{totalReturnPct === null
+              ? copy('Cash plus open-position value', '现金加未结持仓市值')
+              : <>{copy('Total return', '总回报')} <em className={returnClass}>{totalReturnPct >= 0 ? '+' : ''}{(totalReturnPct * 100).toFixed(2)}%</em>{startingBalance > 0 ? ` · ${copy('from', '起始')} ${money(startingBalance)}` : ''}</>}</small>
+          </div>
           <div><span>{isRealMode ? copy('REAL CASH', '实盘现金') : copy('PAPER CASH', '模拟现金')}</span><strong>{money(cash)}</strong><small>{copy('Available buying power', '可用购买力')}</small></div>
-          <div><span>{copy('ACCOUNT EQUITY', '账户权益')}</span><strong>{money(accountEquity)}</strong><small>{copy('Cash plus open-position value', '现金加未结持仓市值')}</small></div>
-          <div><span>{copy('OPEN POSITIONS', '当前持仓')}</span><strong>{paperPortfolio.positions.length}</strong><small>{copy('Unsettled markets', '未结算市场')}</small></div>
-          <div><span>{copy('FILLS / SETTLED', '成交 / 结算')}</span><strong>{paperPortfolio.fills.length} / {paperPortfolio.settlements.length}</strong><small>{new Date(paperPortfolio.asOf).toLocaleTimeString()}</small></div>
+          <div><span>{copy('UNREALIZED P/L', '未实现盈亏')}</span><strong className={unrealizedPnl >= 0 ? 'is-profit' : 'is-loss'}>{unrealizedPnl >= 0 ? '+' : ''}{money(unrealizedPnl)}</strong><small>{positionRows.length} {copy('open · exposure', '持仓 · 敞口')} {money(openExposure)}</small></div>
+          <div><span>{copy('REALIZED P/L', '已实现盈亏')}</span><strong className={Number(totalPnl) >= 0 ? 'is-profit' : 'is-loss'}>{Number(totalPnl) >= 0 ? '+' : ''}{money(totalPnl)}</strong><small>{copy('Net of fees · updated', '扣费后 · 更新于')} {new Date(paperPortfolio.asOf).toLocaleTimeString(chinese ? 'zh-CN' : 'en-US')}</small></div>
         </section>
         <section className="kalshi-performance-section">
           <div className="kalshi-performance-summary">
-            <div><span>{copy('REALIZED P/L', '已实现盈亏')}</span><strong className={Number(totalPnl) >= 0 ? 'is-profit' : 'is-loss'}>{money(totalPnl)}</strong><small>{copy('Filled exits and final settlements, net of fees', '已成交卖出与最终结算，扣除费用')}</small></div>
-            <div><span>{copy('REALIZED WIN RATE', '已实现胜率')}</span><strong>{winRate === null ? '--' : probability(winRate)}</strong><small>{wins} {copy('profitable', '笔盈利')} / {realizedSamples} {copy('realized', '笔已实现')}</small></div>
-            <div><span>{copy('AVERAGE / TRADE', '单笔平均')}</span><strong>{averagePnl === null ? '--' : money(averagePnl)}</strong><small>{copy('Net of reported costs and fees', '扣除已报告成本与费用')}</small></div>
+            <div><span>{copy('REALIZED WIN RATE', '已实现胜率')}</span><strong>{winRate === null ? '--' : probability(winRate)}</strong><small><em className="is-profit">{wins}{copy('W', ' 胜')}</em> · <em className="is-loss">{losses}{copy('L', ' 负')}</em> / {realizedSamples} {copy('trades', '笔')}</small></div>
+            <div><span>{copy('AVERAGE / TRADE', '单笔平均')}</span><strong className={Number(averagePnl) >= 0 ? 'is-profit' : Number(averagePnl) < 0 ? 'is-loss' : ''}>{averagePnl === null ? '--' : money(averagePnl)}</strong><small>{copy('Profit factor', '盈亏比')} {profitFactor === null ? '--' : profitFactor === Infinity ? '∞' : profitFactor.toFixed(2)}</small></div>
+            <div><span>{copy('BEST / WORST', '最佳 / 最差')}</span><strong>{bestTrade === null ? '--' : <><em className="is-profit">{money(bestTrade)}</em></>}</strong><small>{copy('Worst', '最差')} {worstTrade === null ? '--' : <em className="is-loss">{money(worstTrade)}</em>}</small></div>
           </div>
           <div className="kalshi-performance-chart">
             <div><span>{copy('CUMULATIVE REALIZED P/L', '累计已实现盈亏')}</span><small>{copy('Trade-by-trade realized account curve', '逐笔已实现交易账户曲线')}</small></div>
@@ -1141,17 +1174,24 @@ const Kalshi: React.FC = () => {
         <section className="kalshi-ledger-section">
           <div className="kalshi-section-head"><div><span>{copy('OPEN EXPOSURE', '当前敞口')}</span><h2>{copy('Positions and marked P/L', '持仓与盯市盈亏')}</h2><small>{kalshiModeLabel}</small></div><strong>{positionRows.length}</strong></div>
           <div className="kalshi-portfolio-table">
-              <div className="kalshi-portfolio-head"><span>{copy('CONTRACT', '合约')}</span><span>{copy('NET SIDE', '净方向')}</span><span>{copy('YES / NO', 'YES / NO')}</span><span>{copy('VALUE / COST', '市值 / 成本')}</span><span>{copy('UNREALIZED / FEES', '浮盈亏 / 费用')}</span><span>{copy('MARKS / UPDATED', '盯市 / 更新')}</span></div>
-              {positionRows.length ? positionRows.map((item: any, index: number) => (
+              <div className="kalshi-portfolio-head"><span>{copy('CONTRACT', '合约')}</span><span>{copy('SIDE / SIZE', '方向 / 数量')}</span><span>{copy('AVG ENTRY', '平均成本')}</span><span>{copy('MARK', '盯市价')}</span><span>{copy('VALUE / COST', '市值 / 成本')}</span><span>{copy('UNREALIZED / FEES', '浮盈亏 / 费用')}</span><span>{copy('UPDATED', '更新时间')}</span></div>
+              {positionRows.length ? positionRows.map((item: any, index: number) => {
+                const side = positionSideLabel(item);
+                const avgEntry = side === 'NO' ? item.no_average_price_dollars : item.yes_average_price_dollars;
+                const mark = side === 'NO' ? item.no_mark_dollars : item.yes_mark_dollars;
+                const unrealized = Number(item.unrealized_pnl_dollars || 0);
+                return (
                 <div className="kalshi-portfolio-row" key={item.ticker || index}>
                   <b>{item.ticker || '--'}</b>
-                  <span>{positionSideLabel(item)} · {Number(item.net_count_fp || 0)} {copy('net', '净')}</span>
-                  <strong>{Number(item.yes_count_fp || 0)} / {Number(item.no_count_fp || 0)}</strong>
+                  <span><em className={`kalshi-side-badge is-${side.toLowerCase()}`}>{side}</em> {Number(item.net_count_fp || 0)}</span>
+                  <span>{cents(avgEntry)}</span>
+                  <span>{cents(mark)}</span>
                   <span>{money(Number(item.market_value_dollars || 0))} / {money(Number(item.market_exposure_dollars || 0))}</span>
-                  <span className={Number(item.unrealized_pnl_dollars || 0) >= 0 ? 'is-profit' : 'is-loss'}>{money(Number(item.unrealized_pnl_dollars || 0))} / {money(Number(item.fee_cost_dollars || 0))}</span>
-                  <span>{cents(Number(item.yes_mark_dollars || 0))} / {cents(Number(item.no_mark_dollars || 0))} · {item.last_trade_at ? new Date(item.last_trade_at).toLocaleTimeString(chinese ? 'zh-CN' : 'en-US') : '--'}</span>
+                  <span className={unrealized >= 0 ? 'is-profit' : 'is-loss'}>{unrealized >= 0 ? '+' : ''}{money(unrealized)} / {money(Number(item.fee_cost_dollars || 0))}</span>
+                  <span>{item.last_trade_at ? new Date(item.last_trade_at).toLocaleTimeString(chinese ? 'zh-CN' : 'en-US') : '--'}</span>
                 </div>
-              )) : <div className="kalshi-empty-row">{isRealMode ? copy('Your Kalshi account has no open positions yet.', '你的 Kalshi 账户当前没有持仓。') : copy('The Paper account has no open positions yet.', 'Paper 账户当前没有持仓。')}</div>}
+                );
+              }) : <div className="kalshi-empty-row">{isRealMode ? copy('Your Kalshi account has no open positions yet.', '你的 Kalshi 账户当前没有持仓。') : copy('The Paper account has no open positions yet.', 'Paper 账户当前没有持仓。')}</div>}
           </div>
         </section>
         <section className="kalshi-ledger-section">
@@ -1180,7 +1220,7 @@ const Kalshi: React.FC = () => {
 
   const renderStrategy = () => (
     <section className="kalshi-strategy-section">
-      <div className="kalshi-section-head"><div><span>{copy('STRATEGY GOVERNANCE', '策略治理')}</span><h2>{robotState?.strategy?.name || 'BTC15 Probability Ensemble'}</h2></div><strong>v{robotState?.strategy?.version || 1}</strong></div>
+      <div className="kalshi-section-head"><div><span>{copy('STRATEGY GOVERNANCE', '策略治理')}</span><h2>{robotState?.strategy?.name || 'BTC15 Favorite Carry v3'}</h2></div><strong>v{robotState?.strategy?.version || 3}</strong></div>
       <div className="kalshi-strategy-grid">
         <article><span>{copy('PHILOSOPHY', '策略理念')}</span><p>{robotState?.strategy?.philosophy || copy('Probability, edge, liquidity, and risk must agree before an order is allowed.', '概率、边际、流动性与风险必须同时通过后才允许下单。')}</p></article>
         <article><span>{copy('MODEL INPUTS', '模型输入')}</span><ul>{(robotState?.strategy?.components || []).map((component) => <li key={component}>{component}</li>)}</ul></article>
@@ -1195,7 +1235,7 @@ const Kalshi: React.FC = () => {
       {[
         [copy('Contract and quotes', '合约与报价'), 'Kalshi Trade API v2', 'KXBTC15M'],
         [copy('Order book', '订单簿'), 'Kalshi production public orderbook', copy('Sub-second hot cache for active contracts', '活跃合约亚秒级热缓存')],
-        [copy('Settlement authority', '结算依据'), 'CF Benchmarks BRTI', copy('60-second start and end averages', '起止各 60 秒均价')],
+        [copy('Settlement authority', '结算依据'), 'CF Benchmarks Real-Time Index', copy('60-second average over the final minute before close', '结算前最后一分钟的 60 秒均价')],
         [copy('Independent spot', '独立现货'), 'Coinbase Exchange BTC-USD', copy('Ticker + 1-minute candles', '报价与一分钟 K 线')],
       ].map(([title, source, detail]) => <div key={title}><DatabaseOutlined /><span>{title}</span><strong>{source}</strong><small>{detail}</small></div>)}
     </section>

@@ -23,8 +23,16 @@ MAX_DECISION_RECORDS = 1
 MAX_SETTLEMENT_RECORDS = 200
 MAX_LEARNING_OBSERVATIONS = 500
 MAX_TRADED_TICKERS = 500
-PAPER_STATE_VERSION = 4
+PAPER_STATE_VERSION = 5
 KALSHI_MODES = ("paper", "real")
+
+# The v3 favorite-carry strategy targets a structurally high win rate
+# (~85-90% in the 18-month calibration backtest), so "weak" and "strong"
+# evidence thresholds sit far above the coin-flip levels used by v2.
+V3_WEAK_WIN_RATE = 0.72
+V3_STRONG_WIN_RATE = 0.85
+V3_POOR_BRIER = 0.19
+V3_GOOD_BRIER = 0.15
 
 
 def _number(value: Any, default: float = 0.0) -> float:
@@ -156,6 +164,27 @@ def _learning_evidence_summary(
             ),
         }
 
+    def selected_model_probability_of(row):
+        features = dict(row.get("learningFeatures") or {})
+        model_yes = features.get("modelYesProbability")
+        if model_yes is None:
+            return None
+        value = _number(model_yes, 0.5)
+        return value if str(row.get("side") or "").upper() == "YES" else 1.0 - value
+
+    def feature_number(row, key, default=None):
+        features = dict(row.get("learningFeatures") or {})
+        value = features.get(key)
+        return _number(value) if value is not None else default
+
+    def settled_hour(row):
+        raw = str(row.get("settledAt") or "")
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed.astimezone(timezone.utc).hour
+
     realized_pnls = [_number(row.get("pnl")) for row in realized]
     early_pnls = [_number(row.get("pnl")) for row in early]
     model_brier = brier(settled, lambda row: _number(row.get("fairProbability"), 0.5))
@@ -195,6 +224,34 @@ def _learning_evidence_summary(
             "expensiveEntry": cohort(settled, lambda row: _number(row.get("entryPrice"), 0.5) > 0.65),
             "exploration": cohort(settled, lambda row: bool(row.get("explorationTrade"))),
             "standard": cohort(settled, lambda row: not bool(row.get("explorationTrade"))),
+        },
+        # v3 fine-tuning cohorts. Each maps directly to one bounded lever:
+        # marginal-confidence decay -> minModelProbability; a specific
+        # entry-timing bucket underperforming -> min/maxSecondsToClose;
+        # elevated-volatility decay -> maxVolatilityRatio / logit scale;
+        # a weak hour band is informational (no per-hour lever exists).
+        "v3Cohorts": {
+            "modelProbability": {
+                "below070": cohort(settled, lambda row: (selected_model_probability_of(row) or 1.0) < 0.70),
+                "070to080": cohort(settled, lambda row: 0.70 <= (selected_model_probability_of(row) or -1.0) < 0.80),
+                "080to090": cohort(settled, lambda row: 0.80 <= (selected_model_probability_of(row) or -1.0) < 0.90),
+                "above090": cohort(settled, lambda row: (selected_model_probability_of(row) or -1.0) >= 0.90),
+            },
+            "secondsToClose": {
+                "over240": cohort(settled, lambda row: (feature_number(row, "secondsToClose") or 0.0) > 240),
+                "180to240": cohort(settled, lambda row: 180 < (feature_number(row, "secondsToClose") or -1.0) <= 240),
+                "under180": cohort(settled, lambda row: 0 < (feature_number(row, "secondsToClose") or -1.0) <= 180),
+            },
+            "volatilityRatio": {
+                "calm": cohort(settled, lambda row: (feature_number(row, "volatilityRatio") or 1.0) <= 1.5),
+                "elevated": cohort(settled, lambda row: (feature_number(row, "volatilityRatio") or 1.0) > 1.5),
+            },
+            "utcHourBand": {
+                "h00to05": cohort(settled, lambda row: (settled_hour(row) or -1) in range(0, 6)),
+                "h06to11": cohort(settled, lambda row: (settled_hour(row) or -1) in range(6, 12)),
+                "h12to17": cohort(settled, lambda row: (settled_hour(row) or -1) in range(12, 18)),
+                "h18to23": cohort(settled, lambda row: (settled_hour(row) or -1) in range(18, 24)),
+            },
         },
     }
 
@@ -236,20 +293,32 @@ class KalshiRobotState:
             if int(state.get("storageVersion") or 0) < PAPER_STATE_VERSION:
                 enabled = bool(state.get("enabled"))
                 configured = normalize_strategy_config(state.get("config") or {})
-                # Earlier execution/calibration records are not valid against the
-                # current production order book and built-in Paper ledger.
+                # The v3 favorite-carry strategy replaces the v2 longshot-prone
+                # edge hunter. Old records and old tuned thresholds are not
+                # valid evidence for the new entry logic, so both reset to the
+                # freshly calibrated defaults.
                 for field in (
-                    "marketBlendWeight", "minNetEdge", "minConservativeEdge",
+                    "minNetEdge", "minConservativeEdge", "minPrice", "maxPrice",
+                    "minModelProbability", "minSecondsToClose", "maxSecondsToClose",
+                    "probabilityLogitScale", "momentumProjectionScale",
+                    "basisReserveBps", "marketBlendWeight", "maxVolatilityRatio",
+                    "exitProbabilityThreshold", "stopLossPct", "emergencyStopLossPct",
+                    "minimumExitProfit", "riskPerTradePct",
                     "executionPriceTolerance", "learningExplorationRate",
                 ):
                     configured[field] = DEFAULT_STRATEGY_CONFIG[field]
+                configured["learningContrarianMode"] = False
                 replacement = self._initial()
                 replacement["enabled"] = enabled
                 replacement["config"] = configured
                 replacement["strategy"]["changes"] = [{
                     "at": _now(),
-                    "version": 4,
-                    "summary": "Cleared pre-v4 trading and learning records; calibration now uses only AlphaLab Paper fills priced from Kalshi production quotes.",
+                    "version": 5,
+                    "summary": (
+                        "Adopted the v3 favorite-carry strategy: late-window entries on the "
+                        "model-confirmed favorite side only, calibrated on 53,936 real 15-minute "
+                        "windows. Cleared pre-v3 records; they measured a different strategy."
+                    ),
                 }]
                 self._users[user_id] = replacement
                 migrated = True
@@ -277,15 +346,21 @@ class KalshiRobotState:
             "decisions": [],
             "decisionLimit": MAX_DECISION_RECORDS,
             "strategy": {
-                "name": "BTC15 Conservative Edge Ensemble",
-                "version": 2,
-                "philosophy": "Trade only when an uncertainty-adjusted probability edge survives production quotes, official fees, liquidity, volatility-regime, and account-level risk gates.",
+                "name": "BTC15 Favorite Carry v3",
+                "version": 3,
+                "philosophy": (
+                    "Buy only the model-confirmed FAVORITE side in the final minutes of the "
+                    "quarter-hour, priced 50-93c, hold to settlement. Win rate is structural: "
+                    "the forecast itself (~85-90% calibrated) is the expected hit rate. Never "
+                    "buy the longshot side; that is what produced the old ~20% win rate."
+                ),
                 "components": [
-                    "distance to BRTI settlement strike",
-                    "EWMA plus range-based realized volatility",
-                    "bounded 3m, 5m, and 15m momentum",
-                    "Kalshi microprice and order-book imbalance",
-                    "uncertainty-adjusted edge after fees",
+                    "distance to settlement strike over remaining diffusion horizon",
+                    "MLE-calibrated time-scaled logistic (fit on 53,936 real 15m windows)",
+                    "bounded 5m momentum logit shift",
+                    "favorite-side selection with minimum model probability",
+                    "Kalshi microprice blend, fee-adjusted and uncertainty-adjusted edge",
+                    "hold-to-settlement exits with deep protective stops only",
                     "depth participation, exposure, loss-stop, and cooldown gates",
                 ],
                 "settledSamples": 0,
@@ -1557,6 +1632,7 @@ class KalshiRobotState:
                 "basisReserveBps": (-1.0, 1.0),
                 "minNetEdge": (-0.0025, 0.0025),
                 "minConservativeEdge": (-0.0015, 0.0015),
+                "minModelProbability": (-0.02, 0.02),
                 "executionPriceTolerance": (-0.002, 0.002),
                 "learningExplorationRate": (-0.05, 0.05),
             }
@@ -1571,9 +1647,9 @@ class KalshiRobotState:
             brier_score = _number(strategy.get("brierScore"), -1.0)
             weak_financial_evidence = (
                 realized_samples >= 12
-                and (realized_average_pnl < 0 or realized_win_rate < 0.42)
+                and (realized_average_pnl < 0 or realized_win_rate < V3_WEAK_WIN_RATE)
             )
-            poor_calibration = settled_samples >= 12 and brier_score > 0.26
+            poor_calibration = settled_samples >= 12 and brier_score > V3_POOR_BRIER
             evidence_requirements = {
                 "marketBlendWeight": (settled_samples, 12, "final settlement labels"),
                 "probabilityLogitScale": (settled_samples, 12, "final settlement labels"),
@@ -1581,6 +1657,7 @@ class KalshiRobotState:
                 "basisReserveBps": (observed_samples, 24, "settled shadow labels"),
                 "minNetEdge": (realized_samples, 16, "realized trades"),
                 "minConservativeEdge": (realized_samples, 16, "realized trades"),
+                "minModelProbability": (settled_samples, 12, "final settlement labels"),
                 "executionPriceTolerance": (max(early_exit_samples, realized_samples), 12, "execution outcomes"),
                 "learningExplorationRate": (min(realized_samples, settled_samples), 12, "realized and finally settled trades"),
             }
@@ -1599,7 +1676,7 @@ class KalshiRobotState:
                         rejection_reason = "Rejected: negative fee-adjusted evidence forbids looser execution."
                     elif key == "learningExplorationRate" and delta > 0 and weak_financial_evidence:
                         rejection_reason = "Rejected: exploration cannot expand while realized performance is weak."
-                    elif key in {"minNetEdge", "minConservativeEdge"} and delta < 0 and weak_financial_evidence:
+                    elif key in {"minNetEdge", "minConservativeEdge", "minModelProbability"} and delta < 0 and weak_financial_evidence:
                         rejection_reason = "Rejected: entry selectivity cannot be loosened while fee-adjusted performance is weak."
                     elif key == "marketBlendWeight" and delta < 0 and poor_calibration:
                         rejection_reason = "Rejected: poor calibration forbids reducing the stabilizing market-price blend."
@@ -1774,8 +1851,8 @@ class KalshiRobotState:
 
         before = dict(config)
         reasons = []
-        weak_performance = average_pnl < 0 or win_rate < 0.42
-        poor_calibration = brier is not None and brier > 0.26
+        weak_performance = average_pnl < 0 or win_rate < V3_WEAK_WIN_RATE
+        poor_calibration = brier is not None and brier > V3_POOR_BRIER
         early_closes = [row for row in window if str(row.get("exitType") or "") == "sale"]
         early_close_average = (
             sum(_number(row.get("pnl")) for row in early_closes) / len(early_closes)
@@ -1785,13 +1862,14 @@ class KalshiRobotState:
             config["riskPerTradePct"] = max(0.10, float(config["riskPerTradePct"]) * 0.85)
             config["minNetEdge"] = min(0.10, float(config["minNetEdge"]) + 0.0025)
             config["minConservativeEdge"] = min(0.05, float(config["minConservativeEdge"]) + 0.0015)
+            config["minModelProbability"] = min(0.90, float(config.get("minModelProbability") or 0.60) + 0.01)
             config["learningExplorationRate"] = max(0.05, exploration * 0.75)
             config["marketBlendWeight"] = min(0.50, float(config["marketBlendWeight"]) + 0.025)
             if poor_calibration:
-                config["probabilityLogitScale"] = max(1.20, float(config["probabilityLogitScale"]) - 0.05)
-                reasons.append("settled forecasts were overconfident; forecast extremity was reduced")
+                config["probabilityLogitScale"] = max(1.40, float(config["probabilityLogitScale"]) - 0.05)
+                reasons.append("settled forecasts were overconfident; forecast extremity was reduced and favorite selectivity raised")
             if weak_performance:
-                reasons.append("fee-adjusted hit rate or net P/L weakened; sizing and exploration were reduced")
+                reasons.append("fee-adjusted hit rate or net P/L weakened below the favorite-carry benchmark; sizing and exploration were reduced")
             if early_close_average is not None and early_close_average < 0:
                 config["executionPriceTolerance"] = max(0.0, float(config["executionPriceTolerance"]) - 0.002)
                 config["maxSpread"] = max(0.04, float(config["maxSpread"]) - 0.005)
@@ -1799,22 +1877,22 @@ class KalshiRobotState:
                 reasons.append("early exits lost money after fees; crossing, spread, and book participation were tightened")
         elif (
             len(window) >= 16
-            and win_rate >= 0.58
+            and win_rate >= V3_STRONG_WIN_RATE
             and average_pnl > 0
-            and (brier is None or brier <= 0.24)
+            and (brier is None or brier <= V3_GOOD_BRIER)
         ):
             risk_cap = float(config.get("learningMaxRiskPct") or 0.50)
             config["riskPerTradePct"] = min(risk_cap, float(config["riskPerTradePct"]) * 1.08)
-            config["minNetEdge"] = max(0.02, float(config["minNetEdge"]) - 0.0015)
-            config["minConservativeEdge"] = max(0.005, float(config["minConservativeEdge"]) - 0.0005)
-            reasons.append(f"recent {env_label} window remained profitable and calibrated; sizing expanded cautiously")
+            config["minNetEdge"] = max(0.005, float(config["minNetEdge"]) - 0.0015)
+            config["minConservativeEdge"] = max(0.0, float(config["minConservativeEdge"]) - 0.0005)
+            reasons.append(f"recent {env_label} window beat the favorite-carry benchmark; sizing expanded cautiously")
         else:
             # A neutral window uses only the configured exploration budget. It
             # can collect more fills, but cannot cross the hard edge,
             # spread, exposure, loss-stop, or order-size bounds.
             relaxation = min(0.0025, exploration * 0.0125)
-            config["minNetEdge"] = max(0.02, float(config["minNetEdge"]) - relaxation)
-            config["minConservativeEdge"] = max(0.005, float(config["minConservativeEdge"]) - relaxation * 0.4)
+            config["minNetEdge"] = max(0.005, float(config["minNetEdge"]) - relaxation)
+            config["minConservativeEdge"] = max(0.0, float(config["minConservativeEdge"]) - relaxation * 0.4)
             reasons.append(f"recent {env_label} evidence was neutral; signal thresholds relaxed slightly while execution limits stayed fixed")
 
         config = normalize_strategy_config(config)

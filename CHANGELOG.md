@@ -4,7 +4,11 @@ All notable AlphaLab changes are recorded here. The project follows [Semantic Ve
 
 ## [Unreleased]
 
-No unreleased changes.
+### Changed
+
+- **Kalshi BTC 15-minute strategy rebuilt as "Favorite Carry v3"** (`btc15_favorite_carry_v3`). The v2 edge-hunter was structurally under-confident and routed ~100% of entries to the longshot side, producing the observed ~20% win rate. v3 buys only the model-confirmed favorite side (50-93c) in the final 100-320 seconds and holds to settlement. Probability model recalibrated by MLE on 53,936 real 15-minute BTC windows (logit scale ~1.95 rising near expiry, bounded 5-minute momentum logit shift, 60-second settlement-average horizon adjustment, no reliability shrink). Replay of the shipped engine over the last 120 days: 813 trades, 89.9% win rate, every month 86.6-91.6%. See `docs/kalshi_btc15m_strategy_v3.md`.
+- Kalshi robot state migrated to v5: pre-v3 trade/learning records are cleared and strategy parameters reset to calibrated defaults; adaptive-learning and Settings-AI benchmarks recalibrated for the high-win-rate profile (weak < 72% win rate, strong ≥ 85%, poor Brier > 0.19) with a new evidence-gated `minModelProbability` lever.
+- Kalshi frontend presets replaced (Fortress / Favorite Carry / AI Learning 24-7 / Active Sampling), new controls for favorite confidence floor, price band, and entry window; stale pre-v3 local configurations are ignored via a versioned storage key.
 
 ## [3.0.0] - 2026-07-18
 

@@ -20,17 +20,19 @@ def _candles(count=90, start=64_000.0, step=1.00012):
 
 
 def _market(now, **overrides):
+    """Active contract inside the v3 late-entry window with the favorite side
+    (YES) priced like a real Kalshi book: favorites trade in the 70s-80s."""
     value = {
         "ticker": "KXBTC15M-TEST-00",
         "status": "active",
         "title": "BTC price up in next 15 mins?",
-        "open_time": (now - timedelta(minutes=4)).isoformat(),
-        "close_time": (now + timedelta(minutes=8)).isoformat(),
+        "open_time": (now - timedelta(minutes=11)).isoformat(),
+        "close_time": (now + timedelta(minutes=4)).isoformat(),
         "floor_strike": 64_000.0,
-        "yes_bid_dollars": "0.4900",
-        "yes_ask_dollars": "0.5000",
-        "no_bid_dollars": "0.5000",
-        "no_ask_dollars": "0.5100",
+        "yes_bid_dollars": "0.7200",
+        "yes_ask_dollars": "0.7400",
+        "no_bid_dollars": "0.2600",
+        "no_ask_dollars": "0.2800",
         "yes_bid_size_fp": "100.0",
         "yes_ask_size_fp": "100.0",
     }
@@ -61,7 +63,7 @@ def test_fee_uses_current_probability_weighted_formula():
     assert kalshi_fee(0.10) == pytest.approx(0.0063)
 
 
-def test_obvious_edge_can_pass_all_paper_gates():
+def test_confirmed_favorite_can_pass_all_paper_gates():
     now = datetime.now(timezone.utc)
     candles, spot = _candles()
 
@@ -76,10 +78,11 @@ def test_obvious_edge_can_pass_all_paper_gates():
     assert result["paperOnly"] is True
     assert result["sizing"]["contracts"] > 0
     assert result["edge"]["netEdge"] >= result["edge"]["minimumNetEdge"]
+    assert result["edge"]["modelProbability"] >= result["config"]["minModelProbability"]
     assert result["blockingReasons"] == []
 
 
-def test_obvious_mirrored_edge_can_buy_no():
+def test_mirrored_favorite_can_buy_no():
     now = datetime.now(timezone.utc)
     candles, _ = _candles(start=66_000.0, step=0.99988)
     spot = candles[-1][4]
@@ -88,10 +91,10 @@ def test_obvious_mirrored_edge_can_buy_no():
         _market(
             now,
             floor_strike=65_400.0,
-            yes_bid_dollars="0.2000",
-            yes_ask_dollars="0.2500",
-            no_bid_dollars="0.7500",
-            no_ask_dollars="0.8000",
+            yes_bid_dollars="0.1000",
+            yes_ask_dollars="0.1200",
+            no_bid_dollars="0.8800",
+            no_ask_dollars="0.9000",
         ),
         spot_price=spot,
         candles=candles,
@@ -102,6 +105,49 @@ def test_obvious_mirrored_edge_can_buy_no():
     assert result["side"] == "NO"
     assert result["sizing"]["contracts"] > 0
     assert result["blockingReasons"] == []
+
+
+def test_engine_buys_the_favorite_side_not_the_longshot():
+    """The v2 max-edge rule bought under-priced longshots (~20% winners).
+    v3 must select the model-favorite side even when the longshot side has a
+    nominally positive edge against its ask."""
+    now = datetime.now(timezone.utc)
+    candles, spot = _candles()
+
+    result = evaluate_btc15_contract(
+        _market(now, floor_strike=64_660.0),
+        spot_price=spot,
+        candles=candles,
+        now=now,
+    )
+
+    assert result["side"] == "YES"
+    assert result["edge"]["price"] >= result["config"]["minPrice"]
+    assert result["model"]["selectedModelProbability"] >= 0.5
+    gate_keys = [gate["key"] for gate in result["gates"]]
+    assert "model_probability" in gate_keys
+
+
+def test_coin_flip_contract_is_blocked_by_model_probability_gate():
+    now = datetime.now(timezone.utc)
+    candles, spot = _candles(step=1.0)  # flat tape: spot == strike, p ~= 0.5
+
+    result = evaluate_btc15_contract(
+        _market(
+            now,
+            floor_strike=round(spot, 2),
+            yes_bid_dollars="0.4900",
+            yes_ask_dollars="0.5100",
+            no_bid_dollars="0.4900",
+            no_ask_dollars="0.5100",
+        ),
+        spot_price=spot,
+        candles=candles,
+        now=now,
+    )
+
+    assert result["action"] == "WAIT"
+    assert "model_probability" in result["blockingReasons"]
 
 
 def test_position_size_is_not_capped_by_legacy_max_contracts():
@@ -133,8 +179,8 @@ def test_position_size_is_not_capped_by_legacy_max_contracts():
             "dailyPnl": 0,
         },
         orderbook={
-            "yes": [[0.49, 1000]],
-            "no": [[0.50, 1000]],
+            "yes": [[0.72, 1000]],
+            "no": [[0.26, 1000]],
         },
         reference_time=now,
         book_time=now,
@@ -220,7 +266,7 @@ def test_paper_account_gates_prevent_duplicate_or_over_budget_entries():
         account_context={
             "bankroll": 1_000.0,
             "cashAvailable": 500.0,
-            "portfolioExposure": 250.0,
+            "portfolioExposure": 300.0,
             "hasPosition": True,
             "hasOpenOrder": True,
             "alreadyTraded": True,
@@ -270,7 +316,7 @@ def test_missing_strike_and_late_entry_fail_closed():
     market = _market(
         now,
         floor_strike=None,
-        close_time=(now + timedelta(seconds=45)).isoformat(),
+        close_time=(now + timedelta(seconds=40)).isoformat(),
     )
 
     result = evaluate_btc15_contract(market, spot_price=spot, candles=candles, now=now)
@@ -285,6 +331,7 @@ def test_user_config_is_bounded_to_research_limits():
         "paperBankroll": 5,
         "riskPerTradePct": 50,
         "minNetEdge": 0,
+        "minModelProbability": 0.2,
         "minimumHoldSeconds": -1,
         "reversalCooldownSeconds": 5000,
         "exitValueBuffer": 1,
@@ -297,7 +344,8 @@ def test_user_config_is_bounded_to_research_limits():
     assert config["riskPerTradePct"] == 2.0
     assert "maxContracts" not in config
     assert "maxDailyLossPct" not in config
-    assert config["minNetEdge"] == 0.02
+    assert config["minNetEdge"] == 0.005
+    assert config["minModelProbability"] == 0.50
     assert config["minimumHoldSeconds"] == 0
     assert config["reversalCooldownSeconds"] == 600
     assert config["exitValueBuffer"] == 0.05
@@ -349,27 +397,27 @@ def test_paper_exploration_can_collect_one_near_threshold_sample():
     )
 
     assert result["explorationTrade"] is True
-    assert result["explorationOverrides"] == ["net_edge"]
+    assert set(result["explorationOverrides"]).issubset({"net_edge", "conservative_edge"})
     assert result["action"] == "BUY_YES"
     assert result["sizing"]["contracts"] == 1
 
 
-def test_relative_spread_blocks_cheap_contract_with_large_percentage_friction():
+def test_relative_spread_blocks_wide_percentage_friction():
     now = datetime.now(timezone.utc)
     candles, spot = _candles()
     result = evaluate_btc15_contract(
         _market(
             now,
             floor_strike=64_660.0,
-            yes_bid_dollars="0.0800",
-            yes_ask_dollars="0.1200",
-            no_bid_dollars="0.8800",
-            no_ask_dollars="0.9200",
+            yes_bid_dollars="0.4500",
+            yes_ask_dollars="0.5500",
+            no_bid_dollars="0.4500",
+            no_ask_dollars="0.5500",
         ),
         spot_price=spot,
         candles=candles,
         now=now,
-        config={"maxSpread": 0.06, "maxRelativeSpread": 0.25},
+        config={"maxSpread": 0.12, "maxRelativeSpread": 0.15},
     )
 
     assert "relative_spread" in result["blockingReasons"]

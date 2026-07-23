@@ -3,7 +3,9 @@ import api from './api';
 export type KalshiDecisionAction = 'BUY_YES' | 'BUY_NO' | 'WAIT';
 export type KalshiExecutionMode = 'paper' | 'real';
 
-export const KALSHI_CONFIG_STORAGE_KEY = 'alphalab:kalshi:btc15m:config';
+// v3 key: stale pre-v3 local configs carried longshot-era parameters and must
+// not override the calibrated favorite-carry defaults.
+export const KALSHI_CONFIG_STORAGE_KEY = 'alphalab:kalshi:btc15m:config:v3';
 export const KALSHI_CONFIG_CHANGED_EVENT = 'alphalab:kalshi-config-changed';
 
 export interface KalshiBotConfig {
@@ -20,6 +22,7 @@ export interface KalshiBotConfig {
   maxSecondsToClose: number;
   minPrice: number;
   maxPrice: number;
+  minModelProbability: number;
   marketBlendWeight: number;
   maxModelMarketGap: number;
   probabilityLogitScale: number;
@@ -44,42 +47,45 @@ export interface KalshiBotConfig {
   learningMaxRiskPct: number;
 }
 
+// v3 Favorite Carry defaults — mirror backend DEFAULT_STRATEGY_CONFIG
+// (kalshi_engine.py). Calibrated on 53,936 real 15-minute windows.
 export const DEFAULT_KALSHI_BOT_CONFIG: KalshiBotConfig = {
   executionMode: 'paper',
   paperBankroll: 1000,
-  riskPerTradePct: 0.35,
-  minNetEdge: 0.04,
-  minConservativeEdge: 0.015,
-  maxSpread: 0.06,
-  maxRelativeSpread: 0.25,
-  minDepthContracts: 15,
+  riskPerTradePct: 0.75,
+  minNetEdge: 0.015,
+  minConservativeEdge: 0.005,
+  maxSpread: 0.05,
+  maxRelativeSpread: 0.15,
+  minDepthContracts: 10,
   maxBookParticipation: 0.20,
-  minSecondsToClose: 180,
-  maxSecondsToClose: 600,
-  minPrice: 0.12,
-  maxPrice: 0.88,
-  marketBlendWeight: 0.25,
+  minSecondsToClose: 100,
+  maxSecondsToClose: 320,
+  minPrice: 0.50,
+  maxPrice: 0.93,
+  minModelProbability: 0.60,
+  marketBlendWeight: 0.20,
   maxModelMarketGap: 0.25,
-  probabilityLogitScale: 1.55,
-  momentumProjectionScale: 0.15,
-  basisReserveBps: 6,
-  maxVolatilityRatio: 2.75,
+  probabilityLogitScale: 1.95,
+  momentumProjectionScale: 0.07,
+  basisReserveBps: 3,
+  maxVolatilityRatio: 2.50,
   maxJumpSigma: 4,
   fractionalKelly: 0.25,
-  maxPortfolioExposurePct: 20,
+  maxPortfolioExposurePct: 25,
   executionPriceTolerance: 0.01,
-  exitProbabilityThreshold: 0.46,
-  minimumExitProfit: 0.01,
-  stopLossPct: 0.35,
-  emergencyStopLossPct: 0.20,
+  exitProbabilityThreshold: 0.35,
+  minimumExitProfit: 0.02,
+  stopLossPct: 0.55,
+  emergencyStopLossPct: 0.30,
   preTradeAiReview: true,
   learningMode: true,
   learningAiMode: true,
   learningContrarianMode: false,
-  learningExplorationRate: 0.30,
-  learningReviewEvery: 4,
-  learningWindowSize: 24,
-  learningMaxRiskPct: 0.50,
+  learningExplorationRate: 0.15,
+  learningReviewEvery: 6,
+  learningWindowSize: 40,
+  learningMaxRiskPct: 1.0,
 };
 
 
@@ -156,6 +162,7 @@ export interface KalshiDecision {
     marketYesProbability?: number | null;
     modelYesProbability?: number | null;
     fairYesProbability?: number | null;
+    selectedModelProbability?: number | null;
     marketWeight?: number | null;
     uncertainty?: number | null;
     referenceAgeSeconds?: number | null;
@@ -165,6 +172,8 @@ export interface KalshiDecision {
     side?: 'YES' | 'NO' | null;
     price?: number | null;
     fairProbability?: number | null;
+    modelProbability?: number | null;
+    minimumModelProbability?: number;
     grossEdge?: number | null;
     feePerContract?: number | null;
     netEdge?: number | null;
@@ -347,6 +356,8 @@ export interface KalshiPortfolioAnalytics {
   realizedWinRate?: number | null;
   realizedTotalPnl?: number;
   realizedAveragePnl?: number;
+  realizedBestTrade?: number | null;
+  realizedWorstTrade?: number | null;
   equityCurve?: KalshiEquityPoint[];
 }
 
