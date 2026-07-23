@@ -356,6 +356,8 @@ export interface KalshiPortfolioAnalytics {
   realizedWinRate?: number | null;
   realizedTotalPnl?: number;
   realizedAveragePnl?: number;
+  realizedBestTrade?: number | null;
+  realizedWorstTrade?: number | null;
   equityCurve?: KalshiEquityPoint[];
 }
 
