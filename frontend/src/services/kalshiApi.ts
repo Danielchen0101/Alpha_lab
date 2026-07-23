@@ -13,6 +13,7 @@ export interface KalshiBotConfig {
   minNetEdge: number;
   minConservativeEdge: number;
   maxSpread: number;
+  maxRelativeSpread: number;
   minDepthContracts: number;
   maxBookParticipation: number;
   minSecondsToClose: number;
@@ -20,6 +21,7 @@ export interface KalshiBotConfig {
   minPrice: number;
   maxPrice: number;
   marketBlendWeight: number;
+  maxModelMarketGap: number;
   probabilityLogitScale: number;
   momentumProjectionScale: number;
   basisReserveBps: number;
@@ -29,6 +31,9 @@ export interface KalshiBotConfig {
   maxPortfolioExposurePct: number;
   executionPriceTolerance: number;
   exitProbabilityThreshold: number;
+  minimumExitProfit: number;
+  stopLossPct: number;
+  emergencyStopLossPct: number;
   preTradeAiReview: boolean;
   learningMode: boolean;
   learningAiMode: boolean;
@@ -46,6 +51,7 @@ export const DEFAULT_KALSHI_BOT_CONFIG: KalshiBotConfig = {
   minNetEdge: 0.04,
   minConservativeEdge: 0.015,
   maxSpread: 0.06,
+  maxRelativeSpread: 0.25,
   minDepthContracts: 15,
   maxBookParticipation: 0.20,
   minSecondsToClose: 180,
@@ -53,6 +59,7 @@ export const DEFAULT_KALSHI_BOT_CONFIG: KalshiBotConfig = {
   minPrice: 0.12,
   maxPrice: 0.88,
   marketBlendWeight: 0.25,
+  maxModelMarketGap: 0.25,
   probabilityLogitScale: 1.55,
   momentumProjectionScale: 0.15,
   basisReserveBps: 6,
@@ -62,6 +69,9 @@ export const DEFAULT_KALSHI_BOT_CONFIG: KalshiBotConfig = {
   maxPortfolioExposurePct: 20,
   executionPriceTolerance: 0.01,
   exitProbabilityThreshold: 0.46,
+  minimumExitProfit: 0.01,
+  stopLossPct: 0.35,
+  emergencyStopLossPct: 0.20,
   preTradeAiReview: true,
   learningMode: true,
   learningAiMode: true,
@@ -239,6 +249,13 @@ export interface KalshiPaperRobotState {
     averagePnl?: number;
     losses?: number;
     settlementRecords?: KalshiSettlementRecord[];
+    realizedTradeRecords?: KalshiSettlementRecord[];
+    realizedSamples?: number;
+    realizedWins?: number;
+    realizedLosses?: number;
+    realizedWinRate?: number | null;
+    realizedTotalPnl?: number;
+    realizedAveragePnl?: number;
     equityCurve?: KalshiEquityPoint[];
     preTradeAi?: KalshiAiReview;
     learning?: {
@@ -263,6 +280,10 @@ export interface KalshiPaperRobotState {
       lastAiReviewSample?: number;
       lastAiReviewAt?: string | null;
       lastAiDiagnosis?: string | null;
+      lastAiRootCause?: string | null;
+      lastAiTargetMetric?: string | null;
+      lastAiExpectedEffect?: string | null;
+      lastAiEvidenceUsed?: string[];
       lastAiReasons?: string[];
       lastAiAdjustments?: Record<string, { delta?: number; value?: unknown }>;
       aiConfidence?: number;
@@ -274,6 +295,7 @@ export interface KalshiPaperRobotState {
       observedInverseAccuracy?: number | null;
       activeDirectionalAccuracy?: number | null;
       observedSamples?: number;
+      directionalWindowSamples?: number;
       tradedSamples?: number;
       contrarianMode?: boolean;
     };
@@ -284,7 +306,7 @@ export interface KalshiSettlementRecord {
   key: string;
   ticker: string;
   settledAt: string;
-  result: 'YES' | 'NO';
+  result?: 'YES' | 'NO' | null;
   side?: 'YES' | 'NO' | null;
   contracts: number;
   revenue: number;
@@ -294,6 +316,9 @@ export interface KalshiSettlementRecord {
   entryPrice?: number | null;
   exitPrice?: number | null;
   exitType?: 'settlement' | 'sale' | string;
+  exitTrigger?: string | null;
+  netExitPnlPerContract?: number | null;
+  exitLossFraction?: number | null;
   won: boolean;
   matchedFill: boolean;
 }
@@ -315,6 +340,13 @@ export interface KalshiPortfolioAnalytics {
   bestTrade?: number | null;
   worstTrade?: number | null;
   settlementRecords?: KalshiSettlementRecord[];
+  realizedTradeRecords?: KalshiSettlementRecord[];
+  realizedSamples?: number;
+  realizedWins?: number;
+  realizedLosses?: number;
+  realizedWinRate?: number | null;
+  realizedTotalPnl?: number;
+  realizedAveragePnl?: number;
   equityCurve?: KalshiEquityPoint[];
 }
 
@@ -354,6 +386,7 @@ export interface KalshiStrategyLibraryItem {
   config: Partial<KalshiBotConfig>;
   metrics: {
     settledSamples?: number;
+    realizedSamples?: number;
     wins?: number;
     losses?: number;
     winRate?: number | null;
@@ -363,6 +396,7 @@ export interface KalshiStrategyLibraryItem {
     adjustmentCount?: number;
     activeDirection?: string;
     observedSamples?: number;
+    directionalWindowSamples?: number;
     observedDirectionalAccuracy?: number | null;
     observedInverseAccuracy?: number | null;
   };
@@ -426,9 +460,9 @@ const kalshiAPI = {
     { name, mode, config: { ...config, executionMode: mode } },
     { timeout: 15000 },
   ),
-  applyStrategy: (strategyId: string) => api.post<KalshiStrategyLibraryResponse>(
+  applyStrategy: (strategyId: string, mode: KalshiExecutionMode) => api.post<KalshiStrategyLibraryResponse>(
     '/kalshi/strategies/apply',
-    { strategyId },
+    { strategyId, mode },
     { timeout: 15000 },
   ),
   recommendStrategy: (mode: KalshiExecutionMode = 'paper') => api.get<KalshiStrategyLibraryResponse>('/kalshi/strategies/recommend', { params: { mode }, timeout: 10000 }),

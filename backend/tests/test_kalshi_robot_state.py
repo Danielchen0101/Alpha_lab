@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from kalshi_robot_state import KalshiRobotState
 
 
@@ -325,6 +327,37 @@ def test_decision_log_keeps_only_latest_but_filled_trade_evidence_survives(tmp_p
     assert state["tradedTickers"] == ["KXBTC15M-0", "KXBTC15M-1", "KXBTC15M-2"]
 
 
+def test_filled_entry_and_exit_times_persist_outside_single_decision_slot(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    store.record("user-1", {
+        "generatedAt": "2026-07-21T00:00:00Z",
+        "action": "BUY_YES",
+        "side": "YES",
+        "market": {"ticker": "KXBTC15M-TIMING"},
+        "edge": {"price": 0.45},
+    }, {"status": "filled", "fill_count": 2})
+    store.record("user-1", {
+        "generatedAt": "2026-07-21T00:01:00Z",
+        "action": "SELL_YES",
+        "side": "YES",
+        "market": {"ticker": "KXBTC15M-TIMING"},
+        "edge": {"price": 0.55},
+    }, {"status": "filled", "fill_count": 2})
+    store.record("user-1", {
+        "generatedAt": "2026-07-21T00:01:05Z",
+        "action": "WAIT",
+        "market": {"ticker": "KXBTC15M-TIMING"},
+    })
+
+    restored = KalshiRobotState(str(tmp_path / "state.json")).get("user-1")
+
+    assert len(restored["decisions"]) == 1
+    assert restored["strategy"]["lastEntryTicker"] == "KXBTC15M-TIMING"
+    assert restored["strategy"]["lastEntryAt"] == "2026-07-21T00:00:00Z"
+    assert restored["strategy"]["lastExitTicker"] == "KXBTC15M-TIMING"
+    assert restored["strategy"]["lastExitAt"] == "2026-07-21T00:01:00Z"
+
+
 def test_settings_ai_review_is_claimed_once_per_new_evidence_batch(tmp_path):
     store = KalshiRobotState(str(tmp_path / "state.json"))
     store.configure("user-1", True, {
@@ -349,6 +382,27 @@ def test_settings_ai_review_is_claimed_once_per_new_evidence_batch(tmp_path):
         })
         store.reconcile_learning_outcome("user-1", ticker, "NO", settled_at=f"2026-07-21T08:{index:02d}:00Z")
     store.reconcile_settlements("user-1", settlements)
+    store.record_early_close("user-1", {
+        "generatedAt": "2026-07-21T08:10:00Z",
+        "action": "SELL_YES",
+        "side": "YES",
+        "executionIntent": "CLOSE_YES",
+        "market": {"ticker": "KXBTC15M-AI-CLOSE"},
+        "exitAnalysis": {"averageEntryPrice": 0.42, "exitValueEdge": 0.02},
+    }, {
+        "order_id": "ai-close-1",
+        "ticker": "KXBTC15M-AI-CLOSE",
+        "environment": "paper",
+        "action": "SELL",
+        "reduce_only": True,
+        "outcome_side": "YES",
+        "status": "executed",
+        "fill_count_fp": 3,
+        "average_price_dollars": 0.50,
+        "entry_fee_allocated_dollars": 0.01,
+        "fee_cost_dollars": 0.02,
+        "realized_pnl_dollars": 0.21,
+    }, environment="paper")
 
     evidence = store.claim_ai_learning_review("user-1", environment="paper")
 
@@ -356,6 +410,13 @@ def test_settings_ai_review_is_claimed_once_per_new_evidence_batch(tmp_path):
     assert evidence["metrics"]["originalDirectionalAccuracy"] == 0.0
     assert evidence["metrics"]["inverseDirectionalAccuracy"] == 1.0
     assert evidence["metrics"]["observedDirectionalAccuracy"] == 0.0
+    assert evidence["metrics"]["earlyExitSamples"] == 1
+    assert evidence["metrics"]["earlyExitTotalPnl"] == 0.21
+    assert evidence["earlyCloseWindow"][0]["pnl"] == 0.21
+    assert evidence["evidenceSummary"]["samples"]["finalSettlements"] == 8
+    assert evidence["evidenceSummary"]["samples"]["shadowLabels"] == 8
+    assert evidence["evidenceSummary"]["calibration"]["modelBrier"] is not None
+    assert evidence["evidenceSummary"]["calibration"]["reliabilityBins"]
     assert store.claim_ai_learning_review("user-1", environment="paper") is None
 
 
@@ -381,11 +442,38 @@ def test_shadow_forecasts_create_learning_labels_without_fake_trades(tmp_path):
     state = store.get("user-1")
     assert state["strategy"]["settledSamples"] == 0
     assert state["strategy"]["learning"]["observedSamples"] == 8
+    assert state["strategy"]["learning"]["directionalWindowSamples"] == 8
     assert state["strategy"]["learning"]["observedDirectionalAccuracy"] == 0.0
     assert state["strategy"]["learning"]["observedInverseAccuracy"] == 1.0
     evidence = store.claim_ai_learning_review("user-1", environment="paper")
     assert len(evidence["shadowForecastWindow"]) == 8
     assert evidence["settledTradeWindow"] == []
+
+
+def test_directional_accuracy_reports_the_actual_rolling_window_denominator(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    store.configure("user-1", True, {
+        "learningMode": True,
+        "learningWindowSize": 12,
+    })
+    results = ["NO", "NO"] + (["YES"] * 9) + (["NO"] * 3)
+    for index, result in enumerate(results):
+        ticker = f"KXBTC15M-WINDOW-{index}"
+        store.record("user-1", {
+            "action": "WAIT",
+            "side": "YES",
+            "blockingReasons": ["net_edge"],
+            "market": {"ticker": ticker, "secondsToClose": 300},
+            "model": {"originalModelYesProbability": 0.60},
+            "edge": {"fairProbability": 0.60, "price": 0.58, "netEdge": 0.01},
+        })
+        store.reconcile_learning_outcome("user-1", ticker, result)
+
+    learning = store.get("user-1")["strategy"]["learning"]
+    assert learning["observedSamples"] == 14
+    assert learning["directionalWindowSamples"] == 12
+    assert learning["observedDirectionalAccuracy"] == 0.75
+    assert learning["observedInverseAccuracy"] == 0.25
 
 
 def test_ai_adjustments_are_bounded_and_cannot_raise_sizing_risk(tmp_path):
@@ -395,6 +483,18 @@ def test_ai_adjustments_are_bounded_and_cannot_raise_sizing_risk(tmp_path):
         "learningAiMode": True,
         "riskPerTradePct": 0.25,
         "learningExplorationRate": 0.20,
+    })
+    internal = store._state("user-1")["modeState"]["paper"]
+    internal["strategy"].update({
+        "realizedSamples": 20,
+        "realizedWinRate": 0.60,
+        "realizedAveragePnl": 2.0,
+        "settledSamples": 16,
+        "brierScore": 0.20,
+    })
+    internal["strategy"]["learning"].update({
+        "observedSamples": 24,
+        "earlyExitSamples": 12,
     })
 
     state = store.complete_ai_learning_review("user-1", {
@@ -417,6 +517,109 @@ def test_ai_adjustments_are_bounded_and_cannot_raise_sizing_risk(tmp_path):
     assert state["strategy"]["learning"]["adjustmentCount"] == 1
 
 
+def test_ai_guardrails_reject_looser_execution_exploration_and_confidence_after_losses(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    store.configure("user-1", True, {
+        "learningMode": True,
+        "learningAiMode": True,
+        "executionPriceTolerance": 0.01,
+        "learningExplorationRate": 0.20,
+        "probabilityLogitScale": 1.55,
+        "marketBlendWeight": 0.25,
+    })
+    state = store._state("user-1")
+    strategy = state["modeState"]["paper"]["strategy"]
+    strategy.update({
+        "realizedSamples": 20,
+        "realizedWinRate": 0.25,
+        "realizedAveragePnl": -12.0,
+        "settledSamples": 12,
+        "brierScore": 0.42,
+    })
+
+    reviewed = store.complete_ai_learning_review("user-1", {
+        "diagnosis": "Execution and calibration are weak.",
+        "confidence": 0.9,
+        "adjustments": {
+            "executionPriceTolerance": 0.002,
+            "learningExplorationRate": 0.05,
+            "probabilityLogitScale": 0.05,
+            "marketBlendWeight": 0.03,
+        },
+    })
+
+    assert reviewed["config"]["executionPriceTolerance"] == 0.01
+    assert reviewed["config"]["learningExplorationRate"] == 0.20
+    assert reviewed["config"]["probabilityLogitScale"] == 1.55
+    assert reviewed["config"]["marketBlendWeight"] == 0.28
+    rejected = reviewed["strategy"]["learning"]["lastAiRejectedAdjustments"]
+    assert set(rejected) == {
+        "executionPriceTolerance",
+        "learningExplorationRate",
+        "probabilityLogitScale",
+    }
+    assert reviewed["strategy"]["changes"][0]["rejected"] == rejected
+
+
+def test_ai_parameter_changes_require_parameter_specific_evidence(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    configured = store.configure("user-1", True, {
+        "learningMode": True,
+        "learningAiMode": True,
+        "minNetEdge": 0.05,
+        "marketBlendWeight": 0.25,
+    })
+
+    reviewed = store.complete_ai_learning_review("user-1", {
+        "diagnosis": "There is not enough labeled evidence.",
+        "rootCause": "insufficient_data",
+        "confidence": 0.9,
+        "adjustments": {
+            "minNetEdge": -0.0025,
+            "marketBlendWeight": 0.05,
+        },
+    })
+
+    assert reviewed["config"]["minNetEdge"] == configured["config"]["minNetEdge"]
+    assert reviewed["config"]["marketBlendWeight"] == configured["config"]["marketBlendWeight"]
+    rejected = reviewed["strategy"]["learning"]["lastAiRejectedAdjustments"]
+    assert "16 realized trades" in rejected["minNetEdge"]["reason"]
+    assert "12 final settlement labels" in rejected["marketBlendWeight"]["reason"]
+
+
+def test_ai_cannot_loosen_entry_selectivity_during_weak_performance(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    configured = store.configure("user-1", True, {
+        "learningMode": True,
+        "learningAiMode": True,
+        "minNetEdge": 0.05,
+        "minConservativeEdge": 0.025,
+    })
+    strategy = store._state("user-1")["modeState"]["paper"]["strategy"]
+    strategy.update({
+        "realizedSamples": 20,
+        "realizedWinRate": 0.25,
+        "realizedAveragePnl": -5.0,
+    })
+
+    reviewed = store.complete_ai_learning_review("user-1", {
+        "diagnosis": "Losses suggest more selectivity, not less.",
+        "rootCause": "entry_selectivity",
+        "confidence": 0.9,
+        "adjustments": {
+            "minNetEdge": -0.0025,
+            "minConservativeEdge": -0.0015,
+        },
+    })
+
+    assert reviewed["config"]["minNetEdge"] == configured["config"]["minNetEdge"]
+    assert reviewed["config"]["minConservativeEdge"] == configured["config"]["minConservativeEdge"]
+    assert set(reviewed["strategy"]["learning"]["lastAiRejectedAdjustments"]) == {
+        "minNetEdge",
+        "minConservativeEdge",
+    }
+
+
 def test_historical_ai_changes_are_included_in_adjustment_count(tmp_path):
     state_path = tmp_path / "state.json"
     store = KalshiRobotState(str(state_path))
@@ -433,6 +636,54 @@ def test_historical_ai_changes_are_included_in_adjustment_count(tmp_path):
 
     reloaded = KalshiRobotState(str(state_path)).get("user-1", environment="paper")
     assert reloaded["strategy"]["learning"]["adjustmentCount"] == 1
+
+
+def test_fresh_paper_strategy_archives_history_and_starts_strategy_2_clean(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    configured = store.configure("user-1", True, {
+        "executionMode": "paper",
+        "paperBankroll": 10_000,
+        "learningMode": True,
+        "learningAiMode": True,
+        "learningContrarianMode": True,
+        "learningReviewEvery": 4,
+        "learningWindowSize": 24,
+    })
+    bucket = configured["modeState"]["paper"]
+    bucket["strategy"]["realizedSamples"] = 2
+    bucket["strategy"]["realizedWins"] = 1
+    bucket["strategy"]["realizedLosses"] = 1
+    bucket["strategy"]["realizedWinRate"] = 0.5
+    bucket["strategy"]["realizedTotalPnl"] = -4.0
+    bucket["strategy"]["learning"]["adjustmentCount"] = 3
+    store._users["user-1"] = configured
+    store._save()
+
+    fresh = store.start_fresh_strategy(
+        "user-1",
+        starting_bankroll=1000,
+        name="AlphaLab Paper Strategy 2",
+    )
+    paper = fresh["modeState"]["paper"]
+    strategies = [
+        item for item in fresh["strategyLibrary"]
+        if item["mode"] == "paper"
+    ]
+    archived = next(item for item in strategies if item["name"] == "AlphaLab Paper Strategy 1")
+    active = next(item for item in strategies if item["active"])
+
+    assert archived["active"] is False
+    assert archived["metrics"]["realizedSamples"] == 2
+    assert archived["metrics"]["adjustmentCount"] == 3
+    assert active["name"] == "AlphaLab Paper Strategy 2"
+    assert active["metrics"]["realizedSamples"] == 0
+    assert active["metrics"]["adjustmentCount"] == 0
+    assert paper["config"]["paperBankroll"] == 1000
+    assert paper["strategy"]["learning"]["enabled"] is True
+    assert paper["strategy"]["learning"]["contrarianMode"] is True
+    assert paper["filledTrades"] == []
+    assert paper["processedSettlements"] == []
+    assert paper["learningObservations"] == []
 
 
 def test_contrarian_mode_requires_large_stable_direction_gap(tmp_path):
@@ -472,3 +723,122 @@ def test_contrarian_mode_requires_large_stable_direction_gap(tmp_path):
 
     assert state["config"]["learningContrarianMode"] is True
     assert state["strategy"]["learning"]["contrarianMode"] is True
+
+
+def test_early_close_pnl_is_tracked_without_becoming_calibration_label(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    decision = {
+        "generatedAt": "2026-07-22T12:00:00Z",
+        "action": "SELL_YES",
+        "side": "YES",
+        "executionIntent": "CLOSE_YES",
+        "market": {"ticker": "KXBTC15M-CLOSE"},
+        "exitAnalysis": {
+            "averageEntryPrice": 0.40,
+            "exitValueEdge": 0.03,
+            "trigger": "fee_adjusted_take_profit",
+            "netExitPnlPerContract": 0.136,
+            "exitLossFraction": 0.0,
+        },
+    }
+    order = {
+        "order_id": "close-1",
+        "ticker": "KXBTC15M-CLOSE",
+        "environment": "paper",
+        "action": "SELL",
+        "reduce_only": True,
+        "outcome_side": "YES",
+        "status": "executed",
+        "fill_count_fp": 5,
+        "average_price_dollars": 0.55,
+        "entry_fee_allocated_dollars": 0.03,
+        "fee_cost_dollars": 0.04,
+        "realized_pnl_dollars": 0.68,
+    }
+
+    state = store.record_early_close("user-1", decision, order, environment="paper")
+    strategy = state["strategy"]
+
+    assert strategy["closedTradeSamples"] == 1
+    assert strategy["closedTradeTotalPnl"] == 0.68
+    assert strategy["closedTradeRecords"][0]["settlementLabel"] is None
+    assert strategy["settlementRecords"] == []
+    assert strategy["learning"]["earlyExitCalibrationExcluded"] is True
+    assert strategy["learning"]["earlyExitIncludedInPnlLearning"] is True
+    assert strategy["realizedSamples"] == 1
+    assert strategy["realizedTotalPnl"] == 0.68
+    assert strategy["realizedTradeRecords"][0]["exitType"] == "sale"
+    assert strategy["realizedTradeRecords"][0]["result"] is None
+    assert strategy["realizedTradeRecords"][0]["exitTrigger"] == "fee_adjusted_take_profit"
+    assert strategy["realizedTradeRecords"][0]["netExitPnlPerContract"] == 0.136
+    assert strategy["realizedTradeRecords"][0]["exitLossFraction"] == 0.0
+    assert strategy["closedTradeRecords"][0]["exitTrigger"] == "fee_adjusted_take_profit"
+    assert strategy["closedTradeRecords"][0]["netExitPnlPerContract"] == 0.136
+    assert strategy["closedTradeRecords"][0]["exitLossFraction"] == 0.0
+
+
+def test_reconcile_backfills_reduce_only_fills_into_realized_analytics(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    fill = {
+        "fill_id": "fill-close-1",
+        "order_id": "close-1",
+        "ticker": "KXBTC15M-CLOSE",
+        "environment": "paper",
+        "action": "SELL",
+        "reduce_only": True,
+        "outcome_side": "NO",
+        "fill_count_fp": 10,
+        "average_price_dollars": 0.62,
+        "position_cost_dollars": 4.0,
+        "gross_proceeds_dollars": 6.2,
+        "entry_fee_allocated_dollars": 0.1,
+        "fee_cost_dollars": 0.2,
+        "realized_pnl_dollars": 1.9,
+        "created_time": "2026-07-22T12:15:00Z",
+    }
+
+    state = store.reconcile_settlements(
+        "user-1",
+        [],
+        [fill],
+        environment="paper",
+    )
+    strategy = state["strategy"]
+
+    assert strategy["settledSamples"] == 0
+    assert strategy["realizedSamples"] == 1
+    assert strategy["realizedWins"] == 1
+    assert strategy["totalPnl"] == 1.9
+    assert strategy["equityCurve"][0]["cumulativePnl"] == 1.9
+    record = strategy["realizedTradeRecords"][0]
+    assert record["entryPrice"] == 0.4
+    assert record["exitPrice"] == 0.62
+    assert record["fees"] == 0.3
+
+
+def test_saved_strategy_can_only_be_applied_to_its_own_execution_mode(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    saved = store.save_strategy(
+        "user-1",
+        {
+            "executionMode": "paper",
+            "riskPerTradePct": 0.35,
+            "minimumNetEdgePct": 2.5,
+        },
+        name="Paper calibration",
+        environment="paper",
+    )
+    strategy_id = saved["strategy"]["id"]
+
+    with pytest.raises(ValueError, match="strategy_mode_mismatch"):
+        store.apply_strategy("user-1", strategy_id, environment="real")
+
+    real_state = store.get("user-1", environment="real")
+    assert real_state["activeEnvironment"] == "real"
+    assert real_state["config"]["executionMode"] == "real"
+    assert real_state.get("activeStrategyId") != strategy_id
+
+    paper_state = store.apply_strategy("user-1", strategy_id, environment="paper")
+    assert paper_state["activeEnvironment"] == "paper"
+    assert paper_state["config"]["executionMode"] == "paper"
+    assert paper_state["modeState"]["paper"]["activeStrategyId"] == strategy_id

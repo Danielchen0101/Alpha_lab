@@ -82,7 +82,7 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     description: 'Bounded exploration plus evidence-based parameter reviews.',
     descriptionZh: '受控探索，并依据结算证据分批调整参数。',
     recommended: true,
-    config: { riskPerTradePct: 0.25, minNetEdge: 0.025, minConservativeEdge: 0.0075, maxSpread: 0.08, minDepthContracts: 10, maxBookParticipation: 0.20, maxPortfolioExposurePct: 20, executionPriceTolerance: 0.015, exitProbabilityThreshold: 0.45, fractionalKelly: 0.15, learningMode: true, learningAiMode: true, learningExplorationRate: 0.30, learningReviewEvery: 4, learningWindowSize: 24, learningMaxRiskPct: 0.50 },
+    config: { riskPerTradePct: 0.20, minNetEdge: 0.05, minConservativeEdge: 0.025, maxSpread: 0.04, minDepthContracts: 25, maxBookParticipation: 0.10, maxPortfolioExposurePct: 10, executionPriceTolerance: 0.005, exitProbabilityThreshold: 0.47, fractionalKelly: 0.10, learningMode: true, learningAiMode: true, learningExplorationRate: 0.10, learningReviewEvery: 8, learningWindowSize: 32, learningMaxRiskPct: 0.35 },
   },
   {
     id: 'stress-test',
@@ -154,6 +154,28 @@ const orderFee = (item: any) => {
     return item.matched_levels.reduce((sum: number, level: any) => sum + Number(level.fee_cost_dollars || 0), 0);
   }
   return null;
+};
+
+export const positionSideLabel = (item: any): 'YES' | 'NO' | '--' => {
+  const explicit = String(item?.net_side || '').toUpperCase();
+  if (explicit === 'YES' || explicit === 'NO') return explicit;
+  const rawPosition = number(item?.position_fp ?? item?.position) ?? 0;
+  if (rawPosition > 0) return 'YES';
+  if (rawPosition < 0) return 'NO';
+  return '--';
+};
+
+const exitTriggerLabel = (trigger: string | null | undefined, chinese: boolean) => {
+  switch (trigger) {
+    case 'fee_adjusted_take_profit':
+      return chinese ? '扣费后止盈' : 'NET TAKE PROFIT';
+    case 'protective_stop_loss':
+      return chinese ? '保护止损' : 'PROTECTIVE STOP';
+    case 'emergency_stop_loss':
+      return chinese ? '紧急止损' : 'EMERGENCY STOP';
+    default:
+      return '';
+  }
 };
 
 const compact = (value: unknown) => {
@@ -267,6 +289,7 @@ const Kalshi: React.FC = () => {
   const syncedServerConfigRef = React.useRef('');
   const modeRef = React.useRef<KalshiBotConfig['executionMode']>(config.executionMode === 'real' ? 'real' : 'paper');
   const portfolioRequestRef = React.useRef(0);
+  const evaluationRequestRef = React.useRef(0);
   const executionMode: KalshiBotConfig['executionMode'] = config.executionMode === 'real' ? 'real' : 'paper';
   const isRealMode = executionMode === 'real';
   const storedPreTradeAi = robotState?.strategy?.preTradeAi;
@@ -296,19 +319,22 @@ const Kalshi: React.FC = () => {
 
   const evaluate = React.useCallback(async (quiet = false) => {
     if (inFlightRef.current || document.hidden) return;
+    const expectedMode = executionMode;
+    const requestId = evaluationRequestRef.current + 1;
+    evaluationRequestRef.current = requestId;
     inFlightRef.current = true;
     if (!quiet) setRefreshing(true);
     try {
       const response = await kalshiAPI.evaluate(config);
       if (!response.data?.success) throw new Error(response.data?.message || 'Kalshi evaluation failed');
-      acceptPayload(response.data, executionMode);
+      if (evaluationRequestRef.current === requestId) acceptPayload(response.data, expectedMode);
     } catch (requestError: any) {
-      if (mountedRef.current) {
+      if (mountedRef.current && modeRef.current === expectedMode && evaluationRequestRef.current === requestId) {
         setError(requestError?.response?.data?.message || requestError?.message || copy('Market data is temporarily unavailable.', '市场数据暂时不可用。'));
       }
     } finally {
-      inFlightRef.current = false;
-      if (mountedRef.current) {
+      if (evaluationRequestRef.current === requestId) inFlightRef.current = false;
+      if (mountedRef.current && modeRef.current === expectedMode && evaluationRequestRef.current === requestId) {
         setLoading(false);
         setRefreshing(false);
       }
@@ -330,7 +356,11 @@ const Kalshi: React.FC = () => {
       const rows = response.data?.strategies || [];
       setStrategyLibrary(rows);
       const active = rows.find((row) => row.active && row.mode === modeOverride) || rows.find((row) => row.mode === modeOverride);
-      setSelectedStrategyId((current) => (current && rows.some((row) => row.id === current) ? current : active?.id || ''));
+      setSelectedStrategyId((current) => (
+        current && rows.some((row) => row.id === current && row.mode === modeOverride)
+          ? current
+          : active?.id || ''
+      ));
     } catch {
       if (mountedRef.current) setStrategyLibrary([]);
     }
@@ -373,18 +403,27 @@ const Kalshi: React.FC = () => {
       setHistory([]);
       setRobotState(null);
       setRefreshing(true);
+      inFlightRef.current = false;
+      const evaluationRequestId = evaluationRequestRef.current + 1;
+      evaluationRequestRef.current = evaluationRequestId;
       void Promise.all([
         loadPaperPortfolio(nextMode),
         loadStrategies(nextMode),
         kalshiAPI.evaluate(nextConfig).then((response) => {
-          if (response.data?.success) acceptPayload(response.data, nextMode);
+          if (evaluationRequestRef.current === evaluationRequestId && response.data?.success) {
+            acceptPayload(response.data, nextMode);
+          }
         }),
       ])
         .catch((requestError: any) => {
-          if (modeRef.current === nextMode) setError(requestError?.response?.data?.message || copy('Kalshi account refresh failed. Try again.', 'Kalshi 账户刷新失败，请重试。'));
+          if (modeRef.current === nextMode && evaluationRequestRef.current === evaluationRequestId) {
+            setError(requestError?.response?.data?.message || copy('Kalshi account refresh failed. Try again.', 'Kalshi 账户刷新失败，请重试。'));
+          }
         })
         .finally(() => {
-          setRefreshing(false);
+          if (modeRef.current === nextMode && evaluationRequestRef.current === evaluationRequestId) {
+            setRefreshing(false);
+          }
         });
     };
     window.addEventListener(KALSHI_CONFIG_CHANGED_EVENT, handleExternalConfigChange);
@@ -518,7 +557,7 @@ const Kalshi: React.FC = () => {
     setStrategyBusy(true);
     setApplyMessage('');
     try {
-      const response = await kalshiAPI.applyStrategy(strategyId);
+      const response = await kalshiAPI.applyStrategy(strategyId, executionMode);
       const nextConfig = {
         ...config,
         ...(response.data?.state?.config || {}),
@@ -688,15 +727,68 @@ const Kalshi: React.FC = () => {
 
   const renderRiskControls = () => {
     const learning = robotState?.strategy?.learning;
+    const parameterLabels: Record<string, [string, string]> = {
+      riskPerTradePct: ['Risk per interval', '每时段风险'],
+      minNetEdge: ['Minimum net edge', '最低净边际'],
+      minConservativeEdge: ['Conservative edge', '最低保守边际'],
+      marketBlendWeight: ['Market blend weight', '市场价格权重'],
+      probabilityLogitScale: ['Probability confidence', '概率置信强度'],
+      momentumProjectionScale: ['Momentum weight', '动量权重'],
+      basisReserveBps: ['Reference basis reserve', '基准价差缓冲'],
+      executionPriceTolerance: ['Execution tolerance', '成交容差'],
+      learningExplorationRate: ['Exploration budget', '探索预算'],
+      learningContrarianMode: ['Direction mode', '方向模式'],
+      maxSpread: ['Maximum spread', '最大点差'],
+      maxBookParticipation: ['Book participation', '盘口参与率'],
+      minDepthContracts: ['Minimum depth', '最低深度'],
+      maxPortfolioExposurePct: ['Portfolio exposure', '组合敞口'],
+    };
+    const percentParameters = new Set([
+      'riskPerTradePct', 'minNetEdge', 'minConservativeEdge', 'marketBlendWeight',
+      'momentumProjectionScale', 'executionPriceTolerance', 'learningExplorationRate',
+      'maxSpread', 'maxBookParticipation', 'maxPortfolioExposurePct',
+    ]);
+    const parameterLabel = (key: string) => {
+      const labels = parameterLabels[key] || [key, key];
+      return chinese ? labels[1] : labels[0];
+    };
+    const adjustmentValue = (key: string, value: any) => {
+      if (typeof value === 'boolean') return value ? copy('CONTRARIAN', '反向') : copy('NORMAL', '正常');
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return String(value ?? '--');
+      if (key === 'basisReserveBps') return `${numeric.toFixed(1)} bps`;
+      if (key === 'minDepthContracts') return Math.round(numeric).toLocaleString();
+      if (percentParameters.has(key)) return `${(numeric * (key.endsWith('Pct') ? 1 : 100)).toFixed(2)}${key === 'executionPriceTolerance' || key === 'maxSpread' ? 'c' : '%'}`;
+      return numeric.toFixed(3);
+    };
+    const learningChanges: any[] = (robotState?.strategy?.changes || [])
+      .filter((change) => {
+        const source = String(change?.source || '');
+        return source.startsWith('adaptive_') || source.startsWith('settings_ai_') || source.startsWith('evidence_recovery_');
+      })
+      .slice(0, 10)
+      .map((change) => {
+        const applied = change?.applied && Object.keys(change.applied).length
+          ? change.applied
+          : Object.fromEntries(Object.keys(change?.after || {}).filter((key) => change?.before?.[key] !== change?.after?.[key]).map((key) => [
+            key,
+            { before: change?.before?.[key], after: change?.after?.[key], reason: change?.summary },
+          ]));
+        return { ...change, applied };
+      });
     const auditedAdjustmentCount = Math.max(
       Number(learning?.adjustmentCount || 0),
       (robotState?.strategy?.changes || []).filter((change) => {
         const source = String(change?.source || '');
-        return source.startsWith('adaptive_') || source.startsWith('settings_ai_');
+        return source.startsWith('adaptive_') || source.startsWith('settings_ai_') || source.startsWith('evidence_recovery_');
       }).length,
     );
     const modeEquity = paperPortfolio
-      ? (Number(paperPortfolio.balance?.balance || 0) + Number(paperPortfolio.balance?.portfolio_value || 0)) / 100
+      ? (
+        isRealMode
+          ? Number(paperPortfolio.balance?.portfolio_value ?? paperPortfolio.balance?.balance ?? 0)
+          : Number(paperPortfolio.balance?.balance || 0) + Number(paperPortfolio.balance?.portfolio_value || 0)
+      ) / 100
       : Number(config.paperBankroll || 0);
     const modeLabel = isRealMode ? copy('Kalshi Real', 'Kalshi 实盘') : copy('AlphaLab Paper', 'AlphaLab 模拟');
     const learningStatus = !config.learningMode
@@ -756,7 +848,7 @@ const Kalshi: React.FC = () => {
           </div>
           <div className="kalshi-library-actions">
             <select value={selectedStrategyId} onChange={(event) => setSelectedStrategyId(event.target.value)} disabled={strategyBusy}>
-              {(strategyLibrary.filter((item) => item.mode === executionMode).length ? strategyLibrary.filter((item) => item.mode === executionMode) : strategyLibrary).map((item) => (
+              {strategyLibrary.filter((item) => item.mode === executionMode).map((item) => (
                 <option key={item.id} value={item.id}>{item.active ? '● ' : ''}{item.name}</option>
               ))}
             </select>
@@ -776,7 +868,7 @@ const Kalshi: React.FC = () => {
                 </header>
                 <dl>
                   <div><dt>{copy('Win rate', '胜率')}</dt><dd>{metrics.winRate == null ? '--' : probability(metrics.winRate)}</dd></div>
-                  <div><dt>{copy('Settled', '已结算')}</dt><dd>{metrics.settledSamples || 0}</dd></div>
+                  <div><dt>{copy('Realized', '已实现')}</dt><dd>{metrics.realizedSamples || metrics.settledSamples || 0}</dd></div>
                   <div><dt>{copy('Net P/L', '净盈亏')}</dt><dd>{money(metrics.totalPnl || 0)}</dd></div>
                   <div><dt>{copy('Avg / trade', '单笔平均')}</dt><dd>{money(metrics.averagePnl || 0)}</dd></div>
                   <div><dt>{copy('Brier', 'Brier')}</dt><dd>{metrics.brierScore == null ? '--' : Number(metrics.brierScore).toFixed(3)}</dd></div>
@@ -794,21 +886,70 @@ const Kalshi: React.FC = () => {
       </div>
       <div className={`kalshi-learning-panel${config.learningMode ? ' is-enabled' : ''}`}>
         <div className="kalshi-learning-head">
-          <div><RobotOutlined /><span><b>{isRealMode ? copy('Adaptive Real Learning', '实盘自适应学习') : copy('Adaptive Paper Learning', '模拟盘自适应学习')}</b><small>{copy('Walk-forward calibration from filled and settled trades in the selected mode', '根据当前模式下已成交并结算的交易进行滚动参数校准')}</small></span></div>
+          <div><RobotOutlined /><span><b>{isRealMode ? copy('Adaptive Real Learning', '实盘自适应学习') : copy('Adaptive Paper Learning', '模拟盘自适应学习')}</b><small>{copy('P/L learning uses every realized exit; probability calibration uses final settlements only', '盈亏学习使用每笔已实现退出；概率校准只使用最终结算')}</small></span></div>
           <label className="kalshi-learning-switch"><input type="checkbox" checked={config.learningMode} onChange={(event) => setConfig((current) => ({ ...current, learningMode: event.target.checked }))} /><span>{config.learningMode ? copy('ON', '已开启') : copy('OFF', '关闭')}</span></label>
         </div>
         <div className="kalshi-learning-status">
           <div><span>{copy('STATUS', '状态')}</span><strong>{learningStatus}</strong><small>{learning?.lastReason || copy('Enable learning or apply the Learning Lab preset.', '开启学习，或应用“自适应学习实验室”预设。')}</small></div>
-          <div><span>{copy('SETTLED PROGRESS', '结算样本进度')}</span><strong>{robotState?.strategy?.settledSamples || 0} / {learning?.nextReviewSample ?? 12}</strong><small>{copy('next deterministic review', '达到右侧数量后进行确定性复盘')}</small></div>
-          <div><span>{copy('RECENT WIN RATE', '近期胜率')}</span><strong>{learning?.recentWinRate == null ? '--' : probability(learning.recentWinRate)}</strong><small>{copy('not used alone', '不会单独作为调参依据')}</small></div>
+          <div><span>{copy('REALIZED PROGRESS', '已实现样本进度')}</span><strong>{robotState?.strategy?.realizedSamples || robotState?.strategy?.settledSamples || 0} / {learning?.nextReviewSample ?? 12}</strong><small>{copy('next deterministic P/L review', '达到右侧数量后进行确定性盈亏复盘')}</small></div>
+          <div><span>{copy('RECENT WIN RATE', '近期胜率')}</span><strong>{learning?.recentWinRate == null ? '--' : probability(learning.recentWinRate)}</strong><small>{Math.min(Number(robotState?.strategy?.realizedSamples || 0), Number(learning?.windowSize || 24))} {copy('realized exits in the active window', '笔已实现退出（当前窗口）')}</small></div>
           <div><span>{copy('RECENT NET P/L', '近期平均净盈亏')}</span><strong>{learning?.recentAveragePnl == null ? '--' : money(learning.recentAveragePnl)}</strong><small>{copy('after fees', '已扣除费用')}</small></div>
           <div><span>{copy('ADJUSTMENTS', '已调整次数')}</span><strong>{auditedAdjustmentCount}</strong><small>{copy('audited changes', '可审计参数变更')}</small></div>
           <div><span>{copy('SETTINGS AI', '设置 AI')}</span><strong>{learning?.aiStatus ? String(learning.aiStatus).toUpperCase() : copy('WAITING', '等待样本')}</strong><small>{[learning?.aiProvider, learning?.aiModel].filter(Boolean).join(' · ') || copy('Uses your configured provider', '调用设置中配置的模型')}</small></div>
-          <div><span>{copy('NORMAL DIRECTION', '原方向命中')}</span><strong>{learning?.observedDirectionalAccuracy == null ? '--' : probability(learning.observedDirectionalAccuracy)}</strong><small>{learning?.observedSamples || 0} {copy('settled shadow forecasts', '个已结算影子预测')}</small></div>
-          <div><span>{copy('INVERSE COUNTERFACTUAL', '反向命中假设')}</span><strong>{learning?.observedInverseAccuracy == null ? '--' : probability(learning.observedInverseAccuracy)}</strong><small>{copy('all forecasts, not simulated profit', '基于全部预测，不等同于反买收益')}</small></div>
+          <div><span>{copy('NORMAL DIRECTION', '原方向命中')}</span><strong>{learning?.observedDirectionalAccuracy == null ? '--' : probability(learning.observedDirectionalAccuracy)}</strong><small>{learning?.directionalWindowSamples ?? learning?.observedSamples ?? 0} {copy('forecasts in calculation window', '个计算窗口内预测')}</small></div>
+          <div><span>{copy('INVERSE COUNTERFACTUAL', '反向命中假设')}</span><strong>{learning?.observedInverseAccuracy == null ? '--' : probability(learning.observedInverseAccuracy)}</strong><small>{learning?.directionalWindowSamples ?? learning?.observedSamples ?? 0} {copy('same-window complement, not P/L', '个同窗口预测 · 互补命中率，非收益率')}</small></div>
           <div><span>{copy('ACTIVE DIRECTION', '当前方向模式')}</span><strong>{learning?.contrarianMode ? copy('CONTRARIAN', '反向') : copy('NORMAL', '正常')}</strong><small>{copy('24+ stable samples required to flip', '至少 24 个稳定样本才可切换')}</small></div>
         </div>
-        {learning?.lastAiDiagnosis && <div className="kalshi-ai-diagnosis"><RobotOutlined /><span><b>{copy('Latest AI calibration review', '最近一次 AI 校准复盘')}</b><p>{learning.lastAiDiagnosis}</p>{learning.lastAiReasons?.length ? <small>{learning.lastAiReasons.join(' · ')}</small> : null}</span></div>}
+        {learning?.lastAiDiagnosis && <div className="kalshi-ai-diagnosis"><RobotOutlined /><span><b>{copy('Latest AI calibration review', '最近一次 AI 校准复盘')}</b><p>{learning.lastAiDiagnosis}</p><div className="kalshi-ai-review-meta">{learning?.lastAiRootCause && <em>{copy('Root cause', '根因')} · {String(learning.lastAiRootCause).replace(/_/g, ' ')}</em>}{learning?.lastAiTargetMetric && <em>{copy('Target', '目标')} · {learning.lastAiTargetMetric}</em>}{learning?.lastAiExpectedEffect && <em>{copy('Expected', '预期')} · {learning.lastAiExpectedEffect}</em>}</div>{learning.lastAiReasons?.length ? <small>{learning.lastAiReasons.join(' · ')}</small> : null}</span></div>}
+        <div className="kalshi-learning-playbook">
+          <header><span>{copy('AI TRAINING PLAYBOOK', 'AI 调参培训规则')}</span><b>{copy('Diagnose first, adjust one cause', '先诊断，再针对一个根因调整')}</b></header>
+          <div>
+            <article><strong>01</strong><span><b>{copy('Calibration', '概率校准')}</b><small>{copy('Poor Brier or reliability gaps reduce forecast extremity and increase market blending.', 'Brier 或可靠性分箱较差时，降低预测极端程度并提高市场价格融合。')}</small></span></article>
+            <article><strong>02</strong><span><b>{copy('Entry selectivity', '入场选择')}</b><small>{copy('Calibration is sound but net P/L is weak: require more edge instead of taking more trades.', '校准正常但净盈亏偏弱时，提高边际要求，而不是增加交易次数。')}</small></span></article>
+            <article><strong>03</strong><span><b>{copy('Execution friction', '成交摩擦')}</b><small>{copy('Negative early exits or high fees tighten crossing tolerance, spread, and participation.', '早退亏损或费用过高时，收紧成交容差、点差和盘口参与率。')}</small></span></article>
+            <article><strong>04</strong><span><b>{copy('Direction and regime', '方向与行情状态')}</b><small>{copy('Direction changes need independent shadow and traded cohorts; unstable regimes produce no change.', '方向反转需要影子与交易样本独立支持；行情不稳定时保持不变。')}</small></span></article>
+          </div>
+        </div>
+        <div className="kalshi-adjustment-ledger">
+          <div className="kalshi-adjustment-head">
+            <div>
+              <span>{copy('LEARNING AUDIT', '学习审计')}</span>
+              <h4>{copy('What AI and the controller changed', 'AI 与控制器具体调整了什么')}</h4>
+              <p>{copy('Every applied parameter change keeps its previous value, new value, evidence, and source.', '每项已应用参数都会保留调整前后数值、触发证据与来源。')}</p>
+            </div>
+            <strong>{learningChanges.length}</strong>
+          </div>
+          {learningChanges.length ? <div className="kalshi-adjustment-list">
+            {learningChanges.map((change, changeIndex) => {
+              const source = String(change?.source || '').startsWith('settings_ai_')
+                ? copy('AI REVIEW', 'AI 复盘')
+                : copy('RULE CONTROLLER', '规则控制器');
+              const entries = Object.entries(change.applied || {});
+              return <article key={`${change.at || changeIndex}-${change.version || changeIndex}`}>
+                <header>
+                  <div><b>{source}</b><span>v{change.version || '--'} · {change.at ? new Date(change.at).toLocaleString(chinese ? 'zh-CN' : 'en-US') : '--'}</span></div>
+                  <small>{change?.metrics?.samples ? `${change.metrics.samples} ${copy('samples', '个样本')}` : change?.evidence?.realizedSamples ? `${change.evidence.realizedSamples} ${copy('realized', '笔已实现')}` : ''}</small>
+                </header>
+                <p>{change.summary}</p>
+                <div>
+                  {entries.map(([key, raw]: [string, any]) => {
+                    const before = raw?.before ?? change?.before?.[key];
+                    const after = raw?.after ?? raw?.value ?? change?.after?.[key];
+                    return <span key={key}>
+                      <em>{parameterLabel(key)}</em>
+                      <b>{adjustmentValue(key, before)} <i>→</i> {adjustmentValue(key, after)}</b>
+                      <small>{raw?.reason || change.summary}</small>
+                    </span>;
+                  })}
+                </div>
+                {!!Object.keys(change?.rejected || {}).length && <details>
+                  <summary>{copy(`${Object.keys(change.rejected).length} proposal(s) rejected by guardrails`, `${Object.keys(change.rejected).length} 项建议被护栏拒绝`)}</summary>
+                  {Object.entries(change.rejected).map(([key, raw]: [string, any]) => <p key={key}><b>{parameterLabel(key)}</b>: {raw?.reason}</p>)}
+                </details>}
+              </article>;
+            })}
+          </div> : <div className="kalshi-empty-row">{copy('No learning adjustment has been applied yet.', '尚未应用任何学习调整。')}</div>}
+        </div>
         <div className="kalshi-learning-inputs">
           <label><span>{copy('Pre-trade AI challenge', '进场前 AI 质检')}<small>{copy('may stop a new entry only', '只能阻止新开仓')}</small></span><input type="checkbox" checked={config.preTradeAiReview} onChange={(event) => setConfig((current) => ({ ...current, preTradeAiReview: event.target.checked }))} /></label>
           <label><span>{copy('AI-assisted review', 'AI 辅助复盘')}<small>{copy('Settings provider, bounded changes', '使用设置模型，调整受限')}</small></span><input type="checkbox" checked={config.learningAiMode} disabled={!config.learningMode} onChange={(event) => setConfig((current) => ({ ...current, learningAiMode: event.target.checked }))} /></label>
@@ -819,10 +960,10 @@ const Kalshi: React.FC = () => {
         </div>
         <ol className="kalshi-learning-rules">
           <li><b>01</b><span>{copy(`Warm up with 12 filled-and-settled ${modeLabel} trades; open signals and rejected orders never train the controller.`, `先收集 12 笔已成交且已结算的${modeLabel}交易；未成交订单和普通信号不会参与学习。`)}</span></li>
-          <li><b>02</b><span>{copy('Negative net P/L, win rate below 42%, or Brier score above 0.26 tightens size, edge, and exploration.', '若净盈亏为负、胜率低于 42% 或 Brier 分数高于 0.26，则降低仓位和探索并提高边际要求。')}</span></li>
+          <li><b>02</b><span>{copy('Negative net P/L or a weak hit rate reduces size and exploration. Poor settlement calibration also de-extremizes probability forecasts.', '净盈亏为负或命中率偏弱时会降低仓位和探索；结算校准较差时还会降低概率预测的极端程度。')}</span></li>
           <li><b>03</b><span>{copy('Only a profitable, calibrated 16+ trade window may expand risk, and never above the learned-risk cap.', '只有盈利且校准良好的 16 笔以上窗口才可小幅扩大风险，并且绝不超过学习风险上限。')}</span></li>
-          <li><b>04</b><span>{copy('Neutral windows widen exploration slightly; spread, depth, exposure, and order-size gates never relax automatically.', '中性窗口只会轻微扩大探索；点差、深度、敞口和订单大小等硬门控不会被自动放宽。')}</span></li>
-          <li><b>05</b><span>{copy('Settings AI explains errors and proposes small calibration deltas. It cannot size or route orders, and a direction reversal needs 24+ stable settled samples.', '设置中的 AI 会解释错误并提出小幅校准；它不能决定仓位或直接下单，反向策略至少需要 24 个稳定的已结算样本。')}</span></li>
+          <li><b>04</b><span>{copy('Neutral windows may relax signal thresholds slightly, but execution tolerance, spread, depth, exposure, and order-size gates stay fixed.', '中性窗口可以轻微放宽信号阈值，但成交容差、点差、深度、敞口和订单大小门控保持不变。')}</span></li>
+          <li><b>05</b><span>{copy('AI proposals are semantically checked. It cannot loosen execution or exploration during losses, raise overconfident forecasts, size orders, or flip direction without agreement across independent cohorts.', 'AI 建议会经过语义护栏；亏损期不能放宽成交或探索，校准较差时不能提高置信度，也不能决定仓位，且不同证据组未达成一致时不能反转方向。')}</span></li>
         </ol>
       </div>
       <div className="kalshi-control-grid">
@@ -831,11 +972,16 @@ const Kalshi: React.FC = () => {
         <label><span>{copy('Minimum net edge', '最低净边际')}<small>{copy('percentage points', '百分点')}</small></span><input type="number" min="2" max="15" step="0.5" value={config.minNetEdge * 100} onChange={(event) => updateConfig('minNetEdge', event.target.valueAsNumber, 100)} /></label>
         <label><span>{copy('Conservative edge', '最低保守边际')}<small>{copy('after uncertainty', '扣除不确定性后')}</small></span><input type="number" min="0.5" max="8" step="0.5" value={config.minConservativeEdge * 100} onChange={(event) => updateConfig('minConservativeEdge', event.target.valueAsNumber, 100)} /></label>
         <label><span>{copy('Maximum spread', '最大点差')}<small>{copy('cents', '美分')}</small></span><input type="number" min="1" max="20" step="0.5" value={config.maxSpread * 100} onChange={(event) => updateConfig('maxSpread', event.target.valueAsNumber, 100)} /></label>
+        <label><span>{copy('Maximum relative spread', '最大相对点差')}<small>{copy('spread / contract price', '点差 / 合约价格')}</small></span><input type="number" min="5" max="50" step="1" value={config.maxRelativeSpread * 100} onChange={(event) => updateConfig('maxRelativeSpread', event.target.valueAsNumber, 100)} /></label>
         <label><span>{copy('Minimum ask depth', '最低卖方深度')}<small>{copy('contracts', '份')}</small></span><input type="number" min="1" max="10000" step="5" value={config.minDepthContracts} onChange={(event) => updateConfig('minDepthContracts', event.target.valueAsNumber)} /></label>
         <label><span>{copy('Book participation cap', '盘口参与率上限')}<small>%</small></span><input type="number" min="5" max="50" step="5" value={config.maxBookParticipation * 100} onChange={(event) => updateConfig('maxBookParticipation', event.target.valueAsNumber, 100)} /></label>
         <label><span>{copy('Portfolio exposure cap', '组合敞口上限')}<small>%</small></span><input type="number" min="2" max="50" step="1" value={config.maxPortfolioExposurePct} onChange={(event) => updateConfig('maxPortfolioExposurePct', event.target.valueAsNumber)} /></label>
         <label><span>{copy('IOC crossing allowance', 'IOC 成交容差')}<small>{copy('cents, edge-capped', '美分，受边际约束')}</small></span><input type="number" min="0" max="3" step="0.5" value={config.executionPriceTolerance * 100} onChange={(event) => updateConfig('executionPriceTolerance', event.target.valueAsNumber, 100)} /></label>
-        <label><span>{copy('Protective close threshold', '保护性平仓阈值')}<small>{copy('held-side probability', '持有方向概率')}</small></span><input type="number" min="35" max="49" step="1" value={config.exitProbabilityThreshold * 100} onChange={(event) => updateConfig('exitProbabilityThreshold', event.target.valueAsNumber, 100)} /></label>
+        <label><span>{copy('Model-market gap limit', '模型市场分歧上限')}<small>{copy('percentage points', '百分点')}</small></span><input type="number" min="10" max="40" step="1" value={config.maxModelMarketGap * 100} onChange={(event) => updateConfig('maxModelMarketGap', event.target.valueAsNumber, 100)} /></label>
+        <label><span>{copy('Protective probability gate', '保护性概率门槛')}<small>{copy('must also clear the loss gate', '必须同时满足亏损门槛')}</small></span><input type="number" min="35" max="49" step="1" value={config.exitProbabilityThreshold * 100} onChange={(event) => updateConfig('exitProbabilityThreshold', event.target.valueAsNumber, 100)} /></label>
+        <label><span>{copy('Minimum net exit profit', '最低净平仓盈利')}<small>{copy('dollars per contract, after both fees', '每份美元，已扣除两侧手续费')}</small></span><input type="number" min="0" max="10" step="0.5" value={config.minimumExitProfit * 100} onChange={(event) => updateConfig('minimumExitProfit', event.target.valueAsNumber, 100)} /></label>
+        <label><span>{copy('Protective stop-loss gate', '保护性止损门槛')}<small>{copy('loss from fee-adjusted break-even', '相对含费盈亏平衡点的亏损')}</small></span><input type="number" min="15" max="80" step="5" value={config.stopLossPct * 100} onChange={(event) => updateConfig('stopLossPct', event.target.valueAsNumber, 100)} /></label>
+        <label><span>{copy('Emergency stop-loss gate', '紧急止损门槛')}<small>{copy('only after probability collapse', '仅在概率严重恶化后启用')}</small></span><input type="number" min="10" max="60" step="5" value={config.emergencyStopLossPct * 100} onChange={(event) => updateConfig('emergencyStopLossPct', event.target.valueAsNumber, 100)} /></label>
       </div>
       <div className="kalshi-policy-note"><SafetyCertificateOutlined /><span><b>{copy('Hard limits remain deterministic.', '硬限制始终由确定性规则控制。')}</b>{copy(' The robot follows your selected Kalshi environment and uses IOC limit orders only. AI may challenge a cleared new entry, but cannot approve a blocked trade, alter an exit, size an order, or route one.', ' 机器人会跟随你选择的 Kalshi 账户环境，并且只使用 IOC 限价单；AI 可以质疑已通过的新开仓，但不能放行被阻止的交易、修改退出、决定仓位或直接下单。')}</span></div>
     </section>;
@@ -857,6 +1003,7 @@ const Kalshi: React.FC = () => {
       trend_confirmation: copy('Trend confirmation is insufficient', '趋势确认不足'),
       two_sided_quote: copy('No executable two-sided quote', '缺少可成交双边报价'),
       spread: copy('Spread is too wide', '点差过宽'),
+      relative_spread: copy('Spread is too large relative to the contract price', '相对合约价格而言点差过宽'),
       depth: copy('Available depth is too low', '可成交深度不足'),
       net_edge: copy('Net edge is below the minimum', '净边际低于最低要求'),
       conservative_edge: copy('Conservative edge is below the minimum', '保守边际低于最低要求'),
@@ -901,20 +1048,32 @@ const Kalshi: React.FC = () => {
     }
     const cash = Number(paperPortfolio.balance?.balance || 0) / 100;
     const portfolioValue = Number(paperPortfolio.balance?.portfolio_value || 0) / 100;
-    const accountEquity = cash + portfolioValue;
     const portfolioMode = (isRealMode || paperPortfolio.environment === 'real') ? 'real' : 'paper';
+    // Kalshi Real's portfolio_value is already total account value (cash plus
+    // positions). AlphaLab Paper stores open-position value separately.
+    const accountEquity = portfolioMode === 'real'
+      ? Number(paperPortfolio.balance?.portfolio_value ?? paperPortfolio.balance?.balance ?? 0) / 100
+      : cash + portfolioValue;
     const analytics = paperPortfolio.analytics || {};
     const fallbackSettlementRecords = robotState?.strategy?.settlementRecords || [];
-    const settlementRecords = (analytics.settlementRecords?.length ? analytics.settlementRecords : fallbackSettlementRecords)
+    const realizedRecords = (
+      analytics.realizedTradeRecords?.length
+        ? analytics.realizedTradeRecords
+        : robotState?.strategy?.realizedTradeRecords?.length
+          ? robotState.strategy.realizedTradeRecords
+          : analytics.settlementRecords?.length
+            ? analytics.settlementRecords
+            : fallbackSettlementRecords
+    )
       .filter((record: any) => !record.environment || record.environment === portfolioMode);
     const fallbackEquityCurve = robotState?.strategy?.equityCurve || [];
     const equityCurve = (analytics.equityCurve?.length ? analytics.equityCurve : fallbackEquityCurve)
       .filter((point: any) => !point.environment || point.environment === portfolioMode);
-    const settledSamples = analytics.settledSamples ?? settlementRecords.length;
-    const wins = analytics.wins ?? settlementRecords.filter((record) => record.pnl > 0).length;
-    const winRate = analytics.winRate ?? (settledSamples ? wins / settledSamples : null);
-    const totalPnl = analytics.totalPnl ?? settlementRecords.reduce((sum, record) => sum + Number(record.pnl || 0), 0);
-    const averagePnl = analytics.averagePnl ?? (settledSamples ? Number(totalPnl) / settledSamples : 0);
+    const realizedSamples = analytics.realizedSamples ?? realizedRecords.length;
+    const wins = analytics.realizedWins ?? analytics.wins ?? realizedRecords.filter((record) => record.pnl > 0).length;
+    const winRate = analytics.realizedWinRate ?? analytics.winRate ?? (realizedSamples ? wins / realizedSamples : null);
+    const totalPnl = analytics.realizedTotalPnl ?? analytics.totalPnl ?? realizedRecords.reduce((sum, record) => sum + Number(record.pnl || 0), 0);
+    const averagePnl = analytics.realizedAveragePnl ?? analytics.averagePnl ?? (realizedSamples ? Number(totalPnl) / realizedSamples : 0);
     const positionRows = paperPortfolio.positions || [];
     const orderRows = paperPortfolio.orders || [];
     const filledOrders = orderRows.filter((item: any) => Number(item.fill_count_fp || 0) > 0);
@@ -935,7 +1094,7 @@ const Kalshi: React.FC = () => {
             <div className="kalshi-order-table">
               <div className="kalshi-order-head"><span>{copy('TIME', '时间')}</span><span>{copy('CONTRACT', '合约')}</span><span>{copy('ORDER', '订单')}</span><span>{copy('REQUEST / FILLED', '请求 / 成交')}</span><span>{copy('LIMIT / AVG', '限价 / 均价')}</span><span>{copy('SLIPPAGE / FEE', '滑点 / 费用')}</span><span>{copy('STATUS', '状态')}</span></div>
               {orderRows.length ? orderRows.map((item: any, index: number) => {
-                const tradeAction = String(item.side || item.action || item.order_action || '').replace(/_/g, ' ').toUpperCase();
+                const tradeAction = String(item.action || item.order_action || '').replace(/_/g, ' ').toUpperCase();
                 const outcomeSide = String(item.outcome_side || '').toUpperCase();
                 const orderLabel = [tradeAction, outcomeSide].filter(Boolean).join(' ') || '--';
                 return (
@@ -970,13 +1129,13 @@ const Kalshi: React.FC = () => {
         </section>
         <section className="kalshi-performance-section">
           <div className="kalshi-performance-summary">
-            <div><span>{copy('REALIZED P/L', '已实现盈亏')}</span><strong className={Number(totalPnl) >= 0 ? 'is-profit' : 'is-loss'}>{money(totalPnl)}</strong><small>{isRealMode ? copy('Real Kalshi fills and settlements only', '仅使用 Kalshi 实盘成交与结算') : copy('Filled and settled Paper trades only', '仅统计 Paper 已成交且已结算交易')}</small></div>
-            <div><span>{copy('WIN RATE', '结算胜率')}</span><strong>{winRate === null ? '--' : probability(winRate)}</strong><small>{wins} {copy('profitable', '笔盈利')} / {settledSamples} {copy('settled', '笔结算')}</small></div>
+            <div><span>{copy('REALIZED P/L', '已实现盈亏')}</span><strong className={Number(totalPnl) >= 0 ? 'is-profit' : 'is-loss'}>{money(totalPnl)}</strong><small>{copy('Filled exits and final settlements, net of fees', '已成交卖出与最终结算，扣除费用')}</small></div>
+            <div><span>{copy('REALIZED WIN RATE', '已实现胜率')}</span><strong>{winRate === null ? '--' : probability(winRate)}</strong><small>{wins} {copy('profitable', '笔盈利')} / {realizedSamples} {copy('realized', '笔已实现')}</small></div>
             <div><span>{copy('AVERAGE / TRADE', '单笔平均')}</span><strong>{averagePnl === null ? '--' : money(averagePnl)}</strong><small>{copy('Net of reported costs and fees', '扣除已报告成本与费用')}</small></div>
           </div>
           <div className="kalshi-performance-chart">
-            <div><span>{copy('CUMULATIVE REALIZED P/L', '累计已实现盈亏')}</span><small>{copy('Settlement-by-settlement account curve', '逐笔结算账户曲线')}</small></div>
-            <PnlChart points={equityCurve} label={copy('No settled trade curve is available yet.', '暂无已结算交易曲线。')} />
+            <div><span>{copy('CUMULATIVE REALIZED P/L', '累计已实现盈亏')}</span><small>{copy('Trade-by-trade realized account curve', '逐笔已实现交易账户曲线')}</small></div>
+            <PnlChart points={equityCurve} label={copy('No realized trade curve is available yet.', '暂无已实现交易曲线。')} />
           </div>
         </section>
         <section className="kalshi-ledger-section">
@@ -986,7 +1145,7 @@ const Kalshi: React.FC = () => {
               {positionRows.length ? positionRows.map((item: any, index: number) => (
                 <div className="kalshi-portfolio-row" key={item.ticker || index}>
                   <b>{item.ticker || '--'}</b>
-                  <span>{item.net_side || (Number(item.position_fp) >= 0 ? 'YES' : 'NO')} · {Number(item.net_count_fp || 0)} {copy('net', '净')}</span>
+                  <span>{positionSideLabel(item)} · {Number(item.net_count_fp || 0)} {copy('net', '净')}</span>
                   <strong>{Number(item.yes_count_fp || 0)} / {Number(item.no_count_fp || 0)}</strong>
                   <span>{money(Number(item.market_value_dollars || 0))} / {money(Number(item.market_exposure_dollars || 0))}</span>
                   <span className={Number(item.unrealized_pnl_dollars || 0) >= 0 ? 'is-profit' : 'is-loss'}>{money(Number(item.unrealized_pnl_dollars || 0))} / {money(Number(item.fee_cost_dollars || 0))}</span>
@@ -996,20 +1155,23 @@ const Kalshi: React.FC = () => {
           </div>
         </section>
         <section className="kalshi-ledger-section">
-          <div className="kalshi-section-head"><div><span>{copy('SETTLEMENT ANALYTICS', '结算分析')}</span><h2>{copy('Realized trade outcomes', '已实现交易结果')}</h2><small>{copy('Only orders confirmed filled and then settled are included.', '只包含确认成交后又完成结算的订单。')}</small></div><strong>{settlementRecords.length}</strong></div>
+          <div className="kalshi-section-head"><div><span>{copy('REALIZED LEDGER', '已实现账本')}</span><h2>{copy('Realized trade outcomes', '已实现交易结果')}</h2><small>{copy('Every filled sale and final settlement is shown with net P/L.', '每笔成交卖出和最终结算均显示净收益。')}</small></div><strong>{realizedRecords.length}</strong></div>
           <div className="kalshi-settlement-table">
             <div className="kalshi-settlement-head"><span>{copy('SETTLED', '结算时间')}</span><span>{copy('CONTRACT', '合约')}</span><span>{copy('POSITION / RESULT', '方向 / 结果')}</span><span>{copy('BUY / EXIT', '买入 / 退出价')}</span><span>{copy('SIZE', '数量')}</span><span>{copy('COST / FEES', '成本 / 费用')}</span><span>{copy('REALIZED P/L', '已实现盈亏')}</span></div>
-            {settlementRecords.length ? settlementRecords.map((record) => (
+            {realizedRecords.length ? realizedRecords.map((record) => (
               <div className="kalshi-settlement-row" key={record.key}>
                 <span>{record.settledAt ? new Date(record.settledAt).toLocaleString(chinese ? 'zh-CN' : 'en-US') : '--'}</span>
                 <b>{record.ticker}</b>
-                <span>{record.side || '--'} → {record.result}</span>
+                <span>
+                  {record.side || '--'} → {record.exitType === 'sale' ? copy('SOLD', '卖出') : record.result || '--'}
+                  {record.exitType === 'sale' && record.exitTrigger ? <small>{exitTriggerLabel(record.exitTrigger, chinese)}</small> : null}
+                </span>
                 <span><b>{cents(record.entryPrice ?? (Number(record.contracts || 0) > 0 ? Number(record.cost || 0) / Number(record.contracts) : null))}</b> → {cents(record.exitPrice ?? (record.side && record.result ? (record.side === record.result ? 1 : 0) : null))}<small>{record.exitType === 'sale' ? copy('sold', '卖出') : copy('settled', '结算')}</small></span>
                 <span>{record.contracts || '--'}</span>
                 <span>{money(record.cost)} / {money(record.fees)}</span>
                 <strong className={record.pnl > 0 ? 'is-profit' : record.pnl < 0 ? 'is-loss' : ''}>{record.pnl > 0 ? '+' : ''}{money(record.pnl)}</strong>
               </div>
-            )) : <div className="kalshi-empty-row">{copy('No filled-and-settled trades are available yet.', '尚无已成交且已结算的交易。')}</div>}
+            )) : <div className="kalshi-empty-row">{copy('No realized trades are available yet.', '尚无已实现交易。')}</div>}
           </div>
         </section>
       </>

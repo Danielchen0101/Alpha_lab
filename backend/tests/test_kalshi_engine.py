@@ -236,9 +236,32 @@ def test_paper_account_gates_prevent_duplicate_or_over_budget_entries():
         "market_flat",
         "open_order",
         "portfolio_exposure",
-        "loss_cooldown",
     }.issubset(result["blockingReasons"])
+    assert "loss_cooldown" not in result["blockingReasons"]
     assert result["sizing"]["contracts"] == 0
+
+    real_result = evaluate_btc15_contract(
+        _market(now, floor_strike=64_660.0),
+        spot_price=spot,
+        candles=candles,
+        now=now,
+        config={"executionMode": "real"},
+        account_context={
+            "bankroll": 1_000.0,
+            "cashAvailable": 500.0,
+            "portfolioExposure": 0.0,
+            "cooldownActive": True,
+            "cooldownDetail": "three-loss cooldown",
+        },
+    )
+
+    assert "loss_cooldown" in real_result["blockingReasons"]
+    assert real_result["paperOnly"] is False
+    assert real_result["executionEnvironment"] == "kalshi_real"
+    assert "Real IOC limit order" in real_result["methodology"]["orderPolicy"]
+    assert "no exploration overrides" in real_result["methodology"]["samplePolicy"]
+    account_gate = next(gate for gate in real_result["gates"] if gate["key"] == "account_ready")
+    assert account_gate["label"] == "Kalshi Real account ready"
 
 
 def test_missing_strike_and_late_entry_fail_closed():
@@ -262,6 +285,12 @@ def test_user_config_is_bounded_to_research_limits():
         "paperBankroll": 5,
         "riskPerTradePct": 50,
         "minNetEdge": 0,
+        "minimumHoldSeconds": -1,
+        "reversalCooldownSeconds": 5000,
+        "exitValueBuffer": 1,
+        "minimumExitProfit": 1,
+        "stopLossPct": 0,
+        "emergencyStopLossPct": 1,
     })
 
     assert config["paperBankroll"] == 100.0
@@ -269,6 +298,12 @@ def test_user_config_is_bounded_to_research_limits():
     assert "maxContracts" not in config
     assert "maxDailyLossPct" not in config
     assert config["minNetEdge"] == 0.02
+    assert config["minimumHoldSeconds"] == 0
+    assert config["reversalCooldownSeconds"] == 600
+    assert config["exitValueBuffer"] == 0.05
+    assert config["minimumExitProfit"] == 0.10
+    assert config["stopLossPct"] == 0.15
+    assert config["emergencyStopLossPct"] == 0.15
 
 
 def test_adaptive_learning_config_is_explicit_and_bounded():
@@ -316,7 +351,28 @@ def test_paper_exploration_can_collect_one_near_threshold_sample():
     assert result["explorationTrade"] is True
     assert result["explorationOverrides"] == ["net_edge"]
     assert result["action"] == "BUY_YES"
-    assert result["sizing"]["contracts"] >= 1
+    assert result["sizing"]["contracts"] == 1
+
+
+def test_relative_spread_blocks_cheap_contract_with_large_percentage_friction():
+    now = datetime.now(timezone.utc)
+    candles, spot = _candles()
+    result = evaluate_btc15_contract(
+        _market(
+            now,
+            floor_strike=64_660.0,
+            yes_bid_dollars="0.0800",
+            yes_ask_dollars="0.1200",
+            no_bid_dollars="0.8800",
+            no_ask_dollars="0.9200",
+        ),
+        spot_price=spot,
+        candles=candles,
+        now=now,
+        config={"maxSpread": 0.06, "maxRelativeSpread": 0.25},
+    )
+
+    assert "relative_spread" in result["blockingReasons"]
 
 
 def test_paper_exploration_never_overrides_account_or_execution_gates():
@@ -343,3 +399,27 @@ def test_paper_exploration_never_overrides_account_or_execution_gates():
     assert result["explorationTrade"] is False
     assert result["action"] == "WAIT"
     assert "open_order" in result["blockingReasons"]
+
+
+def test_real_mode_never_uses_paper_exploration():
+    now = datetime.now(timezone.utc)
+    candles, spot = _candles()
+    result = evaluate_btc15_contract(
+        _market(now, ticker="KXBTC15M-X-3", floor_strike=64_660.0),
+        spot_price=spot,
+        candles=candles,
+        now=now,
+        config={
+            "executionMode": "real",
+            "learningMode": True,
+            "learningExplorationRate": 0.35,
+            "minNetEdge": 0.15,
+            "minConservativeEdge": 0.08,
+        },
+    )
+
+    assert result["explorationTrade"] is False
+    assert result["explorationOverrides"] == []
+    assert result["action"] == "WAIT"
+    assert "net_edge" in result["blockingReasons"]
+    assert "Real IOC limit order" in result["methodology"]["orderPolicy"]

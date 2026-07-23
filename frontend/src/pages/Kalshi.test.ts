@@ -1,4 +1,4 @@
-import { buildPresetConfig, resolveKalshiView, STRATEGY_PRESETS } from './Kalshi';
+import { buildPresetConfig, positionSideLabel, resolveKalshiView, STRATEGY_PRESETS } from './Kalshi';
 import { DEFAULT_KALSHI_BOT_CONFIG } from '../services/kalshiApi';
 
 describe('Kalshi workspace routing', () => {
@@ -41,9 +41,9 @@ describe('Kalshi workspace routing', () => {
   it('keeps adaptive learning bounded to a paper-sized risk envelope', () => {
     const adaptive = STRATEGY_PRESETS.find((preset) => preset.id === 'adaptive-learning');
     expect(adaptive?.config.learningMode).toBe(true);
-    expect(adaptive?.config.learningReviewEvery).toBe(4);
+    expect(adaptive?.config.learningReviewEvery).toBe(8);
     expect(adaptive?.config.learningAiMode).toBe(true);
-    expect(adaptive?.config.learningWindowSize).toBe(24);
+    expect(adaptive?.config.learningWindowSize).toBe(32);
     expect(adaptive?.config.learningMaxRiskPct).toBeLessThanOrEqual(0.5);
     expect(adaptive?.config.learningExplorationRate).toBeGreaterThan(0);
   });
@@ -62,5 +62,12 @@ describe('Kalshi workspace routing', () => {
     const balancedConfig = buildPresetConfig(balanced!, 4321);
     expect(balancedConfig.learningMode).toBe(false);
     expect(balancedConfig.paperBankroll).toBe(4321);
+  });
+
+  it('does not present a flat position as a YES holding', () => {
+    expect(positionSideLabel({ position_fp: 0 })).toBe('--');
+    expect(positionSideLabel({ position_fp: 3 })).toBe('YES');
+    expect(positionSideLabel({ position_fp: -2 })).toBe('NO');
+    expect(positionSideLabel({ net_side: 'no', position_fp: 3 })).toBe('NO');
   });
 });

@@ -48795,7 +48795,7 @@ def _kalshi_ai_status(uid):
 
 
 def _kalshi_ai_learning_review(uid, evidence):
-    """Use the Settings model to diagnose Paper outcomes, never to route orders.
+    """Use the Settings model to diagnose one mode's outcomes, never to route orders.
 
     The returned deltas are validated again by KalshiRobotState. The model has
     no authority over credentials, environment, order payloads, sizing, cash,
@@ -48812,29 +48812,53 @@ def _kalshi_ai_learning_review(uid, evidence):
             'source': source,
         }
     system_prompt = (
-        'You are AlphaLab Kalshi Paper Calibration Reviewer. Analyze two distinct '
-        'evidence sets: all settled shadow forecasts for directional calibration, '
-        'and actually filled Paper trades for fee-adjusted P/L attribution. Diagnose '
+        'You are AlphaLab Kalshi Strategy Coach and Calibration Reviewer. You do '
+        'not freely retrain or rewrite the trading model. You teach a constrained '
+        'online controller by diagnosing one root cause and proposing a small, '
+        'testable parameter hypothesis. Analyze three distinct '
+        'evidence sets for the explicitly selected Paper or Real environment: '
+        'settled shadow forecasts for directional calibration, filled-and-settled '
+        'trades for fee-adjusted P/L attribution, and reduce-only early closes for '
+        'exit quality, fee, and churn analysis. Early closes do not reveal the final '
+        'binary result and must never be used as directional or Brier-score labels. Diagnose '
         'whether errors came from direction, confidence calibration, entry price, '
         'fees, spread, timing, volatility regime, or hard-gate selection. Recommend '
-        'small calibration deltas. You do not place orders '
+        'small calibration deltas. Follow this curriculum: (1) insufficient data: '
+        'make no change; (2) poor calibration: reduce probabilityLogitScale and/or '
+        'increase marketBlendWeight, never loosen entries or execution; (3) acceptable '
+        'calibration but negative net P/L: inspect entry price, fees and selectivity, '
+        'then raise edge thresholds or tighten execution; (4) poor direction across '
+        'independent shadow and traded cohorts: hold direction unless the strict '
+        'contrarian thresholds are met; (5) profitable and calibrated evidence: '
+        'prefer no AI expansion because deterministic controls own risk growth. '
+        'Treat Brier scores above 0.26 as poor calibration: '
+        'do not increase probabilityLogitScale when calibration is poor. Do not increase '
+        'executionPriceTolerance or learningExplorationRate while fee-adjusted realized '
+        'P/L is negative or realized win rate is below 42%. Never conflate shadow accuracy '
+        'with filled-trade profitability, and require shadow and traded-settlement cohorts '
+        'to agree before recommending a direction reversal. You do not place orders '
         'and may not change riskPerTradePct, credentials, environment, '
-        'cash, exposure limits, loss stops, spread/depth gates, cooldowns, or any '
-        'live setting. A contrarian recommendation is a hypothesis, not a profit '
+        'cash, exposure limits, loss stops, spread/depth gates, cooldowns, execution '
+        'mode, or order routing. A contrarian recommendation is a hypothesis, not a profit '
         'claim, and must be supported across the full observation window rather than '
-        'a selected losing-trade subset. Return one JSON object only with: diagnosis (string under '
-        '500 chars), confidence (0..1), directionRecommendation (normal, contrarian, '
+        'a selected losing-trade subset. The evidenceSummary is authoritative; use '
+        'its reliability bins and side/price cohorts before raw anecdotes. Return one '
+        'JSON object only with: diagnosis (string under 500 chars), rootCause (one of '
+        'insufficient_data, calibration, direction, entry_selectivity, execution_friction, '
+        'regime_instability), targetMetric (string), expectedEffect (string), evidenceUsed '
+        '(array of at most 6 concrete metrics), confidence (0..1), directionRecommendation '
+        '(normal, contrarian, '
         'or hold), reasons (array of at most 5 strings), errorPatterns (array), and '
         'adjustments (object of DELTAS, not absolute values). Allowed adjustment '
         'keys and maximum absolute deltas are: marketBlendWeight 0.05, minNetEdge '
         '0.0025, probabilityLogitScale 0.05, momentumProjectionScale 0.02, '
         'basisReserveBps 1.0, minConservativeEdge 0.0015, executionPriceTolerance 0.002, '
         'learningExplorationRate 0.05. Prefer no adjustment when '
-        'evidence is weak. Prefer increasing safe Paper exploration over lowering hard '
+        'evidence is weak. Prefer increasing bounded exploration over lowering hard '
         'market-quality gates. Never infer expected profit from directional accuracy alone.'
     )
     prompt = json.dumps({
-        'task': 'Explain forecast and trade errors, compare normal versus inverse direction, and propose bounded Paper calibration.',
+        'task': 'Explain forecast, settled-trade, and early-exit errors within this one environment; compare normal versus inverse direction and propose bounded calibration.',
         'evidence': evidence,
     }, separators=(',', ':'), default=str)
     parsed, error = _inst_call_ai_trader(ai_config, system_prompt, prompt)
