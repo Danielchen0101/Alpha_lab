@@ -1084,7 +1084,10 @@ class _PublicDataClient:
                 "coinbase-btc-candles-1m",
                 f"{COINBASE_EXCHANGE_BASE}/products/BTC-USD/candles",
                 params={"granularity": 60},
-                ttl=30.0,
+                # 15s keeps the momentum logit term at most one refresh behind
+                # inside the 100-320s decision window while staying far under
+                # Coinbase's public rate limits at a 5-second robot cadence.
+                ttl=15.0,
             ) or []
         except KalshiApiError:
             warnings.append("btc_history_unavailable")

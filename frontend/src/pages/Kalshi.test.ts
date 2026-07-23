@@ -17,51 +17,59 @@ describe('Kalshi workspace routing', () => {
     expect(resolveKalshiView(pathname)).toBe(expected);
   });
 
-  it('starts with bounded paper risk instead of an unconstrained stake', () => {
+  it('defaults to the calibrated v3 favorite-carry configuration', () => {
     expect(DEFAULT_KALSHI_BOT_CONFIG.paperBankroll).toBe(1000);
-    expect(DEFAULT_KALSHI_BOT_CONFIG.riskPerTradePct).toBeLessThanOrEqual(0.5);
+    expect(DEFAULT_KALSHI_BOT_CONFIG.riskPerTradePct).toBeLessThanOrEqual(1.0);
     expect(DEFAULT_KALSHI_BOT_CONFIG.maxBookParticipation).toBeLessThanOrEqual(0.2);
-    expect(DEFAULT_KALSHI_BOT_CONFIG.minNetEdge).toBeGreaterThanOrEqual(0.04);
+    // Favorites only: never buy the longshot band that produced ~20% winners.
+    expect(DEFAULT_KALSHI_BOT_CONFIG.minPrice).toBeGreaterThanOrEqual(0.5);
+    expect(DEFAULT_KALSHI_BOT_CONFIG.maxPrice).toBeLessThanOrEqual(0.93);
+    expect(DEFAULT_KALSHI_BOT_CONFIG.minModelProbability).toBeGreaterThanOrEqual(0.6);
+    // Late-window entries where the distance signal is strongest.
+    expect(DEFAULT_KALSHI_BOT_CONFIG.maxSecondsToClose).toBeLessThanOrEqual(360);
+    expect(DEFAULT_KALSHI_BOT_CONFIG.probabilityLogitScale).toBeGreaterThanOrEqual(1.9);
   });
 
-  it('offers distinct low, balanced, active, adaptive, and stress presets', () => {
+  it('offers fortress, baseline, adaptive, and active-sampling presets', () => {
     expect(STRATEGY_PRESETS.map((preset) => preset.id)).toEqual([
-      'capital-guard',
-      'balanced',
-      'active-sampling',
+      'fortress',
+      'favorite-carry',
       'adaptive-learning',
-      'stress-test',
+      'active-sampling',
     ]);
     expect(STRATEGY_PRESETS.filter((preset) => preset.recommended)).toHaveLength(2);
-    expect(STRATEGY_PRESETS[0].config.riskPerTradePct).toBeLessThan(
-      Number(STRATEGY_PRESETS[4].config.riskPerTradePct),
+    const fortress = STRATEGY_PRESETS[0];
+    const active = STRATEGY_PRESETS[3];
+    expect(Number(fortress.config.minModelProbability)).toBeGreaterThan(
+      Number(active.config.minModelProbability),
     );
   });
 
-  it('keeps adaptive learning bounded to a paper-sized risk envelope', () => {
+  it('keeps adaptive learning bounded and evidence-gated', () => {
     const adaptive = STRATEGY_PRESETS.find((preset) => preset.id === 'adaptive-learning');
     expect(adaptive?.config.learningMode).toBe(true);
-    expect(adaptive?.config.learningReviewEvery).toBe(8);
     expect(adaptive?.config.learningAiMode).toBe(true);
-    expect(adaptive?.config.learningWindowSize).toBe(32);
-    expect(adaptive?.config.learningMaxRiskPct).toBeLessThanOrEqual(0.5);
+    expect(adaptive?.config.learningReviewEvery).toBe(6);
+    expect(adaptive?.config.learningWindowSize).toBe(40);
+    expect(adaptive?.config.learningMaxRiskPct).toBeLessThanOrEqual(1.0);
     expect(adaptive?.config.learningExplorationRate).toBeGreaterThan(0);
   });
 
   it('applies a preset as a complete configuration while retaining the paper bankroll', () => {
     const adaptive = STRATEGY_PRESETS.find((preset) => preset.id === 'adaptive-learning');
-    const balanced = STRATEGY_PRESETS.find((preset) => preset.id === 'balanced');
+    const baseline = STRATEGY_PRESETS.find((preset) => preset.id === 'favorite-carry');
     expect(adaptive).toBeDefined();
-    expect(balanced).toBeDefined();
+    expect(baseline).toBeDefined();
 
     const adaptiveConfig = buildPresetConfig(adaptive!, 4321);
     expect(adaptiveConfig.paperBankroll).toBe(4321);
     expect(adaptiveConfig.learningMode).toBe(true);
-    expect(adaptiveConfig.marketBlendWeight).toBeDefined();
+    expect(adaptiveConfig.minModelProbability).toBe(DEFAULT_KALSHI_BOT_CONFIG.minModelProbability);
 
-    const balancedConfig = buildPresetConfig(balanced!, 4321);
-    expect(balancedConfig.learningMode).toBe(false);
-    expect(balancedConfig.paperBankroll).toBe(4321);
+    const baselineConfig = buildPresetConfig(baseline!, 4321);
+    expect(baselineConfig.learningMode).toBe(false);
+    expect(baselineConfig.paperBankroll).toBe(4321);
+    expect(baselineConfig.minPrice).toBe(DEFAULT_KALSHI_BOT_CONFIG.minPrice);
   });
 
   it('does not present a flat position as a YES holding', () => {

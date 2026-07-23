@@ -430,8 +430,16 @@
   font: 720 10.5px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.55px;
 }
-.kalshi-account-strip strong { font-size: 24px; line-height: 1.05; }
+.kalshi-account-strip strong { font-size: 24px; line-height: 1.05; font-variant-numeric: tabular-nums; }
 .kalshi-account-strip small { color: var(--kalshi-muted); font-size: 10.5px; }
+.kalshi-account-strip small em { font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums; }
+/* Headline equity cell reads as the anchor of the portfolio page. */
+.kalshi-account-strip > div.is-headline {
+  background: color-mix(in srgb, var(--kalshi-green) 6%, var(--kalshi-surface));
+  border-right: 1px solid var(--kalshi-rule);
+}
+.kalshi-account-strip > div.is-headline strong { font-size: 28px; color: var(--kalshi-green); }
+.kalshi-account-strip > div.is-headline span { color: var(--kalshi-green); }
 .kalshi-performance-section { display: grid; grid-template-columns: minmax(260px, 0.75fr) minmax(420px, 1.75fr); border: 1px solid var(--kalshi-rule); background: var(--kalshi-paper); }
 .kalshi-performance-summary { display: grid; grid-template-columns: 1fr; border-right: 1px solid var(--kalshi-rule); }
 .kalshi-performance-summary > div { display: grid; gap: 6px; align-content: center; min-height: 98px; padding: 18px 22px; border-bottom: 1px solid var(--kalshi-rule-soft); }
@@ -455,6 +463,27 @@
 .kalshi-pnl-empty { display: grid; place-items: center; min-height: 210px; color: var(--kalshi-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
 .is-profit { color: var(--kalshi-green) !important; }
 .is-loss { color: var(--kalshi-orange) !important; }
+.kalshi-performance-summary small em { font-style: normal; font-weight: 750; font-variant-numeric: tabular-nums; }
+.kalshi-performance-summary strong em { font-style: normal; }
+/* YES / NO side badge in the positions table. */
+.kalshi-side-badge {
+  display: inline-block;
+  min-width: 34px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font: 750 9.5px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .06em;
+  text-align: center;
+  font-style: normal;
+}
+.kalshi-side-badge.is-yes { color: var(--kalshi-green); background: color-mix(in srgb, var(--kalshi-green) 14%, transparent); }
+.kalshi-side-badge.is-no { color: var(--kalshi-blue); background: color-mix(in srgb, var(--kalshi-blue) 14%, transparent); }
+.kalshi-side-badge.is--- { color: var(--kalshi-muted); background: var(--kalshi-rule-soft); }
+/* Favorite-confidence highlight cell in the decision panel. */
+.kalshi-decision-numbers > div.is-highlight { background: color-mix(in srgb, var(--kalshi-green) 8%, transparent); border-radius: 4px; }
+.kalshi-decision-numbers > div.is-highlight dd { color: var(--kalshi-green); font-weight: 760; }
+.kalshi-decision-numbers > div.is-highlight dd em { display: block; margin-top: 2px; color: var(--kalshi-muted); font-style: normal; font: 700 9px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.kalshi-activity-list b.is-settlement { color: var(--kalshi-blue); }
 .kalshi-settlement-table { border: 1px solid var(--kalshi-rule-soft); }
 .kalshi-settlement-head,
 .kalshi-settlement-row { display: grid; grid-template-columns: 145px minmax(190px, 1.35fr) 120px 125px 70px 125px 120px; align-items: center; gap: 12px; min-height: 52px; padding: 0 14px; }
@@ -495,8 +524,8 @@
 .kalshi-portfolio-head,
 .kalshi-portfolio-row {
   display: grid;
-  min-width: 940px;
-  grid-template-columns: 1.4fr 1fr 0.7fr 1fr 1fr 1.2fr;
+  min-width: 980px;
+  grid-template-columns: 1.4fr 0.9fr 0.7fr 0.8fr 1fr 1fr 1.1fr;
   align-items: center;
 }
 .kalshi-portfolio-head { background: color-mix(in srgb, var(--kalshi-paper) 70%, var(--kalshi-surface)); }

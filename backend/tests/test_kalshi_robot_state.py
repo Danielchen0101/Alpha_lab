@@ -50,12 +50,12 @@ def test_pretrade_ai_review_is_audited_with_the_latest_decision(tmp_path):
     assert restored["strategy"]["preTradeAi"] == review
 
 
-def test_pre_v4_trade_and_learning_data_is_removed_during_upgrade(tmp_path):
+def test_pre_v5_trade_and_learning_data_is_removed_during_upgrade(tmp_path):
     path = tmp_path / "kalshi-robot.json"
     path.write_text(json.dumps({"user-1": {
-        "storageVersion": 3,
+        "storageVersion": 4,
         "enabled": True,
-        "config": {"riskPerTradePct": 0.5},
+        "config": {"riskPerTradePct": 0.5, "minPrice": 0.12, "maxPrice": 0.88},
         "decisions": [{"ticker": "OLD"}],
         "filledTrades": [{"ticker": "OLD"}],
         "learningObservations": [{"ticker": "OLD"}],
@@ -64,12 +64,16 @@ def test_pre_v4_trade_and_learning_data_is_removed_during_upgrade(tmp_path):
 
     restored = KalshiRobotState(str(path)).get("user-1")
 
-    assert restored["storageVersion"] == 4
+    assert restored["storageVersion"] == 5
     assert restored["enabled"] is True
     assert restored["decisions"] == []
     assert restored["filledTrades"] == []
     assert restored["learningObservations"] == []
     assert restored["learningExamples"] == []
+    # Old longshot-era tuning is replaced by the calibrated v3 favorite band.
+    assert restored["config"]["minPrice"] == 0.50
+    assert restored["config"]["maxPrice"] == 0.93
+    assert restored["config"]["minModelProbability"] == 0.60
 
 
 def test_settlement_calibration_is_idempotent(tmp_path):
@@ -159,9 +163,10 @@ def test_weak_calibration_only_tightens_default_risk(tmp_path):
 
     assert state["strategy"]["settledSamples"] == 20
     assert state["strategy"]["winRate"] == 0.0
-    assert state["config"]["riskPerTradePct"] < 0.35
-    assert state["config"]["marketBlendWeight"] > 0.25
-    assert state["config"]["minNetEdge"] > 0.04
+    assert state["config"]["riskPerTradePct"] < 0.75
+    assert state["config"]["marketBlendWeight"] > 0.20
+    assert state["config"]["minNetEdge"] > 0.015
+    assert state["config"]["minModelProbability"] > 0.60
     assert state["strategy"]["learning"]["status"] == "reviewed"
     assert state["strategy"]["learning"]["adjustmentCount"] == 1
 
@@ -221,7 +226,7 @@ def test_profitable_calibrated_window_expands_only_inside_learning_cap(tmp_path)
         "learningMode": True,
         "learningReviewEvery": 4,
         "learningWindowSize": 20,
-        "learningMaxRiskPct": 0.36,
+        "learningMaxRiskPct": 0.85,
     })
     settlements = []
     for index in range(16):
@@ -232,7 +237,7 @@ def test_profitable_calibrated_window_expands_only_inside_learning_cap(tmp_path)
             "side": "YES",
             "blockingReasons": [],
             "market": {"ticker": ticker, "secondsToClose": 300},
-            "edge": {"fairProbability": 0.75, "price": 0.55},
+            "edge": {"fairProbability": 0.88, "price": 0.82},
         }, {"order_id": f"win-{index}", "status": "filled", "fill_count": 1})
         settlements.append({
             "ticker": ticker,
@@ -243,7 +248,7 @@ def test_profitable_calibrated_window_expands_only_inside_learning_cap(tmp_path)
     state = store.reconcile_settlements("user-1", settlements)
 
     assert configured["config"]["riskPerTradePct"] < state["config"]["riskPerTradePct"]
-    assert state["config"]["riskPerTradePct"] <= 0.36
+    assert state["config"]["riskPerTradePct"] <= 0.85
     assert state["strategy"]["learning"]["recentWinRate"] == 1.0
     assert "expanded cautiously" in state["strategy"]["learning"]["lastReason"]
 
@@ -265,12 +270,14 @@ def test_neutral_window_increases_paper_exploration_without_relaxing_hard_gates(
             "side": "YES",
             "blockingReasons": [],
             "market": {"ticker": ticker, "secondsToClose": 300},
-            "edge": {"fairProbability": 0.50, "price": 0.45},
+            "edge": {"fairProbability": 0.75, "price": 0.55},
         }, {"order_id": f"neutral-{index}", "status": "filled", "fill_count": 1})
         settlements.append({
             "ticker": ticker,
             "settled_time": f"2026-07-21T06:{index:02d}:00Z",
-            "market_result": "yes" if index % 2 == 0 else "no",
+            # 12 of 16 wins: above the v3 weak threshold (72%) but below the
+            # expansion benchmark (85%), i.e. a genuinely neutral window.
+            "market_result": "no" if index % 4 == 3 else "yes",
         })
 
     state = store.reconcile_settlements("user-1", settlements)
@@ -487,10 +494,11 @@ def test_ai_adjustments_are_bounded_and_cannot_raise_sizing_risk(tmp_path):
     internal = store._state("user-1")["modeState"]["paper"]
     internal["strategy"].update({
         "realizedSamples": 20,
-        "realizedWinRate": 0.60,
+        # Healthy for the v3 favorite-carry benchmark (weak is < 0.72).
+        "realizedWinRate": 0.88,
         "realizedAveragePnl": 2.0,
         "settledSamples": 16,
-        "brierScore": 0.20,
+        "brierScore": 0.12,
     })
     internal["strategy"]["learning"].update({
         "observedSamples": 24,
