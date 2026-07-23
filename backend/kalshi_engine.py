@@ -1,8 +1,9 @@
 """Deterministic research engine for Kalshi's 15-minute BTC contracts.
 
 The engine is intentionally pure: it accepts a market snapshot and reference
-prices, then returns an auditable paper-trading decision. It never signs or
-submits an order.
+prices, then returns an auditable, execution-neutral decision. It never signs
+or submits an order; the controller separately applies the selected Paper or
+Real environment and its authorization and risk checks.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "minNetEdge": 0.04,
     "minConservativeEdge": 0.015,
     "maxSpread": 0.06,
+    "maxRelativeSpread": 0.25,
     "minDepthContracts": 15.0,
     "maxBookParticipation": 0.20,
     "minSecondsToClose": 180,
@@ -29,6 +31,7 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "minPrice": 0.12,
     "maxPrice": 0.88,
     "marketBlendWeight": 0.25,
+    "maxModelMarketGap": 0.25,
     "probabilityLogitScale": 1.55,
     "momentumProjectionScale": 0.15,
     "basisReserveBps": 6.0,
@@ -38,9 +41,23 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "maxPortfolioExposurePct": 20.0,
     "executionPriceTolerance": 0.01,
     "exitProbabilityThreshold": 0.46,
-    # Adaptive learning is deliberately opt-in and is applied only to Kalshi
-    # AlphaLab Paper accounts. These values control review cadence and exploration
-    # budget; deterministic risk gates remain authoritative.
+    # Exit orders are governed by executable value, not by the model
+    # probability alone. These controls add hysteresis around entries so a
+    # noisy five-second update cannot immediately reverse a fresh position.
+    "minimumHoldSeconds": 45,
+    "reversalCooldownSeconds": 90,
+    "exitValueBuffer": 0.01,
+    # A normal model reversal is not enough to crystallize a loss.  Exits must
+    # either clear the fee-adjusted profit floor or meet both a probability
+    # deterioration gate and a mark-to-market loss gate.  The emergency gate
+    # is intentionally lower so a genuine collapse can preserve residual
+    # value without turning every five-second probability wobble into churn.
+    "minimumExitProfit": 0.01,
+    "stopLossPct": 0.35,
+    "emergencyStopLossPct": 0.20,
+    # Adaptive learning is isolated per execution environment. These values
+    # control review cadence and exploration budget; deterministic risk gates
+    # and order routing remain authoritative in both Paper and Real.
     "learningMode": True,
     "learningAiMode": True,
     "preTradeAiReview": True,
@@ -93,6 +110,7 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
         "minNetEdge": (0.02, 0.15),
         "minConservativeEdge": (0.005, 0.08),
         "maxSpread": (0.01, 0.20),
+        "maxRelativeSpread": (0.05, 0.50),
         "minDepthContracts": (1.0, 10_000.0),
         "maxBookParticipation": (0.05, 0.50),
         "minSecondsToClose": (60.0, 360.0),
@@ -100,6 +118,7 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
         "minPrice": (0.01, 0.45),
         "maxPrice": (0.55, 0.99),
         "marketBlendWeight": (0.0, 0.50),
+        "maxModelMarketGap": (0.10, 0.40),
         "probabilityLogitScale": (1.20, 1.90),
         "momentumProjectionScale": (0.05, 0.30),
         "basisReserveBps": (3.0, 15.0),
@@ -109,6 +128,12 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
         "maxPortfolioExposurePct": (2.0, 50.0),
         "executionPriceTolerance": (0.0, 0.03),
         "exitProbabilityThreshold": (0.35, 0.49),
+        "minimumHoldSeconds": (0.0, 300.0),
+        "reversalCooldownSeconds": (15.0, 600.0),
+        "exitValueBuffer": (0.0025, 0.05),
+        "minimumExitProfit": (0.0, 0.10),
+        "stopLossPct": (0.15, 0.80),
+        "emergencyStopLossPct": (0.10, 0.60),
         "learningExplorationRate": (0.0, 0.35),
         "learningReviewEvery": (4.0, 24.0),
         "learningWindowSize": (12.0, 100.0),
@@ -131,6 +156,12 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
     value["learningReviewEvery"] = int(value["learningReviewEvery"])
     value["learningWindowSize"] = int(value["learningWindowSize"])
     value["minSecondsToClose"] = int(value["minSecondsToClose"])
+    value["minimumHoldSeconds"] = int(value["minimumHoldSeconds"])
+    value["reversalCooldownSeconds"] = int(value["reversalCooldownSeconds"])
+    value["emergencyStopLossPct"] = min(
+        value["emergencyStopLossPct"],
+        value["stopLossPct"],
+    )
     value["maxSecondsToClose"] = max(
         int(value["maxSecondsToClose"]), value["minSecondsToClose"] + 30
     )
@@ -353,7 +384,7 @@ def evaluate_btc15_contract(
     book_time: Any = None,
     account_context: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Return a fail-closed Paper decision using model, book, and account evidence."""
+    """Return a fail-closed decision using model, book, and account evidence."""
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     settings = normalize_strategy_config(config)
     market = dict(market or {})
@@ -549,6 +580,11 @@ def evaluate_btc15_contract(
         settings["minSecondsToClose"] <= seconds_to_close <= settings["maxSecondsToClose"]
     )
     spread_ok = spread is not None and spread <= settings["maxSpread"]
+    relative_spread = spread / selected_price if spread is not None and selected_price else None
+    relative_spread_ok = (
+        relative_spread is not None
+        and relative_spread <= settings["maxRelativeSpread"]
+    )
     depth_ok = selected_depth >= settings["minDepthContracts"]
     price_ok = (
         selected_price is not None
@@ -567,7 +603,10 @@ def evaluate_btc15_contract(
         and jump_sigma <= settings["maxJumpSigma"]
     )
     model_market_gap = abs(model_yes - market_mid) if model_yes is not None and market_mid is not None else None
-    model_agreement_ok = model_market_gap is not None and model_market_gap <= 0.30
+    model_agreement_ok = (
+        model_market_gap is not None
+        and model_market_gap <= settings["maxModelMarketGap"]
+    )
     momentum_votes = [
         1 if value and value > 0 else -1 if value and value < 0 else 0
         for value in (momentum_3m, momentum_5m, momentum_15m)
@@ -577,8 +616,8 @@ def evaluate_btc15_contract(
     trend_conflict = sum(1 for vote in momentum_votes if vote == -selected_vote)
     trend_ok = side is not None and (trend_support >= 1 or trend_conflict < 2)
     book_pressure_ok = bool(
-        side == "YES" and book_imbalance is not None and book_imbalance >= 0.15
-        or side == "NO" and book_imbalance is not None and book_imbalance <= 0.85
+        side == "YES" and book_imbalance is not None and book_imbalance >= 0.20
+        or side == "NO" and book_imbalance is not None and book_imbalance <= 0.80
     )
     reference_age = _age_seconds(reference_time, now)
     book_age = _age_seconds(book_time, now)
@@ -592,10 +631,11 @@ def evaluate_btc15_contract(
         _gate("data_freshness", reference_fresh and book_fresh, "Fresh evidence", "数据新鲜度", f"spot {reference_age:.1f}s / book {book_age:.1f}s" if reference_age is not None and book_age is not None else "timestamps supplied by live adapters", category="data"),
         _gate("history_sample", sample_ok, "Volatility sample", "波动率样本", f"{len(returns)} one-minute returns", category="data"),
         _gate("volatility_regime", volatility_ok, "Stable volatility regime", "波动状态", f"ratio {(volatility_ratio or 0.0):.2f} / jump {(jump_sigma or 0.0):.1f} sigma", category="signal"),
-        _gate("model_market_agreement", model_agreement_ok, "Model-market agreement", "模型市场一致性", f"gap {(model_market_gap or 0.0) * 100:.1f}pp / max 30.0pp", category="signal"),
+        _gate("model_market_agreement", model_agreement_ok, "Model-market agreement", "模型市场一致性", f"gap {(model_market_gap or 0.0) * 100:.1f}pp / max {settings['maxModelMarketGap'] * 100:.1f}pp", category="signal"),
         _gate("trend_confirmation", trend_ok, "Multi-horizon confirmation", "多周期确认", f"{trend_support} support / {trend_conflict} oppose", category="signal"),
         _gate("two_sided_quote", quotes_valid, "Two-sided market", "双边报价", "YES and NO bid books derive executable asks" if quotes_valid else "quote unavailable", category="execution"),
         _gate("spread", spread_ok, "Spread limit", "点差限制", f"{spread * 100:.1f}c / max {settings['maxSpread'] * 100:.1f}c" if spread is not None else "no executable spread", category="execution"),
+        _gate("relative_spread", relative_spread_ok, "Relative spread", "相对点差", f"{(relative_spread or 0.0) * 100:.1f}% / max {settings['maxRelativeSpread'] * 100:.1f}%" if relative_spread is not None else "relative spread unavailable", category="execution"),
         _gate("depth", depth_ok, "Top-level depth", "可执行深度", f"{selected_depth:.0f} top / {selected_near_depth:.0f} within 3c / min {settings['minDepthContracts']:.0f}", category="execution"),
         _gate("book_pressure", book_pressure_ok, "Adverse book pressure", "盘口逆向压力", f"YES imbalance {(book_imbalance or 0.0) * 100:.0f}%", category="execution"),
         _gate("price_band", price_ok, "Price band", "价格区间", f"{selected_price * 100:.1f}c" if selected_price is not None else "no executable price", category="execution"),
@@ -607,13 +647,24 @@ def evaluate_btc15_contract(
         bankroll = _number(account.get("bankroll"), settings["paperBankroll"]) or settings["paperBankroll"]
         exposure = max(0.0, _number(account.get("portfolioExposure"), 0.0) or 0.0)
         exposure_pct = exposure / max(bankroll, 1.0) * 100.0
+        is_real_execution = settings.get("executionMode") == "real"
         account_gates = [
-            _gate("account_ready", bankroll > 0, "Paper account ready", "Paper 账户可用", f"portfolio {bankroll:.2f}", category="account"),
+            _gate(
+                "account_ready",
+                bankroll > 0,
+                "Kalshi Real account ready" if is_real_execution else "AlphaLab Paper account ready",
+                "Kalshi 实盘账户可用" if is_real_execution else "AlphaLab 模拟账户可用",
+                f"portfolio {bankroll:.2f}",
+                category="account",
+            ),
             _gate("market_flat", not bool(account.get("hasPosition")), "No duplicate position", "无重复持仓", "current contract is flat" if not account.get("hasPosition") else "position already exists", category="account"),
             _gate("open_order", not bool(account.get("hasOpenOrder")), "No open order", "无未完成订单", "no resting order for this contract" if not account.get("hasOpenOrder") else "open order already exists", category="account"),
             _gate("portfolio_exposure", exposure_pct < settings["maxPortfolioExposurePct"], "Portfolio exposure", "组合总敞口", f"{exposure_pct:.1f}% / max {settings['maxPortfolioExposurePct']:.1f}%", category="account"),
-            _gate("loss_cooldown", not bool(account.get("cooldownActive")), "Loss-streak cooldown", "连败冷却", str(account.get("cooldownDetail") or "clear"), category="account"),
         ]
+        if is_real_execution:
+            account_gates.append(
+                _gate("loss_cooldown", not bool(account.get("cooldownActive")), "Loss-streak cooldown", "连败冷却", str(account.get("cooldownDetail") or "clear"), category="account")
+            )
         gates.extend(account_gates)
 
     blocking = [gate["key"] for gate in gates if gate["status"] == "block"]
@@ -654,7 +705,8 @@ def evaluate_btc15_contract(
     hard_risk_budget = bankroll * settings["riskPerTradePct"] / 100.0
     full_kelly = 0.0
     if conservative_probability is not None and selected_price is not None and fee_per_contract is not None:
-        full_kelly = max(0.0, (conservative_probability - selected_price - fee_per_contract) / max(1.0 - selected_price, 0.01))
+        unit_cost = selected_price + fee_per_contract
+        full_kelly = max(0.0, (conservative_probability - unit_cost) / max(1.0 - unit_cost, 0.01))
     kelly_budget = bankroll * full_kelly * settings["fractionalKelly"]
     max_loss_budget = min(hard_risk_budget, kelly_budget) if kelly_budget > 0 else 0.0
     if exploration_trade and selected_price is not None and fee_per_contract is not None:
@@ -673,6 +725,8 @@ def evaluate_btc15_contract(
             cash_cap,
             int(max_loss_budget // max(unit_cost, 0.01)),
         )
+        if exploration_trade:
+            contracts = min(contracts, 1)
         if contracts <= 0:
             blocking.append("position_size")
             gates.append(_gate("position_size", False, "Executable position size", "可执行仓位", "Kelly/risk/depth caps are below one contract", category="account"))
@@ -698,11 +752,12 @@ def evaluate_btc15_contract(
         signal_quality = min(signal_quality, max(0, 55 - len(blocking) * 5))
 
     distance_bps = ((spot / strike) - 1.0) * 10_000.0 if spot and strike else None
+    is_real_execution = settings.get("executionMode") == "real"
     return {
         "engine": "btc15_probability_v2",
         "generatedAt": _iso(now),
-        "paperOnly": settings.get("executionMode") != "real",
-        "executionEnvironment": "kalshi_real" if settings.get("executionMode") == "real" else "alphalab_paper",
+        "paperOnly": not is_real_execution,
+        "executionEnvironment": "kalshi_real" if is_real_execution else "alphalab_paper",
         "action": action,
         "side": side,
         "signalQuality": signal_quality,
@@ -788,8 +843,18 @@ def evaluate_btc15_contract(
             "feeModel": "Kalshi general taker fee estimate",
             "probabilityModel": "volatility ensemble, bounded momentum, market microprice, and uncertainty shrinkage",
             "directionMode": "contrarian" if settings.get("learningContrarianMode") else "normal",
-            "samplePolicy": "one-contract near-threshold Paper exploration; hard data, execution and account gates remain binding" if exploration_trade else "standard edge-qualified entry",
-            "orderPolicy": "AlphaLab Paper IOC simulation at production Kalshi executable quotes; no exchange order is submitted",
+            "samplePolicy": (
+                "one-contract near-threshold Paper exploration; hard data, execution and account gates remain binding"
+                if exploration_trade
+                else "standard edge-qualified entry; no exploration overrides are permitted in Real mode"
+                if is_real_execution
+                else "standard edge-qualified entry"
+            ),
+            "orderPolicy": (
+                "Kalshi Real IOC limit order signed and submitted by the backend only after every deterministic gate passes"
+                if is_real_execution
+                else "AlphaLab Paper IOC simulation at production Kalshi executable quotes; no exchange order is submitted"
+            ),
         },
     }
 

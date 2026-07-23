@@ -37,9 +37,9 @@ try:
 except ImportError:  # pragma: no cover - package-style test imports
     from .kalshi_robot_state import KalshiRobotState
 try:
-    from kalshi_paper import KalshiPaperAccountStore
+    from kalshi_paper import KalshiPaperAccountStore, executable_bid_levels, taker_fill_amounts
 except ImportError:  # pragma: no cover - package-style test imports
-    from .kalshi_paper import KalshiPaperAccountStore
+    from .kalshi_paper import KalshiPaperAccountStore, executable_bid_levels, taker_fill_amounts
 
 
 KALSHI_PUBLIC_BASE = "https://external-api.kalshi.com/trade-api/v2"
@@ -67,6 +67,37 @@ def _finite_number(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
     return parsed if math.isfinite(parsed) else default
+
+
+def _account_equity_cents(balance: Mapping[str, Any], environment: str) -> float:
+    """Return mode-correct account equity without double counting Real cash."""
+    cash_cents = _finite_number(balance.get("balance"))
+    portfolio_value = balance.get("portfolio_value")
+    if str(environment).lower() == "real":
+        # Kalshi's current API defines portfolio_value as total account value.
+        # Fall back to cash only for older or incomplete responses.
+        return _finite_number(portfolio_value, cash_cents) if portfolio_value is not None else cash_cents
+    # AlphaLab Paper stores marked open-position value separately from cash.
+    return cash_cents + _finite_number(portfolio_value)
+
+
+def _live_position_direction(
+    position: Any,
+    yes_count: Any,
+    no_count: Any,
+) -> Tuple[Optional[str], float]:
+    """Normalize Kalshi's signed and outcome-specific position fields.
+
+    A zero position is flat, not a YES position. Some account responses retain
+    settled/closed rows with all counts at zero; those rows must not leak into
+    the open-position UI or robot risk context.
+    """
+    signed_position = _finite_number(position, 0.0)
+    outcome_delta = _finite_number(yes_count, 0.0) - _finite_number(no_count, 0.0)
+    net = signed_position if abs(signed_position) > 1e-9 else outcome_delta
+    if abs(net) <= 1e-9:
+        return None, 0.0
+    return ("YES" if net > 0 else "NO"), abs(net)
 
 
 def _parse_utc(value: Any) -> Optional[datetime]:
@@ -145,10 +176,9 @@ def _position_side_and_count(portfolio: Mapping[str, Any], ticker: str) -> Tuple
             continue
         yes_count = _finite_number(row.get("yes_count_fp") or row.get("yes_count"), 0.0)
         no_count = _finite_number(row.get("no_count_fp") or row.get("no_count"), 0.0)
-        # Complementary YES/NO fills are how the portable IOC close path locks
-        # the $1 binary payout.  Treat only the *net* contracts as directional
-        # exposure; otherwise a hedged position looks like YES forever and the
-        # five-second loop repeatedly buys NO to "close" it again.
+        # Older Paper ledgers may contain complementary YES/NO hedges from the
+        # pre-sell close implementation. Treat only their residual as current
+        # directional exposure; all new exits are reduce-only sales.
         net_count = yes_count - no_count
         if abs(net_count) > 1e-9:
             return ("YES" if net_count > 0 else "NO"), int(math.ceil(abs(net_count)))
@@ -162,12 +192,266 @@ def _position_side_and_count(portfolio: Mapping[str, Any], ticker: str) -> Tuple
     return None, 0
 
 
+def _position_execution_context(
+    portfolio: Mapping[str, Any],
+    ticker: str,
+) -> Dict[str, Any]:
+    """Return normalized entry economics for the currently held outcome."""
+    side, count = _position_side_and_count(portfolio, ticker)
+    result: Dict[str, Any] = {
+        "side": side,
+        "count": count,
+        "averageEntryPrice": None,
+        "allocatedEntryFee": 0.0,
+        "lastTradeAt": None,
+    }
+    if not side or count <= 0:
+        return result
+    for row in list(portfolio.get("positions") or []):
+        if str(row.get("ticker") or row.get("market_ticker") or "") != ticker:
+            continue
+        prefix = side.lower()
+        average = _finite_number(row.get(f"{prefix}_average_price_dollars"), -1.0)
+        side_cost = _finite_number(row.get(f"{prefix}_cost"), -1.0)
+        if average <= 0.0 and side_cost >= 0.0:
+            average = side_cost / count
+        if average <= 0.0:
+            # Kalshi's live position response exposes market exposure more
+            # consistently than an average entry field. It is a conservative
+            # fallback for reporting; exit routing never relies on it.
+            exposure = abs(_finite_number(
+                row.get("market_exposure_dollars") or row.get("market_exposure"),
+                0.0,
+            ))
+            average = exposure / count if exposure > 0 else -1.0
+        fee = _finite_number(
+            row.get(f"{prefix}_fee_cost_dollars")
+            or row.get("feeCost")
+            or row.get("fees_paid_dollars"),
+            0.0,
+        )
+        result.update({
+            "averageEntryPrice": average if 0.0 < average < 1.0 else None,
+            "allocatedEntryFee": max(0.0, fee),
+            "lastTradeAt": row.get("last_trade_at") or row.get("lastTradeAt") or row.get("updated_time"),
+        })
+        break
+    return result
+
+
+def _estimate_reduce_only_sale(
+    side: str,
+    requested: int,
+    orderbook: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Estimate a full-depth reduce-only fill, including the official taker fee."""
+    remaining = max(0, int(requested))
+    gross = 0.0
+    fee = 0.0
+    fill_count = 0
+    worst_price = None
+    for price, depth in executable_bid_levels(side, orderbook):
+        if remaining <= 0:
+            break
+        count = min(remaining, int(depth))
+        if count <= 0:
+            continue
+        amounts = taker_fill_amounts(price, count)
+        gross += float(amounts["positionCost"])
+        fee += float(amounts["tradeFee"])
+        fill_count += count
+        remaining -= count
+        worst_price = price
+    average = gross / fill_count if fill_count else None
+    net_proceeds = math.floor(max(0.0, gross - fee) * 100.0 + 1e-9) / 100.0
+    return {
+        "requestedCount": max(0, int(requested)),
+        "fillableCount": fill_count,
+        "averageBid": average,
+        "worstBid": worst_price,
+        "grossProceeds": gross,
+        "estimatedExitFee": fee,
+        "netProceeds": net_proceeds,
+        "fullDepthAvailable": fill_count >= max(0, int(requested)),
+    }
+
+
+def _protective_exit_state(
+    held_probability: Optional[float],
+    strategy_config: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Classify deterministic exit risk without inventing an executable price.
+
+    This is the probability half of the stop rule. A materially weaker
+    probability (20 percentage points below it) is treated as an emergency.
+    The caller must still combine it with fee-adjusted loss and executable
+    liquidity gates.
+    """
+    threshold = _finite_number(strategy_config.get("exitProbabilityThreshold"), 0.46)
+    emergency_threshold = max(0.05, threshold - 0.20)
+    probability = _finite_number(held_probability, 1.0)
+    return {
+        "protectiveExitThreshold": threshold,
+        "emergencyExitThreshold": emergency_threshold,
+        "protectiveExit": probability <= threshold,
+        "emergencyExit": probability <= emergency_threshold,
+    }
+
+
+def _exit_economic_state(
+    *,
+    average_entry_price: Optional[float],
+    allocated_entry_fee: float,
+    held_count: int,
+    net_exit_value_per_contract: Optional[float],
+    held_probability: Optional[float],
+    strategy_config: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Evaluate an exit against actual entry cost, both fees, and model risk.
+
+    A probability threshold alone is too noisy for a contract evaluated every
+    five seconds.  It previously allowed repeated loss-taking exits whose gross
+    price movement was small relative to two taker fees.  Normal closes now
+    require a real fee-adjusted profit.  Loss-taking closes require both model
+    deterioration and a material mark-to-market loss; an emergency probability
+    collapse uses a lower loss threshold but still needs an executable bid.
+    """
+    probability_state = _protective_exit_state(held_probability, strategy_config)
+    count = max(0, int(held_count or 0))
+    entry_price = _finite_number(average_entry_price, -1.0)
+    entry_fee_per_contract = (
+        max(0.0, _finite_number(allocated_entry_fee, 0.0)) / count
+        if count > 0
+        else 0.0
+    )
+    break_even = (
+        entry_price + entry_fee_per_contract
+        if 0.0 < entry_price < 1.0
+        else None
+    )
+    exit_value = (
+        _finite_number(net_exit_value_per_contract)
+        if net_exit_value_per_contract is not None
+        else None
+    )
+    pnl_per_contract = (
+        exit_value - break_even
+        if exit_value is not None and break_even is not None
+        else None
+    )
+    loss_fraction = (
+        max(0.0, -pnl_per_contract / break_even)
+        if pnl_per_contract is not None and break_even and break_even > 0
+        else None
+    )
+    minimum_profit = _finite_number(strategy_config.get("minimumExitProfit"), 0.01)
+    stop_loss = _finite_number(strategy_config.get("stopLossPct"), 0.35)
+    emergency_stop = min(
+        stop_loss,
+        _finite_number(strategy_config.get("emergencyStopLossPct"), 0.20),
+    )
+    profitable_exit = bool(
+        pnl_per_contract is not None
+        and pnl_per_contract >= minimum_profit
+    )
+    emergency_loss_exit = bool(
+        probability_state["emergencyExit"]
+        and loss_fraction is not None
+        and loss_fraction >= emergency_stop
+    )
+    protective_loss_exit = bool(
+        probability_state["protectiveExit"]
+        and loss_fraction is not None
+        and loss_fraction >= stop_loss
+    )
+    return {
+        **probability_state,
+        "entryFeePerContract": entry_fee_per_contract,
+        "breakEvenExitValuePerContract": break_even,
+        "netExitPnlPerContract": pnl_per_contract,
+        "exitLossFraction": loss_fraction,
+        "minimumExitProfit": minimum_profit,
+        "stopLossPct": stop_loss,
+        "emergencyStopLossPct": emergency_stop,
+        "profitableExit": profitable_exit,
+        "protectiveLossExit": protective_loss_exit,
+        "emergencyLossExit": emergency_loss_exit,
+        "lossExitAuthorized": protective_loss_exit or emergency_loss_exit,
+    }
+
+
+def _seconds_since(value: Any) -> Optional[float]:
+    parsed = _parse_utc(value)
+    if parsed is None:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds())
+
+
+def _recent_filled_exit_age(state: Mapping[str, Any], ticker: str) -> Optional[float]:
+    strategy = dict(state.get("strategy") or {})
+    if str(strategy.get("lastExitTicker") or "") == ticker:
+        age = _seconds_since(strategy.get("lastExitAt"))
+        if age is not None:
+            return age
+    for row in list(state.get("decisions") or []):
+        if str(row.get("ticker") or "") != ticker:
+            continue
+        if not row.get("orderFilled") or not str(row.get("action") or "").startswith("SELL_"):
+            continue
+        return _seconds_since(row.get("generatedAt"))
+    return None
+
+
+def _recent_filled_entry_age(state: Mapping[str, Any], ticker: str) -> Optional[float]:
+    strategy = dict(state.get("strategy") or {})
+    if str(strategy.get("lastEntryTicker") or "") == ticker:
+        age = _seconds_since(strategy.get("lastEntryAt"))
+        if age is not None:
+            return age
+    for row in list(state.get("decisions") or []):
+        if str(row.get("ticker") or "") != ticker:
+            continue
+        if not row.get("orderFilled") or not str(row.get("action") or "").startswith("BUY_"):
+            continue
+        return _seconds_since(row.get("generatedAt"))
+    return None
+
+
+def _intent_client_order_id(
+    user_id: str,
+    environment: str,
+    ticker: str,
+    action: str,
+    side: str,
+    held_count: int,
+    *,
+    now_epoch: Optional[float] = None,
+) -> str:
+    """Create a short-lived idempotency key for one observable trade intent.
+
+    A retry after an ambiguous network timeout reuses the same key, while a
+    later quote cycle or a changed position receives a new key.
+    """
+    bucket = int(float(now_epoch if now_epoch is not None else time.time())) // 10
+    identity = ":".join((
+        str(user_id),
+        str(environment),
+        str(ticker),
+        str(action),
+        str(side),
+        str(max(0, int(held_count))),
+        str(bucket),
+    ))
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"alphalab:kalshi:intent:{identity}"))
+
+
 def _paper_order_payload(
     decision: Mapping[str, Any],
     ticker: str,
     *,
     count_override: Optional[int] = None,
     price_tolerance: float = 0.0,
+    client_order_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Translate a cleared engine decision into Kalshi's V2 YES-book shape."""
     action = str(decision.get("action") or "")
@@ -176,7 +460,9 @@ def _paper_order_payload(
     sizing = dict(decision.get("sizing") or {})
     selected_price = _finite_number(edge.get("price"), -1.0)
     count = int(count_override) if count_override is not None else int(_finite_number(sizing.get("contracts"), 0.0))
-    if action not in {"BUY_YES", "BUY_NO"} or side not in {"YES", "NO"} or count <= 0:
+    is_buy = action in {"BUY_YES", "BUY_NO"}
+    is_sell = action in {"SELL_YES", "SELL_NO"}
+    if not (is_buy or is_sell) or side not in {"YES", "NO"} or count <= 0:
         return None
 
     # V2 quotes one YES book: bid buys YES, while ask sells YES and is
@@ -190,14 +476,14 @@ def _paper_order_payload(
         - _finite_number(edge.get("minimumConservativeEdge")),
     )
     crossing = min(max(0.0, float(price_tolerance or 0.0)), edge_room * 0.5)
-    execution_price = min(0.99, selected_price + crossing)
+    execution_price = min(0.99, selected_price + crossing) if is_buy else max(0.01, selected_price - crossing)
     yes_book_price = execution_price if side == "YES" else 1.0 - execution_price
     if not str(ticker or "").strip() or not 0.0 < yes_book_price < 1.0:
         return None
     return {
         "ticker": str(ticker),
-        "client_order_id": str(uuid.uuid4()),
-        "side": "bid" if side == "YES" else "ask",
+        "client_order_id": str(client_order_id or uuid.uuid4()),
+        "side": ("bid" if side == "YES" else "ask") if is_buy else ("ask" if side == "YES" else "bid"),
         "count": f"{count:.2f}",
         "price": f"{yes_book_price:.4f}",
         "user_side_limit_price": f"{execution_price:.4f}",
@@ -207,7 +493,7 @@ def _paper_order_payload(
         "self_trade_prevention_type": "taker_at_cross",
         "post_only": False,
         "cancel_order_on_pause": True,
-        "reduce_only": False,
+        "reduce_only": bool(is_sell),
         "subaccount": 0,
         "exchange_index": 0,
     }
@@ -289,43 +575,146 @@ def _live_order_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
     return {key: value for key, value in dict(payload or {}).items() if key in allowed and value is not None}
 
 
+def _live_order_economic_side(order: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
+    """Recover the traded outcome from Kalshi's single YES-book order shape."""
+    explicit = str(
+        order.get("outcome_side")
+        or payload.get("outcome_side")
+        or ""
+    ).upper()
+    if explicit in {"YES", "NO"}:
+        return explicit
+    legacy_side = str(order.get("side") or "").upper()
+    if legacy_side in {"YES", "NO"}:
+        return legacy_side
+
+    book_side = str(
+        order.get("book_side")
+        or order.get("side")
+        or payload.get("book_side")
+        or payload.get("side")
+        or ""
+    ).lower()
+    action = str(order.get("action") or payload.get("action") or "").lower()
+    reduce_only = bool(
+        order.get("reduce_only")
+        or payload.get("reduce_only")
+        or action == "sell"
+    )
+    if book_side == "bid":
+        return "NO" if reduce_only else "YES"
+    if book_side == "ask":
+        return "YES" if reduce_only else "NO"
+    return ""
+
+
 def _normalise_live_order(raw: Mapping[str, Any], payload: Mapping[str, Any], decision: Mapping[str, Any]) -> Dict[str, Any]:
     order = dict(raw or {})
     side = str((decision.get("side") or "")).upper()
+    if side not in {"YES", "NO"}:
+        side = _live_order_economic_side(order, payload)
+    explicit_action = str(order.get("action") or payload.get("action") or "").upper()
+    reduce_only = bool(
+        payload.get("reduce_only")
+        or order.get("reduce_only")
+        or explicit_action == "SELL"
+    )
+    action = explicit_action if explicit_action in {"BUY", "SELL"} else ("SELL" if reduce_only else "BUY")
     requested = _finite_number(order.get("count") or order.get("count_fp") or payload.get("count"), 0.0)
     filled = _finite_number(order.get("fill_count") or order.get("fill_count_fp") or order.get("filled_count"), 0.0)
-    limit_price = _finite_number(order.get("price") or payload.get("price"), None)
-    average_price = _finite_number(order.get("average_price") or order.get("average_price_dollars"), None)
+    explicit_remaining = order.get("remaining_count_fp")
+    if explicit_remaining in (None, ""):
+        explicit_remaining = order.get("remaining_count")
+    remaining = (
+        _finite_number(explicit_remaining, 0.0)
+        if explicit_remaining not in (None, "")
+        else max(0.0, requested - filled)
+    )
+    # Event-market V2 transports every order on one YES book.  Preserve the
+    # economic price of the outcome the user is actually trading: a 64c YES
+    # book price for a NO order is a 36c NO contract, not a 64c NO contract.
+    user_side_limit = _finite_number(payload.get("user_side_limit_price"), None)
+    if user_side_limit is None:
+        user_side_limit = _dollar_amount(
+            order.get("no_price_dollars") if side == "NO" else order.get("yes_price_dollars"),
+            default=None,
+        )
+    yes_book_limit = _finite_number(
+        order.get("price_dollars") or order.get("price") or payload.get("price"),
+        None,
+    )
+    if user_side_limit is None and yes_book_limit is not None:
+        user_side_limit = round(1.0 - yes_book_limit, 8) if side == "NO" else yes_book_limit
+    yes_book_average = _finite_number(order.get("average_fill_price"), None)
+    if yes_book_average is None:
+        yes_book_average = _finite_number(
+            order.get("average_price") or order.get("average_price_dollars"),
+            None,
+        )
+    user_side_average = (
+        (round(1.0 - yes_book_average, 8) if side == "NO" else yes_book_average)
+    ) if yes_book_average is not None else None
+    if user_side_average is None:
+        user_side_average = _dollar_amount(
+            order.get("no_price_dollars") if side == "NO" else order.get("yes_price_dollars"),
+            default=None,
+        )
+    if user_side_average is None:
+        user_side_average = user_side_limit
+
+    fee_cost = _dollar_amount(
+        order.get("fee_cost_dollars") or order.get("fee_dollars"),
+        order.get("fee") or order.get("fees"),
+    )
+    if fee_cost <= 0 and order.get("average_fee_paid") not in (None, ""):
+        fee_cost = round(_finite_number(order.get("average_fee_paid"), 0.0) * filled, 8)
+
+    explicit_status = str(order.get("status") or "").lower()
+    if explicit_status:
+        status = explicit_status
+    elif requested > 0 and filled >= requested:
+        status = "filled"
+    elif filled > 0:
+        status = "partially_filled"
+    else:
+        status = "submitted"
     return {
         **order,
         "environment": "real",
         "ticker": order.get("ticker") or payload.get("ticker"),
         "order_id": order.get("order_id") or order.get("id") or payload.get("client_order_id"),
         "client_order_id": order.get("client_order_id") or payload.get("client_order_id"),
-        "outcome_side": order.get("outcome_side") or side,
+        "outcome_side": side,
+        "action": action,
+        "reduce_only": reduce_only,
         "count_fp": requested,
         "fill_count_fp": filled,
-        "remaining_count_fp": max(0.0, requested - filled),
-        "limit_price_dollars": limit_price,
-        "average_price_dollars": average_price if average_price is not None else limit_price,
-        "fee_cost_dollars": _dollar_amount(
-            order.get("fee_cost_dollars") or order.get("fee_dollars"),
-            order.get("fee") or order.get("fees"),
-        ),
-        "status": str(order.get("status") or ("filled" if filled > 0 else "submitted")).lower(),
+        "remaining_count_fp": remaining,
+        "limit_price_dollars": user_side_limit,
+        "average_price_dollars": user_side_average,
+        "fee_cost_dollars": fee_cost,
+        "status": status,
         "time_in_force": order.get("time_in_force") or payload.get("time_in_force") or "immediate_or_cancel",
         "created_time": order.get("created_time") or order.get("created_ts") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
 
 
-def _normalise_live_fill(raw: Mapping[str, Any]) -> Dict[str, Any]:
+def _normalise_live_fill(
+    raw: Mapping[str, Any],
+    order_context: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
     fill = dict(raw or {})
+    context = dict(order_context or {})
     ticker = fill.get("ticker") or fill.get("market_ticker") or fill.get("market") or fill.get("contract_ticker")
     side = str(fill.get("outcome_side") or fill.get("side") or fill.get("result") or "").upper()
     if side not in {"YES", "NO"}:
-        if fill.get("yes_price") not in (None, "") or fill.get("yes_price_dollars") not in (None, ""):
+        side = str(context.get("outcome_side") or "").upper()
+    if side not in {"YES", "NO"}:
+        has_yes = fill.get("yes_price") not in (None, "") or fill.get("yes_price_dollars") not in (None, "")
+        has_no = fill.get("no_price") not in (None, "") or fill.get("no_price_dollars") not in (None, "")
+        if has_yes and not has_no:
             side = "YES"
-        elif fill.get("no_price") not in (None, "") or fill.get("no_price_dollars") not in (None, ""):
+        elif has_no and not has_yes:
             side = "NO"
     count = _finite_number(
         fill.get("count")
@@ -335,28 +724,50 @@ def _normalise_live_fill(raw: Mapping[str, Any]) -> Dict[str, Any]:
         or fill.get("contracts"),
         0.0,
     )
-    price_dollars = _finite_number(
-        fill.get("price_dollars")
-        or fill.get("average_price_dollars")
-        or fill.get("yes_price_dollars")
-        or fill.get("no_price_dollars"),
-        None,
-    )
-    if price_dollars is None:
-        raw_price = _finite_number(
-            fill.get("price")
-            or fill.get("average_price")
-            or fill.get("yes_price")
-            or fill.get("no_price"),
-            0.0,
+    price_dollars = None
+    if side in {"YES", "NO"}:
+        price_dollars = _dollar_amount(
+            fill.get("no_price_dollars") if side == "NO" else fill.get("yes_price_dollars"),
+            default=None,
         )
-        price_dollars = raw_price / 100.0 if raw_price > 1 else raw_price
+    if price_dollars is None and side in {"YES", "NO"}:
+        yes_book_price = _finite_number(
+            fill.get("price_dollars") or fill.get("average_price_dollars"),
+            None,
+        )
+        if yes_book_price is not None:
+            price_dollars = round(1.0 - yes_book_price, 8) if side == "NO" else yes_book_price
+    if price_dollars is None and side in {"YES", "NO"}:
+        outcome_cents = (
+            fill.get("no_price") if side == "NO"
+            else fill.get("yes_price") if side == "YES"
+            else None
+        )
+        if outcome_cents not in (None, ""):
+            price_dollars = _cents_amount(outcome_cents) / 100.0
+        else:
+            yes_book_raw = _finite_number(
+                fill.get("price") or fill.get("average_price"),
+                0.0,
+            )
+            yes_book_dollars = yes_book_raw / 100.0 if yes_book_raw > 1 else yes_book_raw
+            price_dollars = (
+                round(1.0 - yes_book_dollars, 8)
+                if side == "NO" and yes_book_dollars > 0
+                else yes_book_dollars
+            )
     fee_dollars = _dollar_amount(
         fill.get("fee_cost_dollars")
         or fill.get("fee_cost")
         or fill.get("taker_fees_dollars")
         or fill.get("maker_fees_dollars"),
         fill.get("fee") or fill.get("fees") or fill.get("taker_fees") or fill.get("maker_fees"),
+    )
+    action = str(fill.get("action") or context.get("action") or "").lower()
+    reduce_only = bool(
+        fill.get("reduce_only")
+        or context.get("reduce_only")
+        or action == "sell"
     )
     return {
         **fill,
@@ -365,6 +776,8 @@ def _normalise_live_fill(raw: Mapping[str, Any]) -> Dict[str, Any]:
         "fill_id": fill.get("fill_id") or fill.get("trade_id") or fill.get("id") or fill.get("order_id"),
         "order_id": fill.get("order_id"),
         "outcome_side": side,
+        "action": action,
+        "reduce_only": reduce_only,
         "count_fp": count,
         "fill_count_fp": count,
         "price_dollars": price_dollars,
@@ -372,6 +785,85 @@ def _normalise_live_fill(raw: Mapping[str, Any]) -> Dict[str, Any]:
         "fee_cost_dollars": fee_dollars,
         "created_time": fill.get("created_time") or fill.get("created_ts") or fill.get("trade_time") or fill.get("updated_time"),
     }
+
+
+def _reconcile_live_exit_fills(fills) -> list:
+    """Attach FIFO cost basis and realized P/L to authenticated SELL fills.
+
+    Kalshi fill rows describe execution, not account-level realized P/L.  This
+    helper reconstructs only fully supported round trips from the returned
+    history.  A SELL whose complete cost basis is outside the fetched window is
+    deliberately left unscored instead of inventing a profit or loss.
+    """
+    rows = [
+        dict(row) for row in list(fills or [])
+        if isinstance(row, Mapping)
+        and _is_btc15_ticker(row.get("ticker") or row.get("market_ticker"))
+    ]
+    rows.sort(key=lambda row: (
+        str(row.get("created_time") or ""),
+        str(row.get("fill_id") or row.get("order_id") or ""),
+    ))
+    lots: Dict[Tuple[str, str], list] = {}
+    reconciled = []
+    for row in rows:
+        action = str(row.get("action") or "").upper()
+        side = str(row.get("outcome_side") or "").upper()
+        ticker = str(row.get("ticker") or row.get("market_ticker") or "")
+        count = _finite_number(row.get("count_fp") or row.get("fill_count_fp"), 0.0)
+        price = _finite_number(row.get("average_price_dollars") or row.get("price_dollars"), 0.0)
+        fee = max(0.0, _finite_number(row.get("fee_cost_dollars"), 0.0))
+        if side not in {"YES", "NO"} or count <= 0 or price <= 0:
+            reconciled.append(row)
+            continue
+
+        key = (ticker, side)
+        queue = lots.setdefault(key, [])
+        if action == "BUY":
+            queue.append({
+                "count": count,
+                "price": price,
+                "fee": fee,
+            })
+            reconciled.append(row)
+            continue
+        if action != "SELL":
+            reconciled.append(row)
+            continue
+
+        remaining = count
+        principal = 0.0
+        entry_fee = 0.0
+        while remaining > 1e-9 and queue:
+            lot = queue[0]
+            available = _finite_number(lot.get("count"), 0.0)
+            matched = min(remaining, available)
+            fraction = matched / available if available > 0 else 0.0
+            principal += matched * _finite_number(lot.get("price"), 0.0)
+            allocated_fee = _finite_number(lot.get("fee"), 0.0) * fraction
+            entry_fee += allocated_fee
+            lot["count"] = max(0.0, available - matched)
+            lot["fee"] = max(0.0, _finite_number(lot.get("fee"), 0.0) - allocated_fee)
+            remaining -= matched
+            if lot["count"] <= 1e-9:
+                queue.pop(0)
+
+        # Consume any known inventory above, but publish a P/L record only when
+        # the entire SELL has an authenticated cost basis in this fill window.
+        if remaining > 1e-9:
+            reconciled.append(row)
+            continue
+        gross_proceeds = count * price
+        realized_pnl = gross_proceeds - fee - principal - entry_fee
+        reconciled.append({
+            **row,
+            "reduce_only": True,
+            "position_cost_dollars": round(principal, 8),
+            "gross_proceeds_dollars": round(gross_proceeds, 8),
+            "entry_fee_allocated_dollars": round(entry_fee, 8),
+            "realized_pnl_dollars": round(realized_pnl, 8),
+        })
+    return reconciled
 
 
 def _normalise_live_settlement(raw: Mapping[str, Any]) -> Dict[str, Any]:
@@ -653,6 +1145,8 @@ class _PaperRobotController:
         self._stop_event = threading.Event()
         self._ai_review_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self._ai_review_lock = threading.RLock()
+        self._tick_locks: Dict[str, threading.RLock] = {}
+        self._tick_locks_guard = threading.RLock()
         if start_background:
             threading.Thread(target=self._loop, name="kalshi-robot", daemon=True).start()
 
@@ -774,7 +1268,7 @@ class _PaperRobotController:
                 self._signed, config, "GET", "/portfolio/orders", params={"limit": 100}
             )
             fills_future = pool.submit(
-                self._optional_signed, config, "/portfolio/fills", params={"limit": 100}
+                self._optional_signed, config, "/portfolio/fills", params={"limit": 1000}
             )
             settlements_future = pool.submit(
                 self._optional_signed, config, "/portfolio/settlements", params={"limit": 100}
@@ -806,6 +1300,9 @@ class _PaperRobotController:
                     yes_count = abs(position)
                 else:
                     no_count = abs(position)
+            net_side, net_count = _live_position_direction(position, yes_count, no_count)
+            if not net_side or net_count <= 0:
+                continue
             exposure_dollars = _dollar_amount(
                 row.get("market_exposure_dollars") or row.get("cost_dollars"),
                 row.get("market_exposure") or row.get("cost") or row.get("realized_cost"),
@@ -825,8 +1322,8 @@ class _PaperRobotController:
                 "position_fp": position,
                 "yes_count_fp": yes_count,
                 "no_count_fp": no_count,
-                "net_count_fp": abs(position) if position else abs(yes_count - no_count),
-                "net_side": "YES" if (position or yes_count - no_count) >= 0 else "NO",
+                "net_count_fp": net_count,
+                "net_side": net_side,
                 "market_exposure_dollars": exposure_dollars,
                 "market_value_dollars": value_dollars,
                 "fee_cost_dollars": fee_dollars,
@@ -838,8 +1335,8 @@ class _PaperRobotController:
 
         raw_orders = list(orders_payload.get("orders") or orders_payload.get("order_history") or [])
         orders = []
-        fills = []
-        seen_fill_ids = set()
+        orders_by_id = {}
+        order_fill_fallback = []
         for row in raw_orders:
             if not isinstance(row, Mapping):
                 continue
@@ -847,10 +1344,12 @@ class _PaperRobotController:
             if not _is_btc15_ticker(normalized.get("ticker") or normalized.get("market_ticker")):
                 continue
             orders.append(normalized)
+            for identifier in (normalized.get("order_id"), normalized.get("client_order_id")):
+                if identifier:
+                    orders_by_id[str(identifier)] = normalized
             if _order_fill_count(normalized) > 0:
                 fill_id = str(normalized.get("order_id") or normalized.get("client_order_id") or "")
-                seen_fill_ids.add(fill_id)
-                fills.append({**normalized, "fill_id": fill_id})
+                order_fill_fallback.append({**normalized, "fill_id": fill_id})
 
         raw_fills = list(
             fills_payload.get("fills")
@@ -858,10 +1357,13 @@ class _PaperRobotController:
             or fills_payload.get("trades")
             or []
         )
+        fills = []
+        seen_fill_ids = set()
         for row in raw_fills:
             if not isinstance(row, Mapping):
                 continue
-            normalized = _normalise_live_fill(row)
+            order_context = orders_by_id.get(str(row.get("order_id") or ""))
+            normalized = _normalise_live_fill(row, order_context)
             if not _is_btc15_ticker(normalized.get("ticker") or normalized.get("market_ticker")):
                 continue
             fill_id = str(normalized.get("fill_id") or normalized.get("order_id") or uuid.uuid4())
@@ -869,6 +1371,12 @@ class _PaperRobotController:
                 continue
             seen_fill_ids.add(fill_id)
             fills.append(normalized)
+        # Prefer canonical fill rows. Order summaries are only a degraded
+        # fallback when the optional fills endpoint is unavailable/empty; using
+        # both would count one execution twice under different identifiers.
+        if not fills:
+            fills = order_fill_fallback
+        fills = _reconcile_live_exit_fills(fills)
 
         raw_settlements = list(
             settlements_payload.get("settlements")
@@ -886,16 +1394,15 @@ class _PaperRobotController:
 
         state = self.state.reconcile_settlements(user_id, settlements, fills, environment="real")
         analytics = {
-            "settledSamples": state.get("strategy", {}).get("settledSamples") or 0,
-            "wins": state.get("strategy", {}).get("wins") or 0,
-            "losses": state.get("strategy", {}).get("losses") or 0,
-            "winRate": state.get("strategy", {}).get("winRate"),
-            "totalPnl": state.get("strategy", {}).get("totalPnl"),
-            "averagePnl": state.get("strategy", {}).get("averagePnl"),
-            "bestTrade": state.get("strategy", {}).get("bestTrade"),
-            "worstTrade": state.get("strategy", {}).get("worstTrade"),
-            "settlementRecords": state.get("strategy", {}).get("settlementRecords") or [],
-            "equityCurve": state.get("strategy", {}).get("equityCurve") or [],
+            key: (state.get("strategy") or {}).get(key)
+            for key in (
+                "settledSamples", "wins", "losses", "winRate", "totalPnl",
+                "averagePnl", "bestTrade", "worstTrade", "settlementRecords",
+                "closedTradeRecords", "realizedTradeRecords", "realizedSamples",
+                "realizedWins", "realizedLosses", "realizedWinRate",
+                "realizedTotalPnl", "realizedAveragePnl", "equityCurve",
+                "learning",
+            )
         }
 
         return {
@@ -951,7 +1458,10 @@ class _PaperRobotController:
             key: (state.get("strategy") or {}).get(key)
             for key in (
                 "settledSamples", "wins", "losses", "winRate", "totalPnl",
-                "averagePnl", "bestTrade", "worstTrade", "settlementRecords", "equityCurve",
+                "averagePnl", "bestTrade", "worstTrade", "settlementRecords",
+                "closedTradeRecords", "realizedTradeRecords", "realizedSamples",
+                "realizedWins", "realizedLosses", "realizedWinRate",
+                "realizedTotalPnl", "realizedAveragePnl", "equityCurve",
                 "learning",
             )
         }
@@ -966,11 +1476,28 @@ class _PaperRobotController:
         raw_order = response.get("order") or response.get("order_response") or response
         if not isinstance(raw_order, Mapping):
             raw_order = {}
-        order = _normalise_live_order(raw_order, live_payload, decision)
+        # The local payload also contains the user-outcome price that is
+        # intentionally stripped before the signed request.  Keep it only for
+        # normalization so NO orders cannot be recorded at the complementary
+        # YES-book price.
+        order = _normalise_live_order(raw_order, payload, decision)
         self._notify_order(user_id, order, decision)
         return order
 
     def tick(self, user_id: str, *, submit_order: bool, mode: Optional[str] = None) -> Dict[str, Any]:
+        """Serialize each account's evaluate-and-route cycle.
+
+        The background scheduler and a manual refresh may arrive together. A
+        per-user lock prevents both from observing the same position and
+        submitting the same close before either portfolio refresh completes.
+        """
+        key = str(user_id)
+        with self._tick_locks_guard:
+            lock = self._tick_locks.setdefault(key, threading.RLock())
+        with lock:
+            return self._tick_locked(user_id, submit_order=submit_order, mode=mode)
+
+    def _tick_locked(self, user_id: str, *, submit_order: bool, mode: Optional[str] = None) -> Dict[str, Any]:
         seed_state = self.state.get(user_id)
         strategy_seed = dict(seed_state.get("config") or {})
         execution_mode = _execution_mode(mode or strategy_seed.get("executionMode") or "paper")
@@ -997,11 +1524,12 @@ class _PaperRobotController:
                 )
         robot_state = self.state.get(user_id, environment=execution_mode)
         balance = portfolio.get("balance") or {}
-        # Kalshi reports cash and open-position value separately. Account equity
-        # is their sum; choosing one or the other materially understates sizing.
-        cash_cents = _finite_number(balance.get("balance"))
-        portfolio_value_cents = _finite_number(balance.get("portfolio_value"))
-        bankroll_cents = cash_cents + portfolio_value_cents
+        cash_cents = _finite_number(balance.get("balance"), 0.0)
+        # Current Kalshi /portfolio/balance semantics define portfolio_value as
+        # total account value (available balance plus marked positions). Do not
+        # add cash again or Real sizing will be overstated. AlphaLab Paper keeps
+        # open-position value separately and still requires the sum.
+        bankroll_cents = _account_equity_cents(balance, execution_mode)
         try:
             bankroll = float(bankroll_cents) / 100.0
         except (TypeError, ValueError):
@@ -1015,8 +1543,13 @@ class _PaperRobotController:
         snapshot = self.client.snapshot(base_url=KALSHI_PUBLIC_BASE)
         ticker = str((snapshot.get("market") or {}).get("ticker") or "")
         account_context = _paper_account_context(portfolio, robot_state, ticker, bankroll)
+        if execution_mode != "real":
+            account_context["cooldownActive"] = False
+            account_context["cooldownDetail"] = "disabled for paper mode"
         decision_context = dict(account_context)
-        held_side, held_count = _position_side_and_count(portfolio, ticker)
+        position_context = _position_execution_context(portfolio, ticker)
+        held_side = position_context.get("side")
+        held_count = int(position_context.get("count") or 0)
         if held_side:
             # Let the model calculate a fresh directional signal first. The
             # controller then decides whether that signal closes/reverses an
@@ -1035,13 +1568,67 @@ class _PaperRobotController:
             account_context=decision_context,
         )
         decision = dict(decision)
+        fair_yes = _finite_number((decision.get("model") or {}).get("fairYesProbability"), 0.5)
+        held_probability = (
+            fair_yes if held_side == "YES"
+            else 1.0 - fair_yes if held_side == "NO"
+            else None
+        )
+        sale_estimate = (
+            _estimate_reduce_only_sale(held_side, held_count, snapshot.get("orderbook") or {})
+            if held_side and held_count > 0
+            else {}
+        )
+        fillable_exit_count = int(sale_estimate.get("fillableCount") or 0)
+        exit_net_per_contract = (
+            _finite_number(sale_estimate.get("netProceeds")) / fillable_exit_count
+            if fillable_exit_count > 0
+            else None
+        )
+        hold_age_seconds = _seconds_since(position_context.get("lastTradeAt"))
+        if hold_age_seconds is None and held_side:
+            hold_age_seconds = _recent_filled_entry_age(robot_state, ticker)
+        minimum_hold_seconds = int(_finite_number(strategy_config.get("minimumHoldSeconds"), 45))
+        exit_value_buffer = _finite_number(strategy_config.get("exitValueBuffer"), 0.01)
+        exit_value_edge = (
+            exit_net_per_contract - held_probability
+            if exit_net_per_contract is not None and held_probability is not None
+            else None
+        )
+        exit_economics = _exit_economic_state(
+            average_entry_price=position_context.get("averageEntryPrice"),
+            allocated_entry_fee=_finite_number(position_context.get("allocatedEntryFee"), 0.0),
+            held_count=held_count,
+            net_exit_value_per_contract=exit_net_per_contract,
+            held_probability=held_probability,
+            strategy_config=strategy_config,
+        )
+        economically_executable = bool(
+            fillable_exit_count > 0
+            and exit_value_edge is not None
+            and exit_value_edge >= exit_value_buffer
+            and exit_economics["profitableExit"]
+        )
+        exit_analysis = {
+            **position_context,
+            **sale_estimate,
+            **exit_economics,
+            "heldProbability": held_probability,
+            "netExitValuePerContract": exit_net_per_contract,
+            "exitValueEdge": exit_value_edge,
+            "requiredExitValueEdge": exit_value_buffer,
+            "holdAgeSeconds": hold_age_seconds,
+            "minimumHoldSeconds": minimum_hold_seconds,
+            "economicallyExecutable": economically_executable,
+        }
+        decision["exitAnalysis"] = exit_analysis
         decision["account"] = {
             "heldSide": held_side,
             "heldCount": held_count,
             "cashAvailable": account_context.get("cashAvailable"),
             "portfolioExposure": account_context.get("portfolioExposure"),
         }
-        if execution_mode == "real" and cash_cents <= 0:
+        if execution_mode == "real" and cash_cents <= 0 and not held_side:
             decision["action"] = "WAIT"
             decision["executionIntent"] = "WAIT_REAL_NO_CASH"
             decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["real_cash_unavailable"]
@@ -1063,41 +1650,107 @@ class _PaperRobotController:
                 decision["action"] = "WAIT"
                 decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["position_already_aligned"]
             elif held_side and held_side != decision_side:
-                can_route = True
-                route_count_override = max(
-                    1,
-                    held_count + int(_finite_number((decision.get("sizing") or {}).get("contracts"), 0.0)),
-                )
-                decision["executionIntent"] = f"REVERSE_TO_{decision_side}"
+                if account_context.get("hasOpenOrder"):
+                    decision["action"] = "WAIT"
+                    decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["close_order_pending"]
+                elif (
+                    hold_age_seconds is not None
+                    and hold_age_seconds < minimum_hold_seconds
+                    and not exit_economics["emergencyLossExit"]
+                ):
+                    decision["action"] = "WAIT"
+                    decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["minimum_hold_period"]
+                elif fillable_exit_count <= 0:
+                    decision["action"] = "WAIT"
+                    decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["no_executable_close_depth"]
+                elif not economically_executable and not exit_economics["lossExitAuthorized"]:
+                    decision["action"] = "WAIT"
+                    decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["reversal_exit_value_insufficient"]
+                elif exit_net_per_contract is not None and 0.0 < exit_net_per_contract < 1.0:
+                    # A reversal is deliberately two-step. First reduce the
+                    # existing outcome to zero; a later fresh cycle may open the
+                    # opposite side. Full-depth VWAP, fees, and the model's
+                    # expected hold value must justify the close first.
+                    decision["action"] = f"SELL_{held_side}"
+                    decision["side"] = held_side
+                    decision["edge"] = {
+                        **dict(decision.get("edge") or {}),
+                        "side": held_side,
+                        # Route at the worst depth level included by the
+                        # estimator. A VWAP limit would exclude lower bids and
+                        # can turn a planned full close into a partial fill.
+                        "price": _finite_number(sale_estimate.get("worstBid"), exit_net_per_contract),
+                    }
+                    decision["blockingReasons"] = []
+                    decision["executionIntent"] = f"CLOSE_{held_side}_FOR_REVERSE_TO_{decision_side}"
+                    decision["exitAnalysis"]["trigger"] = (
+                        "emergency_stop_loss"
+                        if exit_economics["emergencyLossExit"]
+                        else "protective_stop_loss"
+                        if exit_economics["protectiveLossExit"] and not economically_executable
+                        else "fee_adjusted_take_profit"
+                    )
+                    route_count_override = fillable_exit_count
+                    can_route = True
+                else:
+                    decision["action"] = "WAIT"
+                    decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["no_executable_close_bid"]
             else:
                 # There is deliberately no per-contract or per-day trade-count
                 # ceiling.  Re-entry is governed by current position/open-order,
                 # cash, Kelly sizing, exposure, daily-loss and cooldown gates.
-                can_route = True
-                decision["executionIntent"] = f"OPEN_{decision_side}"
+                recent_exit_age = _recent_filled_exit_age(robot_state, ticker)
+                reversal_cooldown = int(_finite_number(strategy_config.get("reversalCooldownSeconds"), 90))
+                if recent_exit_age is not None and recent_exit_age < reversal_cooldown:
+                    decision["action"] = "WAIT"
+                    decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["reversal_cooldown"]
+                    decision["exitAnalysis"]["recentExitAgeSeconds"] = recent_exit_age
+                    decision["exitAnalysis"]["reversalCooldownSeconds"] = reversal_cooldown
+                else:
+                    can_route = True
+                    decision["executionIntent"] = f"OPEN_{decision_side}"
         elif held_side and ticker:
-            fair_yes = _finite_number((decision.get("model") or {}).get("fairYesProbability"), 0.5)
-            held_probability = fair_yes if held_side == "YES" else 1.0 - fair_yes
-            exit_threshold = _finite_number(strategy_config.get("exitProbabilityThreshold"), 0.46)
-            market = dict(decision.get("market") or {})
-            opposite = "NO" if held_side == "YES" else "YES"
-            exit_price = _finite_number(market.get("noAsk") if opposite == "NO" else market.get("yesAsk"), -1.0)
-            if held_probability <= exit_threshold and 0.0 < exit_price < 1.0:
-                # Buying the complementary outcome offsets the existing binary
-                # position and locks its combined payout without creating new
-                # directional exposure. This is the safest portable close path.
-                decision["action"] = f"BUY_{opposite}"
-                decision["side"] = opposite
+            if account_context.get("hasOpenOrder"):
+                decision["action"] = "WAIT"
+                decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["close_order_pending"]
+            elif (
+                hold_age_seconds is not None
+                and hold_age_seconds < minimum_hold_seconds
+                and not exit_economics["emergencyLossExit"]
+            ):
+                decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["minimum_hold_period"]
+            elif (
+                fillable_exit_count > 0
+                and exit_net_per_contract is not None
+                and (
+                    economically_executable
+                    or exit_economics["lossExitAuthorized"]
+                )
+            ):
+                # Close the held outcome with a reduce-only sale. Buying the
+                # complementary outcome is a hedge, not a close. A normal exit
+                # requires a real fee-adjusted profit. A loss exit requires both
+                # material model deterioration and a configured realized-loss
+                # gate; an emergency can only bypass the minimum hold period.
+                decision["action"] = f"SELL_{held_side}"
+                decision["side"] = held_side
                 decision["edge"] = {
                     **dict(decision.get("edge") or {}),
-                    "side": opposite,
-                    "price": exit_price,
-                    "conservativeEdge": max(0.0, exit_threshold - held_probability),
+                    "side": held_side,
+                    "price": _finite_number(sale_estimate.get("worstBid"), exit_net_per_contract),
+                    "conservativeEdge": max(0.0, exit_value_edge),
                     "minimumConservativeEdge": 0.0,
                 }
                 decision["blockingReasons"] = []
                 decision["executionIntent"] = f"CLOSE_{held_side}"
-                route_count_override = held_count
+                decision["exitAnalysis"]["trigger"] = (
+                    "emergency_stop_loss"
+                    if exit_economics["emergencyLossExit"]
+                    else "protective_stop_loss"
+                    if exit_economics["protectiveLossExit"] and not economically_executable
+                    else "fee_adjusted_take_profit"
+                )
+                route_count_override = fillable_exit_count
                 can_route = True
         is_new_entry = bool(can_route and str(decision.get("executionIntent") or "").startswith("OPEN_"))
         if is_new_entry:
@@ -1137,9 +1790,18 @@ class _PaperRobotController:
                 ticker,
                 count_override=route_count_override,
                 price_tolerance=_finite_number(strategy_config.get("executionPriceTolerance"), 0.01),
+                client_order_id=_intent_client_order_id(
+                    user_id,
+                    execution_mode,
+                    ticker,
+                    str(decision.get("action") or ""),
+                    str(decision.get("side") or ""),
+                    held_count,
+                ),
             )
             if order_payload:
                 side = str(decision.get("side") or "").upper()
+                is_close_order = str(decision.get("action") or "").startswith("SELL_")
                 selected_price = _finite_number((decision.get("edge") or {}).get("price"), 0.0)
                 available_depth = _finite_number(
                     ((decision.get("market") or {}).get("yesAskDepth") if side == "YES" else (decision.get("market") or {}).get("noAskDepth")),
@@ -1147,6 +1809,17 @@ class _PaperRobotController:
                 )
                 if execution_mode == "real":
                     order = self._submit_live_order(user_id, order_payload, decision)
+                elif is_close_order:
+                    order = self.paper_accounts.submit_close(
+                        user_id,
+                        ticker=ticker,
+                        side=side,
+                        price=selected_price,
+                        contracts=int(float(order_payload["count"])),
+                        limit_price=_finite_number(order_payload.get("user_side_limit_price"), selected_price),
+                        orderbook=snapshot.get("orderbook") or {},
+                        client_order_id=str(order_payload["client_order_id"]),
+                    )
                 else:
                     order = self.paper_accounts.submit_taker(
                         user_id,
@@ -1163,6 +1836,13 @@ class _PaperRobotController:
                 if order and execution_mode != "real":
                     self._notify_order(user_id, order, decision)
         state = self.state.record(user_id, decision, order)
+        if order and str(decision.get("action") or "").startswith("SELL_"):
+            state = self.state.record_early_close(
+                user_id,
+                decision,
+                order,
+                environment=environment,
+            )
         if order:
             # The initial portfolio was read before the IOC order. Refresh after
             # submission so the UI can immediately show filled positions, fills,
@@ -1203,21 +1883,23 @@ class _PaperRobotController:
         avg_price = _finite_number(order.get("average_price_dollars"), None)
         limit_price = _finite_number(order.get("limit_price_dollars"), None)
         fee = _finite_number(order.get("fee_cost_dollars"), 0.0)
+        action_name = "SELL" if bool(order.get("reduce_only")) or str(order.get("action") or "").upper() == "SELL" else "BUY"
+        action_zh = "卖出减仓" if action_name == "SELL" else "买入"
         payload = {
             "source": source,
             "event_id": order.get("order_id") or order.get("client_order_id"),
             "mode": mode,
             "symbol": symbol,
-            "side": "BUY",
-            "action": f"BUY {side}".strip(),
+            "side": action_name,
+            "action": f"{action_name} {side}".strip(),
             "qty": f"{filled} / {requested} contracts",
             "orderType": "IOC limit",
             "price": f"{avg_price * 100:.1f}c avg" if avg_price is not None else None,
             "limitPrice": f"{limit_price * 100:.1f}c limit" if limit_price is not None else None,
             "status": "filled" if status in {"filled", "partially_filled"} else status,
             "orderId": order.get("order_id"),
-            "description": f"{source} {status.replace('_', ' ')} {filled}/{requested} {side} on {symbol}.",
-            "descriptionZh": f"Kalshi {'实盘' if mode == 'real' else '模拟盘'}{status.replace('_', ' ')}：{symbol} {side} 成交 {filled}/{requested} 张。",
+            "description": f"{source} {action_name.lower()} {status.replace('_', ' ')} {filled}/{requested} {side} on {symbol}.",
+            "descriptionZh": f"Kalshi {'实盘' if mode == 'real' else '模拟盘'}{action_zh}{status.replace('_', ' ')}：{symbol} {side} 成交 {filled}/{requested} 张。",
             "reason": (
                 f"Intent {decision.get('executionIntent') or decision.get('action')}; "
                 f"fee ${fee:.4f}; slippage {(float(order.get('slippage_dollars') or 0.0) * 100):.1f}c."
@@ -1685,8 +2367,32 @@ def register_kalshi_api(
             mode = request_mode()
             if mode == "real":
                 raise KalshiApiError("Real Kalshi accounts cannot be reset from AlphaLab.", status=400, code="kalshi_real_reset_not_allowed")
-            portfolio = paper_accounts.reset(user["id"])
-            robot_state.reset_trading_history(user["id"])
+            body = request.get_json(silent=True) or {}
+            starting_balance = body.get("startingBalance", 10_000)
+            try:
+                starting_balance = float(starting_balance)
+            except (TypeError, ValueError):
+                raise KalshiApiError(
+                    "Starting balance must be a number.",
+                    status=400,
+                    code="kalshi_invalid_starting_balance",
+                )
+            if not 100 <= starting_balance <= 1_000_000:
+                raise KalshiApiError(
+                    "Starting balance must be between $100 and $1,000,000.",
+                    status=400,
+                    code="kalshi_invalid_starting_balance",
+                )
+            portfolio = paper_accounts.reset(
+                user["id"],
+                starting_balance_dollars=starting_balance,
+            )
+            state = robot_state.start_fresh_strategy(
+                user["id"],
+                environment="paper",
+                starting_bankroll=starting_balance,
+                name=str(body.get("strategyName") or ""),
+            )
             return ok({"success": True, "portfolio": portfolio, "state": robot_state.get(user["id"], environment=mode)})
         except Exception as exc:
             return fail(exc)
@@ -1786,7 +2492,21 @@ def register_kalshi_api(
             body = request.get_json(silent=True) or {}
             if not isinstance(body, Mapping) or not body.get("strategyId"):
                 raise KalshiApiError("strategyId is required", status=400, code="invalid_request")
-            state = robot_state.apply_strategy(user["id"], str(body.get("strategyId")))
+            mode = request_mode(body.get("mode"))
+            try:
+                state = robot_state.apply_strategy(
+                    user["id"],
+                    str(body.get("strategyId")),
+                    environment=mode,
+                )
+            except ValueError as exc:
+                if str(exc) == "strategy_mode_mismatch":
+                    raise KalshiApiError(
+                        "The selected strategy belongs to a different execution mode.",
+                        status=409,
+                        code="kalshi_strategy_mode_mismatch",
+                    ) from exc
+                raise
             return ok({"success": True, "state": state})
         except Exception as exc:
             return fail(exc)

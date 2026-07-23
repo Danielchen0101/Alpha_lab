@@ -14,7 +14,7 @@ import os
 import threading
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_CEILING
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 
@@ -90,6 +90,15 @@ def executable_ask_levels(side: str, orderbook: Optional[Mapping[str, Any]]) -> 
     return []
 
 
+def executable_bid_levels(side: str, orderbook: Optional[Mapping[str, Any]]) -> List[Tuple[float, int]]:
+    """Return executable bids for selling an existing Paper position."""
+    book = dict(orderbook or {})
+    key = "yes" if str(side).upper() == "YES" else "no" if str(side).upper() == "NO" else None
+    if key is None:
+        return []
+    return sorted(_normalize_book_levels(book.get(key)), key=lambda item: item[0], reverse=True)
+
+
 def _aggregate_fill(levels: Sequence[Tuple[float, int]], requested: int, limit_price: float, cash_cents: int) -> Dict[str, Any]:
     fills: List[Dict[str, Any]] = []
     remaining = max(0, int(requested))
@@ -137,6 +146,46 @@ def _aggregate_fill(levels: Sequence[Tuple[float, int]], requested: int, limit_p
     }
 
 
+def _aggregate_sale(levels: Sequence[Tuple[float, int]], requested: int, limit_price: float) -> Dict[str, Any]:
+    """Fill a reduce-only sale against bids and conservatively round proceeds."""
+    fills: List[Dict[str, Any]] = []
+    remaining = max(0, int(requested))
+    gross = Decimal("0")
+    trade_fee = Decimal("0")
+    for level_price, level_size in levels:
+        if remaining <= 0 or level_price + 1e-9 < limit_price:
+            break
+        count = min(remaining, int(level_size))
+        if count <= 0:
+            continue
+        p = Decimal(str(level_price))
+        count_decimal = Decimal(count)
+        level_gross = p * count_decimal
+        level_fee = _ceil(Decimal("0.07") * count_decimal * p * (Decimal(1) - p), Decimal("0.0001"))
+        fills.append({
+            "price_dollars": round(level_price, 4),
+            "count_fp": count,
+            "gross_proceeds_dollars": float(level_gross),
+            "trade_fee_dollars": float(level_fee),
+        })
+        gross += level_gross
+        trade_fee += level_fee
+        remaining -= count
+    fill_count = sum(int(item["count_fp"]) for item in fills)
+    net_credit = max(Decimal("0"), gross - trade_fee).quantize(Decimal("0.01"), rounding=ROUND_FLOOR)
+    effective_fee = gross - net_credit
+    return {
+        "fills": fills,
+        "fill_count": fill_count,
+        "remaining_count": max(0, requested - fill_count),
+        "average_price": float(gross / Decimal(fill_count)) if fill_count else 0.0,
+        "gross_proceeds": float(gross),
+        "trade_fee": float(trade_fee),
+        "fee_cost": float(effective_fee),
+        "credit_cents": int(net_credit * 100),
+    }
+
+
 class KalshiPaperAccountStore:
     """Thread-safe, per-user AlphaLab paper account and execution ledger."""
 
@@ -165,12 +214,17 @@ class KalshiPaperAccountStore:
         if migrated:
             self._save()
 
-    def _initial(self) -> Dict[str, Any]:
+    def _initial(self, starting_balance_cents: Optional[int] = None) -> Dict[str, Any]:
+        initial_balance = (
+            self.starting_balance_cents
+            if starting_balance_cents is None
+            else max(10_000, int(starting_balance_cents))
+        )
         return {
             "version": PAPER_ACCOUNT_VERSION,
             "createdAt": _now(),
             "updatedAt": _now(),
-            "startingBalanceCents": self.starting_balance_cents,
+            "startingBalanceCents": initial_balance,
             "dataProvenance": "kalshi_production_public_v2",
             "feeSchedule": {
                 "seriesTicker": "KXBTC15M",
@@ -178,7 +232,7 @@ class KalshiPaperAccountStore:
                 "feeMultiplier": 1.0,
                 "formula": "0.07 * contracts * price * (1 - price)",
             },
-            "cashCents": self.starting_balance_cents,
+            "cashCents": initial_balance,
             "positions": {},
             "orders": [],
             "fills": [],
@@ -202,9 +256,17 @@ class KalshiPaperAccountStore:
             json.dump(self._users, handle, ensure_ascii=False, indent=2)
         os.replace(temporary, self.path)
 
-    def reset(self, user_id: str) -> Dict[str, Any]:
+    def reset(
+        self,
+        user_id: str,
+        *,
+        starting_balance_dollars: Optional[float] = None,
+    ) -> Dict[str, Any]:
         with self._lock:
-            self._users[str(user_id)] = self._initial()
+            starting_balance_cents = None
+            if starting_balance_dollars is not None:
+                starting_balance_cents = round(float(starting_balance_dollars) * 100)
+            self._users[str(user_id)] = self._initial(starting_balance_cents)
             self._save()
             return self.portfolio(user_id)
 
@@ -259,6 +321,15 @@ class KalshiPaperAccountStore:
 
         with self._lock:
             account = self._account(user_id)
+            existing = next(
+                (
+                    row for row in account.get("orders") or []
+                    if client_id and str((row or {}).get("client_order_id") or "") == client_id
+                ),
+                None,
+            )
+            if existing:
+                return copy.deepcopy(existing)
             levels = executable_ask_levels(side, orderbook)
             if not levels:
                 depth = requested
@@ -343,6 +414,8 @@ class KalshiPaperAccountStore:
                 "noCount": 0,
                 "yesCost": 0.0,
                 "noCost": 0.0,
+                "yesEntryFee": 0.0,
+                "noEntryFee": 0.0,
                 "feeCost": 0.0,
                 "yesMark": 0.0,
                 "noMark": 0.0,
@@ -351,12 +424,146 @@ class KalshiPaperAccountStore:
             })
             count_key = "yesCount" if side == "YES" else "noCount"
             cost_key = "yesCost" if side == "YES" else "noCost"
+            fee_key = "yesEntryFee" if side == "YES" else "noEntryFee"
             position[count_key] = int(position.get(count_key) or 0) + fill_count
             position[cost_key] = round(_number(position.get(cost_key)) + float(execution["position_cost"]), 4)
+            position[fee_key] = round(_number(position.get(fee_key)) + float(execution["fee_cost"]), 4)
             position["feeCost"] = round(_number(position.get("feeCost")) + float(execution["fee_cost"]), 4)
             position["yesMark"] = avg_price if side == "YES" else max(0.0, 1.0 - avg_price)
             position["noMark"] = avg_price if side == "NO" else max(0.0, 1.0 - avg_price)
             position["lastTradeAt"] = created
+            account["updatedAt"] = created
+            self._save()
+            return copy.deepcopy(order)
+
+    def submit_close(
+        self,
+        user_id: str,
+        *,
+        ticker: str,
+        side: str,
+        price: float,
+        contracts: int,
+        limit_price: Optional[float] = None,
+        orderbook: Optional[Mapping[str, Any]] = None,
+        client_order_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Simulate a reduce-only IOC sale of an existing Paper position.
+
+        Unlike the old complementary-buy shortcut, this releases sale proceeds,
+        reduces the held side, and realizes P/L immediately.  The requested size
+        is always capped to the current position.
+        """
+        side = str(side or "").upper()
+        ticker = str(ticker or "").strip()
+        requested = max(0, int(contracts))
+        base_price = float(price)
+        limit = float(limit_price if limit_price is not None else price)
+        order_id = f"paper-order-{uuid.uuid4()}"
+        client_id = str(client_order_id or uuid.uuid4())
+        created = _now()
+        if side not in {"YES", "NO"} or not ticker or requested <= 0 or not 0 < base_price < 1 or not 0 < limit < 1:
+            raise ValueError("A valid ticker, held side, sale price, and contract count are required")
+
+        with self._lock:
+            account = self._account(user_id)
+            existing = next(
+                (
+                    row for row in account.get("orders") or []
+                    if client_id and str((row or {}).get("client_order_id") or "") == client_id
+                ),
+                None,
+            )
+            if existing:
+                return copy.deepcopy(existing)
+            position = (account.get("positions") or {}).get(ticker)
+            count_key = "yesCount" if side == "YES" else "noCount"
+            cost_key = "yesCost" if side == "YES" else "noCost"
+            fee_key = "yesEntryFee" if side == "YES" else "noEntryFee"
+            held_count = int((position or {}).get(count_key) or 0)
+            reduce_count = min(requested, held_count)
+            levels = executable_bid_levels(side, orderbook)
+            if not levels and reduce_count > 0 and base_price + 1e-9 >= limit:
+                levels = [(base_price, reduce_count)]
+            execution = _aggregate_sale(levels, reduce_count, limit) if reduce_count > 0 else {
+                "fills": [], "fill_count": 0, "remaining_count": requested,
+                "average_price": 0.0, "gross_proceeds": 0.0, "trade_fee": 0.0,
+                "fee_cost": 0.0, "credit_cents": 0,
+            }
+            fill_count = int(execution["fill_count"])
+            remaining_count = max(0, requested - fill_count)
+            avg_price = float(execution["average_price"] or 0.0)
+            status = "filled" if fill_count == requested else "partially_filled" if fill_count > 0 else "rejected"
+            rejection_reason = None
+            if held_count <= 0:
+                rejection_reason = "no_position_to_reduce"
+            elif fill_count <= 0:
+                rejection_reason = "insufficient_liquidity_or_price"
+
+            held_cost = _number((position or {}).get(cost_key))
+            held_entry_fee = _number((position or {}).get(fee_key))
+            if held_entry_fee <= 0 and position:
+                total_cost = _number(position.get("yesCost")) + _number(position.get("noCost"))
+                held_entry_fee = _number(position.get("feeCost")) * (held_cost / total_cost if total_cost > 0 else 0.0)
+            allocated_cost = held_cost * (fill_count / held_count) if held_count > 0 else 0.0
+            allocated_entry_fee = held_entry_fee * (fill_count / held_count) if held_count > 0 else 0.0
+            exit_fee = float(execution["fee_cost"])
+            realized_pnl = float(execution["gross_proceeds"]) - exit_fee - allocated_cost - allocated_entry_fee
+            order = {
+                "order_id": order_id,
+                "client_order_id": client_id,
+                "ticker": ticker,
+                "outcome_side": side,
+                "side": "ask" if side == "YES" else "bid",
+                "action": "SELL",
+                "reduce_only": True,
+                "type": "limit",
+                "time_in_force": "immediate_or_cancel",
+                "count_fp": requested,
+                "fill_count_fp": fill_count,
+                "remaining_count_fp": remaining_count,
+                "limit_price_dollars": round(limit, 4),
+                "average_price_dollars": round(avg_price, 4) if fill_count else None,
+                "slippage_dollars": round(max(0.0, base_price - avg_price), 4) if fill_count else None,
+                "gross_proceeds_dollars": round(float(execution["gross_proceeds"]), 4),
+                "position_cost_dollars": round(allocated_cost, 4),
+                "entry_fee_allocated_dollars": round(allocated_entry_fee, 4),
+                "trade_fee_dollars": round(float(execution["trade_fee"]), 4),
+                "fee_cost_dollars": round(exit_fee, 4),
+                "realized_pnl_dollars": round(realized_pnl, 4),
+                "status": status,
+                "rejection_reason": rejection_reason,
+                "matched_levels": copy.deepcopy(execution["fills"]),
+                "created_time": created,
+                "environment": "paper",
+                "data_provenance": "kalshi_production_public_v2",
+            }
+            account["orders"].insert(0, order)
+            account["orders"] = account["orders"][:MAX_LEDGER_ROWS]
+            if fill_count <= 0 or not isinstance(position, dict):
+                account["updatedAt"] = created
+                self._save()
+                return copy.deepcopy(order)
+
+            account["cashCents"] = int(account.get("cashCents") or 0) + int(execution["credit_cents"])
+            fill = {
+                **copy.deepcopy(order),
+                "fill_id": f"paper-fill-{uuid.uuid4()}",
+                "count_fp": fill_count,
+                "price_dollars": round(avg_price, 4),
+            }
+            account["fills"].insert(0, fill)
+            account["fills"] = account["fills"][:MAX_LEDGER_ROWS]
+
+            position[count_key] = held_count - fill_count
+            position[cost_key] = round(max(0.0, held_cost - allocated_cost), 4)
+            position[fee_key] = round(max(0.0, held_entry_fee - allocated_entry_fee), 4)
+            position["feeCost"] = round(max(0.0, _number(position.get("feeCost")) - allocated_entry_fee), 4)
+            position["realizedPnl"] = round(_number(position.get("realizedPnl")) + realized_pnl, 4)
+            position["lastTradeAt"] = created
+            account["realizedPnlDollars"] = round(_number(account.get("realizedPnlDollars")) + realized_pnl, 4)
+            if int(position.get("yesCount") or 0) <= 0 and int(position.get("noCount") or 0) <= 0:
+                account["positions"].pop(ticker, None)
             account["updatedAt"] = created
             self._save()
             return copy.deepcopy(order)
