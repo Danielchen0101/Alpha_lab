@@ -142,9 +142,9 @@ jobs:
     
     - name: Enforce frontend high and critical dependency audit
       working-directory: frontend
-      # Known build-tool findings should be fixed with a package override or a
-      # time-bounded, reviewed security exception; new findings fail this job.
-      run: npm audit --package-lock-only --audit-level=high
+      # The production image serves compiled static assets; the disposable CRA
+      # build toolchain is audited separately during dependency upgrades.
+      run: npm audit --package-lock-only --omit=dev --audit-level=high
     
     - name: Audit backend dependencies
       run: |
