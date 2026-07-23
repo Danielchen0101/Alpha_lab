@@ -850,3 +850,15 @@ button.auth-brand-logo-text {
 .mfa-challenge-card .ant-alert { margin: 22px 0; }
 .mfa-challenge-card .ant-form { margin-top: 26px; }
 .mfa-challenge-loading { display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 132px; color: var(--app-text-muted); }
+.auth-inline-action {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: -4px 0 14px;
+  flex-wrap: wrap;
+}
+
+.auth-inline-action .ant-typography {
+  margin: 0;
+  color: var(--auth-muted, #66706a);
+}

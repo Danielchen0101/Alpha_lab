@@ -379,6 +379,7 @@ SENSITIVE_CACHE_PATHS = (
     '/api/auth/', '/api/settings/', '/api/config/',
     '/api/ai/alpaca/account', '/api/trading/', '/api/ai-agent/',
     '/api/backtest/', '/api/ai/', '/api/entry-plan/', '/api/operations/',
+    '/api/crypto/',
 )
 
 @app.after_request
@@ -875,6 +876,7 @@ SENSITIVE_FIELDS = {
     ],
     'finnhub': ['api_key'],
     'discord': ['webhookUrl'],
+    'kalshi': ['demo_private_key', 'production_private_key'],
 }
 
 
@@ -1066,6 +1068,26 @@ def _discord_status(value, language):
     }.get(text, text)
 
 
+def _discord_action(value, language):
+    """Localize a bounded trading action without rewriting free-form copy."""
+    text = str(value or '-').strip()
+    normalized = text.upper()
+    english = {
+        'BUY': 'BUY', 'SELL': 'SELL', 'ADD': 'ADD', 'HOLD': 'HOLD',
+        'REDUCE': 'REDUCE', 'EXIT': 'EXIT', 'BUY_READY': 'BUY READY',
+        'READY_REVIEW': 'READY REVIEW', 'WAIT_FOR_ENTRY': 'WAIT FOR ENTRY',
+        'WATCH': 'WATCH',
+    }
+    chinese = {
+        'BUY': '买入', 'SELL': '卖出', 'ADD': '加仓', 'HOLD': '持有',
+        'REDUCE': '减仓', 'EXIT': '退出', 'BUY_READY': '可买入',
+        'READY_REVIEW': '建议复核', 'WAIT_FOR_ENTRY': '等待入场',
+        'WATCH': '观察',
+    }
+    mapping = chinese if language == 'zh-CN' else english
+    return mapping.get(normalized, text)
+
+
 def get_discord_config(user_id):
     cfg = get_user_config(user_id, 'discord') or {}
     return cfg if isinstance(cfg, dict) else {}
@@ -1153,6 +1175,8 @@ def _discord_embed(event_type, payload):
     language = str(payload.get('_language') or payload.get('language') or 'en-US')
     zh = language == 'zh-CN'
     cp = lambda en, cn: _discord_copy(language, en, cn)
+    asset_class = str(payload.get('assetClass') or payload.get('asset_class') or '').strip().lower()
+    is_crypto = asset_class == 'crypto'
     color_map = {
         'cycle_digest': 0x1677FF,
         'risk_alert': 0xEF4444,
@@ -1218,23 +1242,34 @@ def _discord_embed(event_type, payload):
     elif base_event_type == 'risk_alert':
         severity = str(payload.get('severity') or 'high').upper()
         override_title = cp('%s Risk Alert' % severity.title(), '%s风险提醒' % ({'CRITICAL': '严重', 'HIGH': '高', 'MEDIUM': '中', 'LOW': '低'}.get(severity, severity)))
+        risk_action = payload.get('actionZh') if zh and payload.get('actionZh') else payload.get('action')
+        if risk_action and is_crypto:
+            risk_action = _discord_action(risk_action, language)
+        elif not risk_action:
+            risk_action = cp('The system will retry and continue monitoring.', '系统将自动重试并继续监控。')
         fields = [
             {'name': cp('Area', '风险区域'), 'value': _fmt(payload.get('step') or payload.get('category'), '-'), 'inline': True},
-            {'name': cp('Symbol', '股票代码'), 'value': _fmt(payload.get('symbol'), '-').upper(), 'inline': True},
+            {'name': cp('Trading pair', '交易对') if is_crypto else cp('Symbol', '股票代码'), 'value': _fmt(payload.get('symbol'), '-').upper(), 'inline': True},
             {'name': cp('Status', '状态'), 'value': _discord_status(payload.get('status'), language), 'inline': True},
             {'name': cp('Condition', '风险原因'), 'value': _fmt(payload.get('reasonZh') if zh and payload.get('reasonZh') else payload.get('reason'), '-')[:500], 'inline': False},
-            {'name': cp('Next Action', '建议操作'), 'value': _fmt(payload.get('actionZh') if zh and payload.get('actionZh') else payload.get('action'), cp('The system will retry and continue monitoring.', '系统将自动重试并继续监控。'))[:300], 'inline': False},
+            {'name': cp('Next Action', '建议操作'), 'value': _fmt(risk_action, '-')[:300], 'inline': False},
         ]
 
     elif base_event_type == 'recommendation':
         recommendations = payload.get('recommendations') or []
+        if is_crypto:
+            override_title = cp('Crypto Candidates', '虚拟币候选')
         fields = [
             {'name': cp('Mode', '运行模式'), 'value': _fmt(payload.get('mode'), '-').upper(), 'inline': True},
-            {'name': cp('Candidates', '推荐数量'), 'value': _fmt(len(recommendations), 0), 'inline': True},
+            {'name': cp('Crypto candidates', '虚拟币候选') if is_crypto else cp('Candidates', '推荐数量'), 'value': _fmt(len(recommendations), 0), 'inline': True},
         ]
         for row in recommendations[:10]:
             action = str(row.get('action') or 'WATCH').upper()
-            action_display = {'BUY_READY': '可买入', 'READY_REVIEW': '建议复核', 'WAIT_FOR_ENTRY': '等待入场', 'WATCH': '观察'}.get(action, action) if zh else action.replace('_', ' ')
+            action_display = (
+                _discord_action(action, language)
+                if is_crypto
+                else ({'BUY_READY': '可买入', 'READY_REVIEW': '建议复核', 'WAIT_FOR_ENTRY': '等待入场', 'WATCH': '观察'}.get(action, action) if zh else action.replace('_', ' '))
+            )
             details = cp(
                 '%s | Entry %s | Stop %s | Target %s | R/R %s',
                 '%s | 入场 %s | 止损 %s | 目标 %s | 盈亏比 %s',
@@ -1337,13 +1372,17 @@ def _discord_embed(event_type, payload):
         side = _fmt(payload.get('side'), '-').upper()
         status = _fmt(payload.get('status'), '-').upper()
         status_title = cp('Filled', '已成交') if status == 'FILLED' else cp('Rejected', '已拒绝') if status in ('REJECTED', 'SUSPENDED') else cp('Submitted', '已提交')
-        side_display = {'BUY': cp('BUY', '买入'), 'SELL': cp('SELL', '卖出')}.get(side, side)
-        override_title = '%s · %s' % (side_display, status_title)
+        if is_crypto:
+            action_value = payload.get('action') or side
+            action_display = _discord_action(action_value, language)
+        else:
+            action_display = {'BUY': cp('BUY', '买入'), 'SELL': cp('SELL', '卖出')}.get(side, side)
+        override_title = '%s · %s' % (action_display, status_title)
         description = payload.get('descriptionZh') if zh and payload.get('descriptionZh') else payload.get('description') or (cp('REAL TRADING\n', '实盘交易\n') if mode == 'REAL' else '')
         fields = [
             {'name': cp('Mode', '账户模式'), 'value': mode, 'inline': True},
-            {'name': cp('Side', '方向'), 'value': side_display, 'inline': True},
-            {'name': cp('Symbol', '股票代码'), 'value': _fmt(payload.get('symbol'), '-').upper(), 'inline': True},
+            {'name': cp('Action', '操作') if is_crypto else cp('Side', '方向'), 'value': action_display, 'inline': True},
+            {'name': cp('Trading pair', '交易对') if is_crypto else cp('Symbol', '股票代码'), 'value': _fmt(payload.get('symbol'), '-').upper(), 'inline': True},
             {'name': cp('Qty / Notional', '数量 / 金额'), 'value': _fmt(payload.get('qty') or payload.get('notional'), '-'), 'inline': True},
             {'name': cp('Order Type', '订单类型'), 'value': _fmt(payload.get('orderType'), '-'), 'inline': True},
             {'name': cp('Price', '价格'), 'value': _fmt(payload.get('price') or payload.get('limitPrice'), cp('N/A', '暂无')), 'inline': True},
@@ -6798,6 +6837,29 @@ MARKET_DATA_CONFIG_FILE = os.path.join(CONFIG_DIR, 'market_data_config.json')
 # Module-level config loaded from saved JSON files at startup
 _MARKET_DATA_BASE_URL = 'https://data.alpaca.markets'
 _MARKET_DATA_FEED = 'iex'
+_ALPACA_TRADING_BASE_URLS = {
+    'paper': 'https://paper-api.alpaca.markets',
+    'live': 'https://api.alpaca.markets',
+}
+
+
+def _trusted_alpaca_trading_base_url(value=None, mode='paper'):
+    """Return an official Alpaca trading origin or reject the value.
+
+    Trading API credentials are user-managed, but the destination is not. A
+    saved arbitrary URL would let a credentialed server request reach private
+    or attacker-controlled hosts, so legacy/custom origins fail closed.
+    """
+    normalized_mode = str(mode or 'paper').strip().lower()
+    if normalized_mode == 'real':
+        normalized_mode = 'live'
+    if normalized_mode not in _ALPACA_TRADING_BASE_URLS:
+        raise ValueError('Alpaca trading mode must be paper or live')
+    expected = _ALPACA_TRADING_BASE_URLS[normalized_mode]
+    candidate = str(value or expected).strip().rstrip('/')
+    if candidate != expected:
+        raise ValueError('Alpaca trading base URL must use the official Alpaca endpoint')
+    return expected
 
 
 def _get_market_data_base_url():
@@ -6853,12 +6915,12 @@ def config_alpaca():
                     'paper_api_secret_masked': mask_key(cfg.get('paper_api_secret', '')),
                     'paper_api_key': bool(cfg.get('paper_api_key')),
                     'paper_api_secret': bool(cfg.get('paper_api_secret')),
-                    'paper_base_url': cfg.get('paper_base_url', 'https://paper-api.alpaca.markets'),
+                    'paper_base_url': _trusted_alpaca_trading_base_url(None, 'paper'),
                     'live_api_key_masked': mask_key(cfg.get('live_api_key', '')),
                     'live_api_secret_masked': mask_key(cfg.get('live_api_secret', '')),
                     'live_api_key': bool(cfg.get('live_api_key')),
                     'live_api_secret': bool(cfg.get('live_api_secret')),
-                    'live_base_url': cfg.get('live_base_url', 'https://api.alpaca.markets'),
+                    'live_base_url': _trusted_alpaca_trading_base_url(None, 'live'),
                     'environment': cfg.get('environment', 'paper'),
                 }
             })
@@ -6867,6 +6929,12 @@ def config_alpaca():
             if not user:
                 return jsonify({'success': False, 'message': 'Authentication required'}), 401
             data = request.get_json() or {}
+            for field, field_mode in (('paper_base_url', 'paper'), ('live_base_url', 'live')):
+                if data.get(field):
+                    try:
+                        _trusted_alpaca_trading_base_url(data[field], field_mode)
+                    except ValueError as exc:
+                        return jsonify({'success': False, 'message': str(exc)}), 400
             if (
                 any(key in data for key in ('live_api_key', 'live_api_secret', 'live_base_url'))
                 or str(data.get('environment') or '').lower() in ('real', 'live')
@@ -6881,6 +6949,8 @@ def config_alpaca():
                     if '****' in str(data[k]):
                         continue  # Skip masked values
                     existing[k] = data[k]
+            existing['paper_base_url'] = _trusted_alpaca_trading_base_url(None, 'paper')
+            existing['live_base_url'] = _trusted_alpaca_trading_base_url(None, 'live')
             ok, err = save_user_config(user['id'], 'alpaca', existing)
             if ok:
                 return jsonify({'success': True, 'message': 'Alpaca config saved'})
@@ -6910,11 +6980,11 @@ def config_alpaca_test():
             if mode == 'paper':
                 api_key = alpaca_cfg.get('paper_api_key', '')
                 api_secret = alpaca_cfg.get('paper_api_secret', '')
-                base_url = alpaca_cfg.get('paper_base_url', base_url)
+                base_url = _trusted_alpaca_trading_base_url(None, 'paper')
             else:
                 api_key = alpaca_cfg.get('live_api_key', '')
                 api_secret = alpaca_cfg.get('live_api_secret', '')
-                base_url = alpaca_cfg.get('live_base_url', base_url)
+                base_url = _trusted_alpaca_trading_base_url(None, 'live')
 
         key_invalid, key_reason = _is_invalid_key(api_key)
         if not api_key or not api_secret or key_invalid:
@@ -7161,9 +7231,11 @@ def _load_all_configs():
     # Alpaca — only load non-sensitive fields (base URLs, environment)
     alpaca_file_cfg = _load_json_config(ALPACA_CONFIG_FILE)
     if alpaca_file_cfg:
-        for k in ['paper_base_url', 'live_base_url', 'environment']:
+        for k in ['environment']:
             if k in alpaca_file_cfg and alpaca_file_cfg[k]:
                 alpaca_config_state[k] = alpaca_file_cfg[k]
+        alpaca_config_state['paper_base_url'] = _trusted_alpaca_trading_base_url(None, 'paper')
+        alpaca_config_state['live_base_url'] = _trusted_alpaca_trading_base_url(None, 'live')
         print(f'[Config] Loaded Alpaca non-sensitive config from {ALPACA_CONFIG_FILE}')
 
     # Market Data — only load non-sensitive fields (feed, base_url)
@@ -8839,11 +8911,11 @@ def resolve_alpaca_config(mode='paper', require_user_config=False):
             if mode == 'paper':
                 key = user_cfg.get('paper_api_key', '')
                 secret = user_cfg.get('paper_api_secret', '')
-                url = user_cfg.get('paper_base_url', 'https://paper-api.alpaca.markets')
+                url = _trusted_alpaca_trading_base_url(None, 'paper')
             else:
                 key = user_cfg.get('live_api_key', '')
                 secret = user_cfg.get('live_api_secret', '')
-                url = user_cfg.get('live_base_url', 'https://api.alpaca.markets')
+                url = _trusted_alpaca_trading_base_url(None, 'live')
             key_bad, key_bad_reason = _is_invalid_key(key)
             if key and secret and not key_bad:
                 print(f'[resolve_alpaca_config] source=supabase user={user["id"][:8]}... mode={mode} hasKey=True')
@@ -8898,11 +8970,11 @@ def resolve_alpaca_config_for_user(uid, mode='paper'):
     if mode == 'paper':
         key = user_cfg.get('paper_api_key', '')
         secret = user_cfg.get('paper_api_secret', '')
-        url = user_cfg.get('paper_base_url', 'https://paper-api.alpaca.markets')
+        url = _trusted_alpaca_trading_base_url(None, 'paper')
     else:
         key = user_cfg.get('live_api_key', '')
         secret = user_cfg.get('live_api_secret', '')
-        url = user_cfg.get('live_base_url', 'https://api.alpaca.markets')
+        url = _trusted_alpaca_trading_base_url(None, 'live')
 
     key_bad, key_bad_reason = _is_invalid_key(key)
     if key and secret and not key_bad:
@@ -9048,11 +9120,11 @@ def resolve_alpaca_config_strict_user(mode='paper'):
     if mode == 'paper':
         key = user_cfg.get('paper_api_key', '')
         secret = user_cfg.get('paper_api_secret', '')
-        url = user_cfg.get('paper_base_url', 'https://paper-api.alpaca.markets')
+        url = _trusted_alpaca_trading_base_url(None, 'paper')
     else:
         key = user_cfg.get('live_api_key', '')
         secret = user_cfg.get('live_api_secret', '')
-        url = user_cfg.get('live_base_url', 'https://api.alpaca.markets')
+        url = _trusted_alpaca_trading_base_url(None, 'live')
     key_bad, key_bad_reason = _is_invalid_key(key)
     if key and secret and not key_bad:
         safe_print(f'[resolve_alpaca_config_strict] user={user["id"][:8]}... mode={mode} hasKey=True')
@@ -9364,7 +9436,7 @@ def system_config_diag():
         return jsonify({'authenticated': False, 'error': 'No valid Supabase session'}), 401
 
     results = {}
-    for config_type in ['alpaca', 'finnhub', 'ai_provider', 'discord']:
+    for config_type in ['alpaca', 'finnhub', 'ai_provider', 'discord', 'kalshi']:
         try:
             cfg = get_user_config(user['id'], config_type)
             if cfg is None:
@@ -10014,11 +10086,19 @@ def settings_broker_config():
                     masked[k] = mask_key(v)
                 else:
                     masked[k] = v
+            masked['paper_base_url'] = _trusted_alpaca_trading_base_url(None, 'paper')
+            masked['live_base_url'] = _trusted_alpaca_trading_base_url(None, 'live')
             return jsonify({'success': True, 'config': masked})
         return jsonify({'success': True, 'config': {}})
 
     # POST
     data = request.get_json() or {}
+    for field, field_mode in (('paper_base_url', 'paper'), ('live_base_url', 'live')):
+        if data.get(field):
+            try:
+                _trusted_alpaca_trading_base_url(data[field], field_mode)
+            except ValueError as exc:
+                return jsonify({'success': False, 'message': str(exc)}), 400
     if (
         any(key in data for key in ('live_api_key', 'live_api_secret', 'live_base_url'))
         or str(data.get('environment') or '').lower() in ('real', 'live')
@@ -10032,6 +10112,8 @@ def settings_broker_config():
             if '****' in str(data[key]):
                 continue  # Skip masked values
             existing[key] = data[key]
+    existing['paper_base_url'] = _trusted_alpaca_trading_base_url(None, 'paper')
+    existing['live_base_url'] = _trusted_alpaca_trading_base_url(None, 'live')
     ok, err = save_user_config(user['id'], 'alpaca', existing)
     if ok:
         result = {'success': True, 'message': 'Broker config saved'}
@@ -43820,13 +43902,36 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
     targets stay fixed. AI can challenge soft thesis decisions but cannot alter
     geometry, cancel protection, or delay a hard stop.
     """
+    exit_started_at = time.monotonic()
+    phase_started_at = exit_started_at
+    phase_timings = {}
+
+    def record_phase_timing(phase):
+        nonlocal phase_started_at
+        now = time.monotonic()
+        phase_timings[phase] = round(now - phase_started_at, 3)
+        _pa_log(
+            '[ExitScanTiming] run=%s phase=%s elapsed=%.3fs total=%.3fs' % (
+                str(run_id or '-')[:80], phase, phase_timings[phase], now - exit_started_at,
+            )
+        )
+        phase_started_at = now
+
     try:
         normalized_trade_mode = _operations_normalize_trading_mode(trade_mode or 'paper')
     except ValueError as exc:
         return {'holdingsScanned': 0, 'signals': [], 'submitted': [], 'error': str(exc)}
     positions, pos_err = _pa_fetch_positions_for_mode(uid, normalized_trade_mode)
+    record_phase_timing('positions')
     if pos_err:
-        return {'holdingsScanned': 0, 'signals': [], 'submitted': [], 'error': pos_err}
+        return {
+            'holdingsScanned': 0,
+            'signals': [],
+            'submitted': [],
+            'error': pos_err,
+            'phaseTimings': phase_timings,
+            'durationSeconds': round(time.monotonic() - exit_started_at, 3),
+        }
 
     config = resolve_alpaca_config_for_user(uid, normalized_trade_mode)
     api_key = config.get('api_key', '')
@@ -43875,6 +43980,7 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
                 broker_errors.append('account_http_%s' % response.status_code)
         except Exception as exc:
             broker_errors.append('account_%s' % str(exc)[:100])
+    record_phase_timing('broker_state')
 
     orders_by_symbol = {}
     for order in open_orders:
@@ -43886,6 +43992,7 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
     market_context, market_meta = _pa_fetch_exit_market_context(
         uid, symbols, normalized_trade_mode,
     )
+    record_phase_timing('market_context')
     spy_indicators = ((market_context.get('SPY') or {}).get('indicators') or {})
     market_regime = spy_indicators.get('trendState') or 'unknown'
     current_plan_by_symbol = {
@@ -44396,7 +44503,9 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
 
         results.append(signal)
 
+    record_phase_timing('position_reconciliation')
     ai_stats = _pa_exit_ai_challenge(uid, results, enabled=ai_review and str(mode).lower() in ('ai', 'hybrid'))
+    record_phase_timing('ai_challenge')
     return {
         'holdingsScanned': len(results),
         'signals': results,
@@ -44431,6 +44540,8 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
         'accountDayPnlPct': round(account_day_pl_pct, 2) if account_day_pl_pct is not None else None,
         'accountTradingBlocked': account_trading_blocked,
         'ai': ai_stats,
+        'phaseTimings': phase_timings,
+        'durationSeconds': round(time.monotonic() - exit_started_at, 3),
         'evaluatedAt': _pa_utc_iso(),
     }
 
@@ -44870,7 +44981,10 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         'admission': 90,
         'entry_plan': 60,
         'execution': 60,
-        'exit_scan': 60,
+        # Exit protection may need broker positions/orders/account, cold market
+        # history, news context, and one bounded AI challenge.  Sixty seconds
+        # was shorter than the sum of those independently bounded calls.
+        'exit_scan': 180,
     }
     started = time.time()
     saved_config = _pa_get_config(uid) or {}
@@ -45749,6 +45863,8 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                                 'protected': exit_summary.get('protectedCount', 0),
                                 'protectionAttached': exit_summary.get('protectionAttachedCount', 0),
                                 'ai': exit_summary.get('ai') or {},
+                                'phaseTimings': exit_summary.get('phaseTimings') or {},
+                                'engineDurationSeconds': exit_summary.get('durationSeconds'),
                                 'results': _exit_signals[:10],
                             })
         summary['order_lifecycle_after'] = _pa_reconcile_order_lifecycle(
@@ -45772,6 +45888,12 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
             (index for index, (key, _label) in enumerate(_PA_PIPELINE_STAGES, start=1) if key == e.stage),
             int(failed_run.get('stepIndex') or 1),
         )
+        timeout_step_data = {'error': 'Timed out after %.0fs' % e.elapsed}
+        if e.stage == 'exit_scan' and isinstance(locals().get('exit_summary'), dict):
+            timeout_step_data.update({
+                'phaseTimings': exit_summary.get('phaseTimings') or {},
+                'engineDurationSeconds': exit_summary.get('durationSeconds'),
+            })
         _pa_active_run_step(
             uid,
             e.stage,
@@ -45779,7 +45901,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
             _PA_PIPELINE_TOTAL_STEPS,
             'failed',
             message='Pipeline timed out at %s' % e.stage,
-            step_data={'error': 'Timed out after %.0fs' % e.elapsed},
+            step_data=timeout_step_data,
         )
         _pa_update_active_run(
             uid,
@@ -48460,6 +48582,291 @@ def _pa_ensure_scheduler():
         _PA_SCHEDULER_THREAD = threading.Thread(target=_pa_scheduler_loop, daemon=True, name='pipeline-auto-scheduler')
         _PA_SCHEDULER_THREAD.start()
         _pa_log('pipeline-auto scheduler started')
+
+
+# Crypto is deliberately registered as an isolated 24/7 subsystem.  It reuses
+# the authenticated per-user credential resolver and operation store, but does
+# not inherit the equity market clock or equity order assumptions above.
+def _crypto_ai_risk_review(uid, evidence):
+    """Run the user's configured model as a bounded crypto risk challenger.
+
+    The crypto service validates the model output again and is the sole owner
+    of target weights and broker fields.  Missing or malformed model output is
+    returned as an explicit unavailable review rather than being mistaken for
+    an approval.
+    """
+    ai_config, source = resolve_ai_config_for_user(uid)
+    if not ai_config.get('apiKey'):
+        return {
+            'status': 'not_configured',
+            'verdict': 'unavailable',
+            'action': evidence.get('action'),
+            'summary': 'No user AI provider is configured.',
+            'source': source,
+        }
+
+    allowed = [str(value).upper() for value in (evidence.get('allowedActions') or [])]
+    system_prompt = (
+        'You are AlphaLab Crypto Risk Reviewer, a second-line reviewer for a '
+        'spot-only BTC/USD and ETH/USD system. The deterministic strategy and '
+        'hard risk gates have final authority. You may only preserve or reduce '
+        'risk: never originate a position, increase target weight, add an '
+        'asset, remove a stop, bypass stale-data/account/kill-switch controls, '
+        'or delay a mandatory EXIT. Return one JSON object only with keys '
+        'verdict (clear, caution, reject), action, summary, counterEvidence, '
+        'and invalidation. Keep summary under 240 characters.'
+    )
+    review_payload = {
+        'contract': {
+            'deterministicAction': evidence.get('action'),
+            'allowedActions': allowed,
+            'maximumTargetWeight': evidence.get('targetWeight'),
+            'rule': 'Preserve or reduce risk only.',
+        },
+        'evidence': evidence,
+    }
+    parsed, error = _inst_call_ai_trader(
+        ai_config,
+        system_prompt,
+        json.dumps(review_payload, separators=(',', ':'), default=str),
+    )
+    if error or not isinstance(parsed, dict):
+        return {
+            'status': 'unavailable',
+            'verdict': 'unavailable',
+            'action': evidence.get('action'),
+            'summary': str(error or 'AI review was not parseable')[:240],
+            'source': source,
+        }
+    return {
+        'status': 'reviewed',
+        'verdict': str(parsed.get('verdict') or 'caution').strip().lower(),
+        'action': str(parsed.get('action') or evidence.get('action') or 'HOLD').strip().upper(),
+        'summary': str(parsed.get('summary') or '')[:240],
+        'counterEvidence': str(parsed.get('counterEvidence') or '')[:400],
+        'invalidation': str(parsed.get('invalidation') or '')[:400],
+        'source': source,
+    }
+
+
+def _crypto_ai_status(uid):
+    """Expose only non-secret Settings AI metadata to the crypto workspace."""
+    ai_config, source = resolve_ai_config_for_user(uid)
+    return {
+        'configured': bool(ai_config.get('apiKey')),
+        'status': ai_config.get('testStatus') or ('configured' if ai_config.get('apiKey') else 'not_configured'),
+        'provider': ai_config.get('provider') or '',
+        'model': ai_config.get('model') or '',
+        'source': source,
+    }
+
+
+def _crypto_discord_notify(uid, event_type, payload):
+    """Adapt crypto events to the existing localized notification contract."""
+    body = dict(payload or {})
+    body['assetClass'] = 'crypto'
+    if event_type == 'recommendation' and not body.get('recommendations'):
+        body['recommendations'] = [{
+            'symbol': body.get('symbol'),
+            'action': body.get('action'),
+            'reason': body.get('reason'),
+            'targetWeight': body.get('targetWeight'),
+            'confidence': body.get('confidence'),
+        }]
+        body.setdefault('fingerprint', '%s:%s:%s:%s' % (
+            body.get('symbol') or '-', body.get('action') or '-',
+            body.get('targetWeight') or '-', body.get('regime') or '-',
+        ))
+    if event_type == 'order':
+        action = str(body.get('action') or '').upper()
+        body.setdefault('side', 'BUY' if action in ('BUY', 'ADD') else 'SELL')
+        body.setdefault('event_id', body.get('orderId'))
+    if event_type == 'risk_alert':
+        body.setdefault('reason', body.get('error') or body.get('event'))
+        body.setdefault('step', 'Crypto automation')
+        body.setdefault('status', 'blocked')
+    return send_discord_notification(uid, event_type, body)
+
+
+try:
+    from crypto_api import register_crypto_api
+except ImportError:  # pragma: no cover - package-style test imports
+    from .crypto_api import register_crypto_api
+
+_CRYPTO_API_CONTROLS = register_crypto_api(
+    app,
+    require_auth=require_auth,
+    resolve_alpaca_config_for_user=resolve_alpaca_config_for_user,
+    operations_store=operations_store,
+    supabase_admin=supabase_admin,
+    supabase_execute=_supabase_execute,
+    safe_print=safe_print,
+    ai_reviewer=_crypto_ai_risk_review,
+    ai_status_resolver=_crypto_ai_status,
+    notifier=_crypto_discord_notify,
+)
+
+try:
+    from kalshi_api import register_kalshi_api
+except ImportError:  # pragma: no cover - package-style test imports
+    from .kalshi_api import register_kalshi_api
+
+
+def _kalshi_ai_candidate_review(uid, evidence):
+    """Second-line Kalshi entry challenge using the user's Settings provider."""
+    ai_config, source = resolve_ai_config_for_user(uid)
+    provider = str(ai_config.get('provider') or '')
+    model = str(ai_config.get('model') or '')
+    if not ai_config.get('apiKey'):
+        return {
+            'status': 'not_configured',
+            'verdict': 'not_reviewed',
+            'confidence': 0.0,
+            'summary': 'Configure and verify an AI provider in Settings to enable pre-trade review.',
+            'provider': provider,
+            'model': model,
+            'source': source,
+        }
+    system_prompt = (
+        'You are AlphaLab Kalshi Pre-Trade Challenger for one KXBTC15M new-entry candidate. '
+        'The deterministic probability engine, market-data validation, fees, sizing, account limits, '
+        'and hard gates have final authority. Review only the supplied structured evidence. '
+        'Look for a material contradiction among strike distance, 3m/5m/15m momentum, volatility '
+        'regime, jump risk, model uncertainty, model-versus-market probability, book imbalance, '
+        'spread, depth, quote age, time remaining, and account context. Do not invent news or data. '
+        'You cannot create a trade, change YES/NO, price, size, thresholds, or override a hard gate. '
+        'Use CHALLENGE only for a specific material contradiction that justifies waiting for a fresh '
+        'snapshot; otherwise use CLEAR. Return one JSON object only with keys verdict (CLEAR or '
+        'CHALLENGE), confidence (0..1), summary (under 240 chars), contradictions (array of at most '
+        '4 short strings), missingData (array of at most 4 field names), topRisks (array of at most '
+        '4 short strings), and nextCheck (under 200 chars).'
+    )
+    parsed, error = _inst_call_ai_trader(
+        ai_config,
+        system_prompt,
+        json.dumps({'task': 'Challenge or clear this deterministic new-entry candidate.', 'evidence': evidence}, separators=(',', ':'), default=str),
+    )
+    if error or not isinstance(parsed, dict):
+        return {
+            'status': 'unavailable',
+            'verdict': 'not_reviewed',
+            'confidence': 0.0,
+            'summary': str(error or 'Settings AI returned an invalid pre-trade review')[:240],
+            'provider': provider,
+            'model': model,
+            'source': source,
+        }
+    verdict = str(parsed.get('verdict') or 'CLEAR').strip().lower()
+    verdict = 'challenge' if verdict in ('challenge', 'reject', 'wait', 'caution') else 'clear'
+    try:
+        confidence = max(0.0, min(1.0, float(parsed.get('confidence') or 0.0)))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    def _short_list(key):
+        values = parsed.get(key) or []
+        if not isinstance(values, list):
+            values = [values]
+        return [str(value)[:180] for value in values if str(value).strip()][:4]
+    return {
+        'status': 'reviewed',
+        'verdict': verdict,
+        'confidence': round(confidence, 4),
+        'summary': str(parsed.get('summary') or ('Candidate cleared.' if verdict == 'clear' else 'Material contradiction requires another snapshot.'))[:240],
+        'contradictions': _short_list('contradictions'),
+        'missingData': _short_list('missingData'),
+        'topRisks': _short_list('topRisks'),
+        'nextCheck': str(parsed.get('nextCheck') or '')[:200],
+        'provider': provider,
+        'model': model,
+        'source': source,
+    }
+
+
+def _kalshi_ai_status(uid):
+    """Expose non-secret Settings AI metadata to Kalshi only."""
+    ai_config, source = resolve_ai_config_for_user(uid)
+    return {
+        'configured': bool(ai_config.get('apiKey')),
+        'status': ai_config.get('testStatus') or ('configured' if ai_config.get('apiKey') else 'not_configured'),
+        'provider': ai_config.get('provider') or '',
+        'model': ai_config.get('model') or '',
+        'source': source,
+    }
+
+
+def _kalshi_ai_learning_review(uid, evidence):
+    """Use the Settings model to diagnose Paper outcomes, never to route orders.
+
+    The returned deltas are validated again by KalshiRobotState. The model has
+    no authority over credentials, environment, order payloads, sizing, cash,
+    exposure, loss stops, book quality, or production settings.
+    """
+    ai_config, source = resolve_ai_config_for_user(uid)
+    provider = str(ai_config.get('provider') or '')
+    model = str(ai_config.get('model') or '')
+    if not ai_config.get('apiKey'):
+        return {
+            'error': 'Configure and verify an AI provider in Settings to enable AI calibration.',
+            'provider': provider,
+            'model': model,
+            'source': source,
+        }
+    system_prompt = (
+        'You are AlphaLab Kalshi Paper Calibration Reviewer. Analyze two distinct '
+        'evidence sets: all settled shadow forecasts for directional calibration, '
+        'and actually filled Paper trades for fee-adjusted P/L attribution. Diagnose '
+        'whether errors came from direction, confidence calibration, entry price, '
+        'fees, spread, timing, volatility regime, or hard-gate selection. Recommend '
+        'small calibration deltas. You do not place orders '
+        'and may not change riskPerTradePct, credentials, environment, '
+        'cash, exposure limits, loss stops, spread/depth gates, cooldowns, or any '
+        'live setting. A contrarian recommendation is a hypothesis, not a profit '
+        'claim, and must be supported across the full observation window rather than '
+        'a selected losing-trade subset. Return one JSON object only with: diagnosis (string under '
+        '500 chars), confidence (0..1), directionRecommendation (normal, contrarian, '
+        'or hold), reasons (array of at most 5 strings), errorPatterns (array), and '
+        'adjustments (object of DELTAS, not absolute values). Allowed adjustment '
+        'keys and maximum absolute deltas are: marketBlendWeight 0.05, minNetEdge '
+        '0.0025, probabilityLogitScale 0.05, momentumProjectionScale 0.02, '
+        'basisReserveBps 1.0, minConservativeEdge 0.0015, executionPriceTolerance 0.002, '
+        'learningExplorationRate 0.05. Prefer no adjustment when '
+        'evidence is weak. Prefer increasing safe Paper exploration over lowering hard '
+        'market-quality gates. Never infer expected profit from directional accuracy alone.'
+    )
+    prompt = json.dumps({
+        'task': 'Explain forecast and trade errors, compare normal versus inverse direction, and propose bounded Paper calibration.',
+        'evidence': evidence,
+    }, separators=(',', ':'), default=str)
+    parsed, error = _inst_call_ai_trader(ai_config, system_prompt, prompt)
+    if error or not isinstance(parsed, dict):
+        return {
+            'error': str(error or 'Settings AI returned an invalid calibration review')[:500],
+            'provider': provider,
+            'model': model,
+            'source': source,
+        }
+    return {
+        'review': parsed,
+        'provider': provider,
+        'model': model,
+        'source': source,
+    }
+
+_KALSHI_API_CONTROLS = register_kalshi_api(
+    app,
+    require_auth=require_auth,
+    safe_print=safe_print,
+    get_user_config=get_user_config,
+    save_user_config=save_user_config,
+    mask_key=mask_key,
+    robot_state_path=os.path.join(os.path.dirname(__file__), "kalshi_robot_state.json"),
+    paper_account_path=os.path.join(os.path.dirname(__file__), "kalshi_paper_accounts.json"),
+    start_background=True,
+    ai_candidate_reviewer=_kalshi_ai_candidate_review,
+    ai_learning_reviewer=_kalshi_ai_learning_review,
+    ai_status_resolver=_kalshi_ai_status,
+    notifier=send_discord_notification,
+)
 
 _pa_load_managed_positions()
 _pa_restore_runtime_state()

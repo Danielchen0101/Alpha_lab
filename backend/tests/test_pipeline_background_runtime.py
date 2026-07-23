@@ -7,6 +7,23 @@ import pytest
 import start_quant_backend as backend
 
 
+def test_alpaca_trading_base_url_allowlist_rejects_custom_and_private_origins():
+    assert backend._trusted_alpaca_trading_base_url(
+        "https://paper-api.alpaca.markets/", "paper",
+    ) == "https://paper-api.alpaca.markets"
+    assert backend._trusted_alpaca_trading_base_url(
+        "https://api.alpaca.markets", "live",
+    ) == "https://api.alpaca.markets"
+
+    for value in (
+        "http://127.0.0.1:8888",
+        "https://api.alpaca.markets.attacker.example",
+        "https://paper-api.alpaca.markets@attacker.example",
+    ):
+        with pytest.raises(ValueError):
+            backend._trusted_alpaca_trading_base_url(value, "paper")
+
+
 class _ImmediateThread:
     def __init__(self, target, args=(), kwargs=None, **_options):
         self.target = target
@@ -536,6 +553,61 @@ def test_discord_embed_uses_saved_website_language(monkeypatch):
 
     assert embed["title"] == "买入 · 已提交"
     assert [field["name"] for field in embed["fields"]][:3] == ["账户模式", "方向", "股票代码"]
+
+
+def test_discord_crypto_order_uses_trading_pair_and_localized_action():
+    embed = backend._discord_embed("order_crypto_btcusd", {
+        "_language": "zh-CN",
+        "assetClass": "crypto",
+        "mode": "paper",
+        "side": "buy",
+        "action": "ADD",
+        "symbol": "BTC/USD",
+        "notional": 250,
+        "orderType": "market",
+        "status": "submitted",
+        "orderId": "crypto-order-1",
+    })
+
+    assert embed["title"] == "加仓 · 已提交"
+    assert [field["name"] for field in embed["fields"]][:3] == ["账户模式", "操作", "交易对"]
+    assert embed["fields"][1]["value"] == "加仓"
+    assert embed["fields"][2]["value"] == "BTC/USD"
+
+
+def test_discord_crypto_recommendations_translate_bounded_actions():
+    embed = backend._discord_embed("recommendation", {
+        "_language": "zh-CN",
+        "assetClass": "crypto",
+        "mode": "paper",
+        "recommendations": [
+            {"symbol": "BTC/USD", "action": "BUY"},
+            {"symbol": "ETH/USD", "action": "REDUCE"},
+            {"symbol": "SOL/USD", "action": "EXIT"},
+        ],
+    })
+
+    assert embed["title"] == "虚拟币候选"
+    assert embed["fields"][1]["name"] == "虚拟币候选"
+    assert embed["fields"][2]["value"].startswith("买入 |")
+    assert embed["fields"][3]["value"].startswith("减仓 |")
+    assert embed["fields"][4]["value"].startswith("退出 |")
+
+
+def test_discord_crypto_risk_uses_trading_pair_and_localized_action():
+    embed = backend._discord_embed("risk_alert", {
+        "_language": "zh-CN",
+        "assetClass": "crypto",
+        "severity": "high",
+        "step": "Drawdown circuit",
+        "symbol": "ETH/USD",
+        "status": "blocked",
+        "reason": "Drawdown limit reached",
+        "action": "HOLD",
+    })
+
+    assert embed["fields"][1]["name"] == "交易对"
+    assert embed["fields"][4]["value"] == "持有"
 
 
 def test_discord_test_uses_current_page_language(monkeypatch):

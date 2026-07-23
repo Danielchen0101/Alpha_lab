@@ -58,6 +58,7 @@ frontend/*.log
 backups/
 backup/
 *.bak
+*.bak-*
 *.backup
 *.backup2
 *_backup.*
@@ -99,6 +100,8 @@ backend/pipeline_auto_history.json
 backend/pipeline_runtime_state.json
 backend/pipeline_managed_positions.json
 backend/operations_store.local.json
+backend/kalshi_robot_state.json
+backend/kalshi_paper_accounts.json
 
 # Debug dumps — never commit
 backend/debug_manual_pipeline_result.json

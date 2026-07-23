@@ -5,8 +5,8 @@
 <h1 align="center">AlphaLab</h1>
 
 <p align="center">
-  <strong>A self-hosted research-to-execution workspace for U.S. equities.</strong><br>
-  Screen markets, test ideas, review risk, build trade plans, and operate Alpaca paper or live accounts from one auditable workflow.
+  <strong>A self-hosted research-to-execution workspace for U.S. equities and spot crypto.</strong><br>
+  Screen markets, test ideas, review risk, build trade plans, and operate eligible Alpaca paper or live accounts from auditable workflows.
 </p>
 
 <p align="center">
@@ -43,6 +43,7 @@ _AlphaLab v3 public overview in the English interface. Figures shown in this pro
 | Area | What is implemented |
 | --- | --- |
 | Market research | Market overview, Alpaca-backed U.S. equity scanning, configurable universes, symbol search, quotes, price history, news, technical context, and watchlists |
+| Crypto research and automation | A 24/7 BTC/USD and ETH/USD spot workspace with completed-hour signals, long/flat sizing, Paper/Live separation, backtests after costs, published-research provenance, three-window Paper-only strategy learning, Settings-based AI review, emergency stop, and an auditable decision ledger |
 | Symbol analysis | Multi-timeframe charts, SMA 20/50, RSI 14, observed support and resistance, company context, and direct handoff into backtesting |
 | Research pipeline | A shared manual and scheduled seven-stage pipeline with stage progress, blockers, candidate evidence, run results, and stop controls |
 | Validation and risk | Fine Scan evidence gates, cost- and risk-aware Deeper Validation, chronological walk-forward checks, portfolio admission, quote freshness, capacity, and duplicate-position/order checks |
@@ -55,6 +56,8 @@ _AlphaLab v3 public overview in the English interface. Figures shown in this pro
 | Configuration and identity | Per-user Alpaca, market-data, AI-provider, Finnhub, and Discord settings; persistent workspace mode and language; secure email password recovery; Supabase TOTP MFA enrollment and challenge flows |
 
 Data freshness and availability depend on the connected vendor, account entitlements, market hours, and rate limits. AlphaLab reports missing or stale inputs where the integration exposes that state; it does not make every feed real-time.
+
+> **Crypto release status:** the current adaptive-trend strategy is not admitted for Live automation. The service defaults to Paper-only even when an Alpaca account is crypto-eligible. Live release requires a server-controlled research-admission gate in addition to account eligibility and the user's separate authorization. See [docs/CRYPTO_STRATEGY.md](docs/CRYPTO_STRATEGY.md) for the current diagnostic evidence and acceptance standard.
 
 ## Research-to-execution workflow
 
@@ -152,6 +155,7 @@ The backend currently owns the REST API, scheduler, and managed-position guard. 
 | Account and legal | <code>/signin</code>, <code>/signup</code>, <code>/forgot-password</code>, <code>/reset-password</code>, <code>/mfa</code>, <code>/terms</code>, <code>/privacy</code> | Supabase-backed account, TOTP MFA, and legal flows |
 | Overview | <code>/dashboard</code>, <code>/activity</code>, <code>/system-health</code> | Market overview, activity, configuration state, and runtime health |
 | Markets | <code>/market</code>, <code>/market/symbol/:symbol</code>, <code>/watchlist</code> | Scanner, symbol research, and saved market lists |
+| Crypto | <code>/crypto</code>, <code>/crypto/strategy</code>, <code>/crypto/automation</code>, <code>/crypto/ledger</code> | 24/7 spot-crypto command desk, strategy evidence, automation controls, and user-scoped decisions |
 | Research | <code>/agent</code>, <code>/agent/candidates</code>, <code>/agent/review</code> | Pipeline control plus read-only candidate and review workspaces |
 | Strategies | <code>/backtest</code>, <code>/backtest/:id</code>, <code>/compare</code>, <code>/optimize</code>, <code>/ranking</code> | Backtests, details, parameter grids, comparison, and ranking |
 | Trade | <code>/trade</code>, <code>/portfolio</code> | Reviewed orders, account state, positions, and portfolio history |
@@ -164,13 +168,14 @@ The backend currently owns the REST API, scheduler, and managed-position guard. 
 | <code>/api/health</code>, <code>/api/status</code> | Health and platform status |
 | <code>/api/config/*</code>, <code>/api/settings/*</code> | Per-user provider and broker configuration |
 | <code>/api/market/*</code> | Search, quotes, bars, news, user symbols, and scanning |
+| <code>/api/crypto/*</code> | Crypto assets and bars, portfolio state, cost-aware backtests, Paper/Live cycles, automation controls, emergency stop, and audit ledger |
 | <code>/api/backtest/*</code> | Backtests, history, and parameter-grid optimization |
 | <code>/api/ai/*</code>, <code>/api/ai-agent/*</code> | AI analysis, staged research, scheduler control, results, and history |
 | <code>/api/entry-plan/*</code>, <code>/api/trading/*</code> | Entry-plan checks, account data, reviewed orders, and cancellation |
 | <code>/api/operations/*</code> | Durable Safety Center state, readiness, audit events, order lifecycle, notification delivery, and cross-device artifacts |
 | <code>/api/notifications/*</code> | Discord configuration, testing, and event delivery |
 
-The API is JSON/REST only. The repository does not currently include an OpenAPI specification or a WebSocket server.
+The API is JSON/REST only. The repository does not currently include an OpenAPI specification or a WebSocket server. The first crypto release is intentionally limited to Alpaca-supported BTC/USD and ETH/USD spot trading; it does not short, use margin, or infer Live eligibility from saved credentials alone. See [docs/CRYPTO_STRATEGY.md](docs/CRYPTO_STRATEGY.md) for the research and risk contract.
 
 ## Quick start
 
@@ -301,6 +306,8 @@ Every <code>REACT_APP_*</code> value is embedded into the browser build and must
 | <code>FLASK_DEBUG</code> | No | Enables Flask debug behavior for local development |
 | <code>DEBUG_ENDPOINTS</code> | No | Enables diagnostic endpoints only when <code>FLASK_ENV=development</code> |
 | <code>OPERATIONS_STORE_LOCAL_FALLBACK</code> | Development only | Allows the local JSON operations mirror outside tests; never enable it on a hosted production service |
+| <code>CRYPTO_LIVE_RELEASE_ADMITTED</code> | No; defaults to <code>false</code> | Server-only strategy release gate. Keep <code>false</code> until independent BTC/ETH release criteria pass; browser settings cannot override it |
+| <code>CRYPTO_SCHEDULER_WORKERS</code> | No; defaults to <code>2</code> | Bounded per-process Crypto scheduler concurrency; accepted range is 1–2 |
 
 Authenticated broker and provider workflows use the per-user values saved from the Settings UI. They do not intentionally fall back to shared server-wide trading credentials.
 
@@ -323,7 +330,7 @@ Apply all three Supabase SQL files before deploying the application. Set the fro
 
 Add the deployed frontend origin and its <code>/auth/confirmed</code> and <code>/reset-password</code> callbacks to the Supabase Auth URL configuration. Configure the same production host for Turnstile.
 
-The scheduler, position guard, and order reconciliation run inside the backend process. Unattended operation therefore requires an always-on instance. A sleeping instance stops those tasks until the service wakes again. Pausing new entries in the Safety Center preserves broker-side protective sell, stop, and OCO orders; it does not make the in-process guard independent of backend availability.
+The equity scheduler, crypto scheduler, position guard, and order reconciliation run inside the backend process. Unattended operation therefore requires an always-on instance. A sleeping instance stops those tasks until the service wakes again. Pausing new entries in the Safety Center preserves broker-side protective sell, stop, and OCO orders; it does not make the in-process guard independent of backend availability.
 
 ### Docker
 
@@ -391,7 +398,7 @@ These checks do not prove market-data quality, strategy validity, broker availab
 - **MFA:** users can enroll a TOTP authenticator in Settings; enrolled accounts are routed through an AAL2 challenge when the Supabase session requires it.
 - **Account-scoped trading mode:** new accounts start in paper mode, while an explicit paper/live choice is saved and restored across sessions and devices. Live and unattended execution still require separate authorization.
 - **Safety semantics:** pausing new entries can optionally cancel pending managed buys while retaining protective exits; resuming uses optimistic version checks against durable state.
-- **Bounded AI authority:** AI can summarize, challenge, or downgrade evidence; it cannot bypass deterministic data, capacity, duplicate-order, execution, or hard-stop controls.
+- **Bounded AI authority:** AI can summarize, challenge, or downgrade evidence; it cannot bypass deterministic data, capacity, duplicate-order, execution, or hard-stop controls. Crypto Live entries also fail closed when the reviewer is unavailable.
 
 The Flask application retains legacy compatibility routes, and its built-in rate limiting is process-local rather than a distributed WAF. Review exposed routes, use HTTPS, restrict CORS to exact origins, place production deployments behind appropriate edge controls, and rotate any credential that may have been exposed.
 

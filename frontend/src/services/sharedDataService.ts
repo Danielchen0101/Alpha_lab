@@ -18,7 +18,6 @@ export class SharedDataService {
     isFetching: false
   };
   
-  private CACHE_DURATION = 30 * 1000; // 30秒缓存
   private listeners: Array<(stocks: StockData[]) => void> = [];
   private inFlightRequest: Promise<StockData[]> | null = null;
   
@@ -26,11 +25,9 @@ export class SharedDataService {
    * 获取股票数据（共享缓存）
    */
   async getStocks(forceRefresh = false): Promise<StockData[]> {
-    const now = Date.now();
-    
-    // 检查缓存是否有效
-    if (!forceRefresh && this.cache.stocks.length > 0 &&
-        (now - this.cache.timestamp) < this.CACHE_DURATION) {
+    // Keep the last successful snapshot for the browser session. Navigating
+    // away and back must not silently turn into another full-market request.
+    if (!forceRefresh && this.cache.stocks.length > 0) {
       if (process.env.NODE_ENV !== 'production') console.log('[SharedDataService] 使用缓存数据');
       return this.cache.stocks;
     }
@@ -99,9 +96,7 @@ export class SharedDataService {
    * 检查缓存是否有效
    */
   isCacheValid(): boolean {
-    const now = Date.now();
-    return this.cache.stocks.length > 0 && 
-           (now - this.cache.timestamp) < this.CACHE_DURATION;
+    return this.cache.stocks.length > 0;
   }
   
   /**

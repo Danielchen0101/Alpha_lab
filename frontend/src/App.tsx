@@ -43,6 +43,8 @@ const MfaChallenge = React.lazy(() => import('./pages/MfaChallenge'));
 const Dashboard = React.lazy(() => import('./pages/Dashboard'));
 const Activity = React.lazy(() => import('./pages/Activity'));
 const Market = React.lazy(() => import('./pages/Market'));
+const Crypto = React.lazy(() => import('./pages/Crypto'));
+const Kalshi = React.lazy(() => import('./pages/Kalshi'));
 const Backtest = React.lazy(() => import('./pages/Backtest'));
 const BacktestDetail = React.lazy(() => import('./pages/BacktestDetail'));
 const StrategyComparison = React.lazy(() => import('./pages/StrategyComparison'));
@@ -131,7 +133,9 @@ const RouteTitleManager: React.FC = () => {
             : pathname.startsWith('/safety') ? (zh ? '交易安全中心' : 'Trading Safety Center')
             : pathname.startsWith('/watchlist') ? (zh ? '自选列表' : 'Watchlist')
               : pathname.startsWith('/market') ? (zh ? '市场研究' : 'Markets')
-                : pathname.startsWith('/agent/review') ? (zh ? '研究审核' : 'Review Workspace')
+                : pathname.startsWith('/crypto') ? (zh ? '虚拟币量化' : 'Crypto Quant')
+                  : pathname.startsWith('/kalshi') ? (zh ? 'Kalshi 事件合约' : 'Kalshi Event Contracts')
+                    : pathname.startsWith('/agent/review') ? (zh ? '研究审核' : 'Review Workspace')
                   : pathname.startsWith('/agent/candidates') ? (zh ? '候选池' : 'Candidate Universe')
                     : pathname.startsWith('/agent') ? (zh ? 'AI 研究' : 'AI Research')
                       : pathname.startsWith('/backtest') || pathname.startsWith('/compare') || pathname.startsWith('/optimize') || pathname.startsWith('/ranking')
@@ -268,6 +272,8 @@ const ThemedApp: React.FC = () => {
               <Route path="/signals" element={<PreservingRedirect to="/activity" />} />
               <Route path={MARKET_SCANNER_PATH} element={<Market />} />
               <Route path={`${MARKET_SYMBOL_ROOT}/:symbol`} element={<SymbolAnalysis />} />
+              <Route path="/crypto/*" element={<Crypto />} />
+              <Route path="/kalshi/*" element={<Kalshi />} />
               <Route path="/backtest" element={<Backtest />} />
               <Route path="/backtest/:id" element={<BacktestDetail />} />
               <Route path="/backtest-analysis" element={<PreservingRedirect to="/backtest" />} />

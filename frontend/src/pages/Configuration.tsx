@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
-  Typography, Card, Form, Input, Select, Button, Tag, message, Row, Col, Alert, Switch, Checkbox,
+  Typography, Card, Form, Input, Select, Button, Tag, message, Row, Col, Alert, Switch, Checkbox, Popconfirm,
 } from 'antd';
 import {
   CheckCircleOutlined, CloseCircleOutlined, QuestionCircleOutlined,
@@ -14,6 +14,7 @@ import axios from 'axios';
 import { supabase } from '../lib/supabaseClient';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTradeMode } from '../contexts/TradeModeContext';
+import kalshiAPI, { KalshiConnectionConfigResponse, KalshiEnvironment } from '../services/kalshiApi';
 import './ConfigurationEditorial.css';
 
 const { Text } = Typography;
@@ -102,6 +103,192 @@ const SecurityNote: React.FC<{ text: string }> = ({ text }) => (
     <span>{text}</span>
   </div>
 );
+
+// =====================================================================
+// Optional Kalshi production credentials (Paper trading is built into AlphaLab)
+// =====================================================================
+const KalshiPersonalSection: React.FC<{ t: any; isZh: boolean }> = ({ t, isZh }) => {
+  const [form] = Form.useForm();
+  const [environment] = useState<KalshiEnvironment>('production');
+  const [config, setConfig] = useState<KalshiConnectionConfigResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const copy = isZh ? {
+    title: 'Kalshi 个人账户 API',
+    subtitle: 'AlphaLab Paper 无需密钥；这里只保存可选的 Kalshi 实盘账户凭证。',
+    website: 'Kalshi API 密钥页面',
+    environment: '账户环境',
+    production: 'Production 实盘账户',
+    keyId: 'API Key ID',
+    privateKey: 'RSA Private Key',
+    keyHint: '从 Kalshi 账户设置复制 Key ID。',
+    privateHint: '粘贴创建 API Key 时下载的完整 PEM 私钥；保存后不会再次显示。',
+    save: '保存 Kalshi 凭证',
+    test: '测试账户连接',
+    remove: '移除凭证',
+    removeConfirm: '确定移除当前环境的 Kalshi 凭证吗？',
+    saved: 'Kalshi 凭证已加密保存。',
+    removed: 'Kalshi 凭证已移除。',
+    connected: 'Kalshi 账户连接已验证。',
+    warning: '实盘凭证可以访问真实账户。请确认账户环境和密钥无误后再保存或测试连接。',
+    security: 'RSA 私钥只发送到后端并使用 Fernet 加密保存；浏览器只会收到遮罩状态。AlphaLab Paper 永远不会使用该密钥。',
+    requiredKey: '请输入 Kalshi API Key ID',
+    requiredPrivate: '首次连接需要粘贴 RSA Private Key',
+  } : {
+    title: 'Kalshi personal account API',
+    subtitle: 'AlphaLab Paper needs no key. This section stores optional Kalshi production credentials only.',
+    website: 'Kalshi API key page',
+    environment: 'Account environment',
+    production: 'Production account',
+    keyId: 'API Key ID',
+    privateKey: 'RSA Private Key',
+    keyHint: 'Copy the Key ID from Kalshi account settings.',
+    privateHint: 'Paste the complete PEM key downloaded when the API key was created. It is never displayed again.',
+    save: 'Save Kalshi credentials',
+    test: 'Test account connection',
+    remove: 'Remove credentials',
+    removeConfirm: 'Remove the Kalshi credentials for this environment?',
+    saved: 'Kalshi credentials saved with encryption.',
+    removed: 'Kalshi credentials removed.',
+    connected: 'Kalshi account connection verified.',
+    warning: 'Production credentials can access a real-money account. Confirm the account environment and keys before saving or testing.',
+    security: 'The RSA private key is sent only to the backend and stored with Fernet encryption. AlphaLab Paper never uses this key.',
+    requiredKey: 'Enter the Kalshi API Key ID',
+    requiredPrivate: 'Paste the RSA private key for the first connection',
+  };
+
+  const current = config?.environments?.[environment];
+
+  const loadConfig = useCallback(async () => {
+    try {
+      const response = await kalshiAPI.getConnectionConfig();
+      setConfig(response.data);
+      const selected: KalshiEnvironment = 'production';
+      const summary = response.data.environments?.[selected];
+      form.setFieldsValue({
+        environment: selected,
+        apiKeyId: summary?.apiKeyIdMasked || '',
+        privateKey: '',
+      });
+    } catch {
+      setConfig(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [form]);
+
+  useEffect(() => { void loadConfig(); }, [loadConfig]);
+
+  const handleSave = async () => {
+    try {
+      const token = await requireSession(t.config.pleaseSignIn);
+      if (!token) return;
+      const values = await form.validateFields();
+      setSaving(true);
+      const payload: { environment: KalshiEnvironment; apiKeyId?: string; privateKey?: string } = { environment };
+      if (values.apiKeyId && !values.apiKeyId.includes('****')) payload.apiKeyId = values.apiKeyId.trim();
+      if (values.privateKey && !values.privateKey.includes('****')) payload.privateKey = values.privateKey;
+      const response = await kalshiAPI.saveConnectionConfig(payload);
+      if (!response.data?.success) throw new Error(response.data?.message || t.config.saveFailed);
+      message.success(copy.saved);
+      await loadConfig();
+    } catch (error: any) {
+      if (error?.errorFields) return;
+      message.error(localizedRequestError(error, t.config.saveFailed));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleTest = async () => {
+    try {
+      const token = await requireSession(t.config.pleaseSignIn);
+      if (!token) return;
+      setTesting(true);
+      const response = await kalshiAPI.testConnection(environment);
+      if (!response.data?.success) throw new Error(response.data?.message || t.config.connectionFailed);
+      message.success(copy.connected);
+      await loadConfig();
+    } catch (error: any) {
+      message.error(localizedRequestError(error, t.config.connectionFailed));
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleRemove = async () => {
+    try {
+      const response = await kalshiAPI.removeConnection(environment);
+      if (!response.data?.success) throw new Error(response.data?.message || t.config.saveFailed);
+      message.success(copy.removed);
+      await loadConfig();
+    } catch (error: any) {
+      message.error(localizedRequestError(error, t.config.saveFailed));
+    }
+  };
+
+  const status = current?.testStatus === 'connected'
+    ? 'connected'
+    : current?.configured ? 'saved' : 'not_tested';
+  const statusTexts = { connected: t.config.statusConnected, saved: t.config.statusSaved, error: t.config.statusError, notTested: t.config.statusNotTested };
+
+  return (
+    <Card bordered={false} loading={loading} className="config-provider-card config-provider-card--kalshi">
+      <SectionHeader
+        icon={<ApiOutlined />}
+        title={copy.title}
+        subtitle={copy.subtitle}
+        status={status}
+        statusTexts={statusTexts}
+        websiteUrl="https://kalshi.com/account/profile"
+        websiteLabel={copy.website}
+      />
+      {environment === 'production' && <Alert type="warning" showIcon className="config-risk-alert" message={copy.warning} />}
+      <Form form={form} layout="vertical" initialValues={{ environment: 'production' }}>
+        <Row gutter={16}>
+          <Col xs={24} md={6}>
+            <Form.Item name="environment" label={<Text strong style={{ fontSize: 13 }}>{copy.environment}</Text>}>
+              <Select disabled>
+                <Option value="production">{copy.production}</Option>
+              </Select>
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={8}>
+            <Form.Item
+              name="apiKeyId"
+              label={<Text strong style={{ fontSize: 13 }}>{copy.keyId}</Text>}
+              help={copy.keyHint}
+              rules={[{ validator: async (_, value) => { if (!value && !current?.configured) throw new Error(copy.requiredKey); } }]}
+            >
+              <Input.Password autoComplete="off" placeholder={current?.configured ? t.config.savedMasked : 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'} />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={10}>
+            <Form.Item
+              name="privateKey"
+              label={<Text strong style={{ fontSize: 13 }}>{copy.privateKey}</Text>}
+              help={current?.privateKeySaved ? `${t.config.savedMasked}. ${copy.privateHint}` : copy.privateHint}
+              rules={[{ validator: async (_, value) => { if (!value && !current?.privateKeySaved) throw new Error(copy.requiredPrivate); } }]}
+            >
+              <Input.Password autoComplete="new-password" placeholder={current?.privateKeySaved ? t.config.savedMasked : '-----BEGIN PRIVATE KEY-----'} />
+            </Form.Item>
+          </Col>
+        </Row>
+        <div className="config-card-actions">
+          {current?.configured && (
+            <Popconfirm title={copy.removeConfirm} onConfirm={() => void handleRemove()}>
+              <Button danger>{copy.remove}</Button>
+            </Popconfirm>
+          )}
+          <Button onClick={handleTest} loading={testing} disabled={!current?.configured} icon={<ExperimentOutlined />}>{copy.test}</Button>
+          <Button type="primary" onClick={handleSave} loading={saving} icon={<SaveOutlined />}>{copy.save}</Button>
+        </div>
+      </Form>
+      <SecurityNote text={copy.security} />
+    </Card>
+  );
+};
 
 // =====================================================================
 // Section A: Alpaca Paper Trading
@@ -1078,7 +1265,7 @@ const Configuration: React.FC = () => {
     title: '连接与服务配置',
     subtitle: '按照实际工作流配置券商、行情、AI 与通知。保存配置后再测试连接，状态才会反映当前可用性。',
     guideTitle: '配置原则',
-    guideItems: ['6 个集成点', '密钥仅显示遮罩值', '先保存，再验证'],
+    guideItems: ['7 个集成点', '密钥仅显示遮罩值', '先保存，再验证'],
     navTitle: '配置目录',
     brokerNav: '券商与执行',
     marketNav: '行情与数据',
@@ -1102,7 +1289,7 @@ const Configuration: React.FC = () => {
     title: 'Connections & services',
     subtitle: 'Configure broker, market data, AI, and notifications in workflow order. Save first, then verify so status reflects the current setup.',
     guideTitle: 'Configuration rules',
-    guideItems: ['6 integration points', 'Secrets stay masked', 'Save, then verify'],
+    guideItems: ['7 integration points', 'Secrets stay masked', 'Save, then verify'],
     navTitle: 'Configuration map',
     brokerNav: 'Broker & execution',
     marketNav: 'Market & data',
@@ -1124,7 +1311,7 @@ const Configuration: React.FC = () => {
   };
 
   useEffect(() => {
-    const allowedTargets = ['#broker', '#paper', '#live', '#market-data', '#finnhub', '#ai', '#notifications'];
+    const allowedTargets = ['#broker', '#paper', '#live', '#kalshi', '#market-data', '#finnhub', '#ai', '#notifications'];
     if (!allowedTargets.includes(location.hash)) return;
     const frame = window.requestAnimationFrame(() => {
       document.querySelector(location.hash)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1170,6 +1357,7 @@ const Configuration: React.FC = () => {
             </header>
             <div className="configuration-anchor" id="paper" data-tour="config-paper"><AlpacaPaperSection t={t} /></div>
             <div className="configuration-anchor" id="live"><AlpacaRealSection onMarketDataSynced={() => setMarketDataReloadKey((key) => key + 1)} t={t} /></div>
+            <div className="configuration-anchor" id="kalshi" data-tour="config-kalshi"><KalshiPersonalSection t={t} isZh={isZh} /></div>
           </section>
 
           <section className="configuration-group" id="market-data">

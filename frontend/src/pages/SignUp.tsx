@@ -7,6 +7,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { supabase } from '../lib/supabaseClient';
+import { getEmailConfirmationRedirect } from '../lib/authRedirect';
 import type { Provider } from '@supabase/supabase-js';
 import '../styles/Auth.css';
 
@@ -37,6 +38,10 @@ const SignUp: React.FC = () => {
   const [oauthLoading, setOauthLoading] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [submittedEmail, setSubmittedEmail] = useState('');
+  const [confirmationRequired, setConfirmationRequired] = useState(true);
+  const [resending, setResending] = useState(false);
+  const [resendMessage, setResendMessage] = useState('');
   const [formValid, setFormValid] = useState(false);
   const [captchaToken, setCaptchaToken] = useState('');
   const turnstileRef = useRef<BoundTurnstileObject | null>(null);
@@ -74,13 +79,15 @@ const SignUp: React.FC = () => {
       setError(t.auth.passwordsDoNotMatchError);
       return;
     }
-    const redirectTo = `${window.location.origin}/auth/confirmed`;
+    const redirectTo = getEmailConfirmationRedirect();
     setSubmitting(true);
     const result = await signUp(values.email, values.password, captchaToken, values.fullName, redirectTo);      
     setSubmitting(false);
     if (result.success) {
       setCaptchaToken('');
       turnstileRef.current?.reset();
+      setSubmittedEmail(values.email.trim());
+      setConfirmationRequired(result.confirmationRequired !== false);
       setSubmitted(true);
     } else {
       const errMsg = (result.message || '').toLowerCase();
@@ -99,6 +106,30 @@ const SignUp: React.FC = () => {
       } else {
         setError(t.auth.errorUnexpected);
       }
+    }
+  };
+
+  const handleResendConfirmation = async () => {
+    if (!submittedEmail || resending) return;
+    setResending(true);
+    setResendMessage('');
+    try {
+      const { error: resendError } = await supabase.auth.resend({
+        type: 'signup',
+        email: submittedEmail,
+        options: { emailRedirectTo: getEmailConfirmationRedirect() },
+      });
+      if (resendError) throw resendError;
+      setResendMessage(t.auth.confirmationResent);
+    } catch (resendError: unknown) {
+      const message = resendError instanceof Error ? resendError.message.toLowerCase() : '';
+      setResendMessage(
+        message.includes('rate') || message.includes('too many')
+          ? t.auth.confirmationResendRateLimit
+          : t.auth.confirmationResendFailed,
+      );
+    } finally {
+      setResending(false);
     }
   };
 
@@ -184,9 +215,19 @@ const SignUp: React.FC = () => {
             {submitted ? (
               <div className="auth-success-panel" role="status" aria-live="polite">
                 <div className="auth-status-mark is-success" aria-hidden="true">✓</div>
-                <Title level={3} className="auth-success-title">{t.auth.accountCreated}</Title>
-                <Text className="auth-success-copy">{t.auth.accountCreatedDesc}</Text>
-                <Button type="primary" size="large" onClick={() => navigate('/signin')} className="auth-btn" style={{ width: '100%', maxWidth: 300 }}>{t.auth.goToSignIn}</Button>
+                <Title level={3} className="auth-success-title">{confirmationRequired ? t.auth.accountCreated : t.auth.accountReady}</Title>
+                <Text className="auth-success-copy">{confirmationRequired ? t.auth.accountCreatedDesc : t.auth.accountReadyDesc}</Text>
+                {confirmationRequired && (
+                  <>
+                    <Button loading={resending} disabled={resending} size="large" onClick={handleResendConfirmation} style={{ width: '100%', maxWidth: 300 }}>
+                      {resending ? t.auth.resendingConfirmation : t.auth.resendConfirmation}
+                    </Button>
+                    {resendMessage && <Text className="auth-success-copy" role="status" aria-live="polite">{resendMessage}</Text>}
+                  </>
+                )}
+                <Button type="primary" size="large" onClick={() => navigate(confirmationRequired ? '/signin' : '/dashboard')} className="auth-btn" style={{ width: '100%', maxWidth: 300 }}>
+                  {confirmationRequired ? t.auth.goToSignIn : t.auth.continueToWorkspace}
+                </Button>
               </div>
             ) : (
               <>

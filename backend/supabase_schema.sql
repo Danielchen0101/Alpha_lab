@@ -9,7 +9,7 @@
 CREATE TABLE IF NOT EXISTS user_api_configs (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  config_type TEXT NOT NULL CHECK (config_type IN ('ai_provider', 'alpaca', 'finnhub', 'discord')),
+  config_type TEXT NOT NULL CHECK (config_type IN ('ai_provider', 'alpaca', 'finnhub', 'discord', 'kalshi')),
   config JSONB NOT NULL DEFAULT '{}',
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),

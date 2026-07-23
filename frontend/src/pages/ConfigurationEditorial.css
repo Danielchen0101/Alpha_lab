@@ -112,6 +112,7 @@
 .config-card-header p { max-width: 720px; margin: 0; color: var(--config-muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
 
 .config-provider-card--live .config-card-header__icon { color: var(--config-green-mid); }
+.config-provider-card--kalshi .config-card-header__icon { color: #2c5d95; }
 .config-provider-card--ai .config-card-header__icon { color: #345f85; }
 .config-provider-card--notifications .config-card-header__icon { color: #66548b; }
 

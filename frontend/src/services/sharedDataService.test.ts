@@ -36,4 +36,16 @@ describe('SharedDataService', () => {
 
     expect(mockedGetStocks).toHaveBeenCalledWith(undefined, false, true);
   });
+
+  it('keeps the last snapshot across page navigation until refresh is requested', async () => {
+    const service = new SharedDataService();
+    mockedGetStocks.mockResolvedValueOnce([{ symbol: 'NVDA' } as any]);
+
+    await expect(service.getStocks()).resolves.toEqual([{ symbol: 'NVDA' }]);
+    jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 60 * 60 * 1000);
+    await expect(service.getStocks()).resolves.toEqual([{ symbol: 'NVDA' }]);
+
+    expect(mockedGetStocks).toHaveBeenCalledTimes(1);
+    jest.restoreAllMocks();
+  });
 });
