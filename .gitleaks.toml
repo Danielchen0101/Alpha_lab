@@ -16,3 +16,11 @@ condition = "AND"
 regexTarget = "line"
 paths = ['''frontend/src/components/AuthenticatedShell\.tsx$''']
 regexes = ['''key:\s*['"]kalshi-btc15-(?:market|bot)['"]''']
+
+[[allowlists]]
+description = "Ignore the Kalshi evaluator monkeypatch target used by the API contract test."
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''backend/tests/test_kalshi_api_contract\.py$''']
+regexes = ['''monkeypatch\.setattr\(kalshi_api,\s*['"]evaluate_btc15_contract['"]''']
