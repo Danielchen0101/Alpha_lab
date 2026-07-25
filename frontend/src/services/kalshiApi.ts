@@ -392,6 +392,19 @@ export interface KalshiPortfolioAnalytics {
   realizedBestTrade?: number | null;
   realizedWorstTrade?: number | null;
   equityCurve?: KalshiEquityPoint[];
+  lifetime?: {
+    realizedSamples?: number;
+    realizedTotalPnl?: number;
+  };
+  displayBaseline?: {
+    active: boolean;
+    resetAt?: string;
+    baselineEquityCents?: number;
+    baselineCashCents?: number;
+    environment?: KalshiExecutionMode | string;
+    ledgerPreserved?: boolean;
+    archivedRealizedEvents?: number;
+  };
   marketPerformance?: Record<'btc15m' | 'btchourly', {
     family: 'btc15m' | 'btchourly';
     label: string;
@@ -465,6 +478,11 @@ const kalshiAPI = {
     { timeout: 30000 },
   ),
   paperPortfolio: (mode: KalshiExecutionMode = 'paper') => api.get<KalshiPaperResponse>('/kalshi/paper/portfolio', { params: { mode }, timeout: 20000 }),
+  resetPortfolioDisplay: (mode: KalshiExecutionMode = 'paper') => api.post<KalshiPaperResponse>(
+    '/kalshi/portfolio/display-reset',
+    { mode },
+    { timeout: 20000 },
+  ),
   paperRobotStatus: (mode?: KalshiExecutionMode) => api.get<KalshiPaperResponse>('/kalshi/paper/robot', { params: mode ? { mode } : undefined, timeout: 10000 }),
   setPaperRobot: (enabled: boolean, config: KalshiBotConfig, mode: KalshiExecutionMode = config.executionMode || 'paper') => api.post<KalshiPaperResponse>(
     '/kalshi/paper/robot',

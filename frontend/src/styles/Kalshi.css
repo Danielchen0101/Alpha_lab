@@ -137,6 +137,31 @@
   background: rgba(255, 255, 252, 0.92);
 }
 
+.kalshi-display-baseline {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  margin-top: 18px;
+  padding: 14px 18px;
+  color: var(--kalshi-ink);
+  background: color-mix(in srgb, var(--kalshi-green) 7%, var(--kalshi-surface));
+  border: 1px solid color-mix(in srgb, var(--kalshi-green) 34%, var(--kalshi-rule));
+}
+
+.kalshi-display-baseline > svg { color: var(--kalshi-green); font-size: 20px; }
+.kalshi-display-baseline > div { display: grid; gap: 3px; }
+.kalshi-display-baseline > div > span {
+  color: var(--kalshi-green);
+  font: 750 9px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .1em;
+}
+.kalshi-display-baseline > div > strong { font-size: 13px; }
+.kalshi-display-baseline > div > small { color: var(--kalshi-muted); font-size: 11px; line-height: 1.5; }
+.kalshi-display-baseline > div:last-child { justify-items: end; padding-left: 18px; border-left: 1px solid var(--kalshi-rule-soft); }
+.kalshi-display-baseline > div:last-child b { color: var(--kalshi-green); font-size: 21px; font-variant-numeric: tabular-nums; }
+.kalshi-display-baseline > div:last-child span { color: var(--kalshi-muted); font-size: 10px; }
+
 .kalshi-hourly-ladder {
   padding: 24px 26px;
 }
@@ -219,6 +244,8 @@
 @media (max-width: 900px) {
   .kalshi-hourly-grid { grid-template-columns: 1fr; }
   .kalshi-family-performance { grid-template-columns: 1fr; }
+  .kalshi-display-baseline { grid-template-columns: auto minmax(0, 1fr); }
+  .kalshi-display-baseline > div:last-child { display: none; }
 }
 .kalshi-context-rail > div {
   display: grid;

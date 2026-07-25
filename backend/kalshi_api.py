@@ -134,6 +134,170 @@ def _family_performance(strategy: Mapping[str, Any]) -> Dict[str, Dict[str, Any]
     return output
 
 
+_PORTFOLIO_ANALYTICS_KEYS = (
+    "settledSamples", "wins", "losses", "winRate", "totalPnl",
+    "averagePnl", "bestTrade", "worstTrade", "settlementRecords",
+    "closedTradeRecords", "realizedTradeRecords", "realizedSamples",
+    "realizedWins", "realizedLosses", "realizedWinRate",
+    "realizedTotalPnl", "realizedAveragePnl", "realizedBestTrade",
+    "realizedWorstTrade", "equityCurve",
+)
+
+
+def _portfolio_analytics(strategy: Mapping[str, Any]) -> Dict[str, Any]:
+    analytics = {key: strategy.get(key) for key in _PORTFOLIO_ANALYTICS_KEYS}
+    analytics["marketPerformance"] = _family_performance(strategy)
+    return analytics
+
+
+def _portfolio_timestamp(value: Any) -> Optional[float]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _portfolio_record_timestamp(row: Mapping[str, Any]) -> Optional[float]:
+    return _portfolio_timestamp(
+        row.get("settledAt")
+        or row.get("closedAt")
+        or row.get("settled_time")
+        or row.get("created_time")
+        or row.get("updated_time")
+    )
+
+
+def _portfolio_rows_after(rows: Any, reset_timestamp: float) -> list:
+    visible = []
+    for row in rows or []:
+        if not isinstance(row, Mapping):
+            continue
+        row_timestamp = _portfolio_record_timestamp(row)
+        if row_timestamp is not None and row_timestamp > reset_timestamp:
+            visible.append(dict(row))
+    return visible
+
+
+def _portfolio_realized_summary(records: Any, *, baseline_at: Optional[str] = None) -> Dict[str, Any]:
+    clean = [dict(row) for row in records or [] if isinstance(row, Mapping)]
+    pnl_values = [_finite_number(row.get("pnl"), 0.0) for row in clean]
+    wins = sum(value > 0 for value in pnl_values)
+    total = round(sum(pnl_values), 4)
+    chronological = sorted(
+        clean,
+        key=lambda row: _portfolio_record_timestamp(row) or 0.0,
+    )
+    cumulative = 0.0
+    curve = []
+    if baseline_at:
+        curve.append({
+            "at": baseline_at,
+            "ticker": "DISPLAY-BASELINE",
+            "pnl": 0.0,
+            "cumulativePnl": 0.0,
+            "environment": None,
+            "displayBaseline": True,
+        })
+    for row in chronological:
+        pnl = _finite_number(row.get("pnl"), 0.0)
+        cumulative = round(cumulative + pnl, 4)
+        curve.append({
+            "at": row.get("settledAt") or row.get("closedAt"),
+            "ticker": row.get("ticker"),
+            "pnl": round(pnl, 4),
+            "cumulativePnl": cumulative,
+            "exitType": row.get("exitType"),
+            "environment": row.get("environment"),
+        })
+    return {
+        "records": clean,
+        "samples": len(clean),
+        "wins": wins,
+        "losses": max(0, len(clean) - wins),
+        "winRate": round(wins / len(clean), 4) if clean else None,
+        "totalPnl": total,
+        "averagePnl": round(total / len(clean), 4) if clean else 0.0,
+        "bestTrade": round(max(pnl_values), 4) if pnl_values else None,
+        "worstTrade": round(min(pnl_values), 4) if pnl_values else None,
+        "equityCurve": curve,
+    }
+
+
+def _portfolio_analytics_after_reset(
+    lifetime_analytics: Mapping[str, Any],
+    baseline: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Return a non-destructive, post-baseline analytics projection.
+
+    The source analytics remain the durable lifetime ledger.  Only the object
+    returned to the Portfolio view is filtered so users can start a fresh
+    visible measurement period without deleting orders, fills or settlements.
+    """
+    reset_at = str(baseline.get("resetAt") or "").strip()
+    reset_timestamp = _portfolio_timestamp(reset_at)
+    analytics = dict(lifetime_analytics or {})
+    if reset_timestamp is None:
+        analytics["displayBaseline"] = {"active": False}
+        return analytics
+
+    lifetime_records = [
+        dict(row) for row in (lifetime_analytics.get("realizedTradeRecords") or [])
+        if isinstance(row, Mapping)
+    ]
+    visible_records = _portfolio_rows_after(lifetime_records, reset_timestamp)
+    realized = _portfolio_realized_summary(visible_records, baseline_at=reset_at)
+
+    lifetime_settlements = lifetime_analytics.get("settlementRecords") or []
+    visible_settlements = _portfolio_rows_after(lifetime_settlements, reset_timestamp)
+    settled = _portfolio_realized_summary(visible_settlements)
+    visible_closed = _portfolio_rows_after(
+        lifetime_analytics.get("closedTradeRecords") or [],
+        reset_timestamp,
+    )
+
+    analytics.update({
+        "settledSamples": settled["samples"],
+        "wins": settled["wins"],
+        "losses": settled["losses"],
+        "winRate": settled["winRate"],
+        "totalPnl": settled["totalPnl"],
+        "averagePnl": settled["averagePnl"],
+        "bestTrade": settled["bestTrade"],
+        "worstTrade": settled["worstTrade"],
+        "settlementRecords": visible_settlements,
+        "closedTradeRecords": visible_closed,
+        "realizedTradeRecords": visible_records,
+        "realizedSamples": realized["samples"],
+        "realizedWins": realized["wins"],
+        "realizedLosses": realized["losses"],
+        "realizedWinRate": realized["winRate"],
+        "realizedTotalPnl": realized["totalPnl"],
+        "realizedAveragePnl": realized["averagePnl"],
+        "realizedBestTrade": realized["bestTrade"],
+        "realizedWorstTrade": realized["worstTrade"],
+        "equityCurve": realized["equityCurve"],
+        "marketPerformance": _family_performance({"realizedTradeRecords": visible_records}),
+        "lifetime": {
+            "realizedSamples": len(lifetime_records),
+            "realizedTotalPnl": round(sum(
+                _finite_number(row.get("pnl"), 0.0) for row in lifetime_records
+            ), 4),
+        },
+        "displayBaseline": {
+            **dict(baseline),
+            "active": True,
+            "archivedRealizedEvents": max(0, len(lifetime_records) - len(visible_records)),
+        },
+    })
+    return analytics
+
+
 def _observation_analytics(rows) -> Dict[str, Any]:
     """Build a compact, auditable opportunity funnel for both strategy families."""
     clean = [dict(row) for row in rows or [] if isinstance(row, Mapping)]
@@ -1930,6 +2094,8 @@ class _PaperRobotController:
         signed_request: Optional[Callable[..., Dict[str, Any]]] = None,
         notifier: Optional[Callable[[str, str, Mapping[str, Any]], Any]] = None,
         observation_saver: Optional[Callable[[str, Mapping[str, Any]], Any]] = None,
+        portfolio_display_loader: Optional[Callable[[str], Mapping[str, Any]]] = None,
+        portfolio_display_saver: Optional[Callable[[str, Mapping[str, Any]], Any]] = None,
         scheduler_lease_acquirer: Optional[Callable[[], bool]] = None,
         reference_stream: Optional[KalshiReferenceStream] = None,
         safe_print=print,
@@ -1942,6 +2108,8 @@ class _PaperRobotController:
         self.signed_request = signed_request
         self.notifier = notifier
         self.observation_saver = observation_saver
+        self.portfolio_display_loader = portfolio_display_loader
+        self.portfolio_display_saver = portfolio_display_saver
         self.scheduler_lease_acquirer = scheduler_lease_acquirer
         self.reference_stream = reference_stream
         self.safe_print = safe_print
@@ -1951,6 +2119,8 @@ class _PaperRobotController:
         self._historical_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self._historical_cache_lock = threading.RLock()
         self._last_hourly_tick: Dict[str, float] = {}
+        self._portfolio_display_lock = threading.RLock()
+        self._local_portfolio_display: Dict[str, Dict[str, Any]] = {}
         scheduler_disabled = str(
             os.environ.get("ALPHALAB_DISABLE_KALSHI_SCHEDULER") or ""
         ).strip().lower() in {"1", "true", "yes", "on"}
@@ -1959,6 +2129,74 @@ class _PaperRobotController:
             threading.Thread(target=self._loop, name="kalshi-robot", daemon=True).start()
         elif start_background and scheduler_disabled:
             self.safe_print("[KalshiRobot] background scheduler disabled by environment")
+
+    def _load_portfolio_display(self, user_id: str, *, strict: bool = False) -> Dict[str, Any]:
+        if callable(self.portfolio_display_loader):
+            try:
+                payload = self.portfolio_display_loader(user_id)
+                return dict(payload or {}) if isinstance(payload, Mapping) else {}
+            except Exception as exc:
+                if strict:
+                    raise
+                self.safe_print(
+                    f"[KalshiPortfolio] display baseline read failed "
+                    f"user={str(user_id)[:8]} error={type(exc).__name__}"
+                )
+                return {}
+        return copy.deepcopy(self._local_portfolio_display.get(str(user_id)) or {})
+
+    def _apply_portfolio_display(
+        self,
+        user_id: str,
+        portfolio: Mapping[str, Any],
+        environment: str,
+        *,
+        display_payload: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        result = copy.deepcopy(dict(portfolio or {}))
+        payload = dict(display_payload or self._load_portfolio_display(user_id) or {})
+        modes = payload.get("modes") if isinstance(payload.get("modes"), Mapping) else {}
+        baseline = modes.get(environment) if isinstance(modes, Mapping) else None
+        analytics = dict(result.get("analytics") or {})
+        if isinstance(baseline, Mapping):
+            analytics = _portfolio_analytics_after_reset(analytics, baseline)
+        else:
+            analytics["displayBaseline"] = {"active": False}
+        result["analytics"] = analytics
+        return result
+
+    def reset_portfolio_display(self, user_id: str, *, mode: str = "paper") -> Dict[str, Any]:
+        """Start a new visible Portfolio period without mutating its ledger."""
+        environment = _execution_mode(mode)
+        portfolio = self.portfolio(user_id, mode=environment, include_display=False)
+        balance = dict(portfolio.get("balance") or {})
+        baseline = {
+            "resetAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "baselineEquityCents": int(round(_account_equity_cents(balance, environment))),
+            "baselineCashCents": int(round(_finite_number(balance.get("balance"), 0.0))),
+            "environment": environment,
+            "ledgerPreserved": True,
+        }
+        with self._portfolio_display_lock:
+            payload = self._load_portfolio_display(user_id, strict=True)
+            modes = dict(payload.get("modes") or {}) if isinstance(payload.get("modes"), Mapping) else {}
+            modes[environment] = baseline
+            updated = {
+                **payload,
+                "schemaVersion": 1,
+                "modes": modes,
+                "updatedAt": baseline["resetAt"],
+            }
+            if callable(self.portfolio_display_saver):
+                self.portfolio_display_saver(user_id, updated)
+            else:
+                self._local_portfolio_display[str(user_id)] = copy.deepcopy(updated)
+        return self._apply_portfolio_display(
+            user_id,
+            portfolio,
+            environment,
+            display_payload=updated,
+        )
 
     def _real_config(self, user_id: str) -> Mapping[str, Any]:
         if not callable(self.connection_loader):
@@ -2199,17 +2437,7 @@ class _PaperRobotController:
             environment="real",
             persist=self.persist_derived_state,
         )
-        analytics = {
-            key: (state.get("strategy") or {}).get(key)
-            for key in (
-                "settledSamples", "wins", "losses", "winRate", "totalPnl",
-                "averagePnl", "bestTrade", "worstTrade", "settlementRecords",
-                "closedTradeRecords", "realizedTradeRecords", "realizedSamples",
-                "realizedWins", "realizedLosses", "realizedWinRate",
-                "realizedTotalPnl", "realizedAveragePnl", "equityCurve",
-            )
-        }
-        analytics["marketPerformance"] = _family_performance(state.get("strategy") or {})
+        analytics = _portfolio_analytics(state.get("strategy") or {})
 
         return {
             "environment": "real",
@@ -2226,10 +2454,17 @@ class _PaperRobotController:
             "analytics": analytics,
         }
 
-    def portfolio(self, user_id: str, *, mode: str = "paper") -> Dict[str, Any]:
+    def portfolio(
+        self,
+        user_id: str,
+        *,
+        mode: str = "paper",
+        include_display: bool = False,
+    ) -> Dict[str, Any]:
         environment = _execution_mode(mode)
         if environment == "real":
-            return self._live_portfolio(user_id)
+            result = self._live_portfolio(user_id)
+            return self._apply_portfolio_display(user_id, result, environment) if include_display else result
         open_tickers = set(self.paper_accounts.open_tickers(user_id))
         refreshed_markets: Dict[str, Mapping[str, Any]] = {}
         if open_tickers:
@@ -2283,22 +2518,10 @@ class _PaperRobotController:
             environment=environment,
             persist=self.persist_derived_state,
         )
-        result["analytics"] = {
-            key: (state.get("strategy") or {}).get(key)
-            for key in (
-                "settledSamples", "wins", "losses", "winRate", "totalPnl",
-                "averagePnl", "bestTrade", "worstTrade", "settlementRecords",
-                "closedTradeRecords", "realizedTradeRecords", "realizedSamples",
-                "realizedWins", "realizedLosses", "realizedWinRate",
-                "realizedTotalPnl", "realizedAveragePnl", "equityCurve",
-            )
-        }
-        result["analytics"]["marketPerformance"] = _family_performance(
-            state.get("strategy") or {}
-        )
+        result["analytics"] = _portfolio_analytics(state.get("strategy") or {})
         for collection in ("positions", "orders", "fills", "settlements"):
             result[collection] = [_tag_market_family(row) for row in result.get(collection) or []]
-        return result
+        return self._apply_portfolio_display(user_id, result, environment) if include_display else result
 
     def _submit_live_order(self, user_id: str, payload: Mapping[str, Any], decision: Mapping[str, Any]) -> Dict[str, Any]:
         config = self._real_config(user_id)
@@ -3003,6 +3226,8 @@ def register_kalshi_api(
     enabled_users_loader=None,
     paper_account_loader=None,
     paper_account_saver=None,
+    portfolio_display_loader=None,
+    portfolio_display_saver=None,
     observation_saver=None,
     observation_loader=None,
     scheduler_lease_acquirer=None,
@@ -3210,6 +3435,8 @@ def register_kalshi_api(
         signed_request=signed_api_request,
         notifier=notifier,
         observation_saver=observation_saver,
+        portfolio_display_loader=portfolio_display_loader,
+        portfolio_display_saver=portfolio_display_saver,
         scheduler_lease_acquirer=scheduler_lease_acquirer,
         reference_stream=reference_stream,
         safe_print=safe_print,
@@ -3433,7 +3660,7 @@ def register_kalshi_api(
             mode = request_mode()
             return ok({
                 "success": True,
-                "portfolio": paper_robot.portfolio(user["id"], mode=mode),
+                "portfolio": paper_robot.portfolio(user["id"], mode=mode, include_display=True),
                 "state": robot_state.get(user["id"], environment=mode),
             })
         except Exception as exc:
@@ -3567,6 +3794,21 @@ def register_kalshi_api(
                 "liveTradingConfigured": active_summary["configured"],
                 "connectionStatus": active_summary["testStatus"],
                 "referenceFeed": reference_stream.status(user["id"]),
+            })
+        except Exception as exc:
+            return fail(exc)
+
+    @blueprint.post("/api/kalshi/portfolio/display-reset")
+    def kalshi_portfolio_display_reset():
+        try:
+            user = authenticated_user()
+            mode = request_mode()
+            portfolio = paper_robot.reset_portfolio_display(user["id"], mode=mode)
+            return ok({
+                "success": True,
+                "portfolio": portfolio,
+                "state": robot_state.get(user["id"], environment=mode),
+                "message": "Portfolio display period reset; the complete account ledger was preserved.",
             })
         except Exception as exc:
             return fail(exc)

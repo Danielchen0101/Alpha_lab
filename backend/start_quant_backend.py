@@ -48737,6 +48737,7 @@ except ImportError:  # pragma: no cover - package-style test imports
 
 _KALSHI_ROBOT_ARTIFACT_TYPE = 'kalshi_robot_state'
 _KALSHI_PAPER_ARTIFACT_TYPE = 'kalshi_paper_account'
+_KALSHI_PORTFOLIO_DISPLAY_ARTIFACT_TYPE = 'kalshi_portfolio_display'
 _KALSHI_ARTIFACT_KEY = 'current'
 
 
@@ -48818,6 +48819,8 @@ _KALSHI_API_CONTROLS = register_kalshi_api(
     enabled_users_loader=_kalshi_enabled_users,
     paper_account_loader=lambda user_id: _kalshi_load_artifact(user_id, _KALSHI_PAPER_ARTIFACT_TYPE),
     paper_account_saver=lambda user_id, account: _kalshi_save_artifact(user_id, _KALSHI_PAPER_ARTIFACT_TYPE, account),
+    portfolio_display_loader=lambda user_id: _kalshi_load_artifact(user_id, _KALSHI_PORTFOLIO_DISPLAY_ARTIFACT_TYPE),
+    portfolio_display_saver=lambda user_id, state: _kalshi_save_artifact(user_id, _KALSHI_PORTFOLIO_DISPLAY_ARTIFACT_TYPE, state),
     observation_saver=_kalshi_save_observation,
     observation_loader=lambda user_id, **kwargs: operations_store.list_kalshi_observations(user_id, **kwargs),
     scheduler_lease_acquirer=_kalshi_claim_scheduler_lease,

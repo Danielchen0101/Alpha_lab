@@ -1,5 +1,6 @@
 import kalshi_api
 
+import copy
 from datetime import datetime, timedelta, timezone
 
 from flask import Flask
@@ -23,6 +24,7 @@ from kalshi_api import (
     _paper_order_payload,
     _position_execution_context,
     _position_side_and_count,
+    _portfolio_analytics_after_reset,
     _protective_exit_state,
     _recent_filled_entry_age,
     _recent_filled_exit_age,
@@ -30,6 +32,51 @@ from kalshi_api import (
     _PublicDataClient,
     register_kalshi_api,
 )
+
+
+def test_portfolio_display_baseline_filters_only_the_visible_projection():
+    lifetime = {
+        "realizedTradeRecords": [
+            {
+                "key": "new",
+                "ticker": "KXBTCD-NEW",
+                "settledAt": "2026-07-25T12:01:00Z",
+                "pnl": -1.25,
+                "exitType": "sale",
+                "environment": "paper",
+            },
+            {
+                "key": "old",
+                "ticker": "KXBTC15M-OLD",
+                "settledAt": "2026-07-25T11:59:00Z",
+                "pnl": 4.0,
+                "exitType": "settlement",
+                "environment": "paper",
+            },
+        ],
+        "settlementRecords": [],
+        "closedTradeRecords": [],
+    }
+
+    visible = _portfolio_analytics_after_reset(
+        lifetime,
+        {
+            "resetAt": "2026-07-25T12:00:00Z",
+            "baselineEquityCents": 1_000_000,
+            "ledgerPreserved": True,
+        },
+    )
+
+    assert [row["key"] for row in visible["realizedTradeRecords"]] == ["new"]
+    assert visible["realizedSamples"] == 1
+    assert visible["realizedTotalPnl"] == -1.25
+    assert visible["equityCurve"][0]["displayBaseline"] is True
+    assert visible["equityCurve"][0]["cumulativePnl"] == 0
+    assert visible["equityCurve"][-1]["cumulativePnl"] == -1.25
+    assert visible["marketPerformance"]["btc15m"]["samples"] == 0
+    assert visible["marketPerformance"]["btchourly"]["samples"] == 1
+    assert visible["lifetime"] == {"realizedSamples": 2, "realizedTotalPnl": 2.75}
+    assert visible["displayBaseline"]["archivedRealizedEvents"] == 1
 
 
 def test_brti_proxy_uses_crossed_safe_robust_constituent_midpoints():
@@ -466,6 +513,54 @@ def test_paper_account_is_available_without_personal_credentials(tmp_path):
     assert payload["portfolio"]["accountProvider"] == "AlphaLab"
     assert payload["portfolio"]["balance"]["balance"] == 1_000_000
     assert payload["portfolio"]["fills"] == []
+
+
+def test_display_reset_preserves_the_complete_paper_ledger(tmp_path):
+    display_store = {}
+
+    def load_display(user_id):
+        return copy.deepcopy(display_store.get(user_id))
+
+    def save_display(user_id, payload):
+        display_store[user_id] = copy.deepcopy(dict(payload))
+        return copy.deepcopy(display_store[user_id])
+
+    app = Flask(__name__)
+    controls = register_kalshi_api(
+        app,
+        require_auth=lambda: {"id": "user-1"},
+        http_get=_fake_get,
+        robot_state_path=str(tmp_path / "state.json"),
+        paper_account_path=str(tmp_path / "paper.json"),
+        portfolio_display_loader=load_display,
+        portfolio_display_saver=save_display,
+    )
+    controls["paper_accounts"].submit_taker(
+        "user-1",
+        ticker="KXBTC15M-TEST-00",
+        side="YES",
+        price=0.55,
+        contracts=3,
+        available_depth=0,
+        client_order_id="preserved-order",
+    )
+    before = controls["paper_accounts"].portfolio("user-1")
+
+    response = app.test_client().post(
+        "/api/kalshi/portfolio/display-reset",
+        json={"mode": "paper"},
+    )
+    payload = response.get_json()
+    after = controls["paper_accounts"].portfolio("user-1")
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["portfolio"]["analytics"]["displayBaseline"]["active"] is True
+    assert payload["portfolio"]["analytics"]["displayBaseline"]["ledgerPreserved"] is True
+    assert len(before["orders"]) == len(after["orders"]) == 1
+    assert before["orders"][0]["client_order_id"] == after["orders"][0]["client_order_id"]
+    assert before["balance"] == after["balance"]
+    assert display_store["user-1"]["modes"]["paper"]["baselineEquityCents"] == 1_000_000
 
 
 def test_config_exposes_builtin_paper_and_production_only_environment(tmp_path):

@@ -249,6 +249,7 @@ const Kalshi: React.FC = () => {
   const [accountStatus, setAccountStatus] = React.useState<Record<string, any> | null>(null);
   const [paperPortfolio, setPaperPortfolio] = React.useState<KalshiPaperPortfolio | null>(null);
   const [portfolioLoading, setPortfolioLoading] = React.useState(false);
+  const [portfolioResetting, setPortfolioResetting] = React.useState(false);
   const [robotState, setRobotState] = React.useState<KalshiPaperRobotState | null>(null);
   const [robotBusy, setRobotBusy] = React.useState(false);
   const [applyBusy, setApplyBusy] = React.useState(false);
@@ -351,6 +352,32 @@ const Kalshi: React.FC = () => {
       // is temporarily unavailable; its source card will show no samples.
     }
   }, []);
+
+  const resetPortfolioDisplay = async () => {
+    if (portfolioResetting) return;
+    const confirmed = window.confirm(copy(
+      'Start a new visible Portfolio period? Account equity and every historical order, fill and settlement will be preserved.',
+      '确定开始一个新的 Portfolio 显示周期吗？账户权益以及所有历史订单、成交和结算都会完整保留。',
+    ));
+    if (!confirmed) return;
+    setPortfolioResetting(true);
+    try {
+      const response = await kalshiAPI.resetPortfolioDisplay(executionMode);
+      if (!response.data?.success || !response.data.portfolio) {
+        throw new Error(response.data?.message || 'Portfolio display reset failed');
+      }
+      setPaperPortfolio(response.data.portfolio);
+      if (response.data.state) setRobotState(response.data.state);
+      setError('');
+    } catch (requestError: any) {
+      setError(requestError?.response?.data?.message || requestError?.message || copy(
+        'Portfolio display period could not be reset.',
+        'Portfolio 显示周期重置失败。',
+      ));
+    } finally {
+      setPortfolioResetting(false);
+    }
+  };
 
   React.useEffect(() => {
     const handleExternalConfigChange = (event: Event) => {
@@ -780,7 +807,7 @@ const Kalshi: React.FC = () => {
     const analytics = paperPortfolio.analytics || {};
     const fallbackSettlementRecords = robotState?.strategy?.settlementRecords || [];
     const realizedRecords = (
-      analytics.realizedTradeRecords?.length
+      Array.isArray(analytics.realizedTradeRecords)
         ? analytics.realizedTradeRecords
         : robotState?.strategy?.realizedTradeRecords?.length
           ? robotState.strategy.realizedTradeRecords
@@ -790,7 +817,7 @@ const Kalshi: React.FC = () => {
     )
       .filter((record: any) => !record.environment || record.environment === portfolioMode);
     const fallbackEquityCurve = robotState?.strategy?.equityCurve || [];
-    const equityCurve = (analytics.equityCurve?.length ? analytics.equityCurve : fallbackEquityCurve)
+    const equityCurve = (Array.isArray(analytics.equityCurve) ? analytics.equityCurve : fallbackEquityCurve)
       .filter((point: any) => !point.environment || point.environment === portfolioMode);
     const realizedSamples = analytics.realizedSamples ?? realizedRecords.length;
     const wins = analytics.realizedWins ?? analytics.wins ?? realizedRecords.filter((record) => record.pnl > 0).length;
@@ -804,9 +831,14 @@ const Kalshi: React.FC = () => {
     const totalFees = orderRows.reduce((sum: number, item: any) => sum + Number(orderFee(item) || 0), 0);
     // Portfolio analytics ---------------------------------------------------
     const startingBalance = Number(paperPortfolio.balance?.starting_balance || 0) / 100;
+    const displayBaseline = analytics.displayBaseline;
+    const displayBaselineEquity = displayBaseline?.active
+      ? Number(displayBaseline.baselineEquityCents || 0) / 100
+      : 0;
+    const returnBase = displayBaselineEquity > 0 ? displayBaselineEquity : startingBalance;
     const unrealizedPnl = positionRows.reduce((sum: number, item: any) => sum + Number(item.unrealized_pnl_dollars || 0), 0);
     const openExposure = positionRows.reduce((sum: number, item: any) => sum + Number(item.market_exposure_dollars || 0), 0);
-    const totalReturnPct = startingBalance > 0 ? (accountEquity - startingBalance) / startingBalance : null;
+    const totalReturnPct = returnBase > 0 ? (accountEquity - returnBase) / returnBase : null;
     const pnlValues = realizedRecords.map((record: any) => Number(record.pnl || 0));
     const bestTrade = analytics.realizedBestTrade ?? (pnlValues.length ? Math.max(...pnlValues) : null);
     const worstTrade = analytics.realizedWorstTrade ?? (pnlValues.length ? Math.min(...pnlValues) : null);
@@ -861,6 +893,15 @@ const Kalshi: React.FC = () => {
     const returnClass = totalReturnPct === null ? '' : totalReturnPct >= 0 ? 'is-profit' : 'is-loss';
     return (
       <>
+        {displayBaseline?.active && <section className="kalshi-display-baseline" data-testid="kalshi-display-baseline">
+          <DatabaseOutlined />
+          <div>
+            <span>{copy('VISIBLE PERIOD', '当前显示周期')}</span>
+            <strong>{copy('New measurement period is active', '新的统计周期已启用')}</strong>
+            <small>{copy('Visible P/L and results restart from', '可见盈亏与交易结果从')} {displayBaseline.resetAt ? new Date(displayBaseline.resetAt).toLocaleString(chinese ? 'zh-CN' : 'en-US') : '--'} · {copy('The full execution ledger remains available in Orders.', '完整订单与成交历史仍保留在“订单”页面。')}</small>
+          </div>
+          <div><b>{displayBaseline.archivedRealizedEvents || 0}</b><span>{copy('preserved prior events', '笔历史事件已保留')}</span></div>
+        </section>}
         <section className="kalshi-family-performance">
           {([
             ['btc15m', copy('BTC 15-minute', 'BTC 15 分钟')],
@@ -884,7 +925,7 @@ const Kalshi: React.FC = () => {
             <strong>{money(accountEquity)}</strong>
             <small>{totalReturnPct === null
               ? copy('Cash plus open-position value', '现金加未结持仓市值')
-              : <>{copy('Total return', '总回报')} <em className={returnClass}>{totalReturnPct >= 0 ? '+' : ''}{(totalReturnPct * 100).toFixed(2)}%</em>{startingBalance > 0 ? ` · ${copy('from', '起始')} ${money(startingBalance)}` : ''}</>}</small>
+              : <>{displayBaseline?.active ? copy('Visible-period return', '当前周期回报') : copy('Total return', '总回报')} <em className={returnClass}>{totalReturnPct >= 0 ? '+' : ''}{(totalReturnPct * 100).toFixed(2)}%</em>{returnBase > 0 ? ` · ${copy('from', '基准')} ${money(returnBase)}` : ''}</>}</small>
           </div>
           <div><span>{isRealMode ? copy('REAL CASH', '实盘现金') : copy('PAPER CASH', '模拟现金')}</span><strong>{money(cash)}</strong><small>{copy('Available buying power', '可用购买力')}</small></div>
           <div><span>{copy('UNREALIZED P/L', '未实现盈亏')}</span><strong className={unrealizedPnl >= 0 ? 'is-profit' : 'is-loss'}>{unrealizedPnl >= 0 ? '+' : ''}{money(unrealizedPnl)}</strong><small>{positionRows.length} {copy('open · exposure', '持仓 · 敞口')} {money(openExposure)}</small></div>
@@ -925,7 +966,7 @@ const Kalshi: React.FC = () => {
           </div>
         </section>
         <section className="kalshi-ledger-section">
-          <div className="kalshi-section-head"><div><span>{copy('REALIZED LEDGER', '已实现账本')}</span><h2>{copy('Realized trade outcomes', '已实现交易结果')}</h2><small>{copy('Every filled sale and final settlement is shown with net P/L.', '每笔成交卖出和最终结算均显示净收益。')}</small></div><strong>{realizedRecords.length}</strong></div>
+          <div className="kalshi-section-head"><div><span>{copy('REALIZED LEDGER', '已实现账本')}</span><h2>{copy('Realized trade outcomes', '已实现交易结果')}</h2><small>{displayBaseline?.active ? copy('Showing the current visible period; prior results remain preserved in the durable ledger.', '当前仅显示新周期；以前的结果仍完整保存在持久账本中。') : copy('Every filled sale and final settlement is shown with net P/L.', '每笔成交卖出和最终结算均显示净收益。')}</small></div><strong>{realizedRecords.length}</strong></div>
           <div className="kalshi-settlement-table">
             <div className="kalshi-settlement-head"><span>{copy('SETTLED', '结算时间')}</span><span>{copy('CONTRACT', '合约')}</span><span>{copy('POSITION / RESULT', '方向 / 结果')}</span><span>{copy('BUY / EXIT', '买入 / 退出价')}</span><span>{copy('SIZE', '数量')}</span><span>{copy('COST / FEES', '成本 / 费用')}</span><span>{copy('REALIZED P/L', '已实现盈亏')}</span></div>
             {realizedRecords.length ? realizedRecords.map((record) => (
@@ -1162,7 +1203,10 @@ const Kalshi: React.FC = () => {
           <button type="button" className="is-secondary" onClick={() => void evaluate()} disabled={refreshing}><ReloadOutlined className={refreshing ? 'is-spinning' : ''} />{copy('Refresh', '刷新')}</button>
           <button type="button" className={robotState?.enabled ? 'is-stop' : 'is-start'} onClick={() => void toggleRobot()} disabled={robotBusy}>{robotState?.enabled ? <PauseCircleOutlined /> : <PlayCircleOutlined />}{robotState?.enabled ? copy('Stop robot', '停止机器人') : copy('Start robot', '启动机器人')}</button>
         </div>}
-        {showPortfolioRefresh && <div className="kalshi-command-actions"><button type="button" className="is-secondary" onClick={() => void loadPaperPortfolio()} disabled={portfolioLoading}><ReloadOutlined className={portfolioLoading ? 'is-spinning' : ''} />{portfolioLoading ? copy('Refreshing…', '刷新中…') : copy('Refresh account', '刷新账户')}</button></div>}
+        {showPortfolioRefresh && <div className="kalshi-command-actions">
+          {view === 'positions' && <button type="button" className="is-secondary" data-testid="reset-portfolio-display" onClick={() => void resetPortfolioDisplay()} disabled={portfolioResetting || portfolioLoading}><DatabaseOutlined />{portfolioResetting ? copy('Resetting…', '重置中…') : copy('Reset visible period', '重置显示周期')}</button>}
+          <button type="button" className="is-secondary" onClick={() => void loadPaperPortfolio()} disabled={portfolioLoading || portfolioResetting}><ReloadOutlined className={portfolioLoading ? 'is-spinning' : ''} />{portfolioLoading ? copy('Refreshing…', '刷新中…') : copy('Refresh account', '刷新账户')}</button>
+        </div>}
       </header>
       <section className="kalshi-context-rail" aria-label={copy('Kalshi workspace status', 'Kalshi 工作区状态')}>
         <div><span>{copy('ENVIRONMENT', '运行环境')}</span><strong className={isRealMode ? 'is-real' : ''}>{kalshiModeLabel}</strong></div>
