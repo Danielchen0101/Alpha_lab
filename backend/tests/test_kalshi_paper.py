@@ -13,6 +13,22 @@ def test_official_general_event_taker_fee_and_account_rounding():
     assert hundred["debit"] == 51.75
 
 
+def test_explicit_market_fee_multiplier_is_applied_to_paper_fills(tmp_path):
+    store = KalshiPaperAccountStore(str(tmp_path / "paper.json"))
+    order = store.submit_taker(
+        "u",
+        ticker="T",
+        side="YES",
+        price=0.50,
+        contracts=100,
+        available_depth=100,
+        market={"fee_multiplier": 2},
+    )
+
+    assert order["fee_multiplier"] == 2
+    assert order["trade_fee_dollars"] == 3.5
+
+
 def test_fill_updates_cash_position_and_ledger(tmp_path):
     store = KalshiPaperAccountStore(str(tmp_path / "paper.json"))
     order = store.submit_taker("u", ticker="T", side="YES", price=0.50, contracts=10, available_depth=7)
@@ -22,6 +38,25 @@ def test_fill_updates_cash_position_and_ledger(tmp_path):
     assert portfolio["balance"]["balance"] == 999_637
     assert portfolio["positions"][0]["yes_count_fp"] == 7
     assert portfolio["fills"][0]["fee_cost_dollars"] == 0.13
+
+
+def test_paper_account_restores_from_durable_user_store_without_local_file(tmp_path):
+    durable = {}
+
+    store = KalshiPaperAccountStore(
+        str(tmp_path / "ignored-local-paper.json"),
+        account_loader=durable.get,
+        account_saver=durable.__setitem__,
+    )
+    store.submit_taker("u", ticker="T", side="YES", price=0.50, contracts=2, available_depth=10)
+
+    restored = KalshiPaperAccountStore(
+        str(tmp_path / "ignored-local-paper.json"),
+        account_loader=durable.get,
+        account_saver=durable.__setitem__,
+    ).portfolio("u")
+
+    assert restored["positions"][0]["yes_count_fp"] == 2
 
 
 def test_repeated_client_order_id_is_idempotent(tmp_path):

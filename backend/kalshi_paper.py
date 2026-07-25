@@ -39,7 +39,26 @@ def _ceil(value: Decimal, quantum: Decimal) -> Decimal:
     return value.quantize(quantum, rounding=ROUND_CEILING)
 
 
-def taker_fill_amounts(price: float, contracts: int) -> Dict[str, float]:
+def _market_fee_multiplier(market: Optional[Mapping[str, Any]]) -> float:
+    """Read an explicit market multiplier, otherwise use Kalshi's general 1x fee."""
+    source = dict(market or {})
+    for key in (
+        "fee_multiplier",
+        "fee_multiplier_fp",
+        "taker_fee_multiplier",
+        "event_taker_fee_multiplier",
+    ):
+        if source.get(key) is not None:
+            return max(0.0, _number(source.get(key), 1.0))
+    return 1.0
+
+
+def taker_fill_amounts(
+    price: float,
+    contracts: int,
+    *,
+    fee_multiplier: float = 1.0,
+) -> Dict[str, float]:
     """Return Kalshi-compatible taker cost and fee amounts in dollars.
 
     Kalshi's general event fee is 7% * C * P * (1-P), rounded up to
@@ -51,7 +70,11 @@ def taker_fill_amounts(price: float, contracts: int) -> Dict[str, float]:
     if count <= 0 or p <= 0 or p >= 1:
         raise ValueError("price must be between 0 and 1 and contracts must be positive")
     cost = p * Decimal(count)
-    trade_fee = _ceil(Decimal("0.07") * Decimal(count) * p * (Decimal(1) - p), Decimal("0.0001"))
+    multiplier = Decimal(str(max(0.0, _number(fee_multiplier, 1.0))))
+    trade_fee = _ceil(
+        multiplier * Decimal("0.07") * Decimal(count) * p * (Decimal(1) - p),
+        Decimal("0.0001"),
+    )
     debit = _ceil(cost + trade_fee, Decimal("0.01"))
     rounding_fee = debit - cost - trade_fee
     return {
@@ -99,7 +122,14 @@ def executable_bid_levels(side: str, orderbook: Optional[Mapping[str, Any]]) -> 
     return sorted(_normalize_book_levels(book.get(key)), key=lambda item: item[0], reverse=True)
 
 
-def _aggregate_fill(levels: Sequence[Tuple[float, int]], requested: int, limit_price: float, cash_cents: int) -> Dict[str, Any]:
+def _aggregate_fill(
+    levels: Sequence[Tuple[float, int]],
+    requested: int,
+    limit_price: float,
+    cash_cents: int,
+    *,
+    fee_multiplier: float = 1.0,
+) -> Dict[str, Any]:
     fills: List[Dict[str, Any]] = []
     remaining = max(0, int(requested))
     total_cost = 0.0
@@ -110,14 +140,18 @@ def _aggregate_fill(levels: Sequence[Tuple[float, int]], requested: int, limit_p
             break
         count = min(remaining, int(level_size))
         while count > 0:
-            amounts = taker_fill_amounts(level_price, count)
+            amounts = taker_fill_amounts(
+                level_price, count, fee_multiplier=fee_multiplier
+            )
             debit_cents = int(round(amounts["debit"] * 100))
             if total_debit_cents + debit_cents <= cash_cents:
                 break
             count -= 1
         if count <= 0:
             break
-        amounts = taker_fill_amounts(level_price, count)
+        amounts = taker_fill_amounts(
+            level_price, count, fee_multiplier=fee_multiplier
+        )
         debit_cents = int(round(amounts["debit"] * 100))
         fills.append({
             "price_dollars": round(level_price, 4),
@@ -146,7 +180,13 @@ def _aggregate_fill(levels: Sequence[Tuple[float, int]], requested: int, limit_p
     }
 
 
-def _aggregate_sale(levels: Sequence[Tuple[float, int]], requested: int, limit_price: float) -> Dict[str, Any]:
+def _aggregate_sale(
+    levels: Sequence[Tuple[float, int]],
+    requested: int,
+    limit_price: float,
+    *,
+    fee_multiplier: float = 1.0,
+) -> Dict[str, Any]:
     """Fill a reduce-only sale against bids and conservatively round proceeds."""
     fills: List[Dict[str, Any]] = []
     remaining = max(0, int(requested))
@@ -161,7 +201,11 @@ def _aggregate_sale(levels: Sequence[Tuple[float, int]], requested: int, limit_p
         p = Decimal(str(level_price))
         count_decimal = Decimal(count)
         level_gross = p * count_decimal
-        level_fee = _ceil(Decimal("0.07") * count_decimal * p * (Decimal(1) - p), Decimal("0.0001"))
+        level_fee = _ceil(
+            Decimal(str(max(0.0, _number(fee_multiplier, 1.0))))
+            * Decimal("0.07") * count_decimal * p * (Decimal(1) - p),
+            Decimal("0.0001"),
+        )
         fills.append({
             "price_dollars": round(level_price, 4),
             "count_fp": count,
@@ -189,12 +233,21 @@ def _aggregate_sale(levels: Sequence[Tuple[float, int]], requested: int, limit_p
 class KalshiPaperAccountStore:
     """Thread-safe, per-user AlphaLab paper account and execution ledger."""
 
-    def __init__(self, path: Optional[str] = None, *, starting_balance_cents: int = DEFAULT_STARTING_BALANCE_CENTS):
+    def __init__(
+        self,
+        path: Optional[str] = None,
+        *,
+        starting_balance_cents: int = DEFAULT_STARTING_BALANCE_CENTS,
+        account_loader=None,
+        account_saver=None,
+    ):
         self.path = path
+        self._account_loader = account_loader
+        self._account_saver = account_saver
         self.starting_balance_cents = max(10_000, int(starting_balance_cents))
         self._lock = threading.RLock()
         self._users: Dict[str, Dict[str, Any]] = {}
-        if path and os.path.exists(path):
+        if path and os.path.exists(path) and not callable(self._account_loader):
             try:
                 with open(path, "r", encoding="utf-8") as handle:
                     payload = json.load(handle)
@@ -242,12 +295,20 @@ class KalshiPaperAccountStore:
     def _account(self, user_id: str) -> Dict[str, Any]:
         key = str(user_id)
         account = self._users.get(key)
+        if account is None and callable(self._account_loader):
+            restored = self._account_loader(key)
+            account = dict(restored) if isinstance(restored, Mapping) else None
+            if account is not None:
+                self._users[key] = account
         if not isinstance(account, dict) or int(account.get("version") or 0) != PAPER_ACCOUNT_VERSION:
             account = self._initial()
             self._users[key] = account
         return account
 
     def _save(self) -> None:
+        if callable(self._account_saver):
+            for user_id, account in self._users.items():
+                self._account_saver(str(user_id), copy.deepcopy(account))
         if not self.path:
             return
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
@@ -330,6 +391,7 @@ class KalshiPaperAccountStore:
             )
             if existing:
                 return copy.deepcopy(existing)
+            fee_multiplier = _market_fee_multiplier(market)
             levels = executable_ask_levels(side, orderbook)
             if not levels:
                 depth = requested
@@ -337,7 +399,13 @@ class KalshiPaperAccountStore:
                     depth = min(depth, int(math.floor(_number(available_depth))))
                 if depth > 0 and base_price <= limit + 1e-9:
                     levels = [(base_price, depth)]
-            execution = _aggregate_fill(levels, requested, limit, int(account.get("cashCents") or 0))
+            execution = _aggregate_fill(
+                levels,
+                requested,
+                limit,
+                int(account.get("cashCents") or 0),
+                fee_multiplier=fee_multiplier,
+            )
             fill_count = int(execution["fill_count"])
             avg_price = float(execution["average_price"] or 0.0)
             remaining_count = int(execution["remaining_count"])
@@ -373,6 +441,7 @@ class KalshiPaperAccountStore:
                 "created_time": created,
                 "environment": "paper",
                 "data_provenance": "kalshi_production_public_v2",
+                "fee_multiplier": fee_multiplier,
             }
             account["orders"].insert(0, order)
             account["orders"] = account["orders"][:MAX_LEDGER_ROWS]
@@ -404,6 +473,7 @@ class KalshiPaperAccountStore:
                 "created_time": created,
                 "environment": "paper",
                 "data_provenance": "kalshi_production_public_v2",
+                "fee_multiplier": fee_multiplier,
             }
             account["fills"].insert(0, fill)
             account["fills"] = account["fills"][:MAX_LEDGER_ROWS]
@@ -421,6 +491,7 @@ class KalshiPaperAccountStore:
                 "noMark": 0.0,
                 "marketTitle": str((market or {}).get("title") or ""),
                 "closeTime": (market or {}).get("close_time"),
+                "feeMultiplier": fee_multiplier,
             })
             count_key = "yesCount" if side == "YES" else "noCount"
             cost_key = "yesCost" if side == "YES" else "noCost"
@@ -482,10 +553,16 @@ class KalshiPaperAccountStore:
             fee_key = "yesEntryFee" if side == "YES" else "noEntryFee"
             held_count = int((position or {}).get(count_key) or 0)
             reduce_count = min(requested, held_count)
+            fee_multiplier = _number((position or {}).get("feeMultiplier"), 1.0)
             levels = executable_bid_levels(side, orderbook)
             if not levels and reduce_count > 0 and base_price + 1e-9 >= limit:
                 levels = [(base_price, reduce_count)]
-            execution = _aggregate_sale(levels, reduce_count, limit) if reduce_count > 0 else {
+            execution = _aggregate_sale(
+                levels,
+                reduce_count,
+                limit,
+                fee_multiplier=fee_multiplier,
+            ) if reduce_count > 0 else {
                 "fills": [], "fill_count": 0, "remaining_count": requested,
                 "average_price": 0.0, "gross_proceeds": 0.0, "trade_fee": 0.0,
                 "fee_cost": 0.0, "credit_cents": 0,
@@ -537,6 +614,7 @@ class KalshiPaperAccountStore:
                 "created_time": created,
                 "environment": "paper",
                 "data_provenance": "kalshi_production_public_v2",
+                "fee_multiplier": fee_multiplier,
             }
             account["orders"].insert(0, order)
             account["orders"] = account["orders"][:MAX_LEDGER_ROWS]

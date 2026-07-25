@@ -278,11 +278,8 @@ def test_paper_account_gates_prevent_duplicate_or_over_budget_entries():
     )
 
     assert result["action"] == "WAIT"
-    assert {
-        "market_flat",
-        "open_order",
-        "portfolio_exposure",
-    }.issubset(result["blockingReasons"])
+    assert {"open_order", "portfolio_exposure"}.issubset(result["blockingReasons"])
+    assert "market_flat" not in result["blockingReasons"]
     assert "loss_cooldown" not in result["blockingReasons"]
     assert result["sizing"]["contracts"] == 0
 
@@ -301,11 +298,11 @@ def test_paper_account_gates_prevent_duplicate_or_over_budget_entries():
         },
     )
 
-    assert "loss_cooldown" in real_result["blockingReasons"]
+    assert "loss_cooldown" not in real_result["blockingReasons"]
     assert real_result["paperOnly"] is False
     assert real_result["executionEnvironment"] == "kalshi_real"
     assert "Real IOC limit order" in real_result["methodology"]["orderPolicy"]
-    assert "no exploration overrides" in real_result["methodology"]["samplePolicy"]
+    assert "no AI or random exploration" in real_result["methodology"]["samplePolicy"]
     account_gate = next(gate for gate in real_result["gates"] if gate["key"] == "account_ready")
     assert account_gate["label"] == "Kalshi Real account ready"
 
@@ -354,52 +351,24 @@ def test_user_config_is_bounded_to_research_limits():
     assert config["emergencyStopLossPct"] == 0.15
 
 
-def test_adaptive_learning_config_is_explicit_and_bounded():
-    disabled = normalize_strategy_config({"learningMode": "true", "preTradeAiReview": "true"})
-    enabled = normalize_strategy_config({
-        "preTradeAiReview": True,
+def test_v4_config_ignores_removed_learning_and_bounds_add_on_controls():
+    config = normalize_strategy_config({
         "learningMode": True,
         "learningAiMode": True,
-        "learningContrarianMode": True,
         "learningExplorationRate": 0.9,
-        "learningReviewEvery": 1,
-        "learningWindowSize": 500,
-        "learningMaxRiskPct": 5,
+        "maxSingleMarketExposurePct": 100,
+        "minimumAddIntervalSeconds": 1,
+        "addMinModelProbability": 0.99,
     })
 
-    assert disabled["preTradeAiReview"] is False
-    assert enabled["preTradeAiReview"] is True
-
-    assert disabled["learningMode"] is False
-    assert enabled["learningMode"] is True
-    assert enabled["learningAiMode"] is True
-    assert enabled["learningContrarianMode"] is True
-    assert enabled["learningExplorationRate"] == 0.35
-    assert enabled["learningReviewEvery"] == 4
-    assert enabled["learningWindowSize"] == 100
-    assert enabled["learningMaxRiskPct"] == 1.0
+    assert not any(key.startswith("learning") for key in config)
+    assert config["maxSingleMarketExposurePct"] == 20
+    assert config["minimumAddIntervalSeconds"] == 10
+    assert config["addMinModelProbability"] == 0.95
 
 
-def test_paper_exploration_can_collect_one_near_threshold_sample():
-    now = datetime.now(timezone.utc)
-    candles, spot = _candles()
-    result = evaluate_btc15_contract(
-        _market(now, ticker="KXBTC15M-X-3", floor_strike=64_660.0),
-        spot_price=spot,
-        candles=candles,
-        now=now,
-        config={
-            "learningMode": True,
-            "learningExplorationRate": 0.35,
-            "minNetEdge": 0.15,
-            "minConservativeEdge": 0.08,
-        },
-    )
 
-    assert result["explorationTrade"] is True
-    assert set(result["explorationOverrides"]).issubset({"net_edge", "conservative_edge"})
-    assert result["action"] == "BUY_YES"
-    assert result["sizing"]["contracts"] == 1
+
 
 
 def test_relative_spread_blocks_wide_percentage_friction():
@@ -421,53 +390,3 @@ def test_relative_spread_blocks_wide_percentage_friction():
     )
 
     assert "relative_spread" in result["blockingReasons"]
-
-
-def test_paper_exploration_never_overrides_account_or_execution_gates():
-    now = datetime.now(timezone.utc)
-    candles, spot = _candles()
-    result = evaluate_btc15_contract(
-        _market(now, ticker="KXBTC15M-X-3", floor_strike=64_660.0),
-        spot_price=spot,
-        candles=candles,
-        now=now,
-        config={
-            "learningMode": True,
-            "learningExplorationRate": 0.35,
-            "minNetEdge": 0.15,
-            "minConservativeEdge": 0.08,
-        },
-        account_context={
-            "bankroll": 1000,
-            "cashAvailable": 1000,
-            "hasOpenOrder": True,
-        },
-    )
-
-    assert result["explorationTrade"] is False
-    assert result["action"] == "WAIT"
-    assert "open_order" in result["blockingReasons"]
-
-
-def test_real_mode_never_uses_paper_exploration():
-    now = datetime.now(timezone.utc)
-    candles, spot = _candles()
-    result = evaluate_btc15_contract(
-        _market(now, ticker="KXBTC15M-X-3", floor_strike=64_660.0),
-        spot_price=spot,
-        candles=candles,
-        now=now,
-        config={
-            "executionMode": "real",
-            "learningMode": True,
-            "learningExplorationRate": 0.35,
-            "minNetEdge": 0.15,
-            "minConservativeEdge": 0.08,
-        },
-    )
-
-    assert result["explorationTrade"] is False
-    assert result["explorationOverrides"] == []
-    assert result["action"] == "WAIT"
-    assert "net_edge" in result["blockingReasons"]
-    assert "Real IOC limit order" in result["methodology"]["orderPolicy"]

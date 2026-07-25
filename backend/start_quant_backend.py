@@ -48701,8 +48701,8 @@ _CRYPTO_API_CONTROLS = register_crypto_api(
     supabase_admin=supabase_admin,
     supabase_execute=_supabase_execute,
     safe_print=safe_print,
-    ai_reviewer=_crypto_ai_risk_review,
-    ai_status_resolver=_crypto_ai_status,
+    ai_reviewer=None,
+    ai_status_resolver=None,
     notifier=_crypto_discord_notify,
 )
 
@@ -48723,191 +48723,61 @@ except ImportError:  # pragma: no cover - package-style test imports
     from .kalshi_api import register_kalshi_api
 
 
-def _kalshi_ai_candidate_review(uid, evidence):
-    """Second-line Kalshi entry challenge using the user's Settings provider."""
-    ai_config, source = resolve_ai_config_for_user(uid)
-    provider = str(ai_config.get('provider') or '')
-    model = str(ai_config.get('model') or '')
-    if not ai_config.get('apiKey'):
-        return {
-            'status': 'not_configured',
-            'verdict': 'not_reviewed',
-            'confidence': 0.0,
-            'summary': 'Configure and verify an AI provider in Settings to enable pre-trade review.',
-            'provider': provider,
-            'model': model,
-            'source': source,
-        }
-    system_prompt = (
-        'You are AlphaLab Kalshi Pre-Trade Challenger for one KXBTC15M new-entry candidate. '
-        'The strategy is Favorite Carry v3: it buys only the model-confirmed FAVORITE side '
-        '(priced 50-93c) in the final minutes and holds to settlement, so a normal candidate '
-        'has high model probability (~0.75-0.95), a small positive fee-adjusted edge, and a '
-        'short remaining horizon. Do not challenge a candidate merely for a high entry price '
-        'or a small edge; that is the design. The deterministic probability engine, '
-        'market-data validation, fees, sizing, account limits, '
-        'and hard gates have final authority. Review only the supplied structured evidence. '
-        'Challenge-worthy contradictions include: the selected side is NOT the model favorite; '
-        'model and market disagree by an unusually large gap for a favorite; a jump or '
-        'volatility-ratio spike suggests the calibrated regime does not hold; momentum has '
-        'sharply reversed against the favorite within the last 3 minutes while the strike '
-        'distance is marginal; quotes or the reference price are stale; or the book is one-sided '
-        'against the entry. Do not invent news or data. '
-        'You cannot create a trade, change YES/NO, price, size, thresholds, or override a hard gate. '
-        'Use CHALLENGE only for a specific material contradiction that justifies waiting for a fresh '
-        'snapshot; otherwise use CLEAR. Return one JSON object only with keys verdict (CLEAR or '
-        'CHALLENGE), confidence (0..1), summary (under 240 chars), contradictions (array of at most '
-        '4 short strings), missingData (array of at most 4 field names), topRisks (array of at most '
-        '4 short strings), and nextCheck (under 200 chars).'
+_KALSHI_ROBOT_ARTIFACT_TYPE = 'kalshi_robot_state'
+_KALSHI_PAPER_ARTIFACT_TYPE = 'kalshi_paper_account'
+_KALSHI_ARTIFACT_KEY = 'current'
+
+
+def _kalshi_load_artifact(user_id, artifact_type):
+    row = operations_store.get_artifact(user_id, artifact_type, _KALSHI_ARTIFACT_KEY)
+    payload = (row or {}).get('payload') if isinstance(row, dict) else None
+    return dict(payload) if isinstance(payload, dict) else None
+
+
+def _kalshi_save_artifact(user_id, artifact_type, payload):
+    serialized = json.dumps(payload, sort_keys=True, separators=(',', ':'), default=str)
+    return operations_store.put_artifact(
+        user_id,
+        artifact_type,
+        _KALSHI_ARTIFACT_KEY,
+        payload=dict(payload),
+        idempotency_key=_operations_deterministic_key(
+            'kalshi-artifact', user_id, artifact_type, serialized,
+        ),
     )
-    parsed, error = _inst_call_ai_trader(
-        ai_config,
-        system_prompt,
-        json.dumps({'task': 'Challenge or clear this deterministic new-entry candidate.', 'evidence': evidence}, separators=(',', ':'), default=str),
+
+
+def _kalshi_enabled_users():
+    rows = operations_store.list_scheduler_artifacts(
+        _KALSHI_ROBOT_ARTIFACT_TYPE,
+        _KALSHI_ARTIFACT_KEY,
+        limit=500,
     )
-    if error or not isinstance(parsed, dict):
-        return {
-            'status': 'unavailable',
-            'verdict': 'not_reviewed',
-            'confidence': 0.0,
-            'summary': str(error or 'Settings AI returned an invalid pre-trade review')[:240],
-            'provider': provider,
-            'model': model,
-            'source': source,
-        }
-    verdict = str(parsed.get('verdict') or 'CLEAR').strip().lower()
-    verdict = 'challenge' if verdict in ('challenge', 'reject', 'wait', 'caution') else 'clear'
-    try:
-        confidence = max(0.0, min(1.0, float(parsed.get('confidence') or 0.0)))
-    except (TypeError, ValueError):
-        confidence = 0.0
-    def _short_list(key):
-        values = parsed.get(key) or []
-        if not isinstance(values, list):
-            values = [values]
-        return [str(value)[:180] for value in values if str(value).strip()][:4]
-    return {
-        'status': 'reviewed',
-        'verdict': verdict,
-        'confidence': round(confidence, 4),
-        'summary': str(parsed.get('summary') or ('Candidate cleared.' if verdict == 'clear' else 'Material contradiction requires another snapshot.'))[:240],
-        'contradictions': _short_list('contradictions'),
-        'missingData': _short_list('missingData'),
-        'topRisks': _short_list('topRisks'),
-        'nextCheck': str(parsed.get('nextCheck') or '')[:200],
-        'provider': provider,
-        'model': model,
-        'source': source,
-    }
+    return [
+        str(row.get('user_id'))
+        for row in rows
+        if isinstance(row.get('payload'), dict) and row['payload'].get('enabled') is True
+    ]
 
 
-def _kalshi_ai_status(uid):
-    """Expose non-secret Settings AI metadata to Kalshi only."""
-    ai_config, source = resolve_ai_config_for_user(uid)
-    return {
-        'configured': bool(ai_config.get('apiKey')),
-        'status': ai_config.get('testStatus') or ('configured' if ai_config.get('apiKey') else 'not_configured'),
-        'provider': ai_config.get('provider') or '',
-        'model': ai_config.get('model') or '',
-        'source': source,
-    }
+def _kalshi_save_observation(user_id, observation):
+    return operations_store.put_kalshi_observation(user_id, dict(observation))
 
 
-def _kalshi_ai_learning_review(uid, evidence):
-    """Use the Settings model to diagnose one mode's outcomes, never to route orders.
+_KALSHI_WORKER_OWNER = '{}:{}'.format(
+    os.environ.get('RENDER_INSTANCE_ID') or os.environ.get('HOSTNAME') or 'local',
+    _uuid.uuid4().hex,
+)
 
-    The returned deltas are validated again by KalshiRobotState. The model has
-    no authority over credentials, environment, order payloads, sizing, cash,
-    exposure, loss stops, book quality, or production settings.
-    """
-    ai_config, source = resolve_ai_config_for_user(uid)
-    provider = str(ai_config.get('provider') or '')
-    model = str(ai_config.get('model') or '')
-    if not ai_config.get('apiKey'):
-        return {
-            'error': 'Configure and verify an AI provider in Settings to enable AI calibration.',
-            'provider': provider,
-            'model': model,
-            'source': source,
-        }
-    system_prompt = (
-        'You are AlphaLab Kalshi Strategy Coach and Calibration Reviewer. You do '
-        'not freely retrain or rewrite the trading model. You teach a constrained '
-        'online controller by diagnosing one root cause and proposing a small, '
-        'testable parameter hypothesis. Analyze three distinct '
-        'evidence sets for the explicitly selected Paper or Real environment: '
-        'settled shadow forecasts for directional calibration, filled-and-settled '
-        'trades for fee-adjusted P/L attribution, and reduce-only early closes for '
-        'exit quality, fee, and churn analysis. Early closes do not reveal the final '
-        'binary result and must never be used as directional or Brier-score labels. Diagnose '
-        'whether errors came from direction, confidence calibration, entry price, '
-        'fees, spread, timing, volatility regime, or hard-gate selection. Recommend '
-        'small calibration deltas. Follow this curriculum: (1) insufficient data: '
-        'make no change; (2) poor calibration: reduce probabilityLogitScale and/or '
-        'increase marketBlendWeight, never loosen entries or execution; (3) acceptable '
-        'calibration but negative net P/L: inspect entry price, fees and selectivity, '
-        'then raise edge thresholds or tighten execution; (4) poor direction across '
-        'independent shadow and traded cohorts: hold direction unless the strict '
-        'contrarian thresholds are met; (5) profitable and calibrated evidence: '
-        'prefer no AI expansion because deterministic controls own risk growth. '
-        'The active strategy is BTC15 Favorite Carry v3: it buys only the '
-        'model-confirmed favorite side (50-93c) in the final minutes of each '
-        '15-minute window and holds to settlement, so its structural benchmark is a '
-        'HIGH win rate (~85-90% calibrated) with small per-trade margins. Judge '
-        'performance against that benchmark, not against a coin flip: a 60% win '
-        'rate here is a failure. Treat Brier scores above 0.19 as poor calibration: '
-        'do not increase probabilityLogitScale when calibration is poor. Do not increase '
-        'executionPriceTolerance or learningExplorationRate while fee-adjusted realized '
-        'P/L is negative or realized win rate is below 72%. If losses cluster on '
-        'entries near the minimum model probability, raise minModelProbability; never '
-        'lower it while realized performance is weak. Never conflate shadow accuracy '
-        'with filled-trade profitability, and require shadow and traded-settlement cohorts '
-        'to agree before recommending a direction reversal. Use evidenceSummary.v3Cohorts to '
-        'target the right lever: a weak modelProbability.below070 or 070to080 cohort supports '
-        'raising minModelProbability; decay concentrated in one secondsToClose bucket supports '
-        'shifting confidence via probabilityLogitScale rather than loosening timing; a weak '
-        'volatilityRatio.elevated cohort supports reducing probabilityLogitScale or '
-        'momentumProjectionScale; utcHourBand differences are informational only. '
-        'You do not place orders '
-        'and may not change riskPerTradePct, credentials, environment, '
-        'cash, exposure limits, loss stops, spread/depth gates, cooldowns, execution '
-        'mode, or order routing. A contrarian recommendation is a hypothesis, not a profit '
-        'claim, and must be supported across the full observation window rather than '
-        'a selected losing-trade subset. The evidenceSummary is authoritative; use '
-        'its reliability bins and side/price cohorts before raw anecdotes. Return one '
-        'JSON object only with: diagnosis (string under 500 chars), rootCause (one of '
-        'insufficient_data, calibration, direction, entry_selectivity, execution_friction, '
-        'regime_instability), targetMetric (string), expectedEffect (string), evidenceUsed '
-        '(array of at most 6 concrete metrics), confidence (0..1), directionRecommendation '
-        '(normal, contrarian, '
-        'or hold), reasons (array of at most 5 strings), errorPatterns (array), and '
-        'adjustments (object of DELTAS, not absolute values). Allowed adjustment '
-        'keys and maximum absolute deltas are: marketBlendWeight 0.05, minNetEdge '
-        '0.0025, probabilityLogitScale 0.05, momentumProjectionScale 0.02, '
-        'basisReserveBps 1.0, minConservativeEdge 0.0015, minModelProbability 0.02, '
-        'executionPriceTolerance 0.002, '
-        'learningExplorationRate 0.05. Prefer no adjustment when '
-        'evidence is weak. Prefer increasing bounded exploration over lowering hard '
-        'market-quality gates. Never infer expected profit from directional accuracy alone.'
+
+def _kalshi_claim_scheduler_lease():
+    return operations_store.claim_worker_lease(
+        'kalshi-btc15-robot',
+        _KALSHI_WORKER_OWNER,
+        ttl_seconds=15,
+        metadata={'component': 'kalshi_robot', 'series': 'KXBTC15M'},
     )
-    prompt = json.dumps({
-        'task': 'Explain forecast, settled-trade, and early-exit errors within this one environment; compare normal versus inverse direction and propose bounded calibration.',
-        'evidence': evidence,
-    }, separators=(',', ':'), default=str)
-    parsed, error = _inst_call_ai_trader(ai_config, system_prompt, prompt)
-    if error or not isinstance(parsed, dict):
-        return {
-            'error': str(error or 'Settings AI returned an invalid calibration review')[:500],
-            'provider': provider,
-            'model': model,
-            'source': source,
-        }
-    return {
-        'review': parsed,
-        'provider': provider,
-        'model': model,
-        'source': source,
-    }
+
 
 _KALSHI_API_CONTROLS = register_kalshi_api(
     app,
@@ -48919,10 +48789,14 @@ _KALSHI_API_CONTROLS = register_kalshi_api(
     robot_state_path=os.path.join(os.path.dirname(__file__), "kalshi_robot_state.json"),
     paper_account_path=os.path.join(os.path.dirname(__file__), "kalshi_paper_accounts.json"),
     start_background=True,
-    ai_candidate_reviewer=_kalshi_ai_candidate_review,
-    ai_learning_reviewer=_kalshi_ai_learning_review,
-    ai_status_resolver=_kalshi_ai_status,
     notifier=send_discord_notification,
+    robot_state_loader=lambda user_id: _kalshi_load_artifact(user_id, _KALSHI_ROBOT_ARTIFACT_TYPE),
+    robot_state_saver=lambda user_id, state: _kalshi_save_artifact(user_id, _KALSHI_ROBOT_ARTIFACT_TYPE, state),
+    enabled_users_loader=_kalshi_enabled_users,
+    paper_account_loader=lambda user_id: _kalshi_load_artifact(user_id, _KALSHI_PAPER_ARTIFACT_TYPE),
+    paper_account_saver=lambda user_id, account: _kalshi_save_artifact(user_id, _KALSHI_PAPER_ARTIFACT_TYPE, account),
+    observation_saver=_kalshi_save_observation,
+    scheduler_lease_acquirer=_kalshi_claim_scheduler_lease,
 )
 
 _pa_load_managed_positions()

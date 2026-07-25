@@ -46,6 +46,7 @@ class OperationsStore:
     ORDER_TABLE = "user_order_lifecycle_events"
     READINESS_TABLE = "user_readiness_status"
     ARTIFACT_TABLE = "user_operation_artifacts"
+    KALSHI_OBSERVATION_TABLE = "user_kalshi_market_observations"
 
     def __init__(
         self,
@@ -67,6 +68,8 @@ class OperationsStore:
             "orders": [],
             "readiness": {},
             "artifacts": {},
+            "kalshi_observations": {},
+            "worker_leases": {},
         }
         if self._client is None and self._allow_local_fallback:
             self._load_local()
@@ -123,6 +126,8 @@ class OperationsStore:
             self._local = {
                 "safety": {}, "audit": [], "notifications": [],
                 "orders": [], "readiness": {}, "artifacts": {},
+                "kalshi_observations": {},
+                "worker_leases": {},
             }
 
     def _save_local(self):
@@ -511,6 +516,47 @@ class OperationsStore:
 
         return [dict(row) for row in self._data(self._execute(operation, "artifact list"))]
 
+    def list_scheduler_artifacts(
+        self,
+        artifact_type: object,
+        artifact_key: object,
+        *,
+        limit: int = 200,
+    ) -> list[dict]:
+        """List one server-owned artifact identity across users.
+
+        This method is only for in-process schedulers restoring durable,
+        user-authorized work after a restart; browser-facing artifact APIs stay
+        user-scoped.
+        """
+        kind = str(artifact_type or "").strip().lower()
+        key = str(artifact_key or "").strip()
+        if not kind or len(kind) > 80:
+            raise ValueError("artifact_type is required and must be at most 80 characters")
+        if not key or len(key) > 200:
+            raise ValueError("artifact_key is required and must be at most 200 characters")
+        safe_limit = max(1, min(int(limit or 200), 500))
+        if self._client is None:
+            if not self._allow_local_fallback:
+                raise OperationsStoreUnavailable("Durable operations store is not configured")
+            with self._lock:
+                rows = [
+                    deepcopy(row) for row in self._local["artifacts"].values()
+                    if row.get("artifact_type") == kind and row.get("artifact_key") == key
+                ]
+            rows.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
+            return rows[:safe_limit]
+
+        response = self._execute(
+            lambda: self._client.table(self.ARTIFACT_TABLE).select(
+                "user_id,payload,version,updated_at"
+            ).eq("artifact_type", kind).eq("artifact_key", key).order(
+                "updated_at", desc=True
+            ).limit(safe_limit).execute(),
+            "scheduler artifact list",
+        )
+        return [dict(row) for row in self._data(response)]
+
     def put_artifact(
         self,
         user_id: object,
@@ -568,6 +614,95 @@ class OperationsStore:
             if not rows:
                 raise OperationsVersionConflict("Artifact changed concurrently")
             return dict(rows[0])
+
+    def put_kalshi_observation(self, user_id: object, observation: dict) -> dict:
+        """Upsert one deterministic 15-second Kalshi decision sample."""
+        uid = self._uid(user_id)
+        if not isinstance(observation, dict):
+            raise ValueError("observation must be an object")
+        environment = str(observation.get("environment") or "").strip().lower()
+        ticker = str(observation.get("ticker") or "").strip()
+        observation_key = str(observation.get("observation_key") or "").strip()
+        observed_at = str(observation.get("observed_at") or "").strip()
+        action = str(observation.get("action") or "WAIT").strip().upper()
+        if environment not in {"paper", "real"}:
+            raise ValueError("Kalshi observation environment must be paper or real")
+        if not ticker or not observation_key or not observed_at:
+            raise ValueError("Kalshi observation ticker, key, and time are required")
+        row = {
+            **deepcopy(observation),
+            "user_id": uid,
+            "environment": environment,
+            "ticker": ticker[:160],
+            "observation_key": observation_key[:240],
+            "observed_at": observed_at,
+            "action": action[:40],
+        }
+        if self._client is None:
+            if not self._allow_local_fallback:
+                raise OperationsStoreUnavailable("Durable operations store is not configured")
+            local_key = f"{uid}:{environment}:{observation_key}"
+            with self._lock:
+                self._local["kalshi_observations"][local_key] = row
+                # Keep development fallback bounded while production remains
+                # durable and queryable in Supabase.
+                if len(self._local["kalshi_observations"]) > 20_000:
+                    keys = list(self._local["kalshi_observations"])[:-20_000]
+                    for key in keys:
+                        self._local["kalshi_observations"].pop(key, None)
+                self._save_local()
+                return deepcopy(row)
+        response = self._execute(
+            lambda: self._client.table(self.KALSHI_OBSERVATION_TABLE).upsert(
+                row,
+                on_conflict="user_id,environment,observation_key",
+            ).execute(),
+            "Kalshi observation upsert",
+        )
+        rows = self._data(response)
+        return dict(rows[0]) if rows else row
+
+    def claim_worker_lease(
+        self,
+        lease_name: object,
+        owner_id: object,
+        *,
+        ttl_seconds: int = 20,
+        metadata: dict | None = None,
+    ) -> bool:
+        """Atomically claim or renew one cross-process scheduler lease."""
+        name = str(lease_name or "").strip()
+        owner = str(owner_id or "").strip()
+        if not name or not owner:
+            raise ValueError("lease_name and owner_id are required")
+        ttl = max(5, min(int(ttl_seconds or 20), 300))
+        if self._client is None:
+            if not self._allow_local_fallback:
+                raise OperationsStoreUnavailable("Durable operations store is not configured")
+            # A local fallback runs in one backend process, so its in-process
+            # scheduler owns the lease.
+            with self._lock:
+                self._local["worker_leases"][name] = {
+                    "owner_id": owner,
+                    "updated_at": utc_now_iso(),
+                }
+                return True
+        response = self._execute(
+            lambda: self._client.rpc(
+                "claim_app_worker_lease",
+                {
+                    "p_lease_name": name,
+                    "p_owner_id": owner,
+                    "p_ttl_seconds": ttl,
+                    "p_metadata": dict(metadata or {}),
+                },
+            ).execute(),
+            "worker lease claim",
+        )
+        data = getattr(response, "data", response)
+        if isinstance(data, list):
+            data = data[0] if data else False
+        return bool(data)
 
     def delete_artifact(
         self,

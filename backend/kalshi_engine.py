@@ -8,7 +8,6 @@ Real environment and its authorization and risk checks.
 
 from __future__ import annotations
 
-import hashlib
 import math
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -20,34 +19,33 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "executionMode": "paper",
     "paperBankroll": 1000.0,
     "riskPerTradePct": 0.75,
-    "minNetEdge": 0.015,
-    "minConservativeEdge": 0.005,
-    "maxSpread": 0.05,
-    "maxRelativeSpread": 0.15,
-    "minDepthContracts": 10.0,
+    "minNetEdge": 0.0075,
+    "minConservativeEdge": 0.002,
+    "maxSpread": 0.06,
+    "maxRelativeSpread": 0.20,
+    "minDepthContracts": 5.0,
     "maxBookParticipation": 0.20,
-    # Favorite-carry entries live in the final minutes of the quarter-hour,
-    # where the distance-to-strike signal is strongest (calibrated on 53,936
-    # real 15-minute windows, Jan 2025 - Jul 2026).
-    "minSecondsToClose": 100,
-    "maxSecondsToClose": 320,
+    # Entries live in the final minutes, where distance to the strike carries
+    # more information and exposure duration remains short.
+    "minSecondsToClose": 60,
+    "maxSecondsToClose": 720,
     # Buy the model-confirmed favorite side only. Longshot buying (the old
     # 12-88c band) is what produced a ~20% realized win rate.
     "minPrice": 0.50,
-    "maxPrice": 0.93,
-    "minModelProbability": 0.60,
+    "maxPrice": 0.95,
+    "minModelProbability": 0.58,
     "marketBlendWeight": 0.20,
-    "maxModelMarketGap": 0.25,
-    # MLE-calibrated logistic scale on real settlement outcomes. The engine
-    # steepens it as expiry approaches (see _time_scaled_logit).
+    "maxModelMarketGap": 0.30,
+    # The engine steepens the distance-to-strike logit as expiry approaches.
     "probabilityLogitScale": 1.95,
     # Momentum enters as a bounded logit shift, not a drift projection.
     "momentumProjectionScale": 0.07,
     "basisReserveBps": 3.0,
-    "maxVolatilityRatio": 2.50,
-    "maxJumpSigma": 4.0,
+    "maxVolatilityRatio": 3.0,
+    "maxJumpSigma": 5.0,
     "fractionalKelly": 0.25,
     "maxPortfolioExposurePct": 25.0,
+    "maxSingleMarketExposurePct": 8.0,
     "executionPriceTolerance": 0.01,
     "exitProbabilityThreshold": 0.35,
     # Exit orders are governed by executable value, not by the model
@@ -55,26 +53,22 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     # noisy five-second update cannot immediately reverse a fresh position.
     "minimumHoldSeconds": 60,
     "reversalCooldownSeconds": 90,
-    "exitValueBuffer": 0.015,
+    "minimumAddIntervalSeconds": 45,
+    "addMinModelProbability": 0.64,
+    "addMinConservativeEdge": 0.0075,
+    "addMinProbabilityImprovement": 0.01,
+    "addMinEdgeImprovement": 0.001,
+    "addSizeFraction": 0.50,
+    "exitValueBuffer": 0.010,
     # Entries happen at most ~5 minutes before settlement, so the default is
     # to HOLD TO SETTLEMENT.  Crystallizing losses mid-window was a major
     # driver of the old strategy's poor realized win rate: exits must either
     # clear the fee-adjusted profit floor or meet both a deep probability
     # deterioration gate and a large mark-to-market loss gate.
-    "minimumExitProfit": 0.02,
-    "stopLossPct": 0.55,
-    "emergencyStopLossPct": 0.30,
-    # Adaptive learning is isolated per execution environment. These values
-    # control review cadence and exploration budget; deterministic risk gates
-    # and order routing remain authoritative in both Paper and Real.
-    "learningMode": True,
-    "learningAiMode": True,
-    "preTradeAiReview": True,
-    "learningContrarianMode": False,
-    "learningExplorationRate": 0.15,
-    "learningReviewEvery": 6,
-    "learningWindowSize": 40,
-    "learningMaxRiskPct": 1.0,
+    "minimumExitProfit": 0.015,
+    "takeProfitScaleOutPct": 0.50,
+    "stopLossPct": 0.45,
+    "emergencyStopLossPct": 0.25,
 }
 
 
@@ -123,7 +117,9 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
         "minDepthContracts": (1.0, 10_000.0),
         "maxBookParticipation": (0.05, 0.50),
         "minSecondsToClose": (45.0, 360.0),
-        "maxSecondsToClose": (180.0, 840.0),
+        # The 15-minute robot still defaults to 720 seconds.  The wider upper
+        # validation bound is used only by the separate hourly-strike robot.
+        "maxSecondsToClose": (180.0, 2400.0),
         "minPrice": (0.30, 0.60),
         "maxPrice": (0.55, 0.99),
         "minModelProbability": (0.50, 0.90),
@@ -136,18 +132,22 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
         "maxJumpSigma": (2.5, 8.0),
         "fractionalKelly": (0.05, 0.50),
         "maxPortfolioExposurePct": (2.0, 50.0),
+        "maxSingleMarketExposurePct": (1.0, 20.0),
         "executionPriceTolerance": (0.0, 0.03),
         "exitProbabilityThreshold": (0.10, 0.49),
         "minimumHoldSeconds": (0.0, 300.0),
         "reversalCooldownSeconds": (15.0, 600.0),
+        "minimumAddIntervalSeconds": (10.0, 180.0),
+        "addMinModelProbability": (0.55, 0.95),
+        "addMinConservativeEdge": (0.0, 0.08),
+        "addMinProbabilityImprovement": (0.0, 0.10),
+        "addMinEdgeImprovement": (0.0, 0.03),
+        "addSizeFraction": (0.10, 1.0),
         "exitValueBuffer": (0.0025, 0.05),
         "minimumExitProfit": (0.0, 0.10),
+        "takeProfitScaleOutPct": (0.10, 1.0),
         "stopLossPct": (0.15, 0.80),
         "emergencyStopLossPct": (0.10, 0.60),
-        "learningExplorationRate": (0.0, 0.35),
-        "learningReviewEvery": (4.0, 24.0),
-        "learningWindowSize": (12.0, 100.0),
-        "learningMaxRiskPct": (0.10, 1.0),
     }
     for key, (low, high) in bounds.items():
         if key not in raw:
@@ -159,15 +159,14 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
 
     requested_mode = str(raw.get("executionMode") or raw.get("mode") or value.get("executionMode") or "paper").strip().lower()
     value["executionMode"] = "real" if requested_mode in {"real", "live", "production"} else "paper"
-    value["learningMode"] = value["learningMode"] if "learningMode" not in raw else raw.get("learningMode") is True
-    value["learningAiMode"] = value["learningAiMode"] if "learningAiMode" not in raw else raw.get("learningAiMode") is True
-    value["preTradeAiReview"] = value["preTradeAiReview"] if "preTradeAiReview" not in raw else raw.get("preTradeAiReview") is True
-    value["learningContrarianMode"] = value["learningContrarianMode"] if "learningContrarianMode" not in raw else raw.get("learningContrarianMode") is True
-    value["learningReviewEvery"] = int(value["learningReviewEvery"])
-    value["learningWindowSize"] = int(value["learningWindowSize"])
     value["minSecondsToClose"] = int(value["minSecondsToClose"])
     value["minimumHoldSeconds"] = int(value["minimumHoldSeconds"])
     value["reversalCooldownSeconds"] = int(value["reversalCooldownSeconds"])
+    value["minimumAddIntervalSeconds"] = int(value["minimumAddIntervalSeconds"])
+    value["maxSingleMarketExposurePct"] = min(
+        value["maxSingleMarketExposurePct"],
+        value["maxPortfolioExposurePct"],
+    )
     value["emergencyStopLossPct"] = min(
         value["emergencyStopLossPct"],
         value["stopLossPct"],
@@ -326,13 +325,7 @@ def _normal_cdf(value: float) -> float:
 
 
 def _time_scaled_logit(base_scale: float, seconds_to_close: float) -> float:
-    """Steepen the calibrated logistic scale as settlement approaches.
-
-    MLE fits on 53,936 real KXBTC15M-style windows gave per-horizon scales of
-    ~1.93 at 300s falling to ~2.15 at 120s: the favorite side persists more the
-    closer the clock is to the 60-second settlement average. The multiplier is
-    bounded so a mis-set base scale cannot explode confidence.
-    """
+    """Steepen the bounded logistic scale as settlement approaches."""
     ramp = _clamp((300.0 - float(seconds_to_close)) / 180.0, 0.0, 1.0)
     return float(base_scale) * (1.0 + 0.12 * ramp)
 
@@ -348,7 +341,8 @@ def _gate(
 ) -> Dict[str, Any]:
     return {
         "key": key,
-        "status": "pass" if passed else "block",
+        "status": "pass" if passed else ("observe" if severity == "adaptive" else "block"),
+        "blocking": bool(not passed and severity != "adaptive"),
         "severity": severity,
         "label": label,
         "labelZh": label_zh,
@@ -403,6 +397,7 @@ def evaluate_btc15_contract(
     config: Optional[Mapping[str, Any]] = None,
     orderbook: Optional[Mapping[str, Any]] = None,
     reference_time: Any = None,
+    reference_metadata: Optional[Mapping[str, Any]] = None,
     book_time: Any = None,
     account_context: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -411,6 +406,7 @@ def evaluate_btc15_contract(
     settings = normalize_strategy_config(config)
     market = dict(market or {})
     account = dict(account_context or {})
+    reference = dict(reference_metadata or {})
     opened = _parse_time(market.get("open_time"))
     closes = _parse_time(market.get("close_time"))
     seconds_to_close = (closes - now).total_seconds() if closes else -1.0
@@ -506,15 +502,23 @@ def evaluate_btc15_contract(
     momentum_15m: Optional[float] = None
     uncertainty = 0.12
     market_weight = 0.0
+    basis_reserve = None
+    effective_horizon_minutes = None
+    venue_count = int(_number(reference.get("venueCount"), 0.0) or 0)
+    dispersion_bps = max(0.0, _number(reference.get("dispersionBps"), 0.0) or 0.0)
 
     market_mid = indicative_market_yes
     if spot and strike and spot > 0 and strike > 0 and sigma_minute is not None and seconds_to_close > 0:
-        # Settlement is a 60-second average of the CF reference index, so the
-        # effective diffusion horizon ends ~30 seconds before the close.
-        minutes = max((seconds_to_close - 30.0) / 60.0, 0.25)
-        # The basis reserve reflects that Coinbase spot is only a proxy for the
-        # CF Benchmarks settlement index.
-        basis_reserve = float(settings["basisReserveBps"]) / 10_000.0
+        # KXBTC15M resolves from the arithmetic mean of the final 60 one-second
+        # BRTI samples. Under a Brownian approximation, variance of that future
+        # average is equivalent to a point horizon ending 40 seconds before
+        # close (T - 60 + 60/3), not the old T - 30 shortcut.
+        minutes = max((seconds_to_close - 40.0) / 60.0, 1.0 / 3.0)
+        effective_horizon_minutes = minutes
+        # Public constituent quotes are a proxy for licensed BRTI. Charge the
+        # observed cross-venue dispersion and missing-venue risk explicitly.
+        quality_reserve_bps = dispersion_bps * 0.50 + max(0, 3 - venue_count) * 2.0
+        basis_reserve = max(float(settings["basisReserveBps"]), quality_reserve_bps) / 10_000.0
         horizon_sigma = math.sqrt(max(sigma_minute, 0.00035) ** 2 * minutes + basis_reserve ** 2)
         momentum_3m = math.exp(sum(returns[-3:])) - 1.0 if returns else 0.0
         momentum_5m = math.exp(sum(returns[-5:])) - 1.0 if returns else 0.0
@@ -523,7 +527,7 @@ def evaluate_btc15_contract(
         # 5-minute move), not a projected drift. Projected drift plus the old
         # reliability shrink systematically under-confident forecasts, which
         # made the engine "find value" on the longshot side and buy ~20%
-        # winners. See docs/kalshi_btc15m_strategy_v3.md.
+        # winners. See docs/kalshi_btc15m_strategy_v4.md.
         momentum_z = _clamp(
             sum(returns[-5:]) / max(sigma_minute * math.sqrt(5.0), 1e-9),
             -3.0,
@@ -546,13 +550,6 @@ def evaluate_btc15_contract(
         model_raw = 1.0 / (1.0 + math.exp(-logit))
         model_yes = _clamp(model_raw, 0.02, 0.98)
         original_model_yes = model_yes
-        # A contrarian direction is never enabled from a single losing streak.
-        # It is a persisted Paper-learning result that must first pass the
-        # multi-window evidence checks in KalshiRobotState.
-        if settings.get("learningMode") and settings.get("learningContrarianMode"):
-            model_yes = 1.0 - model_yes
-        else:
-            original_model_yes = model_yes
 
         if market_mid is not None:
             book_health = _clamp(
@@ -571,8 +568,15 @@ def evaluate_btc15_contract(
             + (spread or settings["maxSpread"]) * 0.35
             + min(0.03, max(0.0, (volatility_ratio or 1.0) - 1.0) * 0.02)
             + min(0.05, disagreement * 0.15),
+            # A wide or single-venue proxy must not create false precision.
             0.02,
             0.12,
+        )
+        uncertainty = _clamp(
+            uncertainty + min(0.025, dispersion_bps / 10_000.0 * 2.0)
+            + (0.01 if venue_count == 1 else 0.0),
+            0.02,
+            0.14,
         )
 
     side: Optional[str] = None
@@ -586,6 +590,10 @@ def evaluate_btc15_contract(
     conservative_probability: Optional[float] = None
     conservative_edge: Optional[float] = None
     selected_model_probability: Optional[float] = None
+    selected_levels: List[Tuple[float, float]] = []
+    eligible_levels: List[Tuple[float, float]] = []
+    edge_eligible_depth = 0.0
+    execution_limit_price: Optional[float] = None
     if fair_yes is not None and quotes_valid:
         # Favorite-carry selection: trade only the side the blended forecast
         # says is MORE likely to settle in the money. The old max-edge rule
@@ -600,6 +608,10 @@ def evaluate_btc15_contract(
                 size for price, size in no_levels
                 if (1.0 - price) <= (yes_ask or 0.0) + 0.03
             ) or selected_depth
+            selected_levels = sorted(
+                ((1.0 - price, size) for price, size in no_levels),
+                key=lambda level: level[0],
+            )
         else:
             side, selected_price, selected_fair = "NO", no_ask, 1.0 - fair_yes
             gross_edge = (1.0 - fair_yes) - no_ask
@@ -608,11 +620,17 @@ def evaluate_btc15_contract(
                 size for price, size in yes_levels
                 if (1.0 - price) <= (no_ask or 0.0) + 0.03
             ) or selected_depth
+            selected_levels = sorted(
+                ((1.0 - price, size) for price, size in yes_levels),
+                key=lambda level: level[0],
+            )
         selected_model_probability = model_yes if side == "YES" else 1.0 - model_yes
         fee_per_contract = kalshi_fee(selected_price)
         net_edge = gross_edge - fee_per_contract
         conservative_probability = max(0.0, selected_fair - uncertainty * 0.50)
         conservative_edge = conservative_probability - selected_price - fee_per_contract
+        if not selected_levels and selected_price is not None and selected_depth > 0:
+            selected_levels = [(selected_price, selected_depth)]
 
     sample_ok = len(returns) >= 30 and sigma_minute is not None
     timing_ok = (
@@ -662,6 +680,32 @@ def evaluate_btc15_contract(
         side == "YES" and book_imbalance is not None and book_imbalance >= 0.20
         or side == "NO" and book_imbalance is not None and book_imbalance <= 0.80
     )
+    # Trend and top-of-book pressure are noisy over a five-second cycle. They
+    # should make entry more expensive, not veto an otherwise liquid,
+    # fee-adjusted opportunity. This avoids the old "every signal must agree"
+    # deadlock while still charging a 0.25-0.50pp confirmation premium.
+    adaptive_edge_premium = (0.0025 if not trend_ok else 0.0) + (
+        0.0025 if not book_pressure_ok else 0.0
+    )
+    effective_min_net_edge = settings["minNetEdge"] + adaptive_edge_premium
+    effective_min_conservative_edge = (
+        settings["minConservativeEdge"] + adaptive_edge_premium
+    )
+    if selected_fair is not None and conservative_probability is not None:
+        eligible_levels = [
+            (price, size) for price, size in selected_levels
+            if settings["minPrice"] <= price <= settings["maxPrice"]
+            and selected_fair - price - kalshi_fee(price) >= effective_min_net_edge
+            and conservative_probability - price - kalshi_fee(price) >= effective_min_conservative_edge
+        ]
+        edge_eligible_depth = sum(size for _, size in eligible_levels)
+        execution_limit_price = max((price for price, _ in eligible_levels), default=selected_price)
+    depth_ok = edge_eligible_depth >= settings["minDepthContracts"]
+    edge_ok = net_edge is not None and net_edge >= effective_min_net_edge
+    conservative_edge_ok = (
+        conservative_edge is not None
+        and conservative_edge >= effective_min_conservative_edge
+    )
     reference_age = _age_seconds(reference_time, now)
     book_age = _age_seconds(book_time, now)
     reference_fresh = reference_age is None or reference_age <= 10.0
@@ -687,21 +731,23 @@ def evaluate_btc15_contract(
             category="signal",
         ),
         _gate("model_market_agreement", model_agreement_ok, "Model-market agreement", "模型市场一致性", f"gap {(model_market_gap or 0.0) * 100:.1f}pp / max {settings['maxModelMarketGap'] * 100:.1f}pp", category="signal"),
-        _gate("trend_confirmation", trend_ok, "Multi-horizon confirmation", "多周期确认", f"{trend_support} support / {trend_conflict} oppose", category="signal"),
+        _gate("trend_confirmation", trend_ok, "Multi-horizon confirmation", "多周期确认", f"{trend_support} support / {trend_conflict} oppose", severity="adaptive", category="signal"),
         _gate("two_sided_quote", quotes_valid, "Two-sided market", "双边报价", "YES and NO bid books derive executable asks" if quotes_valid else "quote unavailable", category="execution"),
         _gate("spread", spread_ok, "Spread limit", "点差限制", f"{spread * 100:.1f}c / max {settings['maxSpread'] * 100:.1f}c" if spread is not None else "no executable spread", category="execution"),
         _gate("relative_spread", relative_spread_ok, "Relative spread", "相对点差", f"{(relative_spread or 0.0) * 100:.1f}% / max {settings['maxRelativeSpread'] * 100:.1f}%" if relative_spread is not None else "relative spread unavailable", category="execution"),
-        _gate("depth", depth_ok, "Top-level depth", "可执行深度", f"{selected_depth:.0f} top / {selected_near_depth:.0f} within 3c / min {settings['minDepthContracts']:.0f}", category="execution"),
-        _gate("book_pressure", book_pressure_ok, "Adverse book pressure", "盘口逆向压力", f"YES imbalance {(book_imbalance or 0.0) * 100:.0f}%", category="execution"),
+        _gate("depth", depth_ok, "Edge-eligible depth", "可执行深度", f"{selected_depth:.0f} top / {edge_eligible_depth:.0f} positive marginal edge / min {settings['minDepthContracts']:.0f}", category="execution"),
+        _gate("book_pressure", book_pressure_ok, "Adverse book pressure", "盘口逆向压力", f"YES imbalance {(book_imbalance or 0.0) * 100:.0f}%", severity="adaptive", category="execution"),
         _gate("price_band", price_ok, "Price band", "价格区间", f"{selected_price * 100:.1f}c" if selected_price is not None else "no executable price", category="execution"),
-        _gate("net_edge", edge_ok, "Fee-adjusted edge", "扣费后边际", f"{net_edge * 100:.1f}pp / min {settings['minNetEdge'] * 100:.1f}pp" if net_edge is not None else "edge unavailable", category="signal"),
-        _gate("conservative_edge", conservative_edge_ok, "Uncertainty-adjusted edge", "不确定性后边际", f"{conservative_edge * 100:.1f}pp / min {settings['minConservativeEdge'] * 100:.1f}pp" if conservative_edge is not None else "edge unavailable", category="signal"),
+        _gate("net_edge", edge_ok, "Fee-adjusted edge", "扣费后边际", f"{net_edge * 100:.1f}pp / adaptive min {effective_min_net_edge * 100:.2f}pp" if net_edge is not None else "edge unavailable", category="signal"),
+        _gate("conservative_edge", conservative_edge_ok, "Uncertainty-adjusted edge", "不确定性后边际", f"{conservative_edge * 100:.1f}pp / adaptive min {effective_min_conservative_edge * 100:.2f}pp" if conservative_edge is not None else "edge unavailable", category="signal"),
     ]
 
     if account:
         bankroll = _number(account.get("bankroll"), settings["paperBankroll"]) or settings["paperBankroll"]
         exposure = max(0.0, _number(account.get("portfolioExposure"), 0.0) or 0.0)
+        market_exposure = max(0.0, _number(account.get("currentMarketExposure"), 0.0) or 0.0)
         exposure_pct = exposure / max(bankroll, 1.0) * 100.0
+        market_exposure_pct = market_exposure / max(bankroll, 1.0) * 100.0
         is_real_execution = settings.get("executionMode") == "real"
         account_gates = [
             _gate(
@@ -712,49 +758,13 @@ def evaluate_btc15_contract(
                 f"portfolio {bankroll:.2f}",
                 category="account",
             ),
-            _gate("market_flat", not bool(account.get("hasPosition")), "No duplicate position", "无重复持仓", "current contract is flat" if not account.get("hasPosition") else "position already exists", category="account"),
             _gate("open_order", not bool(account.get("hasOpenOrder")), "No open order", "无未完成订单", "no resting order for this contract" if not account.get("hasOpenOrder") else "open order already exists", category="account"),
             _gate("portfolio_exposure", exposure_pct < settings["maxPortfolioExposurePct"], "Portfolio exposure", "组合总敞口", f"{exposure_pct:.1f}% / max {settings['maxPortfolioExposurePct']:.1f}%", category="account"),
+            _gate("market_exposure", market_exposure_pct < settings["maxSingleMarketExposurePct"], "Single-market exposure", "单市场敞口", f"{market_exposure_pct:.1f}% / max {settings['maxSingleMarketExposurePct']:.1f}%", category="account"),
         ]
-        if is_real_execution:
-            account_gates.append(
-                _gate("loss_cooldown", not bool(account.get("cooldownActive")), "Loss-streak cooldown", "连败冷却", str(account.get("cooldownDetail") or "clear"), category="account")
-            )
         gates.extend(account_gates)
 
-    blocking = [gate["key"] for gate in gates if gate["status"] == "block"]
-
-    # Paper exploration collects evidence from near-threshold, positive-edge
-    # candidates. It may only override the two statistical edge thresholds;
-    # stale data, spread, depth, book pressure, cash, exposure and
-    # all other execution/account gates remain authoritative.
-    exploration_trade = False
-    exploration_overrides: List[str] = []
-    edge_only_blocks = set(blocking).issubset({"net_edge", "conservative_edge"})
-    near_threshold = bool(
-        net_edge is not None
-        and conservative_edge is not None
-        and net_edge > 0.0
-        and conservative_edge >= -0.005
-    )
-    if (
-        settings.get("executionMode") == "paper"
-        and settings.get("learningMode")
-        and blocking
-        and edge_only_blocks
-        and near_threshold
-        and side in {"YES", "NO"}
-    ):
-        identity = f"{market.get('ticker') or ''}:{side}"
-        bucket = int(hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8], 16) / 0xFFFFFFFF
-        if bucket < float(settings.get("learningExplorationRate") or 0.0):
-            exploration_trade = True
-            exploration_overrides = list(blocking)
-            blocking = []
-            for gate in gates:
-                if gate.get("key") in exploration_overrides:
-                    gate["status"] = "pass"
-                    gate["detail"] = f"{gate.get('detail')} · Paper exploration sample"
+    blocking = [gate["key"] for gate in gates if gate.get("blocking")]
 
     bankroll = _number(account.get("bankroll"), settings["paperBankroll"]) or settings["paperBankroll"]
     hard_risk_budget = bankroll * settings["riskPerTradePct"] / 100.0
@@ -764,24 +774,32 @@ def evaluate_btc15_contract(
         full_kelly = max(0.0, (conservative_probability - unit_cost) / max(1.0 - unit_cost, 0.01))
     kelly_budget = bankroll * full_kelly * settings["fractionalKelly"]
     max_loss_budget = min(hard_risk_budget, kelly_budget) if kelly_budget > 0 else 0.0
-    if exploration_trade and selected_price is not None and fee_per_contract is not None:
-        max_loss_budget = min(hard_risk_budget, max_loss_budget if max_loss_budget > 0 else hard_risk_budget)
     contracts = 0
     estimated_fee = 0.0
     max_loss = 0.0
     expected_value = 0.0
     if not blocking and selected_price is not None and fee_per_contract is not None:
         unit_cost = selected_price + fee_per_contract
-        depth_cap = int(selected_depth * settings["maxBookParticipation"])
+        depth_cap = int(edge_eligible_depth * settings["maxBookParticipation"])
         cash_available = _number(account.get("cashAvailable"), bankroll) or bankroll
         cash_cap = int(cash_available // max(unit_cost, 0.01))
+        portfolio_exposure = max(0.0, _number(account.get("portfolioExposure"), 0.0) or 0.0)
+        market_exposure = max(0.0, _number(account.get("currentMarketExposure"), 0.0) or 0.0)
+        portfolio_room = max(
+            0.0,
+            bankroll * settings["maxPortfolioExposurePct"] / 100.0 - portfolio_exposure,
+        )
+        market_room = max(
+            0.0,
+            bankroll * settings["maxSingleMarketExposurePct"] / 100.0 - market_exposure,
+        )
+        exposure_cap = int(min(portfolio_room, market_room) // max(unit_cost, 0.01))
         contracts = min(
             depth_cap,
             cash_cap,
+            exposure_cap,
             int(max_loss_budget // max(unit_cost, 0.01)),
         )
-        if exploration_trade:
-            contracts = min(contracts, 1)
         if contracts <= 0:
             blocking.append("position_size")
             gates.append(_gate("position_size", False, "Executable position size", "可执行仓位", "Kelly/risk/depth caps are below one contract", category="account"))
@@ -791,8 +809,8 @@ def evaluate_btc15_contract(
             expected_value = (conservative_edge or 0.0) * contracts
 
     action = f"BUY_{side}" if side and not blocking and contracts > 0 else "WAIT"
-    # v3 scoring: favorite confidence carries the win-rate story, so it drives
-    # the headline number; edge and friction adjust around it.
+    # Favorite confidence drives the headline score; net edge and execution
+    # friction adjust it around that base.
     signal_quality = int(round(_clamp(
         28.0
         + max(0.0, (selected_model_probability or 0.5) - 0.5) * 90.0
@@ -812,7 +830,7 @@ def evaluate_btc15_contract(
     distance_bps = ((spot / strike) - 1.0) * 10_000.0 if spot and strike else None
     is_real_execution = settings.get("executionMode") == "real"
     return {
-        "engine": "btc15_favorite_carry_v3",
+        "engine": "btc15_settlement_aligned_v5",
         "generatedAt": _iso(now),
         "paperOnly": not is_real_execution,
         "executionEnvironment": "kalshi_real" if is_real_execution else "alphalab_paper",
@@ -820,8 +838,6 @@ def evaluate_btc15_contract(
         "side": side,
         "signalQuality": signal_quality,
         "blockingReasons": blocking,
-        "explorationTrade": exploration_trade,
-        "explorationOverrides": exploration_overrides,
         "market": {
             "ticker": market.get("ticker"),
             "seriesTicker": BTC_15M_SERIES,
@@ -842,6 +858,8 @@ def evaluate_btc15_contract(
             "noAskDepth": no_ask_depth,
             "bookImbalance": book_imbalance,
             "micropriceYes": microprice_yes,
+            "selectedDepth": selected_depth,
+            "edgeEligibleDepth": edge_eligible_depth,
             "bookAgeSeconds": book_age,
             "volume": _number(market.get("volume_fp"), 0.0),
             "openInterest": _number(market.get("open_interest_fp"), 0.0),
@@ -853,6 +871,11 @@ def evaluate_btc15_contract(
             "minuteVolatility": sigma_minute,
             "projected15mVolatility": sigma_minute * math.sqrt(15.0) if sigma_minute else None,
             "horizonVolatility": horizon_sigma,
+            "settlementEffectiveHorizonMinutes": effective_horizon_minutes,
+            "referenceModel": reference.get("model") or "unspecified_spot_proxy",
+            "referenceVenueCount": venue_count,
+            "referenceDispersionBps": dispersion_bps,
+            "basisReserveBpsApplied": basis_reserve * 10_000.0 if basis_reserve is not None else None,
             "momentum3m": momentum_3m,
             "momentum5m": momentum_5m,
             "momentum15m": momentum_15m,
@@ -872,6 +895,7 @@ def evaluate_btc15_contract(
         "edge": {
             "side": side,
             "price": selected_price,
+            "executionLimitPrice": execution_limit_price,
             "fairProbability": selected_fair,
             "modelProbability": selected_model_probability,
             "minimumModelProbability": settings["minModelProbability"],
@@ -882,6 +906,9 @@ def evaluate_btc15_contract(
             "conservativeEdge": conservative_edge,
             "minimumNetEdge": settings["minNetEdge"],
             "minimumConservativeEdge": settings["minConservativeEdge"],
+            "adaptiveEdgePremium": adaptive_edge_premium,
+            "effectiveMinimumNetEdge": effective_min_net_edge,
+            "effectiveMinimumConservativeEdge": effective_min_conservative_edge,
         },
         "sizing": {
             "paperBankroll": bankroll,
@@ -900,20 +927,18 @@ def evaluate_btc15_contract(
         "config": settings,
         "methodology": {
             "settlementReference": "CF Benchmarks real-time index, 60-second settlement average",
-            "spotReference": "Coinbase Exchange BTC-USD",
+            "spotReference": (
+                "BRTI constituent-exchange proxy; licensed BRTI is the target settlement reference"
+                if reference.get("model") == "brti_constituent_proxy"
+                else "BTC-USD spot proxy; licensed BRTI is the target settlement reference"
+            ),
             "feeModel": "Kalshi general taker fee estimate",
             "probabilityModel": (
-                "favorite-carry: MLE-calibrated time-scaled logistic on distance-to-strike "
-                "(53,936 real 15-minute windows), bounded momentum logit shift, market microprice blend"
+                "favorite-carry: bounded time-scaled logistic on distance-to-strike, "
+                "bounded momentum logit shift, and market microprice blend"
             ),
-            "directionMode": "contrarian" if settings.get("learningContrarianMode") else "normal",
-            "samplePolicy": (
-                "one-contract near-threshold Paper exploration; hard data, execution and account gates remain binding"
-                if exploration_trade
-                else "standard edge-qualified entry; no exploration overrides are permitted in Real mode"
-                if is_real_execution
-                else "standard edge-qualified entry"
-            ),
+            "directionMode": "normal",
+            "samplePolicy": "deterministic fee-adjusted entry; no AI or random exploration overrides",
             "orderPolicy": (
                 "Kalshi Real IOC limit order signed and submitted by the backend only after every deterministic gate passes"
                 if is_real_execution

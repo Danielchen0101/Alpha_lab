@@ -74,7 +74,7 @@ DEFAULT_SIM_CONFIG: Dict[str, Any] = {
     "initialCapital": 100_000.0,
     "feeBps": 25.0,
     "slippageBps": 5.0,
-    "mlEnabled": True,
+    "mlEnabled": False,
     "mlRetrainHours": 24,
     # The 65-day slow-momentum feature only warms up after ~1,560 hourly
     # bars, so the training window must extend well past it.
@@ -612,7 +612,7 @@ class PaperTradingDaemon:
         return meta
 
     def _ml_signal_for(self, symbol: str, bars: Sequence[Mapping[str, Any]], cfg: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
-        if not bool(self.state["config"].get("mlEnabled", True)):
+        if not bool(self.state["config"].get("mlEnabled", False)):
             return None
         model = self._ml_models.get(symbol)
         if model is None:
@@ -802,7 +802,7 @@ class PaperTradingDaemon:
             results["symbols"][symbol] = symbol_result
 
         # ML housekeeping: retrain at most one symbol per cycle to bound time.
-        if bool(self.state["config"].get("mlEnabled", True)):
+        if bool(self.state["config"].get("mlEnabled", False)):
             now = _utc_now()
             for symbol in cfg["symbols"]:
                 if not self._ml_ready(symbol, now):
@@ -908,8 +908,9 @@ class PaperTradingDaemon:
                 if interval not in {1, 5, 15, 30, 60}:
                     raise CryptoSimError("intervalMinutes must be 1, 5, 15, 30, or 60")
                 config["intervalMinutes"] = interval
-            if "mlEnabled" in payload:
-                config["mlEnabled"] = bool(payload.get("mlEnabled"))
+            # Deep-learning execution has been retired. Keep the legacy field
+            # false so existing local state files migrate without breaking.
+            config["mlEnabled"] = False
             if "mlRetrainHours" in payload:
                 hours = int(_number(payload.get("mlRetrainHours"), 24))
                 if not 1 <= hours <= 24 * 7:
@@ -1036,7 +1037,7 @@ class PaperTradingDaemon:
         days = int(_number(payload.get("days"), 180))
         if not 30 <= days <= 365:
             raise CryptoSimError("days must be between 30 and 365")
-        use_ml = bool(payload.get("useMl"))
+        use_ml = False
         initial_capital = _number(payload.get("initialCapital"), 10_000.0)
         if not 100.0 <= initial_capital <= 10_000_000.0:
             raise CryptoSimError("initialCapital must be between 100 and 10,000,000")
@@ -1200,15 +1201,11 @@ def register_crypto_paper_api(
     def sim_train():
         try:
             _authenticated()
-            body = json_object()
-            symbol = str(body.get("symbol") or "").strip().upper()
-            symbols = [symbol] if symbol else list(daemon.state["config"]["symbols"])
-            reports = {}
-            for entry in symbols:
-                if entry not in SIM_SYMBOLS:
-                    raise CryptoSimError("symbol must be BTC/USD or ETH/USD")
-                reports[entry] = daemon.train_ml(entry, force=True)
-            return ok({"success": True, "models": reports})
+            return jsonify({
+                "success": False,
+                "code": "feature_retired",
+                "message": "Crypto deep-learning training has been retired.",
+            }), 410
         except Exception as exc:
             return fail(exc)
 

@@ -1,11 +1,10 @@
 import api from './api';
 
-export type KalshiDecisionAction = 'BUY_YES' | 'BUY_NO' | 'WAIT';
+export type KalshiDecisionAction = 'BUY_YES' | 'BUY_NO' | 'SELL_YES' | 'SELL_NO' | 'WAIT';
 export type KalshiExecutionMode = 'paper' | 'real';
 
-// v3 key: stale pre-v3 local configs carried longshot-era parameters and must
-// not override the calibrated favorite-carry defaults.
-export const KALSHI_CONFIG_STORAGE_KEY = 'alphalab:kalshi:btc15m:config:v3';
+// v6 adds settlement-aligned reference and improved scale-in controls.
+export const KALSHI_CONFIG_STORAGE_KEY = 'alphalab:kalshi:btc15m:config:v6';
 export const KALSHI_CONFIG_CHANGED_EVENT = 'alphalab:kalshi-config-changed';
 
 export interface KalshiBotConfig {
@@ -37,83 +36,72 @@ export interface KalshiBotConfig {
   minimumExitProfit: number;
   stopLossPct: number;
   emergencyStopLossPct: number;
-  preTradeAiReview: boolean;
-  learningMode: boolean;
-  learningAiMode: boolean;
-  learningContrarianMode: boolean;
-  learningExplorationRate: number;
-  learningReviewEvery: number;
-  learningWindowSize: number;
-  learningMaxRiskPct: number;
+  maxSingleMarketExposurePct: number;
+  minimumAddIntervalSeconds: number;
+  addMinModelProbability: number;
+  addMinConservativeEdge: number;
+  addMinProbabilityImprovement: number;
+  addMinEdgeImprovement: number;
+  addSizeFraction: number;
+  minimumHoldSeconds: number;
+  reversalCooldownSeconds: number;
+  exitValueBuffer: number;
+  takeProfitScaleOutPct: number;
 }
 
-// v3 Favorite Carry defaults — mirror backend DEFAULT_STRATEGY_CONFIG
-// (kalshi_engine.py). Calibrated on 53,936 real 15-minute windows.
+// Mirror backend DEFAULT_STRATEGY_CONFIG (kalshi_engine.py).
 export const DEFAULT_KALSHI_BOT_CONFIG: KalshiBotConfig = {
   executionMode: 'paper',
   paperBankroll: 1000,
   riskPerTradePct: 0.75,
-  minNetEdge: 0.015,
-  minConservativeEdge: 0.005,
-  maxSpread: 0.05,
-  maxRelativeSpread: 0.15,
-  minDepthContracts: 10,
+  minNetEdge: 0.0075,
+  minConservativeEdge: 0.002,
+  maxSpread: 0.06,
+  maxRelativeSpread: 0.20,
+  minDepthContracts: 5,
   maxBookParticipation: 0.20,
-  minSecondsToClose: 100,
-  maxSecondsToClose: 320,
+  minSecondsToClose: 60,
+  maxSecondsToClose: 720,
   minPrice: 0.50,
-  maxPrice: 0.93,
-  minModelProbability: 0.60,
+  maxPrice: 0.95,
+  minModelProbability: 0.58,
   marketBlendWeight: 0.20,
-  maxModelMarketGap: 0.25,
+  maxModelMarketGap: 0.30,
   probabilityLogitScale: 1.95,
   momentumProjectionScale: 0.07,
   basisReserveBps: 3,
-  maxVolatilityRatio: 2.50,
-  maxJumpSigma: 4,
+  maxVolatilityRatio: 3,
+  maxJumpSigma: 5,
   fractionalKelly: 0.25,
   maxPortfolioExposurePct: 25,
   executionPriceTolerance: 0.01,
   exitProbabilityThreshold: 0.35,
-  minimumExitProfit: 0.02,
-  stopLossPct: 0.55,
-  emergencyStopLossPct: 0.30,
-  preTradeAiReview: true,
-  learningMode: true,
-  learningAiMode: true,
-  learningContrarianMode: false,
-  learningExplorationRate: 0.15,
-  learningReviewEvery: 6,
-  learningWindowSize: 40,
-  learningMaxRiskPct: 1.0,
+  minimumExitProfit: 0.015,
+  takeProfitScaleOutPct: 0.50,
+  stopLossPct: 0.45,
+  emergencyStopLossPct: 0.25,
+  maxSingleMarketExposurePct: 8,
+  minimumAddIntervalSeconds: 45,
+  addMinModelProbability: 0.64,
+  addMinConservativeEdge: 0.0075,
+  addMinProbabilityImprovement: 0.01,
+  addMinEdgeImprovement: 0.001,
+  addSizeFraction: 0.50,
+  minimumHoldSeconds: 60,
+  reversalCooldownSeconds: 90,
+  exitValueBuffer: 0.010,
 };
 
 
 export interface KalshiGate {
   key: string;
-  status: 'pass' | 'block';
+  status: 'pass' | 'observe' | 'block';
+  blocking?: boolean;
   severity: 'hard' | 'review' | string;
   label: string;
   labelZh: string;
   detail: string;
   category?: 'data' | 'signal' | 'execution' | 'account' | string;
-}
-
-export interface KalshiAiReview {
-  status: 'reviewed' | 'not_configured' | 'unavailable' | 'disabled' | 'not_required' | string;
-  verdict: 'clear' | 'challenge' | 'not_reviewed' | string;
-  ticker?: string;
-  confidence?: number;
-  summary?: string;
-  contradictions?: string[];
-  missingData?: string[];
-  topRisks?: string[];
-  nextCheck?: string;
-  provider?: string;
-  model?: string;
-  source?: string;
-  reviewedAt?: string;
-  cached?: boolean;
 }
 
 export interface KalshiDecision {
@@ -141,6 +129,8 @@ export interface KalshiDecision {
     spread?: number | null;
     yesAskDepth?: number | null;
     noAskDepth?: number | null;
+    selectedDepth?: number | null;
+    edgeEligibleDepth?: number | null;
     bookImbalance?: number | null;
     micropriceYes?: number | null;
     bookAgeSeconds?: number | null;
@@ -154,6 +144,11 @@ export interface KalshiDecision {
     minuteVolatility?: number | null;
     projected15mVolatility?: number | null;
     horizonVolatility?: number | null;
+    settlementEffectiveHorizonMinutes?: number | null;
+    referenceModel?: string;
+    referenceVenueCount?: number;
+    referenceDispersionBps?: number | null;
+    basisReserveBpsApplied?: number | null;
     momentum3m?: number | null;
     momentum5m?: number | null;
     momentum15m?: number | null;
@@ -171,6 +166,7 @@ export interface KalshiDecision {
   edge: {
     side?: 'YES' | 'NO' | null;
     price?: number | null;
+    executionLimitPrice?: number | null;
     fairProbability?: number | null;
     modelProbability?: number | null;
     minimumModelProbability?: number;
@@ -196,7 +192,6 @@ export interface KalshiDecision {
     expectedValue: number;
   };
   gates: KalshiGate[];
-  aiReview?: KalshiAiReview;
   config: KalshiBotConfig;
   methodology: Record<string, string>;
 }
@@ -217,10 +212,19 @@ export interface KalshiSnapshot {
     bid?: string | number | null;
     ask?: string | number | null;
     timestamp?: string | null;
+    model?: string;
+    isOfficialBrti?: boolean;
+    venueCount?: number;
+    venues?: string[];
+    rejectedVenues?: string[];
+    dispersionBps?: number;
     candleCount?: number;
   };
   warnings: string[];
   sources: Record<string, string>;
+  eventTicker?: string;
+  candidateCount?: number;
+  candidateSummary?: Array<Record<string, any>>;
 }
 
 export interface KalshiEvaluationResponse {
@@ -252,8 +256,6 @@ export interface KalshiPaperRobotState {
     winRate?: number | null;
     brierScore?: number | null;
     dailyPnl?: number;
-    consecutiveLosses?: number;
-    cooldownUntil?: string | null;
     totalPnl?: number;
     averagePnl?: number;
     losses?: number;
@@ -266,48 +268,6 @@ export interface KalshiPaperRobotState {
     realizedTotalPnl?: number;
     realizedAveragePnl?: number;
     equityCurve?: KalshiEquityPoint[];
-    preTradeAi?: KalshiAiReview;
-    learning?: {
-      enabled: boolean;
-      paperOnly: boolean;
-      status: 'disabled' | 'warmup' | 'reviewed' | 'paper_only' | string;
-      reviewEvery: number;
-      windowSize: number;
-      lastReviewSample: number;
-      nextReviewSample: number;
-      lastReviewAt?: string | null;
-      lastReason?: string;
-      recentWinRate?: number | null;
-      recentAveragePnl?: number | null;
-      recentBrierScore?: number | null;
-      adjustmentCount?: number;
-      explorationRate?: number;
-      aiEnabled?: boolean;
-      aiStatus?: string;
-      aiProvider?: string | null;
-      aiModel?: string | null;
-      lastAiReviewSample?: number;
-      lastAiReviewAt?: string | null;
-      lastAiDiagnosis?: string | null;
-      lastAiRootCause?: string | null;
-      lastAiTargetMetric?: string | null;
-      lastAiExpectedEffect?: string | null;
-      lastAiEvidenceUsed?: string[];
-      lastAiReasons?: string[];
-      lastAiAdjustments?: Record<string, { delta?: number; value?: unknown }>;
-      aiConfidence?: number;
-      aiDirectionRecommendation?: 'normal' | 'contrarian' | 'hold' | string;
-      originalDirectionalAccuracy?: number | null;
-      inverseDirectionalAccuracy?: number | null;
-      directionalSamples?: number;
-      observedDirectionalAccuracy?: number | null;
-      observedInverseAccuracy?: number | null;
-      activeDirectionalAccuracy?: number | null;
-      observedSamples?: number;
-      directionalWindowSamples?: number;
-      tradedSamples?: number;
-      contrarianMode?: boolean;
-    };
   };
 }
 
@@ -359,6 +319,18 @@ export interface KalshiPortfolioAnalytics {
   realizedBestTrade?: number | null;
   realizedWorstTrade?: number | null;
   equityCurve?: KalshiEquityPoint[];
+  marketPerformance?: Record<'btc15m' | 'btchourly', {
+    family: 'btc15m' | 'btchourly';
+    label: string;
+    samples: number;
+    wins: number;
+    losses: number;
+    winRate: number | null;
+    realizedPnl: number;
+    averagePnl: number;
+    records: KalshiSettlementRecord[];
+    equityCurve: KalshiEquityPoint[];
+  }>;
 }
 
 export interface KalshiPaperPortfolio {
@@ -382,46 +354,6 @@ export interface KalshiPaperResponse {
   order?: Record<string, any> | null;
   orderSubmitted?: boolean;
   orderFilled?: boolean;
-  message?: string;
-}
-
-export interface KalshiStrategyLibraryItem {
-  id: string;
-  mode: KalshiExecutionMode;
-  name: string;
-  source: string;
-  createdAt: string;
-  updatedAt: string;
-  active?: boolean;
-  recommendationScore?: number;
-  config: Partial<KalshiBotConfig>;
-  metrics: {
-    settledSamples?: number;
-    realizedSamples?: number;
-    wins?: number;
-    losses?: number;
-    winRate?: number | null;
-    totalPnl?: number;
-    averagePnl?: number;
-    brierScore?: number | null;
-    adjustmentCount?: number;
-    activeDirection?: string;
-    observedSamples?: number;
-    directionalWindowSamples?: number;
-    observedDirectionalAccuracy?: number | null;
-    observedInverseAccuracy?: number | null;
-  };
-}
-
-export interface KalshiStrategyLibraryResponse {
-  success: boolean;
-  activeEnvironment: KalshiExecutionMode;
-  activeStrategyId?: string;
-  recommendedStrategyId?: string | null;
-  strategies: KalshiStrategyLibraryItem[];
-  strategy?: KalshiStrategyLibraryItem;
-  state?: KalshiPaperRobotState;
-  reason?: string;
   message?: string;
 }
 
@@ -451,6 +383,11 @@ const kalshiAPI = {
     { config },
     { timeout: 15000 },
   ),
+  evaluateHourly: (mode: KalshiExecutionMode = 'paper') => api.post<KalshiEvaluationResponse>(
+    '/kalshi/btc-hourly/evaluate',
+    { mode },
+    { timeout: 30000 },
+  ),
   paperPortfolio: (mode: KalshiExecutionMode = 'paper') => api.get<KalshiPaperResponse>('/kalshi/paper/portfolio', { params: { mode }, timeout: 20000 }),
   paperRobotStatus: (mode?: KalshiExecutionMode) => api.get<KalshiPaperResponse>('/kalshi/paper/robot', { params: mode ? { mode } : undefined, timeout: 10000 }),
   setPaperRobot: (enabled: boolean, config: KalshiBotConfig, mode: KalshiExecutionMode = config.executionMode || 'paper') => api.post<KalshiPaperResponse>(
@@ -463,20 +400,8 @@ const kalshiAPI = {
     { mode, config: { ...config, executionMode: mode } },
     { timeout: 15000 },
   ),
-  runPaperRobotTick: (mode: KalshiExecutionMode = 'paper') => api.post<KalshiPaperResponse>('/kalshi/paper/robot/tick', { mode }, { timeout: 25000 }),
+  runPaperRobotTick: (mode: KalshiExecutionMode = 'paper', family: 'btc15m' | 'btchourly' = 'btc15m') => api.post<KalshiPaperResponse>('/kalshi/paper/robot/tick', { mode, family }, { timeout: 30000 }),
   resetPaperAccount: (mode: KalshiExecutionMode = 'paper') => api.delete<KalshiPaperResponse>('/kalshi/paper/portfolio', { params: { mode }, timeout: 15000 }),
-  strategies: (mode: KalshiExecutionMode = 'paper') => api.get<KalshiStrategyLibraryResponse>('/kalshi/strategies', { params: { mode }, timeout: 10000 }),
-  saveStrategy: (name: string, config: KalshiBotConfig, mode: KalshiExecutionMode = config.executionMode || 'paper') => api.post<KalshiStrategyLibraryResponse>(
-    '/kalshi/strategies',
-    { name, mode, config: { ...config, executionMode: mode } },
-    { timeout: 15000 },
-  ),
-  applyStrategy: (strategyId: string, mode: KalshiExecutionMode) => api.post<KalshiStrategyLibraryResponse>(
-    '/kalshi/strategies/apply',
-    { strategyId, mode },
-    { timeout: 15000 },
-  ),
-  recommendStrategy: (mode: KalshiExecutionMode = 'paper') => api.get<KalshiStrategyLibraryResponse>('/kalshi/strategies/recommend', { params: { mode }, timeout: 10000 }),
   status: () => api.get('/kalshi/status', { timeout: 10000 }),
   getConnectionConfig: () => api.get<KalshiConnectionConfigResponse>('/kalshi/config', { timeout: 10000 }),
   saveConnectionConfig: (payload: { environment: KalshiEnvironment; apiKeyId?: string; privateKey?: string }) => (

@@ -44,8 +44,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
-ALGORITHM_NAME = "Helios Regime Ensemble"
-ALGORITHM_VERSION = "2.0.0"
+ALGORITHM_NAME = "Helios Intraday Regime"
+ALGORITHM_VERSION = "2.1.0"
 SUPPORTED_SYMBOLS: Tuple[str, ...] = ("BTC/USD", "ETH/USD")
 BAR_INTERVAL_SECONDS = 60 * 60
 SUPPORTED_BARS_PER_DAY = frozenset({24, 96})
@@ -115,8 +115,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "rebalance_band": 0.02,
     "add_min_price_gain_pct": 0.03,
     "reduced_weight_fraction": 0.25,
-    # ---- Deep-learning advisor gate ----
-    "ml_gate_enabled": True,
+    # ---- Retired ML fields (kept only so older saved configs still validate) ----
+    "ml_gate_enabled": False,
     "ml_max_adjust": 12.0,
     "ml_veto_threshold": 0.42,
     # ---- Costs (Alpaca tier-1 taker ≈ 25 bps) ----
@@ -564,6 +564,12 @@ def compute_indicators(
     cfg = validate_config(config)
     normalized = normalize_bars(bars, cfg)
     per_day = cfg["bars_per_day"]
+    bars_per_hour = max(1, per_day // 24)
+    return_1h_window = bars_per_hour
+    return_3h_window = 3 * bars_per_hour
+    return_12h_window = 12 * bars_per_hour
+    fast_breakout_window = 12 if per_day >= 96 else 6
+    fast_breakdown_window = 8 if per_day >= 96 else 4
     momentum_short_window = 3 * per_day
     momentum_fast_window = cfg["momentum_fast_days"] * per_day
     momentum_slow_window = cfg["momentum_slow_days"] * per_day
@@ -637,6 +643,11 @@ def compute_indicators(
         momentum_3d = close / closes[index - momentum_short_window] - 1 if index >= momentum_short_window else None
         momentum_fast_v = close / closes[index - momentum_fast_window] - 1 if index >= momentum_fast_window else None
         momentum_slow_v = close / closes[index - momentum_slow_window] - 1 if index >= momentum_slow_window else None
+        return_1h = close / closes[index - return_1h_window] - 1 if index >= return_1h_window else None
+        return_3h = close / closes[index - return_3h_window] - 1 if index >= return_3h_window else None
+        return_12h = close / closes[index - return_12h_window] - 1 if index >= return_12h_window else None
+        fast_high = max(highs[index - fast_breakout_window:index]) if index >= fast_breakout_window else None
+        fast_low = min(lows[index - fast_breakdown_window:index]) if index >= fast_breakdown_window else None
         atr_value = _mean(true_ranges[-atr_window:]) if len(true_ranges) >= atr_window else None
 
         vol_slow_value: Optional[float] = None
@@ -704,6 +715,13 @@ def compute_indicators(
                 "ema_anchor": ema_anchor if index + 1 >= cfg["anchor_ema"] else None,
                 "anchor_slope_pct": anchor_slope_pct,
                 "momentum_3d": momentum_3d,
+                "return_1h": return_1h,
+                "return_3h": return_3h,
+                "return_12h": return_12h,
+                "fast_high": fast_high,
+                "fast_low": fast_low,
+                "fast_breakout": fast_high is not None and close > fast_high,
+                "fast_breakdown": fast_low is not None and close < fast_low,
                 "rsi": rsi_value,
                 "rsi_fast": rsi_fast_value,
                 "adx": adx_value,
@@ -908,12 +926,13 @@ def _validated_ml_signal(ml_signal: Optional[Mapping[str, Any]]) -> Optional[Dic
 
 def _detect_regime(row: Mapping[str, Any], cfg: Mapping[str, Any]) -> str:
     close = float(row["close"])
+    intraday = int(cfg["bars_per_day"]) >= 96
     ema_fast = float(row["ema_10"])
     ema_slow = float(row["ema_40"])
     ema_anchor = float(row["ema_anchor"])
     adx_value = float(row["adx"])
     vol_ratio = row.get("vol_ratio")
-    momentum_3d = row.get("momentum_3d")
+    momentum_3d = row.get("return_3h") if intraday else row.get("momentum_3d")
     if (
         vol_ratio is not None
         and float(vol_ratio) >= cfg["panic_vol_ratio"]
@@ -922,9 +941,9 @@ def _detect_regime(row: Mapping[str, Any], cfg: Mapping[str, Any]) -> str:
     ):
         return "panic"
     if adx_value >= cfg["adx_trend_threshold"]:
-        if ema_fast > ema_slow and close > ema_anchor:
+        if ema_fast > ema_slow and (intraday or close > ema_anchor) and float(momentum_3d or 0.0) >= 0:
             return "trend_up"
-        if ema_fast < ema_slow and close < ema_anchor:
+        if ema_fast < ema_slow and (intraday or close < ema_anchor) and float(momentum_3d or 0.0) <= 0:
             return "trend_down"
     return "range"
 
@@ -939,9 +958,45 @@ def _sleeve_votes(row: Mapping[str, Any], cfg: Mapping[str, Any]) -> Dict[str, f
     rsi_fast_value = float(row["rsi_fast"])
     volume_z = float(row["volume_z"]) if row.get("volume_z") is not None else 0.0
     donchian_pos = float(row["donchian_pos"]) if row.get("donchian_pos") is not None else 0.5
+    intraday = int(cfg["bars_per_day"]) >= 96
     momentum_3d = float(row["momentum_3d"])
-    momentum_fast = float(row["momentum_20d"])
-    momentum_slow = float(row["momentum_65d"])
+    momentum_fast = float(row["return_1h"]) if intraday else float(row["momentum_20d"])
+    momentum_slow = float(row["return_3h"]) if intraday else float(row["momentum_65d"])
+    return_1h = float(row.get("return_1h") or 0.0)
+    return_3h = float(row.get("return_3h") or 0.0)
+    return_12h = float(row.get("return_12h") or 0.0)
+
+    if intraday:
+        ema_gap_pct = (ema_fast - ema_slow) / ema_slow * 100.0 if ema_slow > 0 else 0.0
+        trend_vote = (
+            0.55 * _clamp(ema_gap_pct / 0.35)
+            + 0.30 * _clamp(return_3h / 0.006)
+            + 0.15 * _clamp(return_12h / 0.015)
+        )
+        if bool(row.get("fast_breakdown")):
+            breakout_vote = -1.0
+        elif bool(row.get("fast_breakout")):
+            breakout_vote = 1.0 if volume_z >= 0.0 else 0.7
+        else:
+            breakout_vote = _clamp((donchian_pos - 0.5) * 0.8)
+        momentum_vote = (
+            0.40 * _clamp(return_1h / 0.0025)
+            + 0.35 * _clamp(return_3h / 0.006)
+            + 0.25 * _clamp(return_12h / 0.015)
+        )
+        rsi_sell = 100.0 - cfg["meanrev_rsi_buy"]
+        if zscore <= cfg["meanrev_entry_z"] and rsi_fast_value <= cfg["meanrev_rsi_buy"]:
+            meanrev_vote = 1.0 if return_3h > -0.02 else 0.35
+        elif zscore >= 1.0 or rsi_fast_value >= rsi_sell:
+            meanrev_vote = -1.0
+        else:
+            meanrev_vote = _clamp(-zscore / 1.5) * 0.6
+        return {
+            "trend": round(_clamp(trend_vote), 4),
+            "breakout": round(_clamp(breakout_vote), 4),
+            "momentum": round(_clamp(momentum_vote), 4),
+            "meanrev": round(_clamp(meanrev_vote), 4),
+        }
 
     # --- Trend sleeve: EMA gap, anchor side, anchor slope -------------------
     ema_gap_pct = (ema_fast - ema_slow) / ema_slow * 100.0 if ema_slow > 0 else 0.0
@@ -1015,6 +1070,9 @@ _REQUIRED_INDICATORS = (
     "momentum_3d",
     "momentum_20d",
     "momentum_65d",
+    "return_1h",
+    "return_3h",
+    "return_12h",
     "atr_24h",
     "annualized_volatility_30d",
     "vol_fast_annualized",
@@ -1070,6 +1128,7 @@ def _signal_from_indicator(
         }
 
     close = float(row["close"])
+    intraday = int(cfg["bars_per_day"]) >= 96
     volatility = float(row["annualized_volatility_30d"])
     atr_pct = float(row["atr_pct"])
     zscore = float(row["zscore"])
@@ -1096,8 +1155,10 @@ def _signal_from_indicator(
     for name, vote in top_sleeves:
         reasons.append((vote_text[name] % vote) + f" × weight {used_weights[name]:.2f}.")
 
-    # --- Deep-learning advisor -------------------------------------------
-    ml = _validated_ml_signal(ml_signal) if cfg["ml_gate_enabled"] else None
+    # The production strategy is deterministic. ``ml_signal`` remains in the
+    # function signature solely for backwards-compatible callers and is
+    # deliberately ignored.
+    ml = None
     ml_adjust = 0.0
     if ml is not None:
         ml_adjust = (2.0 * ml["probability_up"] - 1.0) * cfg["ml_max_adjust"]
@@ -1108,12 +1169,16 @@ def _signal_from_indicator(
         )
     score = round(max(0.0, min(100.0, score)), 1)
 
-    momentum_fast = float(row["momentum_20d"])
-    momentum_slow = float(row["momentum_65d"])
+    momentum_fast = float(row["return_1h"]) if intraday else float(row["momentum_20d"])
+    momentum_slow = float(row["return_3h"]) if intraday else float(row["momentum_65d"])
     ema_fast = float(row["ema_10"])
     ema_slow = float(row["ema_40"])
-    negative = ema_fast < ema_slow and momentum_fast < 0 and momentum_slow < 0
-    breakdown = bool(row["breakdown_10d"])
+    negative = (
+        ema_fast < ema_slow
+        and momentum_fast < (-0.001 if intraday else 0.0)
+        and momentum_slow < 0
+    )
+    breakdown = bool(row.get("fast_breakdown")) if intraday else bool(row["breakdown_10d"])
 
     # --- Stops -------------------------------------------------------------
     stop_distance = max(
@@ -1149,14 +1214,25 @@ def _signal_from_indicator(
             trailed_stop = candidate
 
     # --- Entry qualification ------------------------------------------------
-    trend_entry = regime == "trend_up" and score >= cfg["entry_score"]
+    trend_entry = (
+        regime == "trend_up"
+        and score >= cfg["entry_score"]
+        and (not intraday or (momentum_fast > -0.0005 and rsi_fast_value < 78.0))
+    )
+    breakout_entry = (
+        intraday
+        and bool(row.get("fast_breakout"))
+        and score >= cfg["entry_score"] + 2.0
+        and float(row.get("volume_z") or 0.0) >= -0.5
+    )
     dip_entry = (
         regime == "range"
-        and votes["meanrev"] >= 0.6
-        and close > float(row["ema_anchor"])
+        and votes["meanrev"] >= (0.45 if intraday else 0.6)
+        and close > float(row["ema_anchor"]) * (0.97 if intraday else 1.0)
+        and (not intraday or (zscore <= -0.65 and rsi_fast_value <= 45.0 and momentum_slow > -0.02))
         and score >= cfg["entry_score"]
     )
-    entry_mode = "trend" if trend_entry else ("dip" if dip_entry else None)
+    entry_mode = "breakout" if breakout_entry else ("trend" if trend_entry else ("dip" if dip_entry else None))
     entry_qualified = entry_mode is not None
     ml_veto = False
     if (
@@ -1204,7 +1280,7 @@ def _signal_from_indicator(
         and not risk_result.get("blocked")
         and entry_qualified
         and regime == "trend_up"
-        and bool(row["breakout_20d"])
+        and bool(row.get("fast_breakout") if intraday else row["breakout_20d"])
         and score >= cfg["add_score"]
         and add_price_confirmed
         and strategic_target >= current_weight + cfg["rebalance_band"]
@@ -1216,7 +1292,7 @@ def _signal_from_indicator(
     range_take_profit = (
         current_weight > 0
         and regime == "range"
-        and zscore >= 1.0
+        and zscore >= (0.75 if intraday else 1.0)
         and rsi_fast_value >= rsi_sell
     )
 
@@ -1228,7 +1304,12 @@ def _signal_from_indicator(
         target_weight = 0.0
         action = "EXIT"
         allowed_actions = ["HOLD", "REDUCE", "EXIT"]
-    elif score < cfg["reduce_score"] or volatility >= cfg["high_volatility_threshold"] or range_take_profit:
+    elif (
+        score < cfg["reduce_score"]
+        or volatility >= cfg["high_volatility_threshold"]
+        or range_take_profit
+        or (intraday and momentum_fast < 0 and score < cfg["entry_score"])
+    ):
         reduced_target = min(current_weight, cfg["max_asset_weight"] * cfg["reduced_weight_fraction"])
         if current_weight - reduced_target >= cfg["rebalance_band"]:
             target_weight = reduced_target
@@ -1313,8 +1394,13 @@ def _signal_from_indicator(
             "ema_anchor": float(row["ema_anchor"]),
             "anchor_slope_pct": round(float(row["anchor_slope_pct"]), 4),
             "momentum_3d": round(float(row["momentum_3d"]), 6),
-            "momentum_20d": momentum_fast,
-            "momentum_65d": momentum_slow,
+            "momentum_20d": float(row["momentum_20d"]),
+            "momentum_65d": float(row["momentum_65d"]),
+            "return_1h": round(float(row["return_1h"]), 6),
+            "return_3h": round(float(row["return_3h"]), 6),
+            "return_12h": round(float(row["return_12h"]), 6),
+            "fast_breakout": bool(row.get("fast_breakout")),
+            "fast_breakdown": bool(row.get("fast_breakdown")),
             "atr_24h": float(row["atr_24h"]),
             "atr_pct": round(atr_pct, 6),
             "annualized_volatility_30d": volatility,
@@ -1703,9 +1789,7 @@ def backtest(
     row ``i + 1``'s open.  All equity and risk statistics are then marked
     using that next row.  This avoids using a close before it exists.
 
-    ``ml_series`` optionally supplies one out-of-sample ``P(up)`` per input
-    bar (aligned by index; ``None`` entries are skipped) so walk-forward
-    deep-learning probabilities can participate without look-ahead.
+    ``ml_series`` is a retired compatibility argument and is ignored.
     """
 
     cfg = validate_config(config)
@@ -1714,8 +1798,6 @@ def backtest(
         raise CryptoEngineError(f"symbol is not enabled by config: {symbol}")
     initial_capital = _finite_number(initial_capital, "initial_capital", positive=True)
     rows = compute_indicators(bars, cfg)
-    if ml_series is not None and len(ml_series) != len(rows):
-        raise CryptoEngineError("ml_series must align one probability per bar")
     warmup = required_history_bars(cfg) - 1
     if len(rows) <= warmup + 1:
         raise CryptoEngineError(f"backtest requires at least {warmup + 2} bars")
@@ -1870,9 +1952,6 @@ def backtest(
                 )
         elif cooldown_until_index is not None:
             cooldown_until_index = None
-        ml_signal = None
-        if ml_series is not None and ml_series[index] is not None:
-            ml_signal = {"probability_up": float(ml_series[index])}
         signal = _confirmed_signal(
             rows,
             index,
@@ -1883,7 +1962,7 @@ def backtest(
                 "position_state": position_state,
             },
             risk=risk,
-            ml_signal=ml_signal,
+            ml_signal=None,
         )
         # Persist the trailing-stop ratchet exactly as the durable controller
         # would when it stores position_state from a HOLD signal.
@@ -2004,7 +2083,7 @@ def backtest(
         "regime_stats": regime_stats,
         "trade_stats": trade_stats,
         "monthly_returns": _monthly_returns(timestamps, equity_curve),
-        "ml_used": ml_series is not None,
+        "ml_used": False,
         "cost_model": {
             "fee_bps": cfg["fee_bps"],
             "slippage_bps": cfg["slippage_bps"],

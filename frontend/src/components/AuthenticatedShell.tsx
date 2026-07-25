@@ -351,11 +351,19 @@ const kalshiSections: ShellSectionConfig[] = [
     links: [
       {
         key: 'kalshi-btc15-market',
-        label: 'Live contract',
+        label: 'BTC 15-minute',
         labelZh: '实时合约',
         path: '/kalshi/markets/btc-15m',
         icon: <LineChartOutlined />,
         match: (pathname) => pathname === '/kalshi' || pathname === '/kalshi/markets/btc-15m',
+      },
+      {
+        key: 'kalshi-btchourly-market',
+        label: 'BTC hourly strikes',
+        labelZh: 'BTC 整点执行价',
+        path: '/kalshi/markets/btc-hourly',
+        icon: <FundOutlined />,
+        match: (pathname) => pathname === '/kalshi/markets/btc-hourly',
       },
       {
         key: 'kalshi-contract-rules',
@@ -373,6 +381,7 @@ const kalshiSections: ShellSectionConfig[] = [
     path: '/kalshi/bots/btc-15m',
     matches: (pathname) => isShellPath(pathname, '/kalshi/bots'),
     links: [
+      { key: 'kalshi-btchourly-bot', label: 'Hourly robot', labelZh: '整点机器人', path: '/kalshi/bots/btc-hourly', icon: <RobotOutlined /> },
       { key: 'kalshi-btc15-bot', label: 'Live monitor', labelZh: '实时监控', path: '/kalshi/bots/btc-15m', icon: <RobotOutlined /> },
       { key: 'kalshi-decisions', label: 'Decision log', labelZh: '决策记录', path: '/kalshi/bots/decisions', icon: <HistoryOutlined /> },
       { key: 'kalshi-risk', label: 'Strategy & risk', labelZh: '策略与风控', path: '/kalshi/bots/risk', icon: <SafetyCertificateOutlined /> },

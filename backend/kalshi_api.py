@@ -6,6 +6,7 @@ import base64
 import copy
 import math
 import re
+import statistics
 import threading
 import time
 import uuid
@@ -44,14 +45,76 @@ except ImportError:  # pragma: no cover - package-style test imports
 
 KALSHI_PUBLIC_BASE = "https://external-api.kalshi.com/trade-api/v2"
 COINBASE_EXCHANGE_BASE = "https://api.exchange.coinbase.com"
+BITSTAMP_BASE = "https://www.bitstamp.net/api/v2"
+GEMINI_BASE = "https://api.gemini.com/v1"
+KRAKEN_BASE = "https://api.kraken.com/0/public"
 KALSHI_ENVIRONMENTS = {
     "production": KALSHI_PUBLIC_BASE,
 }
 
 
 def _is_btc15_ticker(value: Any) -> bool:
-    """AlphaLab Kalshi workspace is intentionally scoped to BTC 15-minute contracts."""
+    """Return whether a ticker belongs to the legacy 15-minute robot."""
     return str(value or "").upper().startswith(str(BTC_15M_SERIES).upper())
+
+
+BTC_HOURLY_SERIES = "KXBTCD"
+
+
+def _market_family(value: Any) -> Optional[str]:
+    ticker = str(value or "").upper()
+    if ticker.startswith(str(BTC_15M_SERIES).upper()):
+        return "btc15m"
+    if ticker.startswith(BTC_HOURLY_SERIES):
+        return "btchourly"
+    return None
+
+
+def _is_supported_kalshi_ticker(value: Any) -> bool:
+    return _market_family(value) is not None
+
+
+def _tag_market_family(row: Mapping[str, Any]) -> Dict[str, Any]:
+    result = dict(row or {})
+    result["market_family"] = _market_family(
+        result.get("ticker") or result.get("market_ticker")
+    )
+    return result
+
+
+def _family_performance(strategy: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
+    records = [
+        dict(row) for row in (strategy.get("realizedTradeRecords") or [])
+        if isinstance(row, Mapping)
+    ]
+    output: Dict[str, Dict[str, Any]] = {}
+    for family, label in (("btc15m", "BTC 15-minute"), ("btchourly", "BTC hourly strikes")):
+        selected = [row for row in records if _market_family(row.get("ticker")) == family]
+        pnl_values = [_finite_number(row.get("pnl"), 0.0) for row in selected]
+        wins = sum(1 for value in pnl_values if value > 0)
+        cumulative = 0.0
+        curve = []
+        for row, pnl in reversed(list(zip(selected, pnl_values))):
+            cumulative = round(cumulative + pnl, 4)
+            curve.append({
+                "at": row.get("settledAt") or row.get("closedAt"),
+                "pnl": round(pnl, 4),
+                "cumulativePnl": cumulative,
+                "ticker": row.get("ticker"),
+            })
+        output[family] = {
+            "family": family,
+            "label": label,
+            "samples": len(selected),
+            "wins": wins,
+            "losses": max(0, len(selected) - wins),
+            "winRate": round(wins / len(selected), 4) if selected else None,
+            "realizedPnl": round(sum(pnl_values), 4),
+            "averagePnl": round(sum(pnl_values) / len(selected), 4) if selected else 0.0,
+            "records": [_tag_market_family(row) for row in selected],
+            "equityCurve": curve,
+        }
+    return output
 
 
 class KalshiApiError(RuntimeError):
@@ -67,6 +130,66 @@ def _finite_number(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
     return parsed if math.isfinite(parsed) else default
+
+
+def _venue_quote(venue: str, payload: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """Normalize a public BTC/USD quote used to approximate CF BRTI."""
+    venue = str(venue).lower()
+    row: Mapping[str, Any] = payload or {}
+    timestamp = None
+    if venue == "kraken":
+        values = list((row.get("result") or {}).values())
+        row = values[0] if values and isinstance(values[0], Mapping) else {}
+        bid = _finite_number((row.get("b") or [None])[0], -1.0)
+        ask = _finite_number((row.get("a") or [None])[0], -1.0)
+        last = _finite_number((row.get("c") or [None])[0], -1.0)
+    else:
+        bid = _finite_number(row.get("bid"), -1.0)
+        ask = _finite_number(row.get("ask"), -1.0)
+        last = _finite_number(row.get("price", row.get("last")), -1.0)
+        timestamp = row.get("time") or row.get("timestamp")
+    if bid > 0 and ask > bid:
+        price = (bid + ask) / 2.0
+    elif last > 0:
+        price = last
+    else:
+        return None
+    return {
+        "venue": venue,
+        "price": price,
+        "bid": bid if bid > 0 else None,
+        "ask": ask if ask > 0 else None,
+        "timestamp": timestamp,
+    }
+
+
+def _brti_proxy(quotes) -> Optional[Dict[str, Any]]:
+    """Robust constituent-venue aggregate; deliberately not labelled official BRTI."""
+    clean = [dict(row) for row in quotes or [] if row and _finite_number(row.get("price"), 0.0) > 0]
+    if not clean:
+        return None
+    median = statistics.median(_finite_number(row["price"]) for row in clean)
+    deviations = [abs(_finite_number(row["price"]) - median) for row in clean]
+    mad = statistics.median(deviations) if deviations else 0.0
+    tolerance = max(median * 0.0015, mad * 4.5)
+    accepted = [row for row in clean if abs(_finite_number(row["price"]) - median) <= tolerance]
+    if not accepted:
+        accepted = clean
+    proxy = statistics.median(_finite_number(row["price"]) for row in accepted)
+    dispersion = (
+        (max(_finite_number(row["price"]) for row in accepted)
+         - min(_finite_number(row["price"]) for row in accepted))
+        / proxy * 10_000.0
+        if len(accepted) > 1 and proxy > 0 else 0.0
+    )
+    return {
+        "price": proxy,
+        "venueCount": len(accepted),
+        "venues": [row["venue"] for row in accepted],
+        "rejectedVenues": [row["venue"] for row in clean if row not in accepted],
+        "dispersionBps": dispersion,
+        "quotes": accepted,
+    }
 
 
 def _account_equity_cents(balance: Mapping[str, Any], environment: str) -> float:
@@ -112,6 +235,95 @@ def _parse_utc(value: Any) -> Optional[datetime]:
     return parsed.astimezone(timezone.utc)
 
 
+def _market_observation(
+    environment: str,
+    decision: Mapping[str, Any],
+    order: Optional[Mapping[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Build a compact, idempotent 15-second research sample."""
+    market = dict(decision.get("market") or {})
+    ticker = str(market.get("ticker") or "").strip()
+    if not ticker:
+        return None
+    observed = _parse_utc(decision.get("generatedAt")) or datetime.now(timezone.utc)
+    bucket_epoch = int(observed.timestamp()) // 15 * 15
+    model = dict(decision.get("model") or {})
+    edge = dict(decision.get("edge") or {})
+    account = dict(decision.get("account") or {})
+    return {
+        "environment": _execution_mode(environment),
+        "ticker": ticker,
+        "observation_key": f"{ticker}:{bucket_epoch}",
+        "observed_at": observed.isoformat().replace("+00:00", "Z"),
+        "action": str(decision.get("action") or "WAIT"),
+        "side": decision.get("side"),
+        "execution_intent": decision.get("executionIntent"),
+        "signal_quality": int(_finite_number(decision.get("signalQuality"), 0.0)),
+        "seconds_to_close": int(_finite_number(market.get("secondsToClose"), -1.0)),
+        "model_yes_probability": model.get("modelYesProbability"),
+        "fair_yes_probability": model.get("fairYesProbability"),
+        "executable_price": edge.get("price"),
+        "net_edge": edge.get("netEdge"),
+        "conservative_edge": edge.get("conservativeEdge"),
+        "spread": market.get("spread"),
+        "book_imbalance": market.get("bookImbalance"),
+        "blocked_reasons": [
+            str(reason)[:80] for reason in (decision.get("blockingReasons") or [])[:20]
+        ],
+        "features": {
+            "market": {
+                key: market.get(key)
+                for key in (
+                    "status", "yesBid", "yesAsk", "noBid", "noAsk",
+                    "yesAskDepth", "noAskDepth", "selectedDepth",
+                    "edgeEligibleDepth", "referenceAgeSeconds",
+                )
+            },
+            "model": {
+                key: model.get(key)
+                for key in (
+                    "spot", "strike", "distanceBps", "momentum3m",
+                    "momentum15m", "volatilityRatio", "jumpSigma",
+                    "marketYesProbability", "uncertainty", "sampleSize",
+                    "settlementEffectiveHorizonMinutes", "referenceModel",
+                    "referenceVenueCount", "referenceDispersionBps",
+                    "basisReserveBpsApplied",
+                )
+            },
+            "execution": {
+                "topPrice": edge.get("price"),
+                "marginalLimitPrice": edge.get("executionLimitPrice"),
+                "feePerContract": edge.get("feePerContract"),
+                "adaptiveEdgePremium": edge.get("adaptiveEdgePremium"),
+            },
+            "account": {
+                key: account.get(key)
+                for key in (
+                    "heldSide", "heldCount", "cashAvailable",
+                    "portfolioExposure", "currentMarketExposure",
+                )
+            },
+            "positionManagement": dict(decision.get("positionManagement") or {}),
+            "exitAnalysis": {
+                key: (decision.get("exitAnalysis") or {}).get(key)
+                for key in (
+                    "heldProbability", "netExitValuePerContract", "exitValueEdge",
+                    "netExitPnlPerContract", "exitLossFraction", "trigger",
+                )
+            },
+        },
+        "order_result": ({
+            key: order.get(key)
+            for key in (
+                "order_id", "client_order_id", "status", "action",
+                "outcome_side", "count_fp", "fill_count_fp",
+                "average_price_dollars", "fee_cost_dollars",
+                "realized_pnl_dollars",
+            )
+        } if order else None),
+    }
+
+
 def _paper_account_context(
     portfolio: Mapping[str, Any],
     state: Mapping[str, Any],
@@ -138,13 +350,16 @@ def _paper_account_context(
         abs(_finite_number(row.get("market_exposure_dollars") or row.get("market_exposure")))
         for row in positions
     )
+    current_market_exposure = sum(
+        abs(_finite_number(row.get("market_exposure_dollars") or row.get("market_exposure")))
+        for row in matching_positions
+    )
     daily_order_ids = {
         str(row.get("order_id") or row.get("fill_id") or "")
         for row in fills
         if (_parse_utc(row.get("created_time")) or datetime.min.replace(tzinfo=timezone.utc)).date() == now.date()
     }
     strategy = dict(state.get("strategy") or {})
-    cooldown_until = _parse_utc(strategy.get("cooldownUntil"))
     daily_pnl = (
         _finite_number(strategy.get("dailyPnl"))
         if strategy.get("dailyPnlDate") == now.date().isoformat()
@@ -156,17 +371,12 @@ def _paper_account_context(
         "bankroll": bankroll,
         "cashAvailable": max(0.0, cash_available),
         "portfolioExposure": portfolio_exposure,
+        "currentMarketExposure": current_market_exposure,
         "hasPosition": bool(matching_positions),
         "hasOpenOrder": bool(matching_orders),
         "alreadyTraded": ticker in set(state.get("tradedTickers") or []),
         "dailyTrades": len(daily_order_ids - {""}),
         "dailyPnl": daily_pnl,
-        "cooldownActive": bool(cooldown_until and cooldown_until > now),
-        "cooldownDetail": (
-            f"until {cooldown_until.isoformat().replace('+00:00', 'Z')}"
-            if cooldown_until and cooldown_until > now
-            else f"{int(strategy.get('consecutiveLosses') or 0)} consecutive losses"
-        ),
     }
 
 
@@ -417,6 +627,21 @@ def _recent_filled_entry_age(state: Mapping[str, Any], ticker: str) -> Optional[
     return None
 
 
+def _recent_filled_entry_signal(state: Mapping[str, Any], ticker: str, side: str) -> Optional[Dict[str, float]]:
+    """Return the last filled same-side signal so scale-ins require improvement."""
+    side = str(side or "").upper()
+    for row in list(state.get("decisions") or []):
+        if str(row.get("ticker") or "") != ticker or str(row.get("side") or "").upper() != side:
+            continue
+        if not row.get("orderFilled") or not str(row.get("action") or "").startswith("BUY_"):
+            continue
+        return {
+            "probability": _finite_number(row.get("fairProbability"), 0.0),
+            "conservativeEdge": _finite_number(row.get("conservativeEdge"), -1.0),
+        }
+    return None
+
+
 def _intent_client_order_id(
     user_id: str,
     environment: str,
@@ -476,7 +701,14 @@ def _paper_order_payload(
         - _finite_number(edge.get("minimumConservativeEdge")),
     )
     crossing = min(max(0.0, float(price_tolerance or 0.0)), edge_room * 0.5)
-    execution_price = min(0.99, selected_price + crossing) if is_buy else max(0.01, selected_price - crossing)
+    marginal_limit = _finite_number(edge.get("executionLimitPrice"), -1.0)
+    if is_buy and selected_price <= marginal_limit < 1.0:
+        # The engine has evaluated every included depth level after fees and
+        # uncertainty, so this limit can safely consume positive-edge depth.
+        execution_price = min(0.99, marginal_limit)
+        crossing = max(0.0, execution_price - selected_price)
+    else:
+        execution_price = min(0.99, selected_price + crossing) if is_buy else max(0.01, selected_price - crossing)
     yes_book_price = execution_price if side == "YES" else 1.0 - execution_price
     if not str(ticker or "").strip() or not 0.0 < yes_book_price < 1.0:
         return None
@@ -798,7 +1030,7 @@ def _reconcile_live_exit_fills(fills) -> list:
     rows = [
         dict(row) for row in list(fills or [])
         if isinstance(row, Mapping)
-        and _is_btc15_ticker(row.get("ticker") or row.get("market_ticker"))
+        and _is_supported_kalshi_ticker(row.get("ticker") or row.get("market_ticker"))
     ]
     rows.sort(key=lambda row: (
         str(row.get("created_time") or ""),
@@ -864,6 +1096,71 @@ def _reconcile_live_exit_fills(fills) -> list:
             "realized_pnl_dollars": round(realized_pnl, 8),
         })
     return reconciled
+
+
+def _open_live_fill_inventory(fills) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    """Rebuild open FIFO lots from canonical Kalshi fills.
+
+    The authenticated position endpoint is authoritative for quantity. Fill
+    history supplies the missing entry economics used by exit decisions, so
+    market exposure is never mistaken for cost basis.
+    """
+    queues: Dict[Tuple[str, str], list] = {}
+    last_trade: Dict[Tuple[str, str], Any] = {}
+    rows = sorted(
+        [dict(row) for row in fills or [] if isinstance(row, Mapping)],
+        key=lambda row: (
+            str(row.get("created_time") or ""),
+            str(row.get("fill_id") or row.get("order_id") or ""),
+        ),
+    )
+    for row in rows:
+        ticker = str(row.get("ticker") or row.get("market_ticker") or "")
+        side = str(row.get("outcome_side") or "").upper()
+        action = str(row.get("action") or "").upper()
+        count = _finite_number(row.get("count_fp") or row.get("fill_count_fp"), 0.0)
+        price = _finite_number(row.get("average_price_dollars") or row.get("price_dollars"), 0.0)
+        if not _is_supported_kalshi_ticker(ticker) or side not in {"YES", "NO"} or count <= 0:
+            continue
+        key = (ticker, side)
+        queue = queues.setdefault(key, [])
+        last_trade[key] = row.get("created_time")
+        if action == "BUY" and price > 0:
+            queue.append({
+                "count": count,
+                "price": price,
+                "fee": max(0.0, _finite_number(row.get("fee_cost_dollars"), 0.0)),
+            })
+        elif action == "SELL":
+            remaining = count
+            while remaining > 1e-9 and queue:
+                lot = queue[0]
+                available = _finite_number(lot.get("count"), 0.0)
+                matched = min(remaining, available)
+                fraction = matched / available if available > 0 else 0.0
+                lot["count"] = max(0.0, available - matched)
+                lot["fee"] = max(0.0, _finite_number(lot.get("fee"), 0.0) * (1.0 - fraction))
+                remaining -= matched
+                if lot["count"] <= 1e-9:
+                    queue.pop(0)
+
+    result: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for key, queue in queues.items():
+        count = sum(_finite_number(lot.get("count"), 0.0) for lot in queue)
+        if count <= 1e-9:
+            continue
+        principal = sum(
+            _finite_number(lot.get("count"), 0.0) * _finite_number(lot.get("price"), 0.0)
+            for lot in queue
+        )
+        result[key] = {
+            "count": count,
+            "principal": principal,
+            "averagePrice": principal / count,
+            "entryFee": sum(_finite_number(lot.get("fee"), 0.0) for lot in queue),
+            "lastTradeAt": last_trade.get(key),
+        }
+    return result
 
 
 def _normalise_live_settlement(raw: Mapping[str, Any]) -> Dict[str, Any]:
@@ -1070,15 +1367,36 @@ class _PublicDataClient:
                 warnings.append("kalshi_orderbook_unavailable")
 
         ticker_payload: Mapping[str, Any] = {}
+        venue_payloads: Dict[str, Mapping[str, Any]] = {}
         candles = []
-        try:
-            ticker_payload = self._cached_json(
-                "coinbase-btc-ticker",
-                f"{COINBASE_EXCHANGE_BASE}/products/BTC-USD/ticker",
-                ttl=1.0,
-            ) or {}
-        except KalshiApiError:
+        venue_requests = {
+            "coinbase": ("coinbase-btc-ticker", f"{COINBASE_EXCHANGE_BASE}/products/BTC-USD/ticker"),
+            "bitstamp": ("bitstamp-btc-ticker", f"{BITSTAMP_BASE}/ticker/btcusd/"),
+            "gemini": ("gemini-btc-ticker", f"{GEMINI_BASE}/pubticker/btcusd"),
+            "kraken": ("kraken-btc-ticker", f"{KRAKEN_BASE}/Ticker?pair=XBTUSD"),
+        }
+        with ThreadPoolExecutor(max_workers=len(venue_requests)) as executor:
+            futures = {
+                venue: executor.submit(self._cached_json, cache_key, url, ttl=1.0, timeout=4.0)
+                for venue, (cache_key, url) in venue_requests.items()
+            }
+            for venue, future in futures.items():
+                try:
+                    venue_payloads[venue] = future.result() or {}
+                except KalshiApiError:
+                    warnings.append(f"{venue}_reference_unavailable")
+        ticker_payload = venue_payloads.get("coinbase") or {}
+        venue_quotes = [
+            quote for quote in (
+                _venue_quote(venue, payload)
+                for venue, payload in venue_payloads.items()
+            ) if quote
+        ]
+        proxy = _brti_proxy(venue_quotes)
+        if not proxy:
             warnings.append("btc_reference_unavailable")
+        elif int(proxy.get("venueCount") or 0) < 2:
+            warnings.append("brti_proxy_single_venue")
         try:
             candles = self._cached_json(
                 "coinbase-btc-candles-1m",
@@ -1093,6 +1411,7 @@ class _PublicDataClient:
             warnings.append("btc_history_unavailable")
 
         fetched_at = now.isoformat().replace("+00:00", "Z")
+        reference_price = (proxy or {}).get("price") or ticker_payload.get("price")
         return {
             "asOf": fetched_at,
             "selection": selection,
@@ -1102,10 +1421,19 @@ class _PublicDataClient:
             "orderbookAsOf": orderbook_as_of,
             "reference": {
                 "symbol": "BTC-USD",
-                "price": ticker_payload.get("price"),
+                "price": reference_price,
                 "bid": ticker_payload.get("bid"),
                 "ask": ticker_payload.get("ask"),
-                "timestamp": ticker_payload.get("time"),
+                # The aggregate is computed at fetch time; individual venue
+                # timestamps remain available below for audit.
+                "timestamp": fetched_at if proxy else ticker_payload.get("time"),
+                "model": "brti_constituent_proxy" if proxy else "coinbase_fallback",
+                "isOfficialBrti": False,
+                "venueCount": int((proxy or {}).get("venueCount") or 0),
+                "venues": list((proxy or {}).get("venues") or []),
+                "rejectedVenues": list((proxy or {}).get("rejectedVenues") or []),
+                "dispersionBps": round(_finite_number((proxy or {}).get("dispersionBps")), 4),
+                "venueQuotes": list((proxy or {}).get("quotes") or []),
                 "candles": candles,
                 "candleCount": len(candles),
             },
@@ -1114,7 +1442,81 @@ class _PublicDataClient:
                 "contract": f"Kalshi {BTC_15M_SERIES}",
                 "orderbook": "Kalshi public market orderbook",
                 "settlement": "CF Benchmarks BRTI",
-                "spotReference": "Coinbase Exchange BTC-USD",
+                "spotReference": "BRTI constituent-exchange proxy (Coinbase, Bitstamp, Gemini, Kraken)",
+            },
+        }
+
+    def hourly_snapshot(self, *, now: Optional[datetime] = None, base_url: str = KALSHI_PUBLIC_BASE) -> Dict[str, Any]:
+        """Return the nearest active KXBTCD event and executable strike books.
+
+        The hourly event is a ladder of binary strike contracts.  It is kept
+        separate from the 15-minute contract selector, while sharing the same
+        BRTI-proxy reference evidence and candle history.
+        """
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        reference_snapshot = self.snapshot(now=now, base_url=base_url)
+        payload = self._cached_json(
+            f"kalshi-btchourly-open:{base_url}",
+            f"{base_url}/markets",
+            params={"series_ticker": BTC_HOURLY_SERIES, "status": "open", "limit": 1000},
+            ttl=2.0,
+        )
+        markets = [dict(row) for row in ((payload or {}).get("markets") or []) if isinstance(row, Mapping)]
+        eligible = []
+        for market in markets:
+            close_at = _parse_utc(market.get("close_time") or market.get("close_ts"))
+            seconds = (close_at - now).total_seconds() if close_at else -1
+            if 45 <= seconds <= 3700 and str(market.get("status") or "").lower() in {"active", "open"}:
+                eligible.append((seconds, str(market.get("event_ticker") or ""), market))
+        if not eligible:
+            raise KalshiApiError("No active KXBTCD hourly strike event was returned by Kalshi")
+        nearest_seconds, event_ticker, _ = min(eligible, key=lambda item: item[0])
+        event_markets = [market for seconds, event, market in eligible if event == event_ticker]
+        spot = _finite_number((reference_snapshot.get("reference") or {}).get("price"), 0.0)
+        event_markets.sort(key=lambda market: abs(_finite_number(market.get("floor_strike"), spot) - spot))
+        # Sixteen nearby strikes cover both liquid favorites around spot while
+        # keeping the five-second public-data cadence bounded.
+        selected_markets = event_markets[:16]
+
+        def load_book(market: Mapping[str, Any]):
+            ticker = str(market.get("ticker") or "")
+            payload = self._cached_json(
+                f"kalshi-orderbook:{base_url}:{ticker}",
+                f"{base_url}/markets/{ticker}/orderbook",
+                params={"depth": 20},
+                ttl=0.75,
+            )
+            fixed = (payload or {}).get("orderbook_fp") or {}
+            return ticker, {
+                "yes": fixed.get("yes_dollars") or [],
+                "no": fixed.get("no_dollars") or [],
+            }
+
+        books: Dict[str, Dict[str, Any]] = {}
+        warnings = list(reference_snapshot.get("warnings") or [])
+        with ThreadPoolExecutor(max_workers=min(8, max(1, len(selected_markets)))) as pool:
+            futures = [pool.submit(load_book, market) for market in selected_markets]
+            for future in futures:
+                try:
+                    ticker, book = future.result()
+                    books[ticker] = book
+                except Exception:
+                    warnings.append("hourly_orderbook_unavailable")
+        as_of = now.isoformat().replace("+00:00", "Z")
+        return {
+            "asOf": as_of,
+            "selection": "active",
+            "seriesTicker": BTC_HOURLY_SERIES,
+            "eventTicker": event_ticker,
+            "secondsToClose": nearest_seconds,
+            "markets": selected_markets,
+            "orderbooks": books,
+            "orderbookAsOf": as_of,
+            "reference": dict(reference_snapshot.get("reference") or {}),
+            "warnings": sorted(set(warnings)),
+            "sources": {
+                **dict(reference_snapshot.get("sources") or {}),
+                "contract": f"Kalshi {BTC_HOURLY_SERIES} hourly strike ladder",
             },
         }
 
@@ -1126,108 +1528,31 @@ class _PaperRobotController:
         state,
         paper_accounts,
         *,
-        ai_candidate_reviewer=None,
-        ai_learning_reviewer=None,
-        ai_status_resolver=None,
         connection_loader: Optional[Callable[[str], Mapping[str, Any]]] = None,
         signed_request: Optional[Callable[..., Dict[str, Any]]] = None,
         notifier: Optional[Callable[[str, str, Mapping[str, Any]], Any]] = None,
+        observation_saver: Optional[Callable[[str, Mapping[str, Any]], Any]] = None,
+        scheduler_lease_acquirer: Optional[Callable[[], bool]] = None,
         safe_print=print,
         start_background=False,
     ):
         self.client = client
         self.state = state
         self.paper_accounts = paper_accounts
-        self.ai_candidate_reviewer = ai_candidate_reviewer
-        self.ai_learning_reviewer = ai_learning_reviewer
-        self.ai_status_resolver = ai_status_resolver
         self.connection_loader = connection_loader
         self.signed_request = signed_request
         self.notifier = notifier
+        self.observation_saver = observation_saver
+        self.scheduler_lease_acquirer = scheduler_lease_acquirer
         self.safe_print = safe_print
         self._stop_event = threading.Event()
-        self._ai_review_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-        self._ai_review_lock = threading.RLock()
         self._tick_locks: Dict[str, threading.RLock] = {}
         self._tick_locks_guard = threading.RLock()
+        self._historical_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+        self._historical_cache_lock = threading.RLock()
+        self._last_hourly_tick: Dict[str, float] = {}
         if start_background:
             threading.Thread(target=self._loop, name="kalshi-robot", daemon=True).start()
-
-    def _candidate_ai_review(
-        self,
-        user_id: str,
-        decision: Mapping[str, Any],
-        account_context: Mapping[str, Any],
-    ) -> Dict[str, Any]:
-        """Run a cached, downgrade-only review for a cleared new-entry candidate."""
-        config = dict(decision.get("config") or {})
-        if not config.get("preTradeAiReview"):
-            return {"status": "disabled", "verdict": "not_reviewed"}
-        if not callable(self.ai_candidate_reviewer):
-            return {"status": "unavailable", "verdict": "not_reviewed", "summary": "AI reviewer is unavailable."}
-
-        market = dict(decision.get("market") or {})
-        model = dict(decision.get("model") or {})
-        edge = dict(decision.get("edge") or {})
-        ticker = str(market.get("ticker") or "")
-        evidence = {
-            "ticker": ticker,
-            "generatedAt": decision.get("generatedAt"),
-            "deterministicAction": decision.get("action"),
-            "selectedSide": decision.get("side"),
-            "signalQuality": decision.get("signalQuality"),
-            "market": {key: market.get(key) for key in (
-                "status", "secondsToClose", "strike", "yesBid", "yesAsk", "noBid", "noAsk",
-                "spread", "yesAskDepth", "noAskDepth", "bookImbalance", "micropriceYes",
-                "bookAgeSeconds", "volume", "openInterest",
-            )},
-            "model": {key: model.get(key) for key in (
-                "spot", "distanceBps", "momentum3m", "momentum5m", "momentum15m",
-                "projected15mVolatility", "horizonVolatility", "volatilityRatio", "jumpSigma",
-                "marketYesProbability", "modelYesProbability", "fairYesProbability",
-                "uncertainty", "referenceAgeSeconds", "sampleSize",
-            )},
-            "edge": {key: edge.get(key) for key in (
-                "side", "price", "fairProbability", "grossEdge", "feePerContract",
-                "netEdge", "conservativeProbability", "conservativeEdge",
-                "minimumNetEdge", "minimumConservativeEdge",
-            )},
-            "account": {key: account_context.get(key) for key in (
-                "bankroll", "cashAvailable", "portfolioExposure", "dailyTrades", "dailyPnl",
-                "cooldownActive", "hasPosition", "hasOpenOrder", "alreadyTraded",
-            )},
-            "passedGates": [str(gate.get("key")) for gate in decision.get("gates") or [] if gate.get("status") == "pass"],
-            "rule": "AI may challenge this new entry but cannot change side, price, size, or any hard gate.",
-        }
-        # The robot evaluates every five seconds. Keep the key stable across
-        # small quote changes so one contract/side can trigger at most one AI
-        # request per review window.
-        cache_key = "%s:%s:%s" % (user_id, ticker, decision.get("side"))
-        now = time.time()
-        with self._ai_review_lock:
-            cached = self._ai_review_cache.get(cache_key)
-            if cached and now - cached[0] < 45.0:
-                return {**copy.deepcopy(cached[1]), "cached": True}
-        try:
-            result = dict(self.ai_candidate_reviewer(user_id, evidence) or {})
-        except Exception as exc:
-            result = {
-                "status": "unavailable",
-                "verdict": "not_reviewed",
-                "summary": f"AI review failed safely: {type(exc).__name__}.",
-            }
-        result.setdefault("status", "unavailable")
-        result.setdefault("verdict", "not_reviewed")
-        result["ticker"] = ticker
-        result["reviewedAt"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        result["cached"] = False
-        with self._ai_review_lock:
-            self._ai_review_cache[cache_key] = (now, copy.deepcopy(result))
-            if len(self._ai_review_cache) > 256:
-                oldest = sorted(self._ai_review_cache.items(), key=lambda item: item[1][0])[:64]
-                for key, _ in oldest:
-                    self._ai_review_cache.pop(key, None)
-        return result
 
     def _real_config(self, user_id: str) -> Mapping[str, Any]:
         if not callable(self.connection_loader):
@@ -1257,6 +1582,41 @@ class _PaperRobotController:
             self.safe_print(f"[KalshiReal] optional signed fetch failed endpoint={endpoint} error={type(exc).__name__}")
             return {}
 
+    def _historical_account_rows(self, user_id: str, config: Mapping[str, Any]) -> Dict[str, Any]:
+        """Load paginated exchange history with a bounded 15-minute cache."""
+        cache_key = str(user_id)
+        now = time.monotonic()
+        with self._historical_cache_lock:
+            cached = self._historical_cache.get(cache_key)
+            if cached and now - cached[0] < 900:
+                return copy.deepcopy(cached[1])
+
+        def collect(endpoint: str, collection: str) -> list:
+            rows = []
+            cursor = None
+            for _ in range(5):
+                params: Dict[str, Any] = {"limit": 1000}
+                if cursor:
+                    params["cursor"] = cursor
+                payload = self._optional_signed(config, endpoint, params=params)
+                page = payload.get(collection) or []
+                rows.extend(dict(row) for row in page if isinstance(row, Mapping))
+                cursor = payload.get("cursor") or payload.get("next_cursor")
+                if not cursor or not page:
+                    break
+            return rows
+
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="kalshi-history") as pool:
+            orders_future = pool.submit(collect, "/historical/orders", "orders")
+            fills_future = pool.submit(collect, "/historical/fills", "fills")
+            result = {
+                "orders": orders_future.result(),
+                "fills": fills_future.result(),
+            }
+        with self._historical_cache_lock:
+            self._historical_cache[cache_key] = (now, copy.deepcopy(result))
+        return result
+
     def _live_portfolio(self, user_id: str) -> Dict[str, Any]:
         config = self._real_config(user_id)
         # These endpoints are independent. Reading them concurrently cuts the
@@ -1274,13 +1634,14 @@ class _PaperRobotController:
                 self._optional_signed, config, "/portfolio/fills", params={"limit": 1000}
             )
             settlements_future = pool.submit(
-                self._optional_signed, config, "/portfolio/settlements", params={"limit": 100}
+                self._optional_signed, config, "/portfolio/settlements", params={"limit": 1000}
             )
             balance_payload = balance_future.result()
             positions_payload = positions_future.result()
             orders_payload = orders_future.result()
             fills_payload = fills_future.result()
             settlements_payload = settlements_future.result()
+        historical = self._historical_account_rows(user_id, config)
 
         raw_positions = list(
             positions_payload.get("market_positions")
@@ -1293,7 +1654,7 @@ class _PaperRobotController:
             if not isinstance(row, Mapping):
                 continue
             ticker = str(row.get("ticker") or row.get("market_ticker") or row.get("market") or "")
-            if not _is_btc15_ticker(ticker):
+            if not _is_supported_kalshi_ticker(ticker):
                 continue
             yes_count = _finite_number(row.get("yes_count") or row.get("yes_count_fp") or row.get("yes_position") or 0.0)
             no_count = _finite_number(row.get("no_count") or row.get("no_count_fp") or row.get("no_position") or 0.0)
@@ -1337,15 +1698,22 @@ class _PaperRobotController:
             })
 
         raw_orders = list(orders_payload.get("orders") or orders_payload.get("order_history") or [])
+        raw_orders.extend(historical.get("orders") or [])
         orders = []
         orders_by_id = {}
         order_fill_fallback = []
+        seen_order_ids = set()
         for row in raw_orders:
             if not isinstance(row, Mapping):
                 continue
             normalized = _normalise_live_order(row, row, {"side": row.get("outcome_side") or ""})
-            if not _is_btc15_ticker(normalized.get("ticker") or normalized.get("market_ticker")):
+            if not _is_supported_kalshi_ticker(normalized.get("ticker") or normalized.get("market_ticker")):
                 continue
+            order_key = str(normalized.get("order_id") or normalized.get("client_order_id") or "")
+            if order_key and order_key in seen_order_ids:
+                continue
+            if order_key:
+                seen_order_ids.add(order_key)
             orders.append(normalized)
             for identifier in (normalized.get("order_id"), normalized.get("client_order_id")):
                 if identifier:
@@ -1360,6 +1728,7 @@ class _PaperRobotController:
             or fills_payload.get("trades")
             or []
         )
+        raw_fills.extend(historical.get("fills") or [])
         fills = []
         seen_fill_ids = set()
         for row in raw_fills:
@@ -1367,7 +1736,7 @@ class _PaperRobotController:
                 continue
             order_context = orders_by_id.get(str(row.get("order_id") or ""))
             normalized = _normalise_live_fill(row, order_context)
-            if not _is_btc15_ticker(normalized.get("ticker") or normalized.get("market_ticker")):
+            if not _is_supported_kalshi_ticker(normalized.get("ticker") or normalized.get("market_ticker")):
                 continue
             fill_id = str(normalized.get("fill_id") or normalized.get("order_id") or uuid.uuid4())
             if fill_id in seen_fill_ids:
@@ -1380,6 +1749,28 @@ class _PaperRobotController:
         if not fills:
             fills = order_fill_fallback
         fills = _reconcile_live_exit_fills(fills)
+        open_inventory = _open_live_fill_inventory(fills)
+        for position_row in positions:
+            ticker = str(position_row.get("ticker") or "")
+            side = str(position_row.get("net_side") or "").upper()
+            inventory = open_inventory.get((ticker, side))
+            if not inventory:
+                continue
+            prefix = side.lower()
+            position_row[f"{prefix}_average_price_dollars"] = inventory["averagePrice"]
+            position_row[f"{prefix}_cost"] = inventory["principal"]
+            position_row[f"{prefix}_fee_cost_dollars"] = inventory["entryFee"]
+            position_row["position_cost_dollars"] = inventory["principal"]
+            position_row["fee_cost_dollars"] = inventory["entryFee"]
+            position_row["last_trade_at"] = inventory.get("lastTradeAt") or position_row.get("last_trade_at")
+            # Cost-based unrealized P/L is intentionally marked only when the
+            # position endpoint supplies a usable current value.
+            if _finite_number(position_row.get("market_value_dollars"), 0.0) > 0:
+                position_row["unrealized_pnl_dollars"] = (
+                    _finite_number(position_row.get("market_value_dollars"))
+                    - inventory["principal"]
+                    - inventory["entryFee"]
+                )
 
         raw_settlements = list(
             settlements_payload.get("settlements")
@@ -1392,7 +1783,7 @@ class _PaperRobotController:
             if not isinstance(row, Mapping):
                 continue
             normalized = _normalise_live_settlement(row)
-            if _is_btc15_ticker(normalized.get("ticker") or normalized.get("market_ticker")):
+            if _is_supported_kalshi_ticker(normalized.get("ticker") or normalized.get("market_ticker")):
                 settlements.append(normalized)
 
         state = self.state.reconcile_settlements(user_id, settlements, fills, environment="real")
@@ -1404,9 +1795,9 @@ class _PaperRobotController:
                 "closedTradeRecords", "realizedTradeRecords", "realizedSamples",
                 "realizedWins", "realizedLosses", "realizedWinRate",
                 "realizedTotalPnl", "realizedAveragePnl", "equityCurve",
-                "learning",
             )
         }
+        analytics["marketPerformance"] = _family_performance(state.get("strategy") or {})
 
         return {
             "environment": "real",
@@ -1416,10 +1807,10 @@ class _PaperRobotController:
                 "balance": _cents_amount(balance_payload.get("balance")),
                 "portfolio_value": _cents_amount(balance_payload.get("portfolio_value") or balance_payload.get("portfolioValue")),
             },
-            "positions": positions,
-            "orders": orders,
-            "fills": fills,
-            "settlements": settlements,
+            "positions": [_tag_market_family(row) for row in positions],
+            "orders": [_tag_market_family(row) for row in orders],
+            "fills": [_tag_market_family(row) for row in fills],
+            "settlements": [_tag_market_family(row) for row in settlements],
             "analytics": analytics,
         }
 
@@ -1428,8 +1819,7 @@ class _PaperRobotController:
         if environment == "real":
             return self._live_portfolio(user_id)
         open_tickers = set(self.paper_accounts.open_tickers(user_id))
-        learning_tickers = set(self.state.pending_learning_tickers(user_id, environment=environment))
-        for ticker in open_tickers | learning_tickers:
+        for ticker in open_tickers:
             try:
                 market = self.client.market(ticker)
             except Exception as exc:
@@ -1438,18 +1828,16 @@ class _PaperRobotController:
             result_value = str(market.get("result") or market.get("market_result") or "").upper()
             if result_value in {"YES", "NO"}:
                 settled_time = str(market.get("settlement_ts") or market.get("determined_time") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
-                self.state.reconcile_learning_outcome(user_id, ticker, result_value, settled_at=settled_time, environment=environment)
-                if ticker in open_tickers:
-                    settlement = self.paper_accounts.settle(user_id, ticker, result_value, settled_time=settled_time)
-                    if settlement:
-                        self._notify_settlement(user_id, settlement)
-            elif ticker in open_tickers:
+                settlement = self.paper_accounts.settle(user_id, ticker, result_value, settled_time=settled_time)
+                if settlement:
+                    self._notify_settlement(user_id, settlement)
+            else:
                 self.paper_accounts.update_mark(user_id, ticker, market)
         result = self.paper_accounts.portfolio(user_id)
         for collection in ("positions", "orders", "fills", "settlements"):
             result[collection] = [
                 row for row in result.get(collection) or []
-                if _is_btc15_ticker((row or {}).get("ticker") or (row or {}).get("market_ticker"))
+                if _is_supported_kalshi_ticker((row or {}).get("ticker") or (row or {}).get("market_ticker"))
             ]
         state = self.state.reconcile_settlements(
             user_id,
@@ -1465,9 +1853,13 @@ class _PaperRobotController:
                 "closedTradeRecords", "realizedTradeRecords", "realizedSamples",
                 "realizedWins", "realizedLosses", "realizedWinRate",
                 "realizedTotalPnl", "realizedAveragePnl", "equityCurve",
-                "learning",
             )
         }
+        result["analytics"]["marketPerformance"] = _family_performance(
+            state.get("strategy") or {}
+        )
+        for collection in ("positions", "orders", "fills", "settlements"):
+            result[collection] = [_tag_market_family(row) for row in result.get(collection) or []]
         return result
 
     def _submit_live_order(self, user_id: str, payload: Mapping[str, Any], decision: Mapping[str, Any]) -> Dict[str, Any]:
@@ -1487,7 +1879,14 @@ class _PaperRobotController:
         self._notify_order(user_id, order, decision)
         return order
 
-    def tick(self, user_id: str, *, submit_order: bool, mode: Optional[str] = None) -> Dict[str, Any]:
+    def tick(
+        self,
+        user_id: str,
+        *,
+        submit_order: bool,
+        mode: Optional[str] = None,
+        family: str = "btc15m",
+    ) -> Dict[str, Any]:
         """Serialize each account's evaluate-and-route cycle.
 
         The background scheduler and a manual refresh may arrive together. A
@@ -1498,9 +1897,21 @@ class _PaperRobotController:
         with self._tick_locks_guard:
             lock = self._tick_locks.setdefault(key, threading.RLock())
         with lock:
-            return self._tick_locked(user_id, submit_order=submit_order, mode=mode)
+            return self._tick_locked(
+                user_id,
+                submit_order=submit_order,
+                mode=mode,
+                family=family,
+            )
 
-    def _tick_locked(self, user_id: str, *, submit_order: bool, mode: Optional[str] = None) -> Dict[str, Any]:
+    def _tick_locked(
+        self,
+        user_id: str,
+        *,
+        submit_order: bool,
+        mode: Optional[str] = None,
+        family: str = "btc15m",
+    ) -> Dict[str, Any]:
         seed_state = self.state.get(user_id)
         strategy_seed = dict(seed_state.get("config") or {})
         execution_mode = _execution_mode(mode or strategy_seed.get("executionMode") or "paper")
@@ -1508,24 +1919,6 @@ class _PaperRobotController:
         strategy_seed = dict(robot_state.get("config") or {})
         portfolio = self.portfolio(user_id, mode=execution_mode)
         environment = "real" if execution_mode == "real" else "paper"
-        evidence = self.state.claim_ai_learning_review(user_id, environment=environment)
-        if evidence and callable(self.ai_learning_reviewer):
-            try:
-                response = dict(self.ai_learning_reviewer(user_id, evidence) or {})
-                self.state.complete_ai_learning_review(
-                    user_id,
-                    dict(response.get("review") or {}),
-                    provider=str(response.get("provider") or ""),
-                    model=str(response.get("model") or ""),
-                    error=str(response.get("error") or "") or None,
-                )
-            except Exception as exc:
-                self.state.complete_ai_learning_review(
-                    user_id,
-                    {},
-                    error=f"AI calibration review failed: {type(exc).__name__}",
-                )
-        robot_state = self.state.get(user_id, environment=execution_mode)
         balance = portfolio.get("balance") or {}
         cash_cents = _finite_number(balance.get("balance"), 0.0)
         # Current Kalshi /portfolio/balance semantics define portfolio_value as
@@ -1543,34 +1936,99 @@ class _PaperRobotController:
         strategy_config["executionMode"] = execution_mode
         strategy_config["paperBankroll"] = bankroll
         strategy_config = normalize_strategy_config(strategy_config)
-        snapshot = self.client.snapshot(base_url=KALSHI_PUBLIC_BASE)
+        family = "btchourly" if str(family).lower() == "btchourly" else "btc15m"
+        if family == "btchourly":
+            ladder = self.client.hourly_snapshot(base_url=KALSHI_PUBLIC_BASE)
+            hourly_config = {
+                **strategy_config,
+                "riskPerTradePct": min(_finite_number(strategy_config.get("riskPerTradePct"), 0.75), 0.50),
+                "minNetEdge": max(0.005, min(_finite_number(strategy_config.get("minNetEdge"), 0.0075), 0.0075)),
+                "minConservativeEdge": max(0.001, min(_finite_number(strategy_config.get("minConservativeEdge"), 0.002), 0.002)),
+                "minSecondsToClose": 120,
+                "maxSecondsToClose": 1800,
+                "minPrice": 0.48,
+                "maxPrice": 0.96,
+                "minModelProbability": 0.56,
+                "maxSingleMarketExposurePct": min(_finite_number(strategy_config.get("maxSingleMarketExposurePct"), 8.0), 6.0),
+            }
+            hourly_config = normalize_strategy_config(hourly_config)
+            candidates = []
+            for market in ladder.get("markets") or []:
+                candidate_ticker = str((market or {}).get("ticker") or "")
+                book = (ladder.get("orderbooks") or {}).get(candidate_ticker) or {}
+                context = _paper_account_context(portfolio, robot_state, candidate_ticker, bankroll)
+                if context.get("hasPosition"):
+                    context["hasPosition"] = False
+                    context["alreadyTraded"] = False
+                candidate = evaluate_btc15_contract(
+                    market,
+                    spot_price=(ladder.get("reference") or {}).get("price"),
+                    candles=(ladder.get("reference") or {}).get("candles") or [],
+                    config=hourly_config,
+                    orderbook=book,
+                    reference_time=(ladder.get("reference") or {}).get("timestamp"),
+                    reference_metadata=ladder.get("reference") or {},
+                    book_time=ladder.get("orderbookAsOf"),
+                    account_context=context,
+                )
+                candidates.append((candidate, market, book))
+            if not candidates:
+                raise KalshiApiError("The active KXBTCD event has no executable strike candidates")
+            # Prefer a routable opportunity; otherwise expose the closest
+            # uncertainty-adjusted candidate so the UI explains why it waited.
+            decision, selected_market, selected_book = max(
+                candidates,
+                key=lambda item: (
+                    1 if str(item[0].get("action") or "").startswith("BUY_") else 0,
+                    _finite_number((item[0].get("edge") or {}).get("conservativeEdge"), -99.0),
+                    _finite_number((item[0].get("edge") or {}).get("netEdge"), -99.0),
+                ),
+            )
+            strategy_config = hourly_config
+            snapshot = {
+                **dict(ladder),
+                "market": dict(selected_market),
+                "orderbook": dict(selected_book),
+                "candidateCount": len(candidates),
+                "candidateSummary": [
+                    {
+                        "ticker": (item[1] or {}).get("ticker"),
+                        "strike": (item[1] or {}).get("floor_strike"),
+                        "action": item[0].get("action"),
+                        "side": item[0].get("side"),
+                        "netEdge": (item[0].get("edge") or {}).get("netEdge"),
+                        "conservativeEdge": (item[0].get("edge") or {}).get("conservativeEdge"),
+                        "blockingReasons": item[0].get("blockingReasons"),
+                    }
+                    for item in candidates
+                ],
+            }
+        else:
+            snapshot = self.client.snapshot(base_url=KALSHI_PUBLIC_BASE)
+            candidate_ticker = str((snapshot.get("market") or {}).get("ticker") or "")
+            context = _paper_account_context(portfolio, robot_state, candidate_ticker, bankroll)
+            if context.get("hasPosition"):
+                context["hasPosition"] = False
+                context["alreadyTraded"] = False
+            decision = evaluate_btc15_contract(
+                snapshot["market"],
+                spot_price=snapshot["reference"].get("price"),
+                candles=snapshot["reference"].get("candles") or [],
+                config=strategy_config,
+                orderbook=snapshot.get("orderbook") or {},
+                reference_time=snapshot["reference"].get("timestamp"),
+                reference_metadata=snapshot.get("reference") or {},
+                book_time=snapshot.get("orderbookAsOf"),
+                account_context=context,
+            )
+        decision = dict(decision)
+        decision["marketFamily"] = family
+        decision["engine"] = "btchourly-strike-ladder-v1" if family == "btchourly" else decision.get("engine")
         ticker = str((snapshot.get("market") or {}).get("ticker") or "")
         account_context = _paper_account_context(portfolio, robot_state, ticker, bankroll)
-        if execution_mode != "real":
-            account_context["cooldownActive"] = False
-            account_context["cooldownDetail"] = "disabled for paper mode"
-        decision_context = dict(account_context)
         position_context = _position_execution_context(portfolio, ticker)
         held_side = position_context.get("side")
         held_count = int(position_context.get("count") or 0)
-        if held_side:
-            # Let the model calculate a fresh directional signal first. The
-            # controller then decides whether that signal closes/reverses an
-            # existing contract or should be skipped because we are already
-            # aligned.
-            decision_context["hasPosition"] = False
-            decision_context["alreadyTraded"] = False
-        decision = evaluate_btc15_contract(
-            snapshot["market"],
-            spot_price=snapshot["reference"].get("price"),
-            candles=snapshot["reference"].get("candles") or [],
-            config=strategy_config,
-            orderbook=snapshot.get("orderbook") or {},
-            reference_time=snapshot["reference"].get("timestamp"),
-            book_time=snapshot.get("orderbookAsOf"),
-            account_context=decision_context,
-        )
-        decision = dict(decision)
         fair_yes = _finite_number((decision.get("model") or {}).get("fairYesProbability"), 0.5)
         held_probability = (
             fair_yes if held_side == "YES"
@@ -1630,7 +2088,9 @@ class _PaperRobotController:
             "heldCount": held_count,
             "cashAvailable": account_context.get("cashAvailable"),
             "portfolioExposure": account_context.get("portfolioExposure"),
+            "currentMarketExposure": account_context.get("currentMarketExposure"),
         }
+
         if execution_mode == "real" and cash_cents <= 0 and not held_side:
             decision["action"] = "WAIT"
             decision["executionIntent"] = "WAIT_REAL_NO_CASH"
@@ -1650,8 +2110,60 @@ class _PaperRobotController:
         route_count_override: Optional[int] = None
         if str(decision.get("action") or "").startswith("BUY_") and ticker:
             if held_side and held_side == decision_side:
-                decision["action"] = "WAIT"
-                decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["position_already_aligned"]
+                add_age_seconds = _seconds_since(position_context.get("lastTradeAt"))
+                minimum_add_interval = int(_finite_number(strategy_config.get("minimumAddIntervalSeconds"), 30))
+                add_probability = _finite_number(
+                    (decision.get("edge") or {}).get("fairProbability"),
+                    _finite_number((decision.get("edge") or {}).get("modelProbability"), 0.0),
+                )
+                add_edge = _finite_number((decision.get("edge") or {}).get("conservativeEdge"), -1.0)
+                add_probability_floor = _finite_number(strategy_config.get("addMinModelProbability"), 0.67)
+                add_edge_floor = _finite_number(strategy_config.get("addMinConservativeEdge"), 0.01)
+                previous_signal = _recent_filled_entry_signal(robot_state, ticker, decision_side)
+                probability_improvement = _finite_number(
+                    strategy_config.get("addMinProbabilityImprovement"), 0.01
+                )
+                edge_improvement = _finite_number(strategy_config.get("addMinEdgeImprovement"), 0.001)
+                signal_improved = bool(
+                    not previous_signal
+                    or add_probability >= previous_signal["probability"] + probability_improvement
+                    or add_edge >= previous_signal["conservativeEdge"] + edge_improvement
+                )
+                if account_context.get("hasOpenOrder"):
+                    decision["action"] = "WAIT"
+                    decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["add_order_pending"]
+                elif add_age_seconds is not None and add_age_seconds < minimum_add_interval:
+                    decision["action"] = "WAIT"
+                    decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["add_interval"]
+                elif add_probability < add_probability_floor or add_edge < add_edge_floor or not signal_improved:
+                    decision["action"] = "WAIT"
+                    decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["add_signal_not_improved"]
+                elif int(_finite_number((decision.get("sizing") or {}).get("contracts"), 0.0)) <= 0:
+                    decision["action"] = "WAIT"
+                    decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["add_exposure_full"]
+                else:
+                    can_route = True
+                    proposed_add = int(_finite_number((decision.get("sizing") or {}).get("contracts"), 0.0))
+                    add_fraction = max(
+                        0.10,
+                        min(1.0, _finite_number(strategy_config.get("addSizeFraction"), 0.50)),
+                    )
+                    route_count_override = max(1, int(math.floor(proposed_add * add_fraction)))
+                    decision["executionIntent"] = f"ADD_{decision_side}"
+                    decision["positionManagement"] = {
+                        "mode": "add",
+                        "existingContracts": held_count,
+                        "proposedContracts": proposed_add,
+                        "routedContracts": route_count_override,
+                        "addSizeFraction": add_fraction,
+                        "secondsSinceLastFill": add_age_seconds,
+                        "minimumAddIntervalSeconds": minimum_add_interval,
+                        "minimumAddModelProbability": add_probability_floor,
+                        "minimumAddConservativeEdge": add_edge_floor,
+                        "previousSignal": previous_signal,
+                        "minimumProbabilityImprovement": probability_improvement,
+                        "minimumEdgeImprovement": edge_improvement,
+                    }
             elif held_side and held_side != decision_side:
                 if account_context.get("hasOpenOrder"):
                     decision["action"] = "WAIT"
@@ -1701,7 +2213,7 @@ class _PaperRobotController:
             else:
                 # There is deliberately no per-contract or per-day trade-count
                 # ceiling.  Re-entry is governed by current position/open-order,
-                # cash, Kelly sizing, exposure, daily-loss and cooldown gates.
+                # cash, Kelly sizing, exposure, and anti-churn timing gates.
                 recent_exit_age = _recent_filled_exit_age(robot_state, ticker)
                 reversal_cooldown = int(_finite_number(strategy_config.get("reversalCooldownSeconds"), 90))
                 if recent_exit_age is not None and recent_exit_age < reversal_cooldown:
@@ -1746,43 +2258,34 @@ class _PaperRobotController:
                 }
                 decision["blockingReasons"] = []
                 decision["executionIntent"] = f"CLOSE_{held_side}"
-                decision["exitAnalysis"]["trigger"] = (
+                exit_trigger = (
                     "emergency_stop_loss"
                     if exit_economics["emergencyLossExit"]
                     else "protective_stop_loss"
                     if exit_economics["protectiveLossExit"] and not economically_executable
                     else "fee_adjusted_take_profit"
                 )
-                route_count_override = fillable_exit_count
+                decision["exitAnalysis"]["trigger"] = exit_trigger
+                if exit_trigger == "fee_adjusted_take_profit" and fillable_exit_count > 1:
+                    scale_out = max(
+                        0.10,
+                        min(1.0, _finite_number(strategy_config.get("takeProfitScaleOutPct"), 0.50)),
+                    )
+                    route_count_override = max(1, int(math.ceil(fillable_exit_count * scale_out)))
+                    decision["executionIntent"] = f"REDUCE_{held_side}_TAKE_PROFIT"
+                    decision["positionManagement"] = {
+                        "mode": "reduce",
+                        "existingContracts": held_count,
+                        "routedContracts": route_count_override,
+                        "takeProfitScaleOutPct": scale_out,
+                        "remainingIfFilled": max(0, held_count - route_count_override),
+                    }
+                else:
+                    route_count_override = fillable_exit_count
                 can_route = True
-        is_new_entry = bool(can_route and str(decision.get("executionIntent") or "").startswith("OPEN_"))
-        if is_new_entry:
-            ai_review = self._candidate_ai_review(user_id, decision, account_context)
-            decision["aiReview"] = ai_review
-            confidence = _finite_number(ai_review.get("confidence"), 0.0)
-            if (
-                ai_review.get("status") == "reviewed"
-                and str(ai_review.get("verdict") or "").lower() == "challenge"
-                and confidence >= 0.65
-            ):
-                decision["action"] = "WAIT"
-                decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["ai_challenge"]
-                decision["gates"] = list(decision.get("gates") or []) + [{
-                    "key": "ai_challenge",
-                    "status": "block",
-                    "severity": "review",
-                    "label": "AI contradiction review",
-                    "labelZh": "AI 矛盾复核",
-                    "detail": str(ai_review.get("summary") or "Material contradiction requires another market update.")[:240],
-                    "category": "review",
-                }]
-                can_route = False
-        else:
-            decision["aiReview"] = {
-                "status": "not_required",
-                "verdict": "not_reviewed",
-                "summary": "AI review is reserved for cleared new-entry candidates; exits and hard gates remain deterministic.",
-            }
+            else:
+                decision["executionIntent"] = f"HOLD_{held_side}_TO_SETTLEMENT"
+                decision["exitAnalysis"]["trigger"] = "hold_to_settlement"
         if (
             submit_order
             and bool(robot_state.get("enabled"))
@@ -1839,6 +2342,16 @@ class _PaperRobotController:
                 if order and execution_mode != "real":
                     self._notify_order(user_id, order, decision)
         state = self.state.record(user_id, decision, order)
+        observation = _market_observation(environment, decision, order)
+        if observation and callable(self.observation_saver):
+            try:
+                self.observation_saver(user_id, observation)
+            except Exception as exc:
+                self.safe_print(
+                    f"[KalshiRobot] observation persistence failed "
+                    f"user={user_id} ticker={observation.get('ticker')} "
+                    f"error={type(exc).__name__}"
+                )
         if order and str(decision.get("action") or "").startswith("SELL_"):
             state = self.state.record_early_close(
                 user_id,
@@ -1942,11 +2455,34 @@ class _PaperRobotController:
 
     def _loop(self):
         while not self._stop_event.wait(5.0):
+            if callable(self.scheduler_lease_acquirer):
+                try:
+                    if not self.scheduler_lease_acquirer():
+                        continue
+                except Exception as exc:
+                    self.safe_print(
+                        f"[KalshiRobot] scheduler lease unavailable "
+                        f"error={type(exc).__name__}"
+                    )
+                    continue
             for user_id in self.state.enabled_users():
                 try:
                     state = self.state.get(user_id)
                     mode = _execution_mode((state.get("config") or {}).get("executionMode"))
-                    self.tick(user_id, submit_order=True, mode=mode)
+                    self.tick(user_id, submit_order=True, mode=mode, family="btc15m")
+                    now_monotonic = time.monotonic()
+                    if now_monotonic - self._last_hourly_tick.get(str(user_id), 0.0) >= 15.0:
+                        try:
+                            self.tick(user_id, submit_order=True, mode=mode, family="btchourly")
+                        except Exception as exc:
+                            # Strategy runtimes are isolated: ladder-data
+                            # degradation cannot mark BTC15 as failed.
+                            self.safe_print(
+                                f"[KalshiHourlyRobot] tick failed user={user_id} "
+                                f"error={type(exc).__name__}"
+                            )
+                        finally:
+                            self._last_hourly_tick[str(user_id)] = now_monotonic
                 except Exception as exc:
                     self.safe_print(f"[KalshiRobot] tick failed user={user_id} error={type(exc).__name__}")
                     self.state.error(user_id, str(exc))
@@ -1982,10 +2518,14 @@ def register_kalshi_api(
     paper_account_path=None,
     start_background=False,
     http_request=None,
-    ai_learning_reviewer=None,
-    ai_candidate_reviewer=None,
-    ai_status_resolver=None,
     notifier=None,
+    robot_state_loader=None,
+    robot_state_saver=None,
+    enabled_users_loader=None,
+    paper_account_loader=None,
+    paper_account_saver=None,
+    observation_saver=None,
+    scheduler_lease_acquirer=None,
 ):
     """Register Kalshi research and per-user connection APIs once per app."""
     existing = app.extensions.get("alphalab_kalshi_api")
@@ -2161,18 +2701,26 @@ def register_kalshi_api(
                 pass
             raise KalshiApiError(detail or f"Kalshi {environment} account request failed", status=502, code="kalshi_account_request_failed") from exc
 
-    robot_state = KalshiRobotState(robot_state_path)
-    paper_accounts = KalshiPaperAccountStore(paper_account_path)
+    robot_state = KalshiRobotState(
+        robot_state_path,
+        state_loader=robot_state_loader,
+        state_saver=robot_state_saver,
+        enabled_users_loader=enabled_users_loader,
+    )
+    paper_accounts = KalshiPaperAccountStore(
+        paper_account_path,
+        account_loader=paper_account_loader,
+        account_saver=paper_account_saver,
+    )
     paper_robot = _PaperRobotController(
         client,
         robot_state,
         paper_accounts,
-        ai_candidate_reviewer=ai_candidate_reviewer,
-        ai_learning_reviewer=ai_learning_reviewer,
-        ai_status_resolver=ai_status_resolver,
         connection_loader=load_connection,
         signed_request=signed_api_request,
         notifier=notifier,
+        observation_saver=observation_saver,
+        scheduler_lease_acquirer=scheduler_lease_acquirer,
         safe_print=safe_print,
         start_background=start_background,
     )
@@ -2319,6 +2867,7 @@ def register_kalshi_api(
                 candles=snapshot["reference"].get("candles") or [],
                 orderbook=snapshot.get("orderbook") or {},
                 reference_time=snapshot["reference"].get("timestamp"),
+                reference_metadata=snapshot.get("reference") or {},
                 book_time=snapshot.get("orderbookAsOf"),
             )
             snapshot["reference"].pop("candles", None)
@@ -2342,11 +2891,38 @@ def register_kalshi_api(
                 config=config,
                 orderbook=snapshot.get("orderbook") or {},
                 reference_time=snapshot["reference"].get("timestamp"),
+                reference_metadata=snapshot.get("reference") or {},
                 book_time=snapshot.get("orderbookAsOf"),
             )
             snapshot["reference"].pop("candles", None)
             mode = _execution_mode(config.get("executionMode") or (body or {}).get("mode") or "paper")
             return ok({"success": True, "snapshot": snapshot, "decision": decision, "robotState": robot_state.get(user["id"], environment=mode)})
+        except Exception as exc:
+            return fail(exc)
+
+    @blueprint.get("/api/kalshi/btc-hourly/snapshot")
+    def btc_hourly_snapshot():
+        try:
+            authenticated_user()
+            snapshot = client.hourly_snapshot(base_url=KALSHI_PUBLIC_BASE)
+            snapshot["reference"].pop("candles", None)
+            return ok({"success": True, "snapshot": snapshot})
+        except Exception as exc:
+            return fail(exc)
+
+    @blueprint.post("/api/kalshi/btc-hourly/evaluate")
+    def btc_hourly_evaluate():
+        try:
+            user = authenticated_user()
+            state = robot_state.get(user["id"])
+            mode = request_mode((state.get("config") or {}).get("executionMode") or "paper")
+            result = paper_robot.tick(
+                user["id"],
+                submit_order=False,
+                mode=mode,
+                family="btchourly",
+            )
+            return ok({"success": True, **result, "robotState": result.get("state")})
         except Exception as exc:
             return fail(exc)
 
@@ -2454,72 +3030,19 @@ def register_kalshi_api(
             state = robot_state.get(user["id"], environment=raw_mode) if raw_mode else robot_state.get(user["id"])
             mode = request_mode((state.get("config") or {}).get("executionMode") or "paper")
             ensure_real_ready(user["id"], mode)
-            return ok({"success": True, **paper_robot.tick(user["id"], submit_order=bool(state.get("enabled")), mode=mode)})
-        except Exception as exc:
-            return fail(exc)
-
-    @blueprint.get("/api/kalshi/strategies")
-    def kalshi_strategy_library():
-        try:
-            user = authenticated_user()
-            mode = request_mode()
-            return ok(robot_state.list_strategies(user["id"], environment=mode))
-        except Exception as exc:
-            return fail(exc)
-
-    @blueprint.post("/api/kalshi/strategies")
-    def kalshi_strategy_save():
-        try:
-            user = authenticated_user()
             body = request.get_json(silent=True) or {}
-            if not isinstance(body, Mapping):
-                raise KalshiApiError("JSON body must be an object", status=400, code="invalid_request")
-            config = normalize_strategy_config(body.get("config") or {})
-            mode = _execution_mode(config.get("executionMode") or body.get("mode") or "paper")
-            config["executionMode"] = mode
-            state = robot_state.save_strategy(
-                user["id"],
-                config,
-                name=str(body.get("name") or ""),
-                environment=mode,
-                source=str(body.get("source") or "manual"),
-            )
-            return ok(state)
-        except Exception as exc:
-            return fail(exc)
-
-    @blueprint.post("/api/kalshi/strategies/apply")
-    def kalshi_strategy_apply():
-        try:
-            user = authenticated_user()
-            body = request.get_json(silent=True) or {}
-            if not isinstance(body, Mapping) or not body.get("strategyId"):
-                raise KalshiApiError("strategyId is required", status=400, code="invalid_request")
-            mode = request_mode(body.get("mode"))
-            try:
-                state = robot_state.apply_strategy(
+            family = str(request.args.get("family") or body.get("family") or "btc15m").lower()
+            if family not in {"btc15m", "btchourly"}:
+                raise KalshiApiError("family must be btc15m or btchourly", status=400, code="invalid_request")
+            return ok({
+                "success": True,
+                **paper_robot.tick(
                     user["id"],
-                    str(body.get("strategyId")),
-                    environment=mode,
-                )
-            except ValueError as exc:
-                if str(exc) == "strategy_mode_mismatch":
-                    raise KalshiApiError(
-                        "The selected strategy belongs to a different execution mode.",
-                        status=409,
-                        code="kalshi_strategy_mode_mismatch",
-                    ) from exc
-                raise
-            return ok({"success": True, "state": state})
-        except Exception as exc:
-            return fail(exc)
-
-    @blueprint.get("/api/kalshi/strategies/recommend")
-    def kalshi_strategy_recommend():
-        try:
-            user = authenticated_user()
-            mode = request_mode()
-            return ok(robot_state.recommend_strategy(user["id"], environment=mode))
+                    submit_order=bool(state.get("enabled")),
+                    mode=mode,
+                    family=family,
+                ),
+            })
         except Exception as exc:
             return fail(exc)
 
@@ -2531,15 +3054,11 @@ def register_kalshi_api(
             active_summary = environment_summary(config, "production")
             state = robot_state.get(user["id"])
             active_mode = _execution_mode((state.get("config") or {}).get("executionMode") or "paper")
-            ai_status = (
-                dict(ai_status_resolver(user["id"]) or {})
-                if callable(ai_status_resolver)
-                else {"configured": False, "status": "unavailable", "provider": "", "model": ""}
-            )
             return ok({
                 "success": True,
                 "publicData": "available",
                 "seriesTicker": BTC_15M_SERIES,
+                "strategyFamilies": ["btc15m", "btchourly"],
                 "execution": "real_available" if active_summary["configured"] else "paper_only",
                 "activeEnvironment": active_mode,
                 "accountProvider": "Kalshi" if active_mode == "real" else "AlphaLab",
@@ -2547,7 +3066,6 @@ def register_kalshi_api(
                 "personalApiConfigured": active_summary["configured"],
                 "liveTradingConfigured": active_summary["configured"],
                 "connectionStatus": active_summary["testStatus"],
-                "ai": ai_status,
             })
         except Exception as exc:
             return fail(exc)

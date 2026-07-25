@@ -6,7 +6,7 @@ import copy
 import json
 import os
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, Mapping, Optional
 
 try:
@@ -19,20 +19,11 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-MAX_DECISION_RECORDS = 1
-MAX_SETTLEMENT_RECORDS = 200
-MAX_LEARNING_OBSERVATIONS = 500
-MAX_TRADED_TICKERS = 500
-PAPER_STATE_VERSION = 5
+MAX_DECISION_RECORDS = 250
+MAX_SETTLEMENT_RECORDS = 1000
+MAX_TRADED_TICKERS = 2000
+PAPER_STATE_VERSION = 8
 KALSHI_MODES = ("paper", "real")
-
-# The v3 favorite-carry strategy targets a structurally high win rate
-# (~85-90% in the 18-month calibration backtest), so "weak" and "strong"
-# evidence thresholds sit far above the coin-flip levels used by v2.
-V3_WEAK_WIN_RATE = 0.72
-V3_STRONG_WIN_RATE = 0.85
-V3_POOR_BRIER = 0.19
-V3_GOOD_BRIER = 0.15
 
 
 def _number(value: Any, default: float = 0.0) -> float:
@@ -73,189 +64,6 @@ def _execution_environment(value: Any) -> str:
     return "real" if mode in {"real", "live", "production"} else "paper"
 
 
-def _config_adjustments(before: Mapping[str, Any], after: Mapping[str, Any], reason: str) -> Dict[str, Dict[str, Any]]:
-    """Return a compact, user-facing audit record for changed parameters."""
-    adjustments: Dict[str, Dict[str, Any]] = {}
-    for key, value in after.items():
-        if key not in before or before.get(key) == value:
-            continue
-        old_value = before.get(key)
-        row: Dict[str, Any] = {
-            "before": old_value,
-            "after": value,
-            "reason": reason,
-        }
-        if isinstance(old_value, (int, float)) and isinstance(value, (int, float)):
-            row["delta"] = round(float(value) - float(old_value), 6)
-        adjustments[key] = row
-    return adjustments
-
-
-def _learning_evidence_summary(
-    settlement_records,
-    shadow_records,
-    early_close_records,
-    realized_records,
-) -> Dict[str, Any]:
-    """Build deterministic evidence cohorts before an LLM may suggest changes."""
-    settled = [
-        dict(row) for row in (settlement_records or [])
-        if str(row.get("side") or "").upper() in {"YES", "NO"}
-        and str(row.get("result") or "").upper() in {"YES", "NO"}
-    ]
-    shadow = [
-        dict(row) for row in (shadow_records or [])
-        if str(row.get("side") or "").upper() in {"YES", "NO"}
-        and str(row.get("result") or "").upper() in {"YES", "NO"}
-    ]
-    realized = [dict(row) for row in (realized_records or [])]
-    early = [dict(row) for row in (early_close_records or [])]
-
-    calibration_bins = []
-    for low, high in ((0.0, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 1.01)):
-        rows = [
-            row for row in settled
-            if low <= _number(row.get("fairProbability"), 0.5) < high
-        ]
-        if not rows:
-            continue
-        forecasts = [_number(row.get("fairProbability"), 0.5) for row in rows]
-        outcomes = [1.0 if row.get("side") == row.get("result") else 0.0 for row in rows]
-        mean_forecast = sum(forecasts) / len(forecasts)
-        hit_rate = sum(outcomes) / len(outcomes)
-        calibration_bins.append({
-            "range": f"{low:.1f}-{min(high, 1.0):.1f}",
-            "samples": len(rows),
-            "meanForecast": round(mean_forecast, 4),
-            "hitRate": round(hit_rate, 4),
-            "gap": round(mean_forecast - hit_rate, 4),
-        })
-
-    def brier(rows, probability_getter):
-        values = []
-        for row in rows:
-            probability = probability_getter(row)
-            if probability is None:
-                continue
-            outcome = 1.0 if row.get("side") == row.get("result") else 0.0
-            values.append((probability - outcome) ** 2)
-        return round(sum(values) / len(values), 5) if values else None
-
-    def selected_market_probability(row):
-        features = dict(row.get("learningFeatures") or {})
-        market_yes = features.get("marketYesProbability")
-        if market_yes is None:
-            return None
-        value = _number(market_yes, 0.5)
-        return value if row.get("side") == "YES" else 1.0 - value
-
-    def cohort(rows, predicate):
-        selected = [row for row in rows if predicate(row)]
-        if not selected:
-            return {"samples": 0, "winRate": None, "averagePnl": None}
-        pnl_rows = [row for row in selected if row.get("pnl") not in (None, "")]
-        wins = sum(1 for row in selected if row.get("side") == row.get("result"))
-        return {
-            "samples": len(selected),
-            "winRate": round(wins / len(selected), 4),
-            "averagePnl": (
-                round(sum(_number(row.get("pnl")) for row in pnl_rows) / len(pnl_rows), 4)
-                if pnl_rows else None
-            ),
-        }
-
-    def selected_model_probability_of(row):
-        features = dict(row.get("learningFeatures") or {})
-        model_yes = features.get("modelYesProbability")
-        if model_yes is None:
-            return None
-        value = _number(model_yes, 0.5)
-        return value if str(row.get("side") or "").upper() == "YES" else 1.0 - value
-
-    def feature_number(row, key, default=None):
-        features = dict(row.get("learningFeatures") or {})
-        value = features.get(key)
-        return _number(value) if value is not None else default
-
-    def settled_hour(row):
-        raw = str(row.get("settledAt") or "")
-        try:
-            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return parsed.astimezone(timezone.utc).hour
-
-    realized_pnls = [_number(row.get("pnl")) for row in realized]
-    early_pnls = [_number(row.get("pnl")) for row in early]
-    model_brier = brier(settled, lambda row: _number(row.get("fairProbability"), 0.5))
-    market_brier = brier(settled, selected_market_probability)
-    return {
-        "samples": {
-            "finalSettlements": len(settled),
-            "shadowLabels": len(shadow),
-            "realizedTrades": len(realized),
-            "earlyCloses": len(early),
-        },
-        "calibration": {
-            "modelBrier": model_brier,
-            "marketBrier": market_brier,
-            "modelMinusMarketBrier": (
-                round(model_brier - market_brier, 5)
-                if model_brier is not None and market_brier is not None else None
-            ),
-            "reliabilityBins": calibration_bins,
-        },
-        "financial": {
-            "totalPnl": round(sum(realized_pnls), 4),
-            "averagePnl": round(sum(realized_pnls) / len(realized_pnls), 4) if realized_pnls else None,
-            "winRate": (
-                round(sum(1 for value in realized_pnls if value > 0) / len(realized_pnls), 4)
-                if realized_pnls else None
-            ),
-            "earlyCloseAveragePnl": (
-                round(sum(early_pnls) / len(early_pnls), 4) if early_pnls else None
-            ),
-        },
-        "cohorts": {
-            "yes": cohort(settled, lambda row: row.get("side") == "YES"),
-            "no": cohort(settled, lambda row: row.get("side") == "NO"),
-            "cheapEntry": cohort(settled, lambda row: _number(row.get("entryPrice"), 0.5) < 0.35),
-            "midEntry": cohort(settled, lambda row: 0.35 <= _number(row.get("entryPrice"), 0.5) <= 0.65),
-            "expensiveEntry": cohort(settled, lambda row: _number(row.get("entryPrice"), 0.5) > 0.65),
-            "exploration": cohort(settled, lambda row: bool(row.get("explorationTrade"))),
-            "standard": cohort(settled, lambda row: not bool(row.get("explorationTrade"))),
-        },
-        # v3 fine-tuning cohorts. Each maps directly to one bounded lever:
-        # marginal-confidence decay -> minModelProbability; a specific
-        # entry-timing bucket underperforming -> min/maxSecondsToClose;
-        # elevated-volatility decay -> maxVolatilityRatio / logit scale;
-        # a weak hour band is informational (no per-hour lever exists).
-        "v3Cohorts": {
-            "modelProbability": {
-                "below070": cohort(settled, lambda row: (selected_model_probability_of(row) or 1.0) < 0.70),
-                "070to080": cohort(settled, lambda row: 0.70 <= (selected_model_probability_of(row) or -1.0) < 0.80),
-                "080to090": cohort(settled, lambda row: 0.80 <= (selected_model_probability_of(row) or -1.0) < 0.90),
-                "above090": cohort(settled, lambda row: (selected_model_probability_of(row) or -1.0) >= 0.90),
-            },
-            "secondsToClose": {
-                "over240": cohort(settled, lambda row: (feature_number(row, "secondsToClose") or 0.0) > 240),
-                "180to240": cohort(settled, lambda row: 180 < (feature_number(row, "secondsToClose") or -1.0) <= 240),
-                "under180": cohort(settled, lambda row: 0 < (feature_number(row, "secondsToClose") or -1.0) <= 180),
-            },
-            "volatilityRatio": {
-                "calm": cohort(settled, lambda row: (feature_number(row, "volatilityRatio") or 1.0) <= 1.5),
-                "elevated": cohort(settled, lambda row: (feature_number(row, "volatilityRatio") or 1.0) > 1.5),
-            },
-            "utcHourBand": {
-                "h00to05": cohort(settled, lambda row: (settled_hour(row) or -1) in range(0, 6)),
-                "h06to11": cohort(settled, lambda row: (settled_hour(row) or -1) in range(6, 12)),
-                "h12to17": cohort(settled, lambda row: (settled_hour(row) or -1) in range(12, 18)),
-                "h18to23": cohort(settled, lambda row: (settled_hour(row) or -1) in range(18, 24)),
-            },
-        },
-    }
-
-
 def _order_fill_count(order: Optional[Mapping[str, Any]]) -> float:
     if not order:
         return 0.0
@@ -276,11 +84,72 @@ def _order_fill_count(order: Optional[Mapping[str, Any]]) -> float:
 
 
 class KalshiRobotState:
-    def __init__(self, path: Optional[str] = None):
+    @staticmethod
+    def _apply_v8_strategy_defaults(state: Dict[str, Any]) -> None:
+        """Adopt settlement-aligned v5 controls without deleting audit records."""
+        fields = (
+            "minNetEdge", "minConservativeEdge", "maxSpread", "maxRelativeSpread",
+            "minDepthContracts", "minSecondsToClose", "maxSecondsToClose",
+            "minPrice", "maxPrice", "basisReserveBps",
+            "minModelProbability", "maxModelMarketGap", "maxVolatilityRatio",
+            "maxJumpSigma", "minimumAddIntervalSeconds", "addMinModelProbability",
+            "addMinConservativeEdge", "addMinProbabilityImprovement",
+            "addMinEdgeImprovement", "addSizeFraction", "exitValueBuffer",
+            "minimumExitProfit", "takeProfitScaleOutPct", "stopLossPct",
+            "emergencyStopLossPct",
+        )
+
+        def update_config(raw: Optional[Mapping[str, Any]], environment: Optional[str] = None) -> Dict[str, Any]:
+            configured = normalize_strategy_config(raw or {})
+            for field in fields:
+                configured[field] = DEFAULT_STRATEGY_CONFIG[field]
+            if environment:
+                configured["executionMode"] = _execution_environment(environment)
+            return configured
+
+        change = {
+            "at": _now(),
+            "version": 5,
+            "summary": (
+                "Settlement-aligned v5: BRTI constituent proxy, final-60-second average "
+                "horizon, wider staged entry window, marginal liquidity economics, and "
+                "bounded scale-ins with durable Kalshi API audit history."
+            ),
+        }
+
+        def update_changes(strategy: Dict[str, Any]) -> None:
+            changes = list(strategy.get("changes") or [])
+            if not changes or "settlement-aligned v5" not in str(changes[0].get("summary") or "").lower():
+                changes.insert(0, dict(change))
+            strategy["changes"] = changes[:50]
+
+        state["config"] = update_config(state.get("config") or {})
+        mode_state = state.get("modeState")
+        if isinstance(mode_state, dict):
+            for environment, bucket in mode_state.items():
+                if isinstance(bucket, dict):
+                    bucket["config"] = update_config(bucket.get("config") or {}, environment)
+                    if isinstance(bucket.get("strategy"), dict):
+                        update_changes(bucket["strategy"])
+        state["storageVersion"] = PAPER_STATE_VERSION
+        strategy = state.setdefault("strategy", {})
+        update_changes(strategy)
+
+    def __init__(
+        self,
+        path: Optional[str] = None,
+        *,
+        state_loader=None,
+        state_saver=None,
+        enabled_users_loader=None,
+    ):
         self.path = path
+        self._state_loader = state_loader
+        self._state_saver = state_saver
+        self._enabled_users_loader = enabled_users_loader
         self._lock = threading.RLock()
         self._users: Dict[str, Dict[str, Any]] = {}
-        if path and os.path.exists(path):
+        if path and os.path.exists(path) and not callable(self._state_loader):
             try:
                 with open(path, "r", encoding="utf-8") as handle:
                     payload = json.load(handle)
@@ -290,7 +159,8 @@ class KalshiRobotState:
                 self._users = {}
         migrated = False
         for user_id, state in list(self._users.items()):
-            if int(state.get("storageVersion") or 0) < PAPER_STATE_VERSION:
+            version = int(state.get("storageVersion") or 0)
+            if version < 6:
                 enabled = bool(state.get("enabled"))
                 configured = normalize_strategy_config(state.get("config") or {})
                 # The v3 favorite-carry strategy replaces the v2 longshot-prone
@@ -304,10 +174,9 @@ class KalshiRobotState:
                     "basisReserveBps", "marketBlendWeight", "maxVolatilityRatio",
                     "exitProbabilityThreshold", "stopLossPct", "emergencyStopLossPct",
                     "minimumExitProfit", "riskPerTradePct",
-                    "executionPriceTolerance", "learningExplorationRate",
+                    "executionPriceTolerance",
                 ):
                     configured[field] = DEFAULT_STRATEGY_CONFIG[field]
-                configured["learningContrarianMode"] = False
                 replacement = self._initial()
                 replacement["enabled"] = enabled
                 replacement["config"] = configured
@@ -315,12 +184,15 @@ class KalshiRobotState:
                     "at": _now(),
                     "version": 5,
                     "summary": (
-                        "Adopted the v3 favorite-carry strategy: late-window entries on the "
-                        "model-confirmed favorite side only, calibrated on 53,936 real 15-minute "
-                        "windows. Cleared pre-v3 records; they measured a different strategy."
+                        "Adopted deterministic BTC15 v4: fee-adjusted entries, bounded scale-ins, "
+                        "economic exits, and explicit hold-to-settlement decisions. Removed all "
+                        "AI learning, random exploration, contrarian mode, and strategy presets."
                     ),
                 }]
                 self._users[user_id] = replacement
+                migrated = True
+            if int(self._users[user_id].get("storageVersion") or 0) < PAPER_STATE_VERSION:
+                self._apply_v8_strategy_defaults(self._users[user_id])
                 migrated = True
         if migrated:
             self._save()
@@ -336,31 +208,31 @@ class KalshiRobotState:
             "lastError": None,
             "runs": 0,
             "modeState": {},
-            "strategyLibrary": [],
             "config": {},
             "tradedTickers": [],
             "filledTrades": [],
             "processedSettlements": [],
-            "learningObservations": [],
-            "learningExamples": [],
             "decisions": [],
             "decisionLimit": MAX_DECISION_RECORDS,
             "strategy": {
-                "name": "BTC15 Favorite Carry v3",
-                "version": 3,
+                "name": "BTC15 Settlement-Aligned Carry v5",
+                "version": 5,
                 "philosophy": (
                     "Buy only the model-confirmed FAVORITE side in the final minutes of the "
-                    "quarter-hour, priced 50-93c, hold to settlement. Win rate is structural: "
-                    "the forecast itself (~85-90% calibrated) is the expected hit rate. Never "
+                    "quarter-hour, priced 50-95c, and normally hold to settlement. Expected "
+                    "win rate comes from measured calibration, never a guaranteed headline. Never "
                     "buy the longshot side; that is what produced the old ~20% win rate."
                 ),
                 "components": [
                     "distance to settlement strike over remaining diffusion horizon",
-                    "MLE-calibrated time-scaled logistic (fit on 53,936 real 15m windows)",
+                    "BRTI constituent-exchange proxy with cross-venue dispersion reserve",
+                    "final-60-second settlement-average variance horizon",
+                    "bounded time-scaled logistic distance model",
                     "bounded 5m momentum logit shift",
                     "favorite-side selection with minimum model probability",
                     "Kalshi microprice blend, fee-adjusted and uncertainty-adjusted edge",
-                    "hold-to-settlement exits with deep protective stops only",
+                    "bounded same-side scale-ins under incremental edge and exposure gates",
+                    "economic exits versus hold-to-settlement value with deep protective stops",
                     "depth participation, exposure, loss-stop, and cooldown gates",
                 ],
                 "settledSamples": 0,
@@ -387,47 +259,11 @@ class KalshiRobotState:
                 "equityCurve": [],
                 "dailyPnlDate": None,
                 "dailyPnl": 0.0,
-                "consecutiveLosses": 0,
-                "cooldownUntil": None,
                 "lastEntryTicker": None,
                 "lastEntryAt": None,
                 "lastExitTicker": None,
                 "lastExitAt": None,
-                "learning": {
-                    "enabled": False,
-                    "paperOnly": True,
-                    "status": "disabled",
-                    "reviewEvery": 8,
-                    "windowSize": 24,
-                    "lastReviewSample": 0,
-                    "nextReviewSample": 12,
-                    "lastReviewAt": None,
-                    "lastReason": "Adaptive learning has not been enabled.",
-                    "recentWinRate": None,
-                    "recentAveragePnl": None,
-                    "recentBrierScore": None,
-                    "adjustmentCount": 0,
-                    "explorationRate": 0.15,
-                    "aiEnabled": False,
-                    "aiStatus": "not_configured",
-                    "aiProvider": None,
-                    "aiModel": None,
-                    "lastAiReviewSample": 0,
-                    "lastAiReviewAt": None,
-                    "lastAiDiagnosis": None,
-                    "lastAiReasons": [],
-                    "lastAiAdjustments": {},
-                    "originalDirectionalAccuracy": None,
-                    "inverseDirectionalAccuracy": None,
-                    "observedDirectionalAccuracy": None,
-                    "observedInverseAccuracy": None,
-                    "activeDirectionalAccuracy": None,
-                    "observedSamples": 0,
-                    "directionalWindowSamples": 0,
-                    "tradedSamples": 0,
-                    "contrarianMode": False,
-                },
-                "changes": [{"at": _now(), "version": 3, "summary": "Introduced AlphaLab Paper execution on production public Kalshi market evidence."}],
+                "changes": [{"at": _now(), "version": 4, "summary": "Introduced deterministic v4 position management and durable online execution."}],
             },
         }
 
@@ -439,10 +275,7 @@ class KalshiRobotState:
         config = normalize_strategy_config(source.get("config") or {"executionMode": environment})
         config["executionMode"] = environment
         strategy = copy.deepcopy(source.get("strategy") or initial["strategy"])
-        strategy.setdefault("learning", {})
-        strategy["learning"].setdefault("enabled", bool(config.get("learningMode")))
-        strategy["learning"]["paperOnly"] = environment != "real"
-        strategy["learning"]["environment"] = environment
+        strategy.pop("learning", None)
         return {
             "config": config,
             "strategy": strategy,
@@ -455,14 +288,6 @@ class KalshiRobotState:
                 str(value) for value in list(source.get("processedSettlements") or [])
                 if str(value).startswith(f"{environment}:")
             ][-1000:],
-            "learningObservations": [
-                dict(row) for row in list(source.get("learningObservations") or [])
-                if _execution_environment((row or {}).get("environment") or environment) == environment
-            ][-MAX_LEARNING_OBSERVATIONS:],
-            "learningExamples": [
-                dict(row) for row in list(source.get("learningExamples") or [])
-                if _execution_environment((row or {}).get("environment") or environment) == environment
-            ][-MAX_LEARNING_OBSERVATIONS:],
             "decisions": [
                 dict(row) for row in list(source.get("decisions") or [])
                 if _execution_environment((row or {}).get("environment") or environment) == environment
@@ -485,22 +310,7 @@ class KalshiRobotState:
         for field, value in template.items():
             bucket.setdefault(field, copy.deepcopy(value))
         bucket["config"] = normalize_strategy_config({**bucket.get("config", {}), "executionMode": environment})
-        bucket["strategy"].setdefault("learning", {})
-        # Older state files counted only deterministic walk-forward reviews,
-        # even though Settings-AI reviews were already persisted as audited
-        # strategy changes.  Rebuild the user-facing total from the audit log
-        # so the counter reflects every parameter update, including historical
-        # AI calibration changes.
-        audited_adjustments = sum(
-            1
-            for change in (bucket["strategy"].get("changes") or [])
-            if str((change or {}).get("source") or "").startswith(("adaptive_", "settings_ai_", "evidence_recovery_"))
-        )
-        learning = bucket["strategy"]["learning"]
-        learning["adjustmentCount"] = max(
-            int(learning.get("adjustmentCount") or 0),
-            audited_adjustments,
-        )
+        bucket["strategy"].pop("learning", None)
         bucket["decisionLimit"] = MAX_DECISION_RECORDS
         bucket["decisions"] = list(bucket.get("decisions") or [])[:MAX_DECISION_RECORDS]
         return bucket
@@ -531,77 +341,20 @@ class KalshiRobotState:
             return state
         for field in (
             "config", "strategy", "tradedTickers", "filledTrades", "processedSettlements",
-            "learningObservations", "learningExamples", "decisions", "decisionLimit",
+            "decisions", "decisionLimit",
         ):
             state[field] = copy.deepcopy(bucket.get(field))
         return state
 
-    @staticmethod
-    def _strategy_metrics(bucket: Mapping[str, Any]) -> Dict[str, Any]:
-        strategy = dict(bucket.get("strategy") or {})
-        learning = dict(strategy.get("learning") or {})
-        return {
-            "settledSamples": int(strategy.get("settledSamples") or 0),
-            "realizedSamples": int(strategy.get("realizedSamples") or 0),
-            "wins": int(strategy.get("wins") or 0),
-            "losses": int(strategy.get("losses") or 0),
-            "winRate": strategy.get("winRate"),
-            "totalPnl": round(_number(strategy.get("totalPnl")), 4),
-            "averagePnl": round(_number(strategy.get("averagePnl")), 4),
-            "brierScore": strategy.get("brierScore"),
-            "adjustmentCount": int(learning.get("adjustmentCount") or 0),
-            "activeDirection": "contrarian" if learning.get("contrarianMode") else "normal",
-            "observedSamples": int(learning.get("observedSamples") or 0),
-            "directionalWindowSamples": int(learning.get("directionalWindowSamples") or 0),
-            "observedDirectionalAccuracy": learning.get("observedDirectionalAccuracy"),
-            "observedInverseAccuracy": learning.get("observedInverseAccuracy"),
-        }
-
-    def _ensure_strategy_library(self, state: Dict[str, Any]) -> None:
-        library = state.setdefault("strategyLibrary", [])
-        if not isinstance(library, list):
-            library = []
-            state["strategyLibrary"] = library
-        existing_ids = {str(item.get("id")) for item in library if isinstance(item, Mapping)}
-        for environment in KALSHI_MODES:
-            bucket = self._mode_bucket(state, environment)
-            strategy_id = str(bucket.get("activeStrategyId") or f"{environment}-active")
-            if strategy_id not in existing_ids:
-                library.append({
-                    "id": strategy_id,
-                    "mode": environment,
-                    "name": "Kalshi Real Strategy 1" if environment == "real" else "AlphaLab Paper Strategy 1",
-                    "source": "active",
-                    "createdAt": _now(),
-                    "updatedAt": _now(),
-                    "config": copy.deepcopy(bucket.get("config") or {}),
-                    "metrics": self._strategy_metrics(bucket),
-                    "active": True,
-                })
-                bucket["activeStrategyId"] = strategy_id
-                existing_ids.add(strategy_id)
-        self._refresh_strategy_library(state)
-
-    def _refresh_strategy_library(self, state: Dict[str, Any]) -> None:
-        library = state.setdefault("strategyLibrary", [])
-        for item in library:
-            if not isinstance(item, dict):
-                continue
-            environment = _execution_environment(item.get("mode"))
-            bucket = self._mode_bucket(state, environment)
-            active_id = str(bucket.get("activeStrategyId") or f"{environment}-active")
-            if str(item.get("id")) == active_id:
-                item["active"] = True
-                item["updatedAt"] = _now()
-                item["config"] = copy.deepcopy(bucket.get("config") or {})
-                item["metrics"] = self._strategy_metrics(bucket)
-            else:
-                item["active"] = False
-
     def _state(self, user_id: str) -> Dict[str, Any]:
         key = str(user_id)
+        migrated = False
         if key not in self._users:
-            self._users[key] = self._initial()
+            restored = self._state_loader(key) if callable(self._state_loader) else None
+            self._users[key] = dict(restored) if isinstance(restored, Mapping) else self._initial()
+            if int(self._users[key].get("storageVersion") or 0) < PAPER_STATE_VERSION:
+                self._apply_v8_strategy_defaults(self._users[key])
+                migrated = True
         else:
             initial = self._initial()
             for field, value in initial.items():
@@ -609,11 +362,9 @@ class KalshiRobotState:
             for field, value in initial["strategy"].items():
                 self._users[key]["strategy"].setdefault(field, value)
             strategy = self._users[key]["strategy"]
-            stored_config = self._users[key].setdefault("config", {})
-            if stored_config.get("learningMode") is True and "learningAiMode" not in stored_config:
-                # Existing Adaptive Learning users receive the new Settings-AI
-                # reviewer without having to re-apply the preset.
-                stored_config["learningAiMode"] = True
+            self._users[key]["config"] = normalize_strategy_config(
+                self._users[key].get("config") or {}
+            )
             # The user-facing decision state is intentionally ephemeral: only
             # the current five-second evaluation is retained. Filled trades are
             # preserved separately so settlement attribution remains correct.
@@ -626,8 +377,9 @@ class KalshiRobotState:
                     filled_trades.append(dict(row))
                     known_order_ids.add(identity)
             self._users[key]["filledTrades"] = filled_trades[-MAX_SETTLEMENT_RECORDS:]
-            self._users[key].setdefault("learningObservations", [])
-            self._users[key].setdefault("learningExamples", [])
+            self._users[key].pop("learningObservations", None)
+            self._users[key].pop("learningExamples", None)
+            self._users[key].pop("strategyLibrary", None)
             self._users[key]["decisions"] = legacy_decisions[:MAX_DECISION_RECORDS]
             self._users[key]["decisionLimit"] = MAX_DECISION_RECORDS
             if int(strategy.get("version") or 1) < 2:
@@ -650,11 +402,15 @@ class KalshiRobotState:
         )
         for environment in KALSHI_MODES:
             self._mode_bucket(self._users[key], environment)
-        self._ensure_strategy_library(self._users[key])
         self._sync_mode_mirror(self._users[key], active_environment, activate=True)
+        if migrated:
+            self._save()
         return self._users[key]
 
     def _save(self) -> None:
+        if callable(self._state_saver):
+            for user_id, state in self._users.items():
+                self._state_saver(str(user_id), copy.deepcopy(state))
         if not self.path:
             return
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -675,7 +431,7 @@ class KalshiRobotState:
             return copy.deepcopy(state)
 
     def reset_trading_history(self, user_id: str) -> Dict[str, Any]:
-        """Clear all fills, settlements, decisions, and learned calibration."""
+        """Clear all fills, settlements, and decisions."""
         with self._lock:
             current = self._state(user_id)
             enabled = bool(current.get("enabled"))
@@ -685,7 +441,6 @@ class KalshiRobotState:
             replacement["enabled"] = enabled
             replacement["activeEnvironment"] = active_environment
             replacement["modeState"][active_environment] = self._mode_template(active_environment, {"config": config})
-            self._ensure_strategy_library(replacement)
             self._sync_mode_mirror(replacement, active_environment, activate=True)
             self._users[str(user_id)] = replacement
             self._save()
@@ -699,13 +454,7 @@ class KalshiRobotState:
         starting_bankroll: float = 1000.0,
         name: str = "",
     ) -> Dict[str, Any]:
-        """Archive the active strategy and start a clean, mode-scoped experiment.
-
-        The archived strategy keeps its configuration and measured history.
-        The new strategy copies only the active configuration, then starts with
-        no fills, settlements, observations, decisions, or learning changes.
-        The other execution mode is deliberately left untouched.
-        """
+        """Start a clean Paper run while leaving Real mode untouched."""
         selected_environment = _execution_environment(environment)
         if selected_environment != "paper":
             raise ValueError("fresh_strategy_reset_is_paper_only")
@@ -713,7 +462,6 @@ class KalshiRobotState:
 
         with self._lock:
             state = self._state(user_id)
-            self._refresh_strategy_library(state)
             current_bucket = self._mode_bucket(state, selected_environment)
             current_config = normalize_strategy_config(current_bucket.get("config") or {})
             current_config.update({
@@ -721,76 +469,38 @@ class KalshiRobotState:
                 "paperBankroll": bankroll,
             })
 
-            library = state.setdefault("strategyLibrary", [])
-            existing_ids = {
-                str(item.get("id"))
-                for item in library
-                if isinstance(item, Mapping)
-            }
-            sequence = 2
-            while f"paper-active-{sequence}" in existing_ids:
-                sequence += 1
-            strategy_id = f"paper-active-{sequence}"
-            strategy_name = (name or f"AlphaLab Paper Strategy {sequence}")[:80]
-
             fresh_bucket = self._mode_template(
                 selected_environment,
                 {"config": current_config},
             )
-            fresh_bucket["activeStrategyId"] = strategy_id
-            learning = fresh_bucket["strategy"].setdefault("learning", {})
-            learning.update({
-                "enabled": bool(current_config.get("learningMode")),
-                "paperOnly": True,
-                "environment": selected_environment,
-                "status": "warmup" if current_config.get("learningMode") else "disabled",
-                "reviewEvery": int(current_config.get("learningReviewEvery") or 8),
-                "windowSize": int(current_config.get("learningWindowSize") or 24),
-                "lastReviewSample": 0,
-                "nextReviewSample": 12,
-                "explorationRate": float(current_config.get("learningExplorationRate") or 0.0),
-                "aiEnabled": bool(current_config.get("learningAiMode")),
-                "aiStatus": "waiting_evidence" if current_config.get("learningAiMode") else "disabled",
-                "contrarianMode": bool(current_config.get("learningContrarianMode")),
-                "adjustmentCount": 0,
-                "observedSamples": 0,
-                "directionalWindowSamples": 0,
-                "tradedSamples": 0,
-            })
             fresh_bucket["strategy"]["changes"] = [{
                 "at": _now(),
-                "version": 1,
+                "version": 4,
                 "source": "fresh_strategy",
                 "summary": (
-                    f"Started {strategy_name} with a ${bankroll:,.2f} Paper bankroll "
-                    "and zero trading or learning history."
+                    f"Started {(name or 'BTC15 Settlement-Aligned Carry v5')[:80]} "
+                    f"with a ${bankroll:,.2f} Paper bankroll "
+                    "and zero trading history."
                 ),
             }]
             state.setdefault("modeState", {})[selected_environment] = fresh_bucket
-            library.append({
-                "id": strategy_id,
-                "mode": selected_environment,
-                "name": strategy_name,
-                "source": "active",
-                "createdAt": _now(),
-                "updatedAt": _now(),
-                "config": copy.deepcopy(current_config),
-                "metrics": self._strategy_metrics(fresh_bucket),
-                "active": True,
-            })
-            state["strategyLibrary"] = library[-60:]
             self._sync_mode_mirror(
                 state,
                 selected_environment,
                 activate=state.get("activeEnvironment") == selected_environment,
             )
-            self._refresh_strategy_library(state)
             self._save()
             return copy.deepcopy(state)
 
     def enabled_users(self):
         with self._lock:
-            return [key for key, value in self._users.items() if value.get("enabled")]
+            enabled = {key for key, value in self._users.items() if value.get("enabled")}
+            if callable(self._enabled_users_loader):
+                enabled.update(
+                    str(user_id) for user_id in (self._enabled_users_loader() or [])
+                    if str(user_id).strip()
+                )
+            return sorted(enabled)
 
     def configure(self, user_id: str, enabled: bool, config: Mapping[str, Any]) -> Dict[str, Any]:
         with self._lock:
@@ -801,23 +511,8 @@ class KalshiRobotState:
             state["enabled"] = bool(enabled)
             bucket["config"] = normalized
             state["lastError"] = None
-            learning = bucket["strategy"].setdefault("learning", {})
-            learning.update({
-                "enabled": bool(normalized.get("learningMode")),
-                "paperOnly": environment != "real",
-                "environment": environment,
-                "status": "warmup" if normalized.get("learningMode") else "disabled",
-                "reviewEvery": int(normalized.get("learningReviewEvery") or 8),
-                "windowSize": int(normalized.get("learningWindowSize") or 24),
-                "explorationRate": float(normalized.get("learningExplorationRate") or 0.0),
-                "aiEnabled": bool(normalized.get("learningAiMode")),
-                "aiStatus": "waiting_evidence" if normalized.get("learningAiMode") else "disabled",
-                "contrarianMode": bool(normalized.get("learningContrarianMode")),
-            })
-            if not normalized.get("learningMode"):
-                learning["lastReason"] = "Adaptive learning has not been enabled."
+            bucket["strategy"].pop("learning", None)
             self._sync_mode_mirror(state, environment, activate=True)
-            self._refresh_strategy_library(state)
             self._save()
             return copy.deepcopy(state)
 
@@ -832,9 +527,6 @@ class KalshiRobotState:
                 or state.get("config", {}).get("executionMode")
             )
             bucket = self._mode_bucket(state, environment)
-            ai_review = copy.deepcopy(decision.get("aiReview") or {})
-            if ai_review and ai_review.get("status") not in {None, "not_required"}:
-                bucket["strategy"]["preTradeAi"] = ai_review
             row = {
                 "generatedAt": decision.get("generatedAt") or _now(),
                 "environment": environment,
@@ -862,12 +554,9 @@ class KalshiRobotState:
                 "orderSubmitted": bool(order),
                 "orderFilled": _order_fill_count(order) > 0,
                 "executionIntent": decision.get("executionIntent"),
-                "aiReview": ai_review,
                 "account": dict(decision.get("account") or {}),
                 "engine": decision.get("engine"),
-                "directionMode": (decision.get("methodology") or {}).get("directionMode") or "normal",
-                "explorationTrade": bool(decision.get("explorationTrade")),
-                "learningFeatures": {
+                "features": {
                     "selectedSide": decision.get("side"),
                     "selectedPrice": edge.get("price"),
                     "netEdge": edge.get("netEdge"),
@@ -885,7 +574,14 @@ class KalshiRobotState:
                     "volatilityRatio": (decision.get("model") or {}).get("volatilityRatio"),
                     "jumpSigma": (decision.get("model") or {}).get("jumpSigma"),
                     "distanceBps": (decision.get("model") or {}).get("distanceBps"),
+                    "settlementEffectiveHorizonMinutes": (decision.get("model") or {}).get("settlementEffectiveHorizonMinutes"),
+                    "referenceModel": (decision.get("model") or {}).get("referenceModel"),
+                    "referenceVenueCount": (decision.get("model") or {}).get("referenceVenueCount"),
+                    "referenceDispersionBps": (decision.get("model") or {}).get("referenceDispersionBps"),
+                    "basisReserveBpsApplied": (decision.get("model") or {}).get("basisReserveBpsApplied"),
                     "spread": market.get("spread"),
+                    "edgeEligibleDepth": market.get("edgeEligibleDepth"),
+                    "executionLimitPrice": edge.get("executionLimitPrice"),
                     "bookImbalance": market.get("bookImbalance"),
                     "secondsToClose": market.get("secondsToClose"),
                 },
@@ -909,39 +605,6 @@ class KalshiRobotState:
                     bucket["strategy"]["lastExitTicker"] = row.get("ticker")
                     bucket["strategy"]["lastExitAt"] = row.get("generatedAt")
             ticker = str(market.get("ticker") or "")
-            learning_seconds = _number((row.get("learningFeatures") or {}).get("secondsToClose"), -1.0)
-            active_config = normalize_strategy_config(bucket.get("config") or {})
-            learning_window_open = (
-                active_config["minSecondsToClose"] <= learning_seconds <= active_config["maxSecondsToClose"]
-            )
-            if (
-                bucket.get("config", {}).get("learningMode")
-                and ticker
-                and row.get("side") in {"YES", "NO"}
-                and learning_window_open
-            ):
-                observations = list(bucket.get("learningObservations") or [])
-                if not any(str(item.get("ticker") or "") == ticker for item in observations):
-                    original_side = row["side"]
-                    if row.get("directionMode") == "contrarian":
-                        original_side = "NO" if original_side == "YES" else "YES"
-                    observations.append({
-                        "ticker": ticker,
-                        "observedAt": row["generatedAt"],
-                        "environment": environment,
-                        "side": row["side"],
-                        "originalSide": original_side,
-                        "fairProbability": row.get("fairProbability"),
-                        "price": row.get("price"),
-                        "netEdge": row.get("netEdge"),
-                        "conservativeEdge": row.get("conservativeEdge"),
-                        "blockingReasons": row.get("blockingReasons"),
-                        "learningFeatures": row.get("learningFeatures"),
-                        "directionMode": row.get("directionMode"),
-                        "traded": bool(row.get("orderFilled")),
-                        "settled": False,
-                    })
-                    bucket["learningObservations"] = observations[-MAX_LEARNING_OBSERVATIONS:]
             if _order_fill_count(order) > 0 and ticker and ticker not in bucket["tradedTickers"]:
                 bucket["tradedTickers"].append(ticker)
                 # Decision history is intentionally ephemeral, but the traded-ticker
@@ -953,7 +616,6 @@ class KalshiRobotState:
             bucket["lastRunAt"] = state["lastRunAt"]
             bucket["runs"] = int(bucket.get("runs") or 0) + 1
             self._sync_mode_mirror(state, environment)
-            self._refresh_strategy_library(state)
             self._save()
             return copy.deepcopy(state)
 
@@ -967,9 +629,8 @@ class KalshiRobotState:
     ) -> Dict[str, Any]:
         """Persist a realized reduce-only close without fabricating a settlement label.
 
-        Early closes are useful financial evidence, but they do not reveal the
-        eventual binary contract result. Keeping them in a separate ledger
-        prevents exit P/L from corrupting Brier score or directional accuracy.
+        Early closes are kept separate from final settlement calibration
+        because they do not reveal the eventual binary contract result.
         """
         if not order or _order_fill_count(order) <= 0:
             return self.get(user_id, environment=environment)
@@ -1019,18 +680,8 @@ class KalshiRobotState:
                 sum(1 for item in records if _number(item.get("pnl")) > 0) / len(records),
                 4,
             ) if records else None
-            learning = strategy.setdefault("learning", {})
-            learning.update({
-                "earlyExitSamples": len(records),
-                "earlyExitWinRate": strategy["closedTradeWinRate"],
-                "earlyExitTotalPnl": strategy["closedTradeTotalPnl"],
-                "earlyExitAveragePnl": round(strategy["closedTradeTotalPnl"] / len(records), 4) if records else None,
-                "earlyExitCalibrationExcluded": True,
-                "earlyExitIncludedInPnlLearning": True,
-            })
             self._sync_realized_analytics(strategy, environment)
             self._sync_mode_mirror(state, environment)
-            self._refresh_strategy_library(state)
             self._save()
             return copy.deepcopy(state)
 
@@ -1114,77 +765,6 @@ class KalshiRobotState:
         strategy["averagePnl"] = strategy["realizedAveragePnl"]
         strategy["bestTrade"] = strategy["realizedBestTrade"]
         strategy["worstTrade"] = strategy["realizedWorstTrade"]
-
-    def pending_learning_tickers(self, user_id: str, *, environment: str = "paper"):
-        """Return unresolved shadow forecasts used for non-financial learning."""
-        environment = _execution_environment(environment)
-        with self._lock:
-            state = self._state(user_id)
-            bucket = self._mode_bucket(state, environment)
-            return [
-                str(row.get("ticker")) for row in bucket.get("learningObservations") or []
-                if row.get("ticker")
-                and not row.get("settled")
-                and _execution_environment(row.get("environment")) == environment
-            ]
-
-    def reconcile_learning_outcome(self, user_id: str, ticker: str, result: str, *, settled_at: str = "", environment: str = "paper") -> Dict[str, Any]:
-        """Label a shadow forecast without counting it as a financial trade."""
-        result = str(result or "").upper()
-        if result not in {"YES", "NO"} or not ticker:
-            return self.get(user_id)
-        environment = _execution_environment(environment)
-        with self._lock:
-            state = self._state(user_id)
-            bucket = self._mode_bucket(state, environment)
-            observations = list(bucket.get("learningObservations") or [])
-            examples = list(bucket.get("learningExamples") or [])
-            changed = False
-            known = {
-                f"{_execution_environment(row.get('environment'))}:{str(row.get('ticker') or '')}"
-                for row in examples
-            }
-            for row in observations:
-                if (
-                    str(row.get("ticker") or "") != ticker
-                    or row.get("settled")
-                    or _execution_environment(row.get("environment")) != environment
-                ):
-                    continue
-                row["settled"] = True
-                row["settledAt"] = settled_at or _now()
-                row["result"] = result
-                row["selectedHit"] = str(row.get("side") or "").upper() == result
-                row["originalHit"] = str(row.get("originalSide") or "").upper() == result
-                row["environment"] = environment
-                key = f"{environment}:{ticker}"
-                if key not in known:
-                    examples.append(dict(row))
-                    known.add(key)
-                changed = True
-            if changed:
-                bucket["learningObservations"] = observations[-MAX_LEARNING_OBSERVATIONS:]
-                bucket["learningExamples"] = examples[-MAX_LEARNING_OBSERVATIONS:]
-                learning = bucket["strategy"].setdefault("learning", {})
-                window_size = int((bucket.get("config") or {}).get("learningWindowSize") or 24)
-                environment_examples = [
-                    row for row in bucket["learningExamples"]
-                    if _execution_environment(row.get("environment")) == environment
-                ]
-                window = environment_examples[-window_size:]
-                size = len(window)
-                original_hits = sum(1 for row in window if row.get("originalHit"))
-                selected_hits = sum(1 for row in window if row.get("selectedHit"))
-                learning["observedSamples"] = len(environment_examples)
-                learning["directionalWindowSamples"] = size
-                learning["observedDirectionalAccuracy"] = round(original_hits / size, 4) if size else None
-                learning["observedInverseAccuracy"] = round(1.0 - original_hits / size, 4) if size else None
-                learning["activeDirectionalAccuracy"] = round(selected_hits / size, 4) if size else None
-                learning["tradedSamples"] = sum(1 for row in environment_examples if row.get("traded"))
-                self._sync_mode_mirror(state, environment)
-                self._refresh_strategy_library(state)
-                self._save()
-            return copy.deepcopy(state)
 
     def error(self, user_id: str, message: str) -> None:
         with self._lock:
@@ -1277,18 +857,6 @@ class KalshiRobotState:
                 strategy["closedTradeWinRate"] = (
                     round(closed_wins / len(closed_records), 4) if closed_records else None
                 )
-                learning = strategy.setdefault("learning", {})
-                learning.update({
-                    "earlyExitSamples": len(closed_records),
-                    "earlyExitWinRate": strategy["closedTradeWinRate"],
-                    "earlyExitTotalPnl": strategy["closedTradeTotalPnl"],
-                    "earlyExitAveragePnl": round(
-                        strategy["closedTradeTotalPnl"] / len(closed_records),
-                        4,
-                    ) if closed_records else None,
-                    "earlyExitCalibrationExcluded": True,
-                    "earlyExitIncludedInPnlLearning": True,
-                })
             existing_records = {
                 str(row.get("key")): dict(row)
                 for row in bucket["strategy"].get("settlementRecords") or []
@@ -1399,9 +967,6 @@ class KalshiRobotState:
                     "exitType": "settlement",
                     "won": won,
                     "fairProbability": round(probability, 6),
-                    "directionMode": str((forecast or {}).get("directionMode") or "normal"),
-                    "explorationTrade": bool((forecast or {}).get("explorationTrade")),
-                    "learningFeatures": dict((forecast or {}).get("learningFeatures") or {}),
                     "matchedFill": bool(matching_entry_fills or forecast),
                 }
                 existing_records[settlement_key] = record
@@ -1426,18 +991,6 @@ class KalshiRobotState:
                     strategy["dailyPnlDate"] = settlement_day
                     strategy["dailyPnl"] = 0.0
                 strategy["dailyPnl"] = round(float(strategy.get("dailyPnl") or 0.0) + pnl, 4)
-                if environment != "real":
-                    strategy["consecutiveLosses"] = 0
-                    strategy["cooldownUntil"] = None
-                elif won:
-                    strategy["consecutiveLosses"] = 0
-                    strategy["cooldownUntil"] = None
-                else:
-                    strategy["consecutiveLosses"] = int(strategy.get("consecutiveLosses") or 0) + 1
-                    if strategy["consecutiveLosses"] >= 3:
-                        strategy["cooldownUntil"] = (
-                            settlement_time + timedelta(minutes=30)
-                        ).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
                 processed.add(settlement_key)
                 changed = True
 
@@ -1448,32 +1001,8 @@ class KalshiRobotState:
             if records:
                 brier = sum((_number(row.get("fairProbability"), 0.5) - (1.0 if row.get("result") == row.get("side") else 0.0)) ** 2 for row in records) / len(records)
                 strategy["brierScore"] = round(brier, 5)
-            directional = [
-                row for row in records
-                if str(row.get("side") or "").upper() in {"YES", "NO"}
-                and str(row.get("result") or "").upper() in {"YES", "NO"}
-            ]
-            normal_hits = 0
-            for row in directional:
-                selected_hit = str(row.get("side")).upper() == str(row.get("result")).upper()
-                normal_hits += int(not selected_hit if row.get("directionMode") == "contrarian" else selected_hit)
-            original_accuracy = normal_hits / len(directional) if directional else None
-            inverse_accuracy = (1.0 - original_accuracy) if original_accuracy is not None else None
-            learning = strategy.setdefault("learning", {})
-            learning["originalDirectionalAccuracy"] = round(original_accuracy, 4) if original_accuracy is not None else None
-            learning["inverseDirectionalAccuracy"] = round(inverse_accuracy, 4) if inverse_accuracy is not None else None
-            learning["directionalSamples"] = len(directional)
-            learning["contrarianMode"] = bool((bucket.get("config") or {}).get("learningContrarianMode"))
-            learning["environment"] = environment
             self._sync_realized_analytics(strategy, environment)
             realized_records = list(reversed(strategy.get("realizedTradeRecords") or []))
-            if self._review_adaptive_learning(
-                bucket,
-                records,
-                realized_records=realized_records,
-                environment=environment,
-            ):
-                changed = True
             if changed or records or realized_records:
                 preserved_processed = [
                     str(value) for value in (bucket.get("processedSettlements") or [])
@@ -1481,597 +1010,7 @@ class KalshiRobotState:
                 ][-1000:]
                 bucket["processedSettlements"] = (preserved_processed + list(processed))[-1000:]
                 self._sync_mode_mirror(state, environment)
-                self._refresh_strategy_library(state)
                 self._save()
             return copy.deepcopy(state)
-
-    def claim_ai_learning_review(self, user_id: str, *, environment: str = "paper") -> Optional[Dict[str, Any]]:
-        """Atomically claim one bounded Settings-AI review for the active execution environment."""
-        environment = _execution_environment(environment)
-        with self._lock:
-            state = self._state(user_id)
-            bucket = self._mode_bucket(state, environment)
-            config = normalize_strategy_config(bucket.get("config") or {})
-            learning = bucket["strategy"].setdefault("learning", {})
-            records = [
-                row for row in reversed(bucket["strategy"].get("settlementRecords") or [])
-                if _execution_environment(row.get("environment")) == environment
-            ]
-            early_closes = [
-                row for row in bucket["strategy"].get("closedTradeRecords") or []
-                if _execution_environment(row.get("environment")) == environment
-            ]
-            observations = [
-                row for row in (bucket.get("learningExamples") or [])
-                if _execution_environment(row.get("environment")) == environment
-            ]
-            sample_count = len(observations)
-            last_sample_key = f"lastAiReviewSample_{environment}"
-            last_sample = int(learning.get(last_sample_key) or 0)
-            cadence = max(4, min(24, int(config.get("learningReviewEvery") or 8)))
-            if (
-                not config.get("learningMode")
-                or not config.get("learningAiMode")
-                or sample_count < 8
-                or sample_count < last_sample + cadence
-            ):
-                return None
-            learning[last_sample_key] = sample_count
-            learning["lastAiReviewSample"] = sample_count
-            learning["aiStatus"] = "reviewing"
-            self._sync_mode_mirror(state, environment)
-            self._save()
-            safe_records = []
-            for row in records[-int(config.get("learningWindowSize") or 24):]:
-                safe_records.append({
-                    key: row.get(key) for key in (
-                        "ticker", "settledAt", "result", "side", "contracts", "pnl",
-                        "won", "fairProbability", "directionMode", "explorationTrade",
-                        "learningFeatures",
-                    )
-                })
-            safe_observations = []
-            for row in observations[-int(config.get("learningWindowSize") or 24):]:
-                safe_observations.append({
-                    key: row.get(key) for key in (
-                        "ticker", "observedAt", "settledAt", "result", "side",
-                        "originalSide", "selectedHit", "originalHit", "traded",
-                        "fairProbability", "price", "netEdge", "conservativeEdge",
-                        "blockingReasons", "learningFeatures", "directionMode",
-                    )
-                })
-            safe_early_closes = []
-            for row in early_closes[-int(config.get("learningWindowSize") or 24):]:
-                safe_early_closes.append({
-                    key: row.get(key) for key in (
-                        "ticker", "closedAt", "side", "count", "entryPrice",
-                        "exitPrice", "entryFee", "exitFee", "pnl",
-                        "executionIntent", "exitValueEdge",
-                    )
-                })
-            realized_records = [
-                row for row in reversed(bucket["strategy"].get("realizedTradeRecords") or [])
-                if _execution_environment(row.get("environment")) == environment
-            ]
-            evidence_summary = _learning_evidence_summary(
-                safe_records,
-                safe_observations,
-                safe_early_closes,
-                realized_records[-int(config.get("learningWindowSize") or 24):],
-            )
-            return {
-                "environment": environment,
-                "sampleCount": sample_count,
-                "settledTradeWindow": safe_records,
-                "shadowForecastWindow": safe_observations,
-                # Early exits are financial/routing evidence only. They help
-                # Settings AI diagnose fees, churn and exit quality, but never
-                # become binary settlement labels or Brier-score observations.
-                "earlyCloseWindow": safe_early_closes,
-                "evidenceSummary": evidence_summary,
-                "metrics": {
-                    "winRate": bucket["strategy"].get("winRate"),
-                    "averagePnl": bucket["strategy"].get("averagePnl"),
-                    "totalPnl": bucket["strategy"].get("totalPnl"),
-                    "brierScore": bucket["strategy"].get("brierScore"),
-                    "originalDirectionalAccuracy": learning.get("originalDirectionalAccuracy"),
-                    "inverseDirectionalAccuracy": learning.get("inverseDirectionalAccuracy"),
-                    "directionalSamples": learning.get("directionalSamples"),
-                    "observedDirectionalAccuracy": learning.get("observedDirectionalAccuracy"),
-                    "observedInverseAccuracy": learning.get("observedInverseAccuracy"),
-                    "activeDirectionalAccuracy": learning.get("activeDirectionalAccuracy"),
-                    "observedSamples": learning.get("observedSamples"),
-                    "directionalWindowSamples": learning.get("directionalWindowSamples"),
-                    "tradedSamples": learning.get("tradedSamples"),
-                    "earlyExitSamples": bucket["strategy"].get("closedTradeSamples"),
-                    "earlyExitWinRate": bucket["strategy"].get("closedTradeWinRate"),
-                    "earlyExitTotalPnl": bucket["strategy"].get("closedTradeTotalPnl"),
-                    "realizedSamples": bucket["strategy"].get("realizedSamples"),
-                    "realizedWinRate": bucket["strategy"].get("realizedWinRate"),
-                    "realizedAveragePnl": bucket["strategy"].get("realizedAveragePnl"),
-                    "realizedTotalPnl": bucket["strategy"].get("realizedTotalPnl"),
-                },
-                "config": config,
-            }
-
-    def complete_ai_learning_review(
-        self,
-        user_id: str,
-        review: Mapping[str, Any],
-        *,
-        provider: str = "",
-        model: str = "",
-        error: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Validate and apply an AI diagnosis inside narrow, auditable bounds."""
-        with self._lock:
-            state = self._state(user_id)
-            environment = _execution_environment(review.get("environment") or state.get("activeEnvironment") or (state.get("config") or {}).get("executionMode"))
-            bucket = self._mode_bucket(state, environment)
-            strategy = bucket["strategy"]
-            learning = strategy.setdefault("learning", {})
-            learning.update({"aiProvider": provider or None, "aiModel": model or None})
-            if error:
-                learning.update({
-                    "aiStatus": "unavailable",
-                    "lastAiReviewAt": _now(),
-                    "lastAiDiagnosis": str(error)[:400],
-                })
-                self._sync_mode_mirror(state, environment)
-                self._save()
-                return copy.deepcopy(state)
-
-            config = normalize_strategy_config(bucket.get("config") or {})
-            before = dict(config)
-            confidence = max(0.0, min(1.0, _number(review.get("confidence"))))
-            deltas = dict(review.get("adjustments") or {})
-            delta_limits = {
-                "marketBlendWeight": (-0.05, 0.05),
-                "probabilityLogitScale": (-0.05, 0.05),
-                "momentumProjectionScale": (-0.02, 0.02),
-                "basisReserveBps": (-1.0, 1.0),
-                "minNetEdge": (-0.0025, 0.0025),
-                "minConservativeEdge": (-0.0015, 0.0015),
-                "minModelProbability": (-0.02, 0.02),
-                "executionPriceTolerance": (-0.002, 0.002),
-                "learningExplorationRate": (-0.05, 0.05),
-            }
-            applied = {}
-            rejected = {}
-            realized_samples = int(strategy.get("realizedSamples") or learning.get("realizedSamples") or 0)
-            settled_samples = int(strategy.get("settledSamples") or learning.get("settledCalibrationSamples") or 0)
-            observed_samples = int(learning.get("observedSamples") or 0)
-            early_exit_samples = int(strategy.get("closedTradeSamples") or learning.get("earlyExitSamples") or 0)
-            realized_win_rate = _number(strategy.get("realizedWinRate"), _number(strategy.get("winRate"), 0.0))
-            realized_average_pnl = _number(strategy.get("realizedAveragePnl"), _number(strategy.get("averagePnl"), 0.0))
-            brier_score = _number(strategy.get("brierScore"), -1.0)
-            weak_financial_evidence = (
-                realized_samples >= 12
-                and (realized_average_pnl < 0 or realized_win_rate < V3_WEAK_WIN_RATE)
-            )
-            poor_calibration = settled_samples >= 12 and brier_score > V3_POOR_BRIER
-            evidence_requirements = {
-                "marketBlendWeight": (settled_samples, 12, "final settlement labels"),
-                "probabilityLogitScale": (settled_samples, 12, "final settlement labels"),
-                "momentumProjectionScale": (observed_samples, 24, "settled shadow labels"),
-                "basisReserveBps": (observed_samples, 24, "settled shadow labels"),
-                "minNetEdge": (realized_samples, 16, "realized trades"),
-                "minConservativeEdge": (realized_samples, 16, "realized trades"),
-                "minModelProbability": (settled_samples, 12, "final settlement labels"),
-                "executionPriceTolerance": (max(early_exit_samples, realized_samples), 12, "execution outcomes"),
-                "learningExplorationRate": (min(realized_samples, settled_samples), 12, "realized and finally settled trades"),
-            }
-            if confidence >= 0.55:
-                for key, (low, high) in delta_limits.items():
-                    if key not in deltas:
-                        continue
-                    delta = max(low, min(high, _number(deltas.get(key))))
-                    rejection_reason = ""
-                    available, required, evidence_name = evidence_requirements[key]
-                    if available < required:
-                        rejection_reason = f"Rejected: {key} requires {required} {evidence_name}; only {available} available."
-                    elif key == "probabilityLogitScale" and delta > 0 and poor_calibration:
-                        rejection_reason = "Rejected: poor Brier calibration forbids increasing forecast confidence."
-                    elif key == "executionPriceTolerance" and delta > 0 and weak_financial_evidence:
-                        rejection_reason = "Rejected: negative fee-adjusted evidence forbids looser execution."
-                    elif key == "learningExplorationRate" and delta > 0 and weak_financial_evidence:
-                        rejection_reason = "Rejected: exploration cannot expand while realized performance is weak."
-                    elif key in {"minNetEdge", "minConservativeEdge", "minModelProbability"} and delta < 0 and weak_financial_evidence:
-                        rejection_reason = "Rejected: entry selectivity cannot be loosened while fee-adjusted performance is weak."
-                    elif key == "marketBlendWeight" and delta < 0 and poor_calibration:
-                        rejection_reason = "Rejected: poor calibration forbids reducing the stabilizing market-price blend."
-                    if rejection_reason:
-                        rejected[key] = {
-                            "requestedDelta": round(delta, 6),
-                            "value": config[key],
-                            "reason": rejection_reason,
-                        }
-                        continue
-                    value = float(config[key]) + delta
-                    config[key] = value
-                    applied[key] = {
-                        "before": before[key],
-                        "after": config[key],
-                        "delta": round(delta, 6),
-                        "reason": "Bounded Settings AI calibration proposal.",
-                    }
-
-            sample_count = int(learning.get("observedSamples") or 0)
-            original_accuracy = _number(learning.get("observedDirectionalAccuracy"), -1.0)
-            inverse_accuracy = _number(learning.get("observedInverseAccuracy"), -1.0)
-            traded_samples = int(learning.get("directionalSamples") or 0)
-            traded_original_accuracy = _number(learning.get("originalDirectionalAccuracy"), -1.0)
-            traded_inverse_accuracy = _number(learning.get("inverseDirectionalAccuracy"), -1.0)
-            recommendation = str(review.get("directionRecommendation") or "hold").strip().lower()
-            if (
-                recommendation == "contrarian"
-                and confidence >= 0.75
-                and sample_count >= 24
-                and inverse_accuracy >= 0.58
-                and inverse_accuracy - original_accuracy >= 0.15
-                and traded_samples >= 12
-                and traded_inverse_accuracy >= traded_original_accuracy + 0.10
-                and _number(strategy.get("averagePnl")) < 0
-            ):
-                config["learningContrarianMode"] = True
-                applied["learningContrarianMode"] = {
-                    "before": bool(before.get("learningContrarianMode")),
-                    "after": True,
-                    "reason": "Shadow and traded settlement cohorts independently support inversion.",
-                }
-            elif recommendation == "contrarian":
-                rejected["learningContrarianMode"] = {
-                    "requested": True,
-                    "value": bool(config.get("learningContrarianMode")),
-                    "reason": "Rejected: direction changes require agreement from both shadow and traded settlement cohorts.",
-                }
-            elif (
-                recommendation == "normal"
-                and config.get("learningContrarianMode")
-                and confidence >= 0.75
-                and sample_count >= 24
-                and original_accuracy >= inverse_accuracy + 0.15
-            ):
-                config["learningContrarianMode"] = False
-                applied["learningContrarianMode"] = {
-                    "before": True,
-                    "after": False,
-                    "reason": "Stable shadow evidence restored the normal direction.",
-                }
-
-            config = normalize_strategy_config(config)
-            # The language model never increases sizing or risk. Those remain
-            # under the deterministic walk-forward controller.
-            config["riskPerTradePct"] = before["riskPerTradePct"]
-            bucket["config"] = config
-            reasons = [str(value)[:240] for value in (review.get("reasons") or [])][:5]
-            learning.update({
-                "aiStatus": "reviewed",
-                "lastAiReviewAt": _now(),
-                "lastAiDiagnosis": str(review.get("diagnosis") or "AI review completed.")[:500],
-                "lastAiRootCause": str(review.get("rootCause") or "insufficient_data")[:80],
-                "lastAiTargetMetric": str(review.get("targetMetric") or "")[:120],
-                "lastAiExpectedEffect": str(review.get("expectedEffect") or "")[:240],
-                "lastAiEvidenceUsed": [str(value)[:180] for value in (review.get("evidenceUsed") or [])][:6],
-                "lastAiReasons": reasons,
-                "lastAiAdjustments": applied,
-                "lastAiRejectedAdjustments": rejected,
-                "aiConfidence": round(confidence, 4),
-                "aiDirectionRecommendation": recommendation,
-                "contrarianMode": bool(config.get("learningContrarianMode")),
-            })
-            if applied:
-                learning["adjustmentCount"] = int(learning.get("adjustmentCount") or 0) + 1
-            if applied or rejected:
-                strategy["version"] = int(strategy.get("version") or 1) + 1
-                strategy["changes"].insert(0, {
-                    "at": _now(),
-                    "version": strategy["version"],
-                    "source": "settings_ai_bounded_calibration",
-                    "summary": learning["lastAiDiagnosis"],
-                    "before": before,
-                    "after": config,
-                    "applied": applied,
-                    "rejected": rejected,
-                    "evidence": {
-                        "realizedSamples": realized_samples,
-                        "realizedWinRate": round(realized_win_rate, 4),
-                        "realizedAveragePnl": round(realized_average_pnl, 4),
-                        "settledSamples": settled_samples,
-                        "observedSamples": observed_samples,
-                        "earlyExitSamples": early_exit_samples,
-                        "brierScore": round(brier_score, 5) if brier_score >= 0 else None,
-                    },
-                })
-                strategy["changes"] = strategy["changes"][:50]
-            self._sync_mode_mirror(state, environment)
-            self._refresh_strategy_library(state)
-            self._save()
-            return copy.deepcopy(state)
-
-    @staticmethod
-    def _review_adaptive_learning(
-        state: Dict[str, Any],
-        records,
-        *,
-        realized_records=None,
-        environment: str,
-    ) -> bool:
-        """Review settled evidence for the active environment and make one bounded parameter update.
-
-        This is an adaptive walk-forward controller, not an unconstrained
-        self-modifying model.  It increases exploration only when recent
-        evidence is neutral, tightens immediately when calibration or net P/L
-        deteriorates, and never bypasses deterministic risk limits.
-        """
-        environment = _execution_environment(environment)
-        env_label = "Kalshi Real" if environment == "real" else "AlphaLab Paper"
-        strategy = state["strategy"]
-        config = normalize_strategy_config(state.get("config") or {})
-        learning = strategy.setdefault("learning", {})
-        enabled = bool(config.get("learningMode"))
-        review_every = int(config.get("learningReviewEvery") or 8)
-        window_size = int(config.get("learningWindowSize") or 24)
-        exploration = float(config.get("learningExplorationRate") or 0.0)
-        performance_records = list(realized_records if realized_records is not None else records)
-        sample_count = len(performance_records)
-        minimum_samples = 12
-        last_review_sample = int(learning.get("lastReviewSample") or 0)
-        next_review_sample = max(minimum_samples, last_review_sample + review_every)
-        learning.update({
-            "enabled": enabled,
-            "paperOnly": environment != "real",
-            "environment": environment,
-            "reviewEvery": review_every,
-            "windowSize": window_size,
-            "explorationRate": round(exploration, 4),
-            "nextReviewSample": next_review_sample,
-        })
-
-        if not enabled:
-            learning["status"] = "disabled"
-            learning["lastReason"] = "Adaptive learning has not been enabled."
-            return False
-        if sample_count < next_review_sample:
-            learning["status"] = "warmup"
-            learning["lastReason"] = (
-                f"Collecting realized {env_label} P/L evidence ({sample_count}/{next_review_sample})."
-            )
-            return False
-
-        window = performance_records[-window_size:]
-        calibration_window = list(records)[-window_size:]
-        wins = sum(1 for row in window if _number(row.get("pnl")) > 0)
-        win_rate = wins / max(1, len(window))
-        average_pnl = sum(_number(row.get("pnl")) for row in window) / max(1, len(window))
-        brier = sum(
-            (_number(row.get("fairProbability"), 0.5) - (1.0 if row.get("result") == row.get("side") else 0.0)) ** 2
-            for row in calibration_window
-        ) / len(calibration_window) if len(calibration_window) >= 12 else None
-
-        before = dict(config)
-        reasons = []
-        weak_performance = average_pnl < 0 or win_rate < V3_WEAK_WIN_RATE
-        poor_calibration = brier is not None and brier > V3_POOR_BRIER
-        early_closes = [row for row in window if str(row.get("exitType") or "") == "sale"]
-        early_close_average = (
-            sum(_number(row.get("pnl")) for row in early_closes) / len(early_closes)
-            if early_closes else None
-        )
-        if poor_calibration or weak_performance:
-            config["riskPerTradePct"] = max(0.10, float(config["riskPerTradePct"]) * 0.85)
-            config["minNetEdge"] = min(0.10, float(config["minNetEdge"]) + 0.0025)
-            config["minConservativeEdge"] = min(0.05, float(config["minConservativeEdge"]) + 0.0015)
-            config["minModelProbability"] = min(0.90, float(config.get("minModelProbability") or 0.60) + 0.01)
-            config["learningExplorationRate"] = max(0.05, exploration * 0.75)
-            config["marketBlendWeight"] = min(0.50, float(config["marketBlendWeight"]) + 0.025)
-            if poor_calibration:
-                config["probabilityLogitScale"] = max(1.40, float(config["probabilityLogitScale"]) - 0.05)
-                reasons.append("settled forecasts were overconfident; forecast extremity was reduced and favorite selectivity raised")
-            if weak_performance:
-                reasons.append("fee-adjusted hit rate or net P/L weakened below the favorite-carry benchmark; sizing and exploration were reduced")
-            if early_close_average is not None and early_close_average < 0:
-                config["executionPriceTolerance"] = max(0.0, float(config["executionPriceTolerance"]) - 0.002)
-                config["maxSpread"] = max(0.04, float(config["maxSpread"]) - 0.005)
-                config["maxBookParticipation"] = max(0.10, float(config["maxBookParticipation"]) - 0.025)
-                reasons.append("early exits lost money after fees; crossing, spread, and book participation were tightened")
-        elif (
-            len(window) >= 16
-            and win_rate >= V3_STRONG_WIN_RATE
-            and average_pnl > 0
-            and (brier is None or brier <= V3_GOOD_BRIER)
-        ):
-            risk_cap = float(config.get("learningMaxRiskPct") or 0.50)
-            config["riskPerTradePct"] = min(risk_cap, float(config["riskPerTradePct"]) * 1.08)
-            config["minNetEdge"] = max(0.005, float(config["minNetEdge"]) - 0.0015)
-            config["minConservativeEdge"] = max(0.0, float(config["minConservativeEdge"]) - 0.0005)
-            reasons.append(f"recent {env_label} window beat the favorite-carry benchmark; sizing expanded cautiously")
-        else:
-            # A neutral window uses only the configured exploration budget. It
-            # can collect more fills, but cannot cross the hard edge,
-            # spread, exposure, loss-stop, or order-size bounds.
-            relaxation = min(0.0025, exploration * 0.0125)
-            config["minNetEdge"] = max(0.005, float(config["minNetEdge"]) - relaxation)
-            config["minConservativeEdge"] = max(0.0, float(config["minConservativeEdge"]) - relaxation * 0.4)
-            reasons.append(f"recent {env_label} evidence was neutral; signal thresholds relaxed slightly while execution limits stayed fixed")
-
-        config = normalize_strategy_config(config)
-        config["riskPerTradePct"] = min(
-            float(config["riskPerTradePct"]),
-            float(config.get("learningMaxRiskPct") or 0.50),
-        )
-        changed = config != before
-        if changed:
-            reason = "; ".join(reasons)
-            applied = _config_adjustments(before, config, reason)
-            state["config"] = config
-            strategy["version"] = int(strategy.get("version") or 1) + 1
-            strategy["changes"].insert(0, {
-                "at": _now(),
-                "version": strategy["version"],
-                "source": f"adaptive_{environment}_learning",
-                "summary": reason,
-                "before": before,
-                "after": config,
-                "applied": applied,
-                "metrics": {
-                    "samples": len(window),
-                    "winRate": round(win_rate, 4),
-                    "averagePnl": round(average_pnl, 4),
-                    "brierScore": round(brier, 5) if brier is not None else None,
-                    "settledCalibrationSamples": len(calibration_window),
-                    "earlyExitSamples": len(early_closes),
-                    "earlyExitAveragePnl": round(early_close_average, 4) if early_close_average is not None else None,
-                },
-            })
-            strategy["changes"] = strategy["changes"][:50]
-
-        learning.update({
-            "status": "reviewed",
-            "lastReviewSample": sample_count,
-            "nextReviewSample": sample_count + review_every,
-            "lastReviewAt": _now(),
-            "lastReason": "; ".join(reasons),
-            "recentWinRate": round(win_rate, 4),
-            "recentAveragePnl": round(average_pnl, 4),
-            "recentBrierScore": round(brier, 5) if brier is not None else None,
-            "realizedSamples": sample_count,
-            "settledCalibrationSamples": len(calibration_window),
-            "adjustmentCount": int(learning.get("adjustmentCount") or 0) + (1 if changed else 0),
-            "explorationRate": round(float(config.get("learningExplorationRate") or 0.0), 4),
-        })
-        return True
-
-    def list_strategies(self, user_id: str, *, environment: Optional[str] = None) -> Dict[str, Any]:
-        with self._lock:
-            state = self._state(user_id)
-            self._refresh_strategy_library(state)
-            selected_environment = _execution_environment(environment or state.get("activeEnvironment"))
-            strategies = [
-                copy.deepcopy(item) for item in state.get("strategyLibrary") or []
-                if environment is None or _execution_environment((item or {}).get("mode")) == selected_environment
-            ]
-            recommendation = self._recommend_from_items(strategies)
-            return {
-                "success": True,
-                "activeEnvironment": selected_environment,
-                "activeStrategyId": self._mode_bucket(state, selected_environment).get("activeStrategyId"),
-                "recommendedStrategyId": recommendation.get("id") if recommendation else None,
-                "strategies": strategies,
-            }
-
-    def save_strategy(
-        self,
-        user_id: str,
-        config: Mapping[str, Any],
-        *,
-        name: str = "",
-        environment: Optional[str] = None,
-        source: str = "manual",
-    ) -> Dict[str, Any]:
-        with self._lock:
-            state = self._state(user_id)
-            normalized = normalize_strategy_config(config)
-            selected_environment = _execution_environment(environment or normalized.get("executionMode"))
-            normalized["executionMode"] = selected_environment
-            bucket = self._mode_bucket(state, selected_environment)
-            existing = [
-                item for item in state.setdefault("strategyLibrary", [])
-                if _execution_environment((item or {}).get("mode")) == selected_environment
-                and str((item or {}).get("source")) != "active"
-            ]
-            strategy_id = f"{selected_environment}-strategy-{len(existing) + 1}"
-            created = {
-                "id": strategy_id,
-                "mode": selected_environment,
-                "name": (name or ("Real Strategy" if selected_environment == "real" else "Paper Strategy"))[:80],
-                "source": source,
-                "createdAt": _now(),
-                "updatedAt": _now(),
-                "config": copy.deepcopy(normalized),
-                "metrics": self._strategy_metrics(bucket),
-                "active": False,
-            }
-            state["strategyLibrary"].append(created)
-            state["strategyLibrary"] = state["strategyLibrary"][-60:]
-            self._refresh_strategy_library(state)
-            self._save()
-            return {"success": True, "strategy": copy.deepcopy(created), **self.list_strategies(user_id, environment=selected_environment)}
-
-    def apply_strategy(
-        self,
-        user_id: str,
-        strategy_id: str,
-        *,
-        environment: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        with self._lock:
-            state = self._state(user_id)
-            self._refresh_strategy_library(state)
-            strategy = next((item for item in state.get("strategyLibrary") or [] if str(item.get("id")) == str(strategy_id)), None)
-            if not strategy:
-                raise KeyError("strategy_not_found")
-            strategy_environment = _execution_environment(strategy.get("mode"))
-            if environment is not None and _execution_environment(environment) != strategy_environment:
-                raise ValueError("strategy_mode_mismatch")
-            bucket = self._mode_bucket(state, strategy_environment)
-            config = normalize_strategy_config(strategy.get("config") or {})
-            config["executionMode"] = strategy_environment
-            bucket["config"] = config
-            bucket["activeStrategyId"] = str(strategy.get("id"))
-            bucket["strategy"].setdefault("learning", {}).update({
-                "enabled": bool(config.get("learningMode")),
-                "paperOnly": strategy_environment != "real",
-                "environment": strategy_environment,
-                "aiEnabled": bool(config.get("learningAiMode")),
-                "contrarianMode": bool(config.get("learningContrarianMode")),
-                "explorationRate": float(config.get("learningExplorationRate") or 0.0),
-            })
-            self._sync_mode_mirror(state, strategy_environment, activate=True)
-            self._refresh_strategy_library(state)
-            self._save()
-            return copy.deepcopy(state)
-
-    @staticmethod
-    def _recommend_from_items(items) -> Optional[Dict[str, Any]]:
-        best = None
-        best_score = float("-inf")
-        for item in items or []:
-            metrics = dict((item or {}).get("metrics") or {})
-            samples = _number(metrics.get("realizedSamples") or metrics.get("settledSamples"))
-            win_rate = _number(metrics.get("winRate"), 0.0)
-            pnl = _number(metrics.get("totalPnl"), 0.0)
-            brier = _number(metrics.get("brierScore"), 0.35)
-            adjustment = min(10.0, _number(metrics.get("adjustmentCount"), 0.0))
-            score = (win_rate * 100.0) + min(25.0, samples) + min(40.0, pnl / 25.0) - (brier * 40.0) + adjustment
-            if samples < 4:
-                score -= 15.0
-            if score > best_score:
-                best_score = score
-                best = dict(item)
-                best["recommendationScore"] = round(score, 2)
-        return best
-
-    def recommend_strategy(self, user_id: str, *, environment: str = "paper") -> Dict[str, Any]:
-        with self._lock:
-            state = self._state(user_id)
-            environment = _execution_environment(environment)
-            self._refresh_strategy_library(state)
-            items = [
-                copy.deepcopy(item) for item in state.get("strategyLibrary") or []
-                if _execution_environment((item or {}).get("mode")) == environment
-            ]
-            recommended = self._recommend_from_items(items)
-            return {
-                "success": True,
-                "activeEnvironment": environment,
-                "recommendedStrategyId": recommended.get("id") if recommended else None,
-                "strategy": recommended,
-                "reason": (
-                    "Highest blend of win rate, net P/L, sample size, Brier score, and adaptive-adjustment evidence."
-                    if recommended else "No saved strategy is available for this mode."
-                ),
-            }
-
 
 __all__ = ["KalshiRobotState"]

@@ -607,3 +607,27 @@ def test_managed_buy_client_order_ids_are_recognizable_and_bounded():
     assert generated.startswith("alphalab-entry-BRKB-")
     assert len(generated) <= 48
     assert preserved == "alphalab-entry-AAPL-existing"
+
+
+def test_kalshi_observation_upsert_and_worker_lease_use_local_fallback(tmp_path):
+    store = local_store(tmp_path)
+    observation = {
+        "environment": "paper",
+        "ticker": "KXBTC15M-TEST",
+        "observation_key": "KXBTC15M-TEST:123",
+        "observed_at": "2026-07-25T12:00:00Z",
+        "action": "WAIT",
+        "blocked_reasons": ["net_edge"],
+        "features": {"model": {"distanceBps": 4.2}},
+    }
+
+    first = store.put_kalshi_observation("user-a", observation)
+    second = store.put_kalshi_observation(
+        "user-a",
+        {**observation, "action": "BUY_YES", "blocked_reasons": []},
+    )
+
+    assert first["action"] == "WAIT"
+    assert second["action"] == "BUY_YES"
+    assert len(store._local["kalshi_observations"]) == 1
+    assert store.claim_worker_lease("kalshi-btc15-robot", "worker-a") is True

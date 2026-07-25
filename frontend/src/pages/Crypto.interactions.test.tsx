@@ -61,6 +61,7 @@ jest.mock('recharts', () => {
     XAxis: Empty,
     YAxis: Empty,
     CartesianGrid: Empty,
+    ReferenceLine: Empty,
     Tooltip: Empty,
   };
 });
@@ -107,8 +108,57 @@ const overviewPayload = {
         },
       },
     ],
-    portfolio: { equity: 100000, exposurePct: 12.5, dayPnl: 250 },
+    portfolio: {
+      equity: 100000,
+      exposurePct: 12.5,
+      dayPnl: 250,
+      positions: [{ symbol: 'BTC/USD', unrealizedPnl: 75 }],
+    },
     automation: { enabled: false, status: 'idle', killSwitch: false },
+    runtime: {
+      cryptoPerformance: {
+        realizedPnl: 125,
+        estimatedFees: 12.5,
+        tradeCount: 3,
+        closedTradeCount: 2,
+        wins: 1,
+        losses: 1,
+        curve: [
+          {
+            time: '2026-07-25T12:00:00Z',
+            value: 125,
+            tradePnl: 130,
+            fee: 5,
+            symbol: 'BTC/USD',
+            action: 'REDUCE',
+          },
+        ],
+      },
+    },
+    config: {
+      enabled: false,
+      mode: 'paper',
+      symbols: ['BTC/USD', 'ETH/USD'],
+      tradeHorizon: 'short',
+      intervalMinutes: 15,
+      liveAuthorized: false,
+      killSwitch: false,
+      maxTotalExposure: 0.30,
+      maxAssetExposurePct: 18,
+      assetAllocationsPct: { 'BTC/USD': 18, 'ETH/USD': 12 },
+      riskPerTradePct: 0.25,
+      minimumConfidence: 52,
+      riskProfile: 'balanced',
+      maxOrderNotional: 1000,
+      minOrderNotional: 10,
+      allowAdds: true,
+      aiReviewEnabled: false,
+      paperLearningEnabled: false,
+      calibrationEveryCycles: 24,
+      order: { type: 'market', timeInForce: 'gtc', limitOffsetBps: 8, stopOffsetBps: 15 },
+      strategy: {},
+      algorithm: { name: 'Helios Regime Ensemble', version: '2.0.0' },
+    },
   },
 };
 
@@ -237,36 +287,41 @@ afterEach(async () => {
 });
 
 describe('Crypto workspace (Helios v2)', () => {
-  it('renders the command view with ensemble signal details', async () => {
+  it('renders the professional trading desk without ML controls', async () => {
     await renderAt('/crypto');
-    expect(container.textContent).toContain('Crypto Command');
+    expect(container.textContent).toContain('Crypto Trading Desk');
     expect(container.textContent).toContain('BTC/USD');
     expect(container.textContent).toContain('Uptrend');
     expect(container.textContent).toContain('BUY');
-    expect(container.textContent).toContain('P(up) 61%');
+    expect(container.textContent).toContain('Crypto cumulative P/L');
+    expect(container.textContent).toContain('+$200.00');
+    expect(container.textContent).not.toContain('Equity trajectory');
+    expect(container.textContent).toContain('Deterministic / no AI');
+    expect(container.textContent).not.toContain('P(up)');
     expect(api.overview).toHaveBeenCalledWith('paper');
-    expect(api.simOverview).toHaveBeenCalled();
+    expect(api.simOverview).not.toHaveBeenCalled();
   });
 
-  it('renders the simulator view with performance stats', async () => {
+  it('renders server-side 24/7 automation controls', async () => {
     await renderAt('/crypto/automation');
-    expect(container.textContent).toContain('24/7 Paper Autopilot');
-    expect(container.textContent).toContain('RUNNING');
-    expect(container.textContent).toContain('101,500');
-    expect(container.textContent).toContain('Open positions');
+    expect(container.textContent).toContain('24/7 AUTOPILOT');
+    expect(container.textContent).toContain('Automation is standing by');
+    expect(container.textContent).toContain('Run one cycle now');
   });
 
-  it('renders the strategy lab explainer', async () => {
+  it('renders the simplified strategy mandate and keeps backtest offline', async () => {
     await renderAt('/crypto/strategy');
-    expect(container.textContent).toContain('Strategy Lab');
-    expect(container.textContent).toContain('How Helios decides');
-    expect(container.textContent).toContain('Walk-forward backtest');
+    expect(container.textContent).toContain('Strategy & risk mandate');
+    expect(container.textContent).toContain('How the robot trades');
+    expect(container.textContent).toContain('Backtesting remains an offline research tool');
+    expect(container.textContent).not.toContain('Walk-forward ML');
   });
 
-  it('renders the ledger with tabs', async () => {
+  it('renders one durable Portfolio ledger', async () => {
     await renderAt('/crypto/ledger');
-    expect(container.textContent).toContain('Sim trades');
-    expect(container.textContent).toContain('Alpaca ledger');
-    expect(api.simTrades).toHaveBeenCalled();
+    expect(container.textContent).toContain('Trade & decision records');
+    expect(container.textContent).toContain('Routed trades');
+    expect(api.ledger).toHaveBeenCalledWith(100);
+    expect(api.simTrades).not.toHaveBeenCalled();
   });
 });

@@ -7,23 +7,45 @@ from flask import Flask
 from kalshi_api import (
     _PaperRobotController,
     _account_equity_cents,
+    _brti_proxy,
     _live_order_payload,
     _live_position_direction,
     _normalise_live_fill,
     _normalise_live_order,
     _normalise_live_settlement,
+    _open_live_fill_inventory,
     _reconcile_live_exit_fills,
     _estimate_reduce_only_sale,
     _exit_economic_state,
     _intent_client_order_id,
+    _market_observation,
     _paper_order_payload,
     _position_execution_context,
     _position_side_and_count,
     _protective_exit_state,
     _recent_filled_entry_age,
     _recent_filled_exit_age,
+    _venue_quote,
     register_kalshi_api,
 )
+
+
+def test_brti_proxy_uses_crossed_safe_robust_constituent_midpoints():
+    quotes = [
+        _venue_quote("coinbase", {"bid": "9999", "ask": "10001", "price": "10000"}),
+        _venue_quote("bitstamp", {"bid": "10000", "ask": "10002", "last": "10001"}),
+        _venue_quote("gemini", {"bid": "10999", "ask": "11001", "last": "11000"}),
+    ]
+
+    result = _brti_proxy(quotes)
+
+    assert result["price"] == 10000.5
+    assert result["venueCount"] == 2
+    assert result["rejectedVenues"] == ["gemini"]
+
+
+def test_venue_quote_rejects_empty_or_crossed_without_last():
+    assert _venue_quote("coinbase", {"bid": "101", "ask": "100"}) is None
 
 
 class _Response:
@@ -107,9 +129,6 @@ def test_real_tick_with_zero_cash_fails_closed_without_routing(monkeypatch):
                 "tradedTickers": [],
             }
 
-        def claim_ai_learning_review(self, _user_id, *, environment):
-            return None
-
         def record(self, _user_id, decision, order):
             return {"decision": decision, "order": order}
 
@@ -152,6 +171,81 @@ def test_real_tick_with_zero_cash_fails_closed_without_routing(monkeypatch):
     assert result["decision"]["executionIntent"] == "WAIT_REAL_NO_CASH"
     assert "real_cash_unavailable" in result["decision"]["blockingReasons"]
     assert result["decision"]["sizing"]["contracts"] == 0
+
+
+def test_same_side_signal_becomes_add_on_without_a_trade_count_gate(monkeypatch):
+    class State:
+        def get(self, _user_id, *, environment=None):
+            return {
+                "enabled": True,
+                "config": {
+                    "executionMode": environment or "paper",
+                    "minimumAddIntervalSeconds": 30,
+                    "addMinModelProbability": 0.67,
+                    "addMinConservativeEdge": 0.01,
+                },
+                "strategy": {},
+                "tradedTickers": ["KXBTC15M-TEST-00"],
+            }
+
+        def record(self, _user_id, decision, order):
+            return {"decisions": [decision]}
+
+    class Client:
+        def snapshot(self, *, base_url):
+            return {
+                "market": {"ticker": "KXBTC15M-TEST-00"},
+                "reference": {"price": 65_000, "candles": [], "timestamp": "2026-07-25T12:00:00Z"},
+                "orderbook": {"yes": [["0.60", "100"]], "no": [["0.38", "100"]]},
+                "orderbookAsOf": "2026-07-25T12:00:00Z",
+            }
+
+    decision = {
+        "generatedAt": "2026-07-25T12:00:00Z",
+        "action": "BUY_YES",
+        "side": "YES",
+        "model": {"fairYesProbability": 0.74},
+        "edge": {
+            "price": 0.62,
+            "modelProbability": 0.74,
+            "conservativeEdge": 0.03,
+        },
+        "sizing": {"contracts": 3},
+        "gates": [],
+        "blockingReasons": [],
+        "config": {"executionMode": "paper"},
+    }
+    monkeypatch.setattr(
+        kalshi_api,
+        "evaluate_btc15_contract",
+        lambda *args, **kwargs: decision,
+    )
+    controller = _PaperRobotController(Client(), State(), paper_accounts=None)
+    monkeypatch.setattr(
+        controller,
+        "portfolio",
+        lambda _user_id, *, mode: {
+            "balance": {"balance": 99_000, "portfolio_value": 300},
+            "positions": [{
+                "ticker": "KXBTC15M-TEST-00",
+                "yes_count_fp": 5,
+                "no_count_fp": 0,
+                "yes_average_price_dollars": 0.55,
+                "market_exposure_dollars": 2.75,
+                "last_trade_at": "2020-01-01T00:00:00Z",
+            }],
+            "orders": [],
+            "fills": [],
+            "settlements": [],
+        },
+    )
+
+    result = controller.tick("user-1", submit_order=False, mode="paper")
+
+    assert result["decision"]["action"] == "BUY_YES"
+    assert result["decision"]["executionIntent"] == "ADD_YES"
+    assert result["decision"]["positionManagement"]["existingContracts"] == 5
+    assert "market_flat" not in result["decision"]["blockingReasons"]
 
 
 def test_live_exit_fill_reconciliation_uses_fifo_cost_and_both_fees():
@@ -206,6 +300,41 @@ def test_trade_intent_id_is_stable_for_retries_and_rotates_by_window():
     assert changed_position != first
 
 
+def test_market_observation_uses_a_stable_15_second_bucket():
+    decision = {
+        "generatedAt": "2026-07-25T12:00:14Z",
+        "action": "BUY_YES",
+        "side": "YES",
+        "executionIntent": "ADD_YES",
+        "signalQuality": 78,
+        "blockingReasons": [],
+        "market": {
+            "ticker": "KXBTC15M-TEST",
+            "secondsToClose": 140,
+            "spread": 0.02,
+        },
+        "model": {
+            "modelYesProbability": 0.72,
+            "fairYesProbability": 0.69,
+        },
+        "edge": {
+            "price": 0.62,
+            "netEdge": 0.04,
+            "conservativeEdge": 0.02,
+        },
+    }
+
+    first = _market_observation("paper", decision)
+    second = _market_observation(
+        "paper",
+        {**decision, "generatedAt": "2026-07-25T12:00:01Z"},
+    )
+
+    assert first["observation_key"] == second["observation_key"]
+    assert first["execution_intent"] == "ADD_YES"
+    assert first["environment"] == "paper"
+
+
 def test_live_settlement_keeps_dollars_and_converts_cent_revenue():
     settlement = _normalise_live_settlement({
         "ticker": "KXBTC15M-TEST-00",
@@ -223,7 +352,7 @@ def test_live_settlement_keeps_dollars_and_converts_cent_revenue():
     assert settlement["fee_cost_dollars"] == 0.66
 
 
-def _app(tmp_path, *, auth=True, ai_status_resolver=None):
+def _app(tmp_path, *, auth=True):
     app = Flask(__name__)
     register_kalshi_api(
         app,
@@ -231,7 +360,6 @@ def _app(tmp_path, *, auth=True, ai_status_resolver=None):
         http_get=_fake_get,
         robot_state_path=str(tmp_path / "state.json"),
         paper_account_path=str(tmp_path / "paper.json"),
-        ai_status_resolver=ai_status_resolver,
     )
     return app
 
@@ -280,59 +408,10 @@ def test_missing_auth_returns_stable_401(tmp_path):
     assert response.get_json()["code"] == "authentication_required"
 
 
-def test_status_exposes_only_non_secret_ai_availability(tmp_path):
-    payload = _app(
-        tmp_path,
-        ai_status_resolver=lambda _uid: {
-            "configured": True,
-            "status": "connected",
-            "provider": "test-provider",
-            "model": "test-model",
-        },
-    ).test_client().get("/api/kalshi/status").get_json()
+def test_status_has_no_removed_ai_learning_surface(tmp_path):
+    payload = _app(tmp_path).test_client().get("/api/kalshi/status").get_json()
 
-    assert payload["ai"] == {
-        "configured": True,
-        "status": "connected",
-        "provider": "test-provider",
-        "model": "test-model",
-    }
-
-
-def test_pretrade_ai_review_is_rate_limited_and_receives_bounded_evidence():
-    calls = []
-
-    def reviewer(user_id, evidence):
-        calls.append((user_id, evidence))
-        return {"status": "reviewed", "verdict": "clear", "confidence": 0.8, "summary": "No contradiction."}
-
-    controller = _PaperRobotController(
-        client=None,
-        state=None,
-        paper_accounts=None,
-        ai_candidate_reviewer=reviewer,
-    )
-    decision = {
-        "generatedAt": "2026-07-21T00:00:00Z",
-        "action": "BUY_YES",
-        "side": "YES",
-        "signalQuality": 80,
-        "config": {"preTradeAiReview": True},
-        "market": {"ticker": "KXBTC15M-AI", "yesAsk": 0.50, "spread": 0.02},
-        "model": {"fairYesProbability": 0.62, "momentum5m": 0.01},
-        "edge": {"side": "YES", "price": 0.50, "netEdge": 0.10},
-        "gates": [{"key": "spread", "status": "pass"}],
-    }
-
-    first = controller._candidate_ai_review("user-1", decision, {"cashAvailable": 1000})
-    decision["edge"]["price"] = 0.51
-    second = controller._candidate_ai_review("user-1", decision, {"cashAvailable": 1000})
-
-    assert len(calls) == 1
-    assert calls[0][1]["passedGates"] == ["spread"]
-    assert first["ticker"] == "KXBTC15M-AI"
-    assert first["cached"] is False
-    assert second["cached"] is True
+    assert "ai" not in payload
 
 
 def test_paper_order_payload_uses_yes_book_shape():
@@ -670,6 +749,32 @@ def test_take_profit_is_measured_after_entry_and_exit_fees():
     assert round(state["netExitPnlPerContract"], 6) == 0.015
     assert state["profitableExit"] is True
     assert state["lossExitAuthorized"] is False
+
+
+def test_open_live_fill_inventory_rebuilds_fifo_cost_after_partial_sale():
+    inventory = _open_live_fill_inventory([
+        {
+            "fill_id": "buy-1", "ticker": "KXBTC15M-FIFO", "outcome_side": "YES",
+            "action": "BUY", "count_fp": 4, "average_price_dollars": 0.40,
+            "fee_cost_dollars": 0.04, "created_time": "2026-07-25T00:00:00Z",
+        },
+        {
+            "fill_id": "buy-2", "ticker": "KXBTC15M-FIFO", "outcome_side": "YES",
+            "action": "BUY", "count_fp": 4, "average_price_dollars": 0.60,
+            "fee_cost_dollars": 0.08, "created_time": "2026-07-25T00:01:00Z",
+        },
+        {
+            "fill_id": "sell-1", "ticker": "KXBTC15M-FIFO", "outcome_side": "YES",
+            "action": "SELL", "count_fp": 5, "average_price_dollars": 0.70,
+            "fee_cost_dollars": 0.03, "created_time": "2026-07-25T00:02:00Z",
+        },
+    ])
+
+    row = inventory[("KXBTC15M-FIFO", "YES")]
+    assert row["count"] == 3
+    assert round(row["principal"], 8) == 1.8
+    assert round(row["averagePrice"], 8) == 0.6
+    assert round(row["entryFee"], 8) == 0.06
 
 
 def test_material_loss_requires_the_matching_probability_stop_gate():

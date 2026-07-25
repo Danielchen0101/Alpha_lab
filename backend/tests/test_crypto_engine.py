@@ -89,6 +89,63 @@ def _panic_bars(count=1700, seed=11):
     return bars
 
 
+def _intraday_bars(count=1200, seed=41):
+    """Fifteen-minute BTC-like tape with alternating trend/range sessions."""
+    rng = random.Random(seed)
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    bars, price = [], 60_000.0
+    for index in range(count):
+        session = (index // 96) % 4
+        drift = (0.00035, -0.00025, 0.00005, 0.0004)[session]
+        intraday_wave = 0.0007 * math.sin(index / 7.0)
+        close = price * math.exp(drift + intraday_wave + rng.gauss(0, 0.0009))
+        spread = price * 0.0008
+        bars.append({
+            "t": (start + timedelta(minutes=15 * index)).isoformat(),
+            "o": price,
+            "h": max(price, close) + spread,
+            "l": min(price, close) - spread,
+            "c": close,
+            "v": 1_000 + abs(close / price - 1) * 500_000,
+        })
+        price = close
+    return bars
+
+
+def _intraday_config():
+    return validate_config({
+        **DEFAULT_CONFIG,
+        "bars_per_day": 96,
+        "ema_fast": 8,
+        "ema_slow": 21,
+        "anchor_ema": 96,
+        "momentum_fast_days": 1,
+        "momentum_slow_days": 3,
+        "atr_hours": 12,
+        "volatility_days": 2,
+        "vol_fast_days": 1,
+        "breakout_days": 1,
+        "breakdown_days": 1,
+        "rsi_period": 9,
+        "adx_period": 10,
+        "adx_trend_threshold": 18.0,
+        "meanrev_entry_z": -0.8,
+        "meanrev_rsi_buy": 38.0,
+        "entry_confirmation_bars": 1,
+        "exit_confirmation_bars": 1,
+        "entry_score": 52.0,
+        "add_score": 64.0,
+        "reduce_score": 47.0,
+        "rebalance_band": 0.005,
+        "add_min_price_gain_pct": 0.0035,
+        "stop_atr_multiple": 1.6,
+        "trail_atr_multiple": 1.8,
+        "min_stop_distance_pct": 0.0045,
+        "max_stop_distance_pct": 0.025,
+        "reduced_weight_fraction": 0.5,
+    })
+
+
 # --------------------------------------------------------------------- config
 
 
@@ -253,31 +310,18 @@ def test_flat_book_in_panic_regime_never_buys():
     assert signal["score"] <= 50.0
 
 
-def test_ml_advisor_adjusts_score_boundedly_and_can_veto_entries():
+def test_retired_ml_advisor_cannot_change_live_signal():
     bars = _hourly_bars()
     baseline = generate_signal(bars)
     boosted = generate_signal(bars, ml_signal={"probability_up": 1.0})
     suppressed = generate_signal(bars, ml_signal={"probability_up": 0.0})
 
-    max_adjust = DEFAULT_CONFIG["ml_max_adjust"]
-    assert boosted["score"] <= min(100.0, baseline["score"] + max_adjust + 1e-6)
-    assert boosted["score"] > baseline["score"]
-    assert suppressed["score"] < baseline["score"]
-    # A probability below the veto floor blocks the fresh entry entirely.
-    assert suppressed["action"] == "HOLD"
-    assert suppressed["evidence"]["ml_veto"] is True
-    assert suppressed["ensemble"]["ml"]["veto"] is True
-
-    disabled = generate_signal(
-        bars,
-        {**DEFAULT_CONFIG, "ml_gate_enabled": False},
-        ml_signal={"probability_up": 0.0},
-    )
-    assert disabled["ensemble"]["ml"] is None
-    assert disabled["action"] == "BUY"
-
-    with pytest.raises(CryptoEngineError, match="probability_up"):
-        generate_signal(bars, ml_signal={"probability_up": 1.5})
+    assert boosted["score"] == baseline["score"]
+    assert suppressed["score"] == baseline["score"]
+    assert boosted["action"] == baseline["action"]
+    assert suppressed["action"] == baseline["action"]
+    assert boosted["ensemble"]["ml"] is None
+    assert suppressed["ensemble"]["ml"] is None
 
 
 def test_trailing_stop_ratchets_up_through_position_state_but_never_widens():
@@ -393,6 +437,22 @@ def test_daily_loss_blocks_entries_but_does_not_force_liquidation():
     assert "EXIT" in held["allowed_actions"]
 
 
+def test_intraday_mandate_uses_fast_features_and_generates_repeatable_turnover():
+    config = _intraday_config()
+    bars = _intraday_bars()
+    signal = generate_signal(bars, config)
+    tested = backtest(bars, config, symbol="BTC/USD", initial_capital=10_000.0)
+
+    assert signal["version"] == ALGORITHM_VERSION
+    assert signal["indicators"]["return_1h"] is not None
+    assert signal["indicators"]["return_3h"] is not None
+    assert signal["indicators"]["return_12h"] is not None
+    # This is deliberately an active short-horizon mandate, but still bounded
+    # away from one order on every completed bar.
+    assert 10 <= tested["metrics"]["trades"] <= 150
+    assert tested["cost_model"]["fee_bps"] == config["fee_bps"]
+
+
 # ------------------------------------------------------------------ backtests
 
 
@@ -452,13 +512,10 @@ def test_backtest_does_not_rewrite_past_decisions_when_future_bar_is_appended():
         assert base["decisions"][index]["score"] == extended["decisions"][index]["score"]
 
 
-def test_backtest_ml_series_must_align_and_participates_when_supplied():
+def test_backtest_ignores_retired_ml_series():
     bars = _noisy_trend_bars(seed=21)
-    with pytest.raises(CryptoEngineError, match="align"):
-        backtest(bars, symbol="BTC/USD", ml_series=[0.5])
-
     probabilities = [0.65] * len(bars)
     result = backtest(bars, symbol="BTC/USD", ml_series=probabilities)
-    assert result["ml_used"] is True
+    assert result["ml_used"] is False
     scored = [d for d in result["decisions"] if d.get("ensemble")]
-    assert any((d["ensemble"].get("ml") or {}).get("probability_up") == 0.65 for d in scored)
+    assert all(d["ensemble"].get("ml") is None for d in scored)

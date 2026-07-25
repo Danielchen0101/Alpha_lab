@@ -7,7 +7,6 @@ import {
   PauseCircleOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
-  RobotOutlined,
   SafetyCertificateOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
@@ -24,70 +23,11 @@ import kalshiAPI, {
   KalshiEvaluationResponse,
   KalshiGate,
   KalshiSnapshot,
-  KalshiStrategyLibraryItem,
 } from '../services/kalshiApi';
 import '../styles/Kalshi.css';
 
 const MARKET_REFRESH_MS = 5_000;
 const PORTFOLIO_REFRESH_MS = 10_000;
-
-type StrategyPreset = {
-  id: string;
-  name: string;
-  nameZh: string;
-  description: string;
-  descriptionZh: string;
-  recommended?: boolean;
-  config: Partial<KalshiBotConfig>;
-};
-
-export const buildPresetConfig = (preset: StrategyPreset, paperBankroll: number, executionMode: KalshiBotConfig['executionMode'] = 'paper'): KalshiBotConfig => ({
-  ...DEFAULT_KALSHI_BOT_CONFIG,
-  executionMode,
-  paperBankroll,
-  ...preset.config,
-  learningAiMode: preset.config.learningMode ? preset.config.learningAiMode !== false : false,
-});
-
-// All presets are variations of the v3 Favorite Carry strategy: buy only the
-// model-confirmed favorite side (50-93c) in the final minutes and hold to
-// settlement. Backtested win rate ~86-92% (53,936 real windows, 18.5 months).
-export const STRATEGY_PRESETS: StrategyPreset[] = [
-  {
-    id: 'fortress',
-    name: 'Fortress · Highest Win Rate',
-    nameZh: '堡垒 · 最高胜率',
-    description: 'Only very strong favorites (75%+ model confidence) with strict edge and book gates. Fewest trades, highest expected hit rate.',
-    descriptionZh: '只买模型置信度 75% 以上的强势方，边际与盘口门槛最严。交易最少，预期胜率最高。',
-    config: { riskPerTradePct: 0.40, minModelProbability: 0.75, minNetEdge: 0.02, minConservativeEdge: 0.01, maxSpread: 0.04, minDepthContracts: 20, maxBookParticipation: 0.10, maxPortfolioExposurePct: 12, minPrice: 0.60, maxPrice: 0.93, minSecondsToClose: 100, maxSecondsToClose: 280, executionPriceTolerance: 0.005, fractionalKelly: 0.15, learningMode: false },
-  },
-  {
-    id: 'favorite-carry',
-    name: 'Favorite Carry · Calibrated Baseline',
-    nameZh: '优势侧携带 · 校准基准',
-    description: 'The backtested v3 baseline: calibrated favorite entries in the last 100-320 seconds, hold to settlement.',
-    descriptionZh: '回测校准的 v3 基准：最后 100-320 秒进场买优势侧，持有到结算。',
-    recommended: true,
-    config: { learningMode: false },
-  },
-  {
-    id: 'adaptive-learning',
-    name: 'AI Learning · 24/7 Recommended',
-    nameZh: '推荐 · AI 自适应 24 小时',
-    description: 'Favorite Carry baseline plus bounded exploration and evidence-gated AI parameter reviews. Best for continuous unattended trading.',
-    descriptionZh: '在校准基准上叠加受控探索与证据门槛的 AI 参数复核，最适合 24 小时无人值守运行。',
-    recommended: true,
-    config: { learningMode: true, learningAiMode: true, learningExplorationRate: 0.15, learningReviewEvery: 6, learningWindowSize: 40, learningMaxRiskPct: 1.0 },
-  },
-  {
-    id: 'active-sampling',
-    name: 'Active Sampling · More Trades',
-    nameZh: '积极采样 · 更多交易',
-    description: 'Looser edge gates and a wider entry window for more fills per day; win rate stays structurally high via the favorite gate.',
-    descriptionZh: '放宽边际门槛并拉宽进场窗口以增加成交；优势侧门槛仍保证结构性高胜率。',
-    config: { riskPerTradePct: 0.60, minModelProbability: 0.58, minNetEdge: 0.008, minConservativeEdge: 0.0, maxSpread: 0.07, minDepthContracts: 8, maxBookParticipation: 0.25, minSecondsToClose: 90, maxSecondsToClose: 360, executionPriceTolerance: 0.015, learningMode: true, learningAiMode: true, learningExplorationRate: 0.25, learningReviewEvery: 6, learningWindowSize: 40 },
-  },
-];
 
 export type KalshiView =
   | 'desk'
@@ -260,6 +200,7 @@ const Kalshi: React.FC = () => {
   const navigate = useNavigate();
   const chinese = language === 'zh-CN';
   const view = resolveKalshiView(location.pathname);
+  const isHourly = location.pathname.includes('btc-hourly');
   const copy = React.useCallback((english: string, chineseText: string) => (chinese ? chineseText : english), [chinese]);
   const [snapshot, setSnapshot] = React.useState<KalshiSnapshot | null>(null);
   const [decision, setDecision] = React.useState<KalshiDecision | null>(null);
@@ -274,9 +215,6 @@ const Kalshi: React.FC = () => {
   const [robotState, setRobotState] = React.useState<KalshiPaperRobotState | null>(null);
   const [robotBusy, setRobotBusy] = React.useState(false);
   const [applyBusy, setApplyBusy] = React.useState(false);
-  const [strategyBusy, setStrategyBusy] = React.useState(false);
-  const [strategyLibrary, setStrategyLibrary] = React.useState<KalshiStrategyLibraryItem[]>([]);
-  const [selectedStrategyId, setSelectedStrategyId] = React.useState('');
   const [applyMessage, setApplyMessage] = React.useState('');
   const [clock, setClock] = React.useState(Date.now());
   const inFlightRef = React.useRef(false);
@@ -287,12 +225,6 @@ const Kalshi: React.FC = () => {
   const evaluationRequestRef = React.useRef(0);
   const executionMode: KalshiBotConfig['executionMode'] = config.executionMode === 'real' ? 'real' : 'paper';
   const isRealMode = executionMode === 'real';
-  const storedPreTradeAi = robotState?.strategy?.preTradeAi;
-  const preTradeAi = decision?.aiReview?.status === 'reviewed'
-    ? decision.aiReview
-    : (!storedPreTradeAi?.ticker || storedPreTradeAi.ticker === decision?.market.ticker)
-      ? storedPreTradeAi
-      : undefined;
 
   React.useEffect(() => {
     modeRef.current = executionMode;
@@ -320,7 +252,9 @@ const Kalshi: React.FC = () => {
     inFlightRef.current = true;
     if (!quiet) setRefreshing(true);
     try {
-      const response = await kalshiAPI.evaluate(config);
+      const response = isHourly
+        ? await kalshiAPI.evaluateHourly(expectedMode)
+        : await kalshiAPI.evaluate(config);
       if (!response.data?.success) throw new Error(response.data?.message || 'Kalshi evaluation failed');
       if (evaluationRequestRef.current === requestId) acceptPayload(response.data, expectedMode);
     } catch (requestError: any) {
@@ -334,7 +268,7 @@ const Kalshi: React.FC = () => {
         setRefreshing(false);
       }
     }
-  }, [acceptPayload, config, copy, executionMode]);
+  }, [acceptPayload, config, copy, executionMode, isHourly]);
 
   React.useEffect(() => {
     mountedRef.current = true;
@@ -342,23 +276,6 @@ const Kalshi: React.FC = () => {
     return () => { mountedRef.current = false; };
   // Initial request is intentionally once; config changes are applied explicitly.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const loadStrategies = React.useCallback(async (modeOverride: KalshiBotConfig['executionMode'] = modeRef.current) => {
-    try {
-      const response = await kalshiAPI.strategies(modeOverride);
-      if (!mountedRef.current || modeRef.current !== modeOverride) return;
-      const rows = response.data?.strategies || [];
-      setStrategyLibrary(rows);
-      const active = rows.find((row) => row.active && row.mode === modeOverride) || rows.find((row) => row.mode === modeOverride);
-      setSelectedStrategyId((current) => (
-        current && rows.some((row) => row.id === current && row.mode === modeOverride)
-          ? current
-          : active?.id || ''
-      ));
-    } catch {
-      if (mountedRef.current) setStrategyLibrary([]);
-    }
   }, []);
 
   const loadPaperPortfolio = React.useCallback(async (modeOverride: KalshiBotConfig['executionMode'] = modeRef.current) => {
@@ -403,8 +320,7 @@ const Kalshi: React.FC = () => {
       evaluationRequestRef.current = evaluationRequestId;
       void Promise.all([
         loadPaperPortfolio(nextMode),
-        loadStrategies(nextMode),
-        kalshiAPI.evaluate(nextConfig).then((response) => {
+        (isHourly ? kalshiAPI.evaluateHourly(nextMode) : kalshiAPI.evaluate(nextConfig)).then((response) => {
           if (evaluationRequestRef.current === evaluationRequestId && response.data?.success) {
             acceptPayload(response.data, nextMode);
           }
@@ -423,7 +339,7 @@ const Kalshi: React.FC = () => {
     };
     window.addEventListener(KALSHI_CONFIG_CHANGED_EVENT, handleExternalConfigChange);
     return () => window.removeEventListener(KALSHI_CONFIG_CHANGED_EVENT, handleExternalConfigChange);
-  }, [acceptPayload, copy, loadPaperPortfolio, loadStrategies]);
+  }, [acceptPayload, copy, isHourly, loadPaperPortfolio]);
 
   React.useEffect(() => {
     const mode = executionMode;
@@ -434,8 +350,7 @@ const Kalshi: React.FC = () => {
       })
       .catch(() => undefined);
     void loadPaperPortfolio(mode);
-    void loadStrategies(mode);
-  }, [executionMode, loadPaperPortfolio, loadStrategies]);
+  }, [executionMode, loadPaperPortfolio]);
 
   React.useEffect(() => {
     const serverConfig = robotState?.config;
@@ -472,6 +387,17 @@ const Kalshi: React.FC = () => {
   }, [evaluate]);
 
   React.useEffect(() => {
+    setSnapshot(null);
+    setDecision(null);
+    setHistory([]);
+    setLoading(true);
+    inFlightRef.current = false;
+    void evaluate();
+  // Switching robot tabs keeps this page mounted, so refresh explicitly.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHourly]);
+
+  React.useEffect(() => {
     const timer = window.setInterval(() => void loadPaperPortfolio(), PORTFOLIO_REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [loadPaperPortfolio]);
@@ -495,7 +421,7 @@ const Kalshi: React.FC = () => {
     }
   };
 
-  const applyConfig = async (nextConfig: KalshiBotConfig = config, presetName = '') => {
+  const applyConfig = async (nextConfig: KalshiBotConfig = config) => {
     if (applyBusy) return;
     setApplyBusy(true);
     setApplyMessage('');
@@ -504,14 +430,13 @@ const Kalshi: React.FC = () => {
     try {
       const saved = await kalshiAPI.savePaperRobotConfig(nextConfig, nextConfig.executionMode);
       if (saved.data?.state) setRobotState(saved.data.state);
-      const response = await kalshiAPI.evaluate(nextConfig);
+      const response = isHourly
+        ? await kalshiAPI.evaluateHourly(nextConfig.executionMode)
+        : await kalshiAPI.evaluate(nextConfig);
       if (!response.data?.success) throw new Error(response.data?.message || 'Kalshi evaluation failed');
       acceptPayload(response.data, nextConfig.executionMode === 'real' ? 'real' : 'paper');
-      setApplyMessage(presetName
-        ? copy(`${presetName} applied and evaluated.`, `已应用并评估：${presetName}。`)
-        : copy('Saved and evaluated with the new limits.', '已保存，并使用新限制完成评估。'));
+      setApplyMessage(copy('Saved and evaluated with the new limits.', '已保存，并使用新限制完成评估。'));
       await loadPaperPortfolio(nextConfig.executionMode === 'real' ? 'real' : 'paper');
-      await loadStrategies(nextConfig.executionMode === 'real' ? 'real' : 'paper');
     } catch (requestError: any) {
       setError(requestError?.response?.data?.message || copy('Robot limits could not be saved.', '机器人限制无法保存。'));
     } finally {
@@ -524,73 +449,6 @@ const Kalshi: React.FC = () => {
     setConfig((current) => ({ ...current, [key]: raw / scale }));
   };
 
-  const applyPreset = (preset: StrategyPreset) => {
-    const nextConfig = buildPresetConfig(preset, config.paperBankroll, executionMode);
-    void applyConfig(nextConfig, chinese ? preset.nameZh : preset.name);
-  };
-
-  const saveCurrentStrategy = async () => {
-    if (strategyBusy) return;
-    setStrategyBusy(true);
-    setApplyMessage('');
-    try {
-      const name = `${isRealMode ? 'Kalshi Real' : 'AlphaLab Paper'} Strategy ${new Date().toLocaleString()}`;
-      const response = await kalshiAPI.saveStrategy(name, config, executionMode);
-      const rows = response.data?.strategies || [];
-      setStrategyLibrary(rows);
-      setSelectedStrategyId(response.data?.strategy?.id || rows.find((row) => row.active)?.id || '');
-      setApplyMessage(copy('Strategy saved to the selected mode library.', '策略已保存到当前模式策略库。'));
-    } catch (requestError: any) {
-      setError(requestError?.response?.data?.message || copy('Strategy could not be saved.', '策略无法保存。'));
-    } finally {
-      setStrategyBusy(false);
-    }
-  };
-
-  const applySavedStrategy = async (strategyId = selectedStrategyId) => {
-    if (strategyBusy || !strategyId) return;
-    setStrategyBusy(true);
-    setApplyMessage('');
-    try {
-      const response = await kalshiAPI.applyStrategy(strategyId, executionMode);
-      const nextConfig = {
-        ...config,
-        ...(response.data?.state?.config || {}),
-      } as KalshiBotConfig;
-      const nextMode = nextConfig.executionMode === 'real' ? 'real' : 'paper';
-      modeRef.current = nextMode;
-      setConfig(nextConfig);
-      writeStoredConfig(nextConfig);
-      if (response.data?.state) setRobotState(response.data.state);
-      await loadStrategies(nextMode);
-      await loadPaperPortfolio(nextMode);
-      const evaluation = await kalshiAPI.evaluate(nextConfig);
-      if (evaluation.data?.success) acceptPayload(evaluation.data, nextMode);
-      setApplyMessage(copy('Strategy applied to the robot.', '策略已应用到机器人。'));
-    } catch (requestError: any) {
-      setError(requestError?.response?.data?.message || copy('Strategy could not be applied.', '策略无法应用。'));
-    } finally {
-      setStrategyBusy(false);
-    }
-  };
-
-  const recommendStrategy = async () => {
-    if (strategyBusy) return;
-    setStrategyBusy(true);
-    setApplyMessage('');
-    try {
-      const response = await kalshiAPI.recommendStrategy(executionMode);
-      const rows = response.data?.strategies || [];
-      setStrategyLibrary(rows);
-      if (response.data?.recommendedStrategyId) setSelectedStrategyId(response.data.recommendedStrategyId);
-      setApplyMessage(response.data?.reason || copy('AI-ranked strategy recommendation is ready.', '策略推荐已生成。'));
-    } catch (requestError: any) {
-      setError(requestError?.response?.data?.message || copy('Strategy recommendation failed.', '策略推荐失败。'));
-    } finally {
-      setStrategyBusy(false);
-    }
-  };
-
   const closeAt = decision?.market.closeTime ? Date.parse(decision.market.closeTime) : NaN;
   const secondsLeft = Number.isFinite(closeAt) ? Math.max(0, Math.floor((closeAt - clock) / 1000)) : null;
   const countdown = secondsLeft === null
@@ -601,6 +459,7 @@ const Kalshi: React.FC = () => {
   const rulesSecondary = typeof rawMarket.rules_secondary === 'string' ? rawMarket.rules_secondary : '';
   const active = snapshot?.selection === 'active';
   const blockedGateCount = decision?.gates.filter((gate) => gate.status === 'block').length || 0;
+  const adaptiveGateCount = decision?.gates.filter((gate) => gate.status === 'observe').length || 0;
   const kalshiModeLabel = isRealMode ? copy('KALSHI REAL', 'KALSHI 实盘') : copy('ALPHALAB PAPER', 'ALPHALAB 模拟盘');
 
   const renderMetrics = () => (
@@ -608,7 +467,7 @@ const Kalshi: React.FC = () => {
       <div><span>{copy('CONTRACT', '合约')}</span><strong>{decision?.market.ticker || 'KXBTC15M'}</strong><small>{active ? copy('Trading now', '正在交易') : copy('Next available interval', '下一个可用时段')}</small></div>
       <div><span>{copy('TIME LEFT', '剩余时间')}</span><strong>{countdown}</strong><small>{copy('Entry closes before settlement', '进场早于结算')}</small></div>
       <div><span>{copy('STRIKE', '结算基准')}</span><strong>{money(decision?.market.strike)}</strong><small>{copy('Reference at window open', '开盘参考价')}</small></div>
-      <div><span>{copy('BTC REFERENCE', 'BTC 参考价')}</span><strong>{money(decision?.model.spot)}</strong><small>Coinbase BTC-USD</small></div>
+      <div><span>{copy('BTC REFERENCE', 'BTC 参考价')}</span><strong>{money(decision?.model.spot)}</strong><small>{decision?.model.referenceModel === 'brti_constituent_proxy' ? `BRTI proxy · ${decision.model.referenceVenueCount || 0} venues` : 'BTC-USD fallback'}</small></div>
       <div><span>{copy('YES / NO ASK', 'YES / NO 卖价')}</span><strong>{cents(decision?.market.yesAsk)} / {cents(decision?.market.noAsk)}</strong><small>{copy('Executable quotes', '可成交报价')}</small></div>
       <div><span>{copy('VOLUME / OI', '成交量 / 持仓量')}</span><strong>{compact(decision?.market.volume)} / {compact(decision?.market.openInterest)}</strong><small>{copy('Contract units', '合约份数')}</small></div>
     </section>
@@ -645,7 +504,7 @@ const Kalshi: React.FC = () => {
       <aside className={`kalshi-decision-panel is-${decision?.action === 'WAIT' ? 'wait' : 'advance'}`}>
         <div className="kalshi-section-head">
           <div><span>02 / {isRealMode ? copy('REAL DECISION', '实盘决策') : copy('PAPER DECISION', '模拟决策')}</span><h2>{copy('Risk-owned output', '风控主导输出')}</h2></div>
-          <RobotOutlined />
+          <SafetyCertificateOutlined />
         </div>
         <div className="kalshi-action-line">
           <span>{actionLabel(decision, chinese)}</span>
@@ -665,19 +524,6 @@ const Kalshi: React.FC = () => {
           <strong>{decision?.sizing.contracts || 0} <small>{copy('contracts', '份')}</small></strong>
           <b>{money(decision?.sizing.maximumLoss)}</b>
         </div>
-        <div className={`kalshi-pretrade-ai is-${preTradeAi?.verdict || preTradeAi?.status || 'waiting'}`}>
-          <div>
-            <RobotOutlined />
-            <span><b>{copy('AI entry challenger', 'AI 进场质检')}</b><small>{copy('New entries only · downgrade authority', '仅审核新开仓 · 只有降级权限')}</small></span>
-            <strong>{preTradeAi?.status === 'reviewed'
-              ? (preTradeAi.verdict === 'challenge' ? copy('CHALLENGE', '要求等待') : copy('CLEAR', '未发现矛盾'))
-              : preTradeAi?.status === 'not_configured'
-                ? copy('NOT CONFIGURED', '未配置')
-                : copy('WAITING', '等待候选')}</strong>
-          </div>
-          <p>{preTradeAi?.summary || copy('Runs only after every deterministic entry gate passes. It cannot create a trade or change price, side, size, exits, or hard limits.', '仅在确定性进场门控全部通过后运行；不能发起交易，也不能修改价格、方向、仓位、退出或硬限制。')}</p>
-          {preTradeAi?.status === 'reviewed' && <small>{[preTradeAi.provider, preTradeAi.model, preTradeAi.confidence == null ? '' : `${Math.round(preTradeAi.confidence * 100)}%`, preTradeAi.cached ? copy('cached', '缓存') : ''].filter(Boolean).join(' · ')}</small>}
-        </div>
       </aside>
     </section>
   );
@@ -685,15 +531,15 @@ const Kalshi: React.FC = () => {
   const renderGates = () => (
     <section className="kalshi-gates-section">
       <div className="kalshi-section-head">
-        <div><span>03 / {copy('TRADE GATES', '交易门控')}</span><h2>{copy('Every condition must pass', '所有条件必须通过')}</h2></div>
-        <strong>{decision ? `${decision.gates.length - blockedGateCount}/${decision.gates.length}` : '--'} {copy('clear', '通过')}</strong>
+        <div><span>03 / {copy('TRADE GATES', '交易门控')}</span><h2>{copy('Hard controls and adaptive confirmation', '硬风控与自适应确认')}</h2></div>
+        <strong>{decision ? `${blockedGateCount} ${copy('blocked', '阻断')} · ${adaptiveGateCount} ${copy('adaptive', '自适应')}` : '--'}</strong>
       </div>
       <div className="kalshi-gate-list">
         {(decision?.gates || []).map((gate: KalshiGate) => (
           <div key={gate.key} className={`kalshi-gate is-${gate.status}`}>
-            {gate.status === 'pass' ? <CheckCircleOutlined /> : <CloseCircleOutlined />}
+            {gate.status === 'pass' ? <CheckCircleOutlined /> : gate.status === 'observe' ? <ClockCircleOutlined /> : <CloseCircleOutlined />}
             <span><em>{String(gate.category || 'signal').toUpperCase()}</em><b>{chinese ? gate.labelZh : gate.label}</b><small>{gate.detail}</small></span>
-            <strong>{gate.status === 'pass' ? copy('PASS', '通过') : copy('BLOCK', '阻断')}</strong>
+            <strong>{gate.status === 'pass' ? copy('PASS', '通过') : gate.status === 'observe' ? copy('EDGE+', '提高边际') : copy('BLOCK', '阻断')}</strong>
           </div>
         ))}
       </div>
@@ -721,67 +567,6 @@ const Kalshi: React.FC = () => {
   };
 
   const renderRiskControls = () => {
-    const learning = robotState?.strategy?.learning;
-    const parameterLabels: Record<string, [string, string]> = {
-      riskPerTradePct: ['Risk per interval', '每时段风险'],
-      minNetEdge: ['Minimum net edge', '最低净边际'],
-      minConservativeEdge: ['Conservative edge', '最低保守边际'],
-      minModelProbability: ['Favorite confidence floor', '优势侧置信下限'],
-      minPrice: ['Price band floor', '价格区间下限'],
-      maxPrice: ['Price band ceiling', '价格区间上限'],
-      marketBlendWeight: ['Market blend weight', '市场价格权重'],
-      probabilityLogitScale: ['Probability confidence', '概率置信强度'],
-      momentumProjectionScale: ['Momentum weight', '动量权重'],
-      basisReserveBps: ['Reference basis reserve', '基准价差缓冲'],
-      executionPriceTolerance: ['Execution tolerance', '成交容差'],
-      learningExplorationRate: ['Exploration budget', '探索预算'],
-      learningContrarianMode: ['Direction mode', '方向模式'],
-      maxSpread: ['Maximum spread', '最大点差'],
-      maxBookParticipation: ['Book participation', '盘口参与率'],
-      minDepthContracts: ['Minimum depth', '最低深度'],
-      maxPortfolioExposurePct: ['Portfolio exposure', '组合敞口'],
-    };
-    const percentParameters = new Set([
-      'riskPerTradePct', 'minNetEdge', 'minConservativeEdge', 'minModelProbability',
-      'minPrice', 'maxPrice', 'marketBlendWeight',
-      'momentumProjectionScale', 'executionPriceTolerance', 'learningExplorationRate',
-      'maxSpread', 'maxBookParticipation', 'maxPortfolioExposurePct',
-    ]);
-    const parameterLabel = (key: string) => {
-      const labels = parameterLabels[key] || [key, key];
-      return chinese ? labels[1] : labels[0];
-    };
-    const adjustmentValue = (key: string, value: any) => {
-      if (typeof value === 'boolean') return value ? copy('CONTRARIAN', '反向') : copy('NORMAL', '正常');
-      const numeric = Number(value);
-      if (!Number.isFinite(numeric)) return String(value ?? '--');
-      if (key === 'basisReserveBps') return `${numeric.toFixed(1)} bps`;
-      if (key === 'minDepthContracts') return Math.round(numeric).toLocaleString();
-      if (percentParameters.has(key)) return `${(numeric * (key.endsWith('Pct') ? 1 : 100)).toFixed(2)}${key === 'executionPriceTolerance' || key === 'maxSpread' ? 'c' : '%'}`;
-      return numeric.toFixed(3);
-    };
-    const learningChanges: any[] = (robotState?.strategy?.changes || [])
-      .filter((change) => {
-        const source = String(change?.source || '');
-        return source.startsWith('adaptive_') || source.startsWith('settings_ai_') || source.startsWith('evidence_recovery_');
-      })
-      .slice(0, 10)
-      .map((change) => {
-        const applied = change?.applied && Object.keys(change.applied).length
-          ? change.applied
-          : Object.fromEntries(Object.keys(change?.after || {}).filter((key) => change?.before?.[key] !== change?.after?.[key]).map((key) => [
-            key,
-            { before: change?.before?.[key], after: change?.after?.[key], reason: change?.summary },
-          ]));
-        return { ...change, applied };
-      });
-    const auditedAdjustmentCount = Math.max(
-      Number(learning?.adjustmentCount || 0),
-      (robotState?.strategy?.changes || []).filter((change) => {
-        const source = String(change?.source || '');
-        return source.startsWith('adaptive_') || source.startsWith('settings_ai_') || source.startsWith('evidence_recovery_');
-      }).length,
-    );
     const modeEquity = paperPortfolio
       ? (
         isRealMode
@@ -789,218 +574,78 @@ const Kalshi: React.FC = () => {
           : Number(paperPortfolio.balance?.balance || 0) + Number(paperPortfolio.balance?.portfolio_value || 0)
       ) / 100
       : Number(config.paperBankroll || 0);
-    const modeLabel = isRealMode ? copy('Kalshi Real', 'Kalshi 实盘') : copy('AlphaLab Paper', 'AlphaLab 模拟');
-    const learningStatus = !config.learningMode
-      ? copy('OFF', '未开启')
-      : learning?.status === 'paper_only'
-        ? copy('MODE-SCOPED EVIDENCE', '按当前模式收集')
-        : learning?.status === 'reviewed'
-          ? copy('REVIEWED', '已完成复盘')
-          : copy('COLLECTING EVIDENCE', '正在收集证据');
+    const controls: Array<{
+      key: keyof KalshiBotConfig;
+      label: [string, string];
+      unit: [string, string];
+      min: number;
+      max: number;
+      step: number;
+      scale?: number;
+    }> = [
+      { key: 'riskPerTradePct', label: ['Risk per order', '每次下单风险'], unit: ['%', '%'], min: 0.1, max: 2, step: 0.05 },
+      { key: 'minModelProbability', label: ['Model probability floor', '模型概率下限'], unit: ['%', '%'], min: 50, max: 90, step: 1, scale: 100 },
+      { key: 'minPrice', label: ['Entry price floor', '进场价格下限'], unit: ['cents', '美分'], min: 30, max: 60, step: 1, scale: 100 },
+      { key: 'maxPrice', label: ['Entry price ceiling', '进场价格上限'], unit: ['cents', '美分'], min: 40, max: 99, step: 1, scale: 100 },
+      { key: 'minSecondsToClose', label: ['Entry window start', '进场窗口起点'], unit: ['seconds to close', '距关闭秒数'], min: 45, max: 360, step: 5 },
+      { key: 'maxSecondsToClose', label: ['Entry window end', '进场窗口终点'], unit: ['seconds to close', '距关闭秒数'], min: 180, max: 840, step: 10 },
+      { key: 'minNetEdge', label: ['Minimum net edge', '最低净边际'], unit: ['%', '%'], min: 0, max: 15, step: 0.25, scale: 100 },
+      { key: 'minConservativeEdge', label: ['Conservative edge floor', '保守边际下限'], unit: ['%', '%'], min: 0, max: 10, step: 0.25, scale: 100 },
+      { key: 'maxSpread', label: ['Maximum spread', '最大点差'], unit: ['cents', '美分'], min: 1, max: 20, step: 0.5, scale: 100 },
+      { key: 'minDepthContracts', label: ['Minimum ask depth', '最低卖方深度'], unit: ['contracts', '份'], min: 1, max: 10000, step: 5 },
+      { key: 'maxBookParticipation', label: ['Book participation cap', '盘口参与率上限'], unit: ['%', '%'], min: 1, max: 50, step: 1, scale: 100 },
+      { key: 'maxPortfolioExposurePct', label: ['Portfolio exposure cap', '组合敞口上限'], unit: ['%', '%'], min: 2, max: 50, step: 1 },
+      { key: 'maxSingleMarketExposurePct', label: ['Single-market exposure cap', '单一市场敞口上限'], unit: ['%', '%'], min: 1, max: 20, step: 1 },
+      { key: 'addMinModelProbability', label: ['Add-on probability floor', '加仓概率下限'], unit: ['%', '%'], min: 50, max: 95, step: 1, scale: 100 },
+      { key: 'addMinConservativeEdge', label: ['Add-on edge floor', '加仓边际下限'], unit: ['%', '%'], min: 0, max: 10, step: 0.25, scale: 100 },
+      { key: 'addMinProbabilityImprovement', label: ['Add-on probability improvement', '加仓概率改善'], unit: ['percentage points', '百分点'], min: 0, max: 10, step: 0.25, scale: 100 },
+      { key: 'addMinEdgeImprovement', label: ['Add-on edge improvement', '加仓边际改善'], unit: ['percentage points', '百分点'], min: 0, max: 3, step: 0.1, scale: 100 },
+      { key: 'addSizeFraction', label: ['Add-on size fraction', '单次加仓比例'], unit: ['% of fresh size', '新计算仓位比例'], min: 10, max: 100, step: 5, scale: 100 },
+      { key: 'minimumAddIntervalSeconds', label: ['Minimum add interval', '最短加仓间隔'], unit: ['seconds', '秒'], min: 10, max: 180, step: 5 },
+      { key: 'executionPriceTolerance', label: ['IOC crossing allowance', 'IOC 成交容差'], unit: ['cents', '美分'], min: 0, max: 3, step: 0.25, scale: 100 },
+      { key: 'minimumHoldSeconds', label: ['Minimum hold time', '最短持仓时间'], unit: ['seconds', '秒'], min: 0, max: 300, step: 5 },
+      { key: 'exitValueBuffer', label: ['Exit edge buffer', '平仓边际缓冲'], unit: ['%', '%'], min: 0.25, max: 5, step: 0.25, scale: 100 },
+      { key: 'minimumExitProfit', label: ['Minimum net exit profit', '最低净平仓盈利'], unit: ['cents per contract', '每份美分'], min: 0, max: 10, step: 0.5, scale: 100 },
+      { key: 'takeProfitScaleOutPct', label: ['Take-profit scale-out', '止盈减仓比例'], unit: ['% of position', '持仓比例'], min: 10, max: 100, step: 5, scale: 100 },
+      { key: 'exitProbabilityThreshold', label: ['Protective probability gate', '保护性概率门槛'], unit: ['%', '%'], min: 10, max: 49, step: 1, scale: 100 },
+      { key: 'stopLossPct', label: ['Protective stop-loss gate', '保护性止损门槛'], unit: ['%', '%'], min: 15, max: 80, step: 5, scale: 100 },
+      { key: 'emergencyStopLossPct', label: ['Emergency stop-loss gate', '紧急止损门槛'], unit: ['%', '%'], min: 10, max: 60, step: 5, scale: 100 },
+    ];
+
     return <section className="kalshi-controls-section">
       <div className="kalshi-section-head">
-        <div><span>{isRealMode ? copy('REAL RISK POLICY', '实盘风控策略') : copy('PAPER RISK POLICY', '模拟风控策略')}</span><h2>{copy('BTC 15-minute limits', 'BTC 15 分钟限制')}</h2></div>
+        <div><span>{isRealMode ? copy('REAL RISK POLICY', '实盘风控策略') : copy('PAPER RISK POLICY', '模拟风控策略')}</span><h2>{copy('BTC 15-minute deterministic carry v4', 'BTC 15 分钟确定性策略 v4')}</h2></div>
         <div className="kalshi-apply-action">
           {applyMessage && <small>{applyMessage}</small>}
           <button type="button" onClick={() => void applyConfig()} disabled={applyBusy}><ThunderboltOutlined className={applyBusy ? 'is-spinning' : ''} />{applyBusy ? copy('Applying…', '正在应用…') : copy('Apply and evaluate', '应用并评估')}</button>
         </div>
       </div>
-      <div className="kalshi-presets" aria-label={copy('Strategy presets', '策略预设')}>
-        <div className="kalshi-presets-intro">
-          <span>{copy('ONE-CLICK PRESETS · FAVORITE CARRY v3', '一键策略预设 · 优势侧携带 v3')}</span>
-          <h3>{copy('Pick selectivity vs. trade count', '在胜率强度与交易数量之间选择')}</h3>
-          <p>{copy('Every preset buys only the model-confirmed favorite side in the final minutes and holds to settlement — the structure behind the 86-92% backtested win rate. Applying replaces the full parameter set and re-evaluates immediately.', '所有预设都只在最后几分钟买入模型确认的优势侧并持有到结算——这正是回测 86-92% 胜率的结构来源。应用后会替换整套参数并立即重新评估。')}</p>
-        </div>
-        <div className="kalshi-preset-grid">
-          {STRATEGY_PRESETS.map((preset) => {
-            const merged = { ...DEFAULT_KALSHI_BOT_CONFIG, ...preset.config };
-            return (
-            <article key={preset.id} className={preset.id === 'adaptive-learning' ? 'is-learning' : ''}>
-              <div><span>{preset.recommended ? copy('RECOMMENDED', '推荐') : copy('PRESET', '预设')}</span><h4>{chinese ? preset.nameZh : preset.name}</h4><p>{chinese ? preset.descriptionZh : preset.description}</p></div>
-              <dl>
-                <div><dt>{copy('Risk', '单次风险')}</dt><dd>{merged.riskPerTradePct}%</dd></div>
-                <div><dt>{copy('Confidence', '置信下限')}</dt><dd>{Math.round(merged.minModelProbability * 100)}%</dd></div>
-                <div><dt>{copy('Edge', '净边际')}</dt><dd>{(merged.minNetEdge * 100).toFixed(1)}%</dd></div>
-              </dl>
-              <details className="kalshi-preset-details">
-                <summary>{copy('View all parameters', '查看完整参数')}</summary>
-                <div>
-                  <span>{copy('Price band', '价格区间')}<b>{Math.round(merged.minPrice * 100)}-{Math.round(merged.maxPrice * 100)}c</b></span>
-                  <span>{copy('Entry window', '进场窗口')}<b>{merged.minSecondsToClose}-{merged.maxSecondsToClose}s</b></span>
-                  <span>{copy('Spread', '最大点差')}<b>{(merged.maxSpread * 100).toFixed(0)}c</b></span>
-                  <span>{copy('Depth', '最低深度')}<b>{merged.minDepthContracts}</b></span>
-                  <span>{copy('Participation', '参与率')}<b>{Math.round(merged.maxBookParticipation * 100)}%</b></span>
-                  <span>{copy('IOC tolerance', '成交容差')}<b>{(merged.executionPriceTolerance * 100).toFixed(1)}c</b></span>
-                  <span>{copy('Exposure', '敞口上限')}<b>{merged.maxPortfolioExposurePct}%</b></span>
-                  <span>{copy('Kelly fraction', '凯利比例')}<b>{Math.round(merged.fractionalKelly * 100)}%</b></span>
-                  {merged.learningMode && <span>{copy('Review every', '复盘间隔')}<b>{merged.learningReviewEvery}</b></span>}
-                </div>
-              </details>
-              <button type="button" disabled={applyBusy} onClick={() => applyPreset(preset)}>{merged.learningMode ? <RobotOutlined /> : <ThunderboltOutlined />}{copy('Apply preset', '直接应用')}</button>
-            </article>
-            );
-          })}
-        </div>
-      </div>
-      <div className="kalshi-strategy-library">
-        <div className="kalshi-library-head">
-          <div>
-            <span>{copy('MODE-SCOPED STRATEGY LIBRARY', '按模式隔离的策略库')}</span>
-            <h3>{isRealMode ? copy('Real strategies', '实盘策略') : copy('Paper strategies', '模拟盘策略')}</h3>
-            <p>{copy('Paper and Real share one library view, but each strategy keeps separate bankroll, fills, learning evidence, and risk parameters.', 'Paper 和 Real 显示在同一个策略库里，但资金、成交、学习证据和风控参数彼此独立。')}</p>
-          </div>
-          <div className="kalshi-library-actions">
-            <select value={selectedStrategyId} onChange={(event) => setSelectedStrategyId(event.target.value)} disabled={strategyBusy}>
-              {strategyLibrary.filter((item) => item.mode === executionMode).map((item) => (
-                <option key={item.id} value={item.id}>{item.active ? '● ' : ''}{item.name}</option>
-              ))}
-            </select>
-            <button type="button" className="is-secondary" onClick={() => void recommendStrategy()} disabled={strategyBusy}>{copy('AI recommend', 'AI 推荐')}</button>
-            <button type="button" className="is-secondary" onClick={() => void saveCurrentStrategy()} disabled={strategyBusy}>{copy('Save current', '保存当前')}</button>
-            <button type="button" onClick={() => void applySavedStrategy()} disabled={strategyBusy || !selectedStrategyId}><ThunderboltOutlined />{copy('Apply strategy', '应用策略')}</button>
-          </div>
-        </div>
-        <div className="kalshi-library-grid">
-          {strategyLibrary.filter((item) => item.mode === executionMode).map((item) => {
-            const metrics = item.metrics || {};
-            return (
-              <article key={item.id} className={`kalshi-library-card${item.active ? ' is-active' : ''}`}>
-                <header>
-                  <div><span>{item.mode === 'real' ? copy('REAL STRATEGY', '实盘策略') : copy('PAPER STRATEGY', '模拟策略')}</span><h4>{item.name}</h4></div>
-                  {item.active && <b>{copy('ACTIVE', '运行中')}</b>}
-                </header>
-                <dl>
-                  <div><dt>{copy('Win rate', '胜率')}</dt><dd>{metrics.winRate == null ? '--' : probability(metrics.winRate)}</dd></div>
-                  <div><dt>{copy('Realized', '已实现')}</dt><dd>{metrics.realizedSamples || metrics.settledSamples || 0}</dd></div>
-                  <div><dt>{copy('Net P/L', '净盈亏')}</dt><dd>{money(metrics.totalPnl || 0)}</dd></div>
-                  <div><dt>{copy('Avg / trade', '单笔平均')}</dt><dd>{money(metrics.averagePnl || 0)}</dd></div>
-                  <div><dt>{copy('Brier', 'Brier')}</dt><dd>{metrics.brierScore == null ? '--' : Number(metrics.brierScore).toFixed(3)}</dd></div>
-                  <div><dt>{copy('AI / learning', 'AI / 学习')}</dt><dd>{metrics.adjustmentCount || 0}</dd></div>
-                </dl>
-                <p>{copy('Risk', '风险')} {item.config?.riskPerTradePct ?? '--'}% · {copy('Edge', '边际')} {Number(item.config?.minNetEdge || 0) * 100}% · {copy('Direction', '方向')} {metrics.activeDirection || 'normal'}</p>
-                <button type="button" disabled={strategyBusy || item.active} onClick={() => void applySavedStrategy(item.id)}>{item.active ? copy('Applied', '已应用') : copy('Apply this strategy', '应用这个策略')}</button>
-              </article>
-            );
-          })}
-          {!strategyLibrary.filter((item) => item.mode === executionMode).length && (
-            <div className="kalshi-library-empty">{copy('No saved strategy yet. Save the current limits to create Strategy 1.', '当前模式还没有已保存策略。保存当前参数即可创建策略 1。')}</div>
-          )}
-        </div>
-      </div>
-      <div className={`kalshi-learning-panel${config.learningMode ? ' is-enabled' : ''}`}>
-        <div className="kalshi-learning-head">
-          <div><RobotOutlined /><span><b>{isRealMode ? copy('Adaptive Real Learning', '实盘自适应学习') : copy('Adaptive Paper Learning', '模拟盘自适应学习')}</b><small>{copy('P/L learning uses every realized exit; probability calibration uses final settlements only', '盈亏学习使用每笔已实现退出；概率校准只使用最终结算')}</small></span></div>
-          <label className="kalshi-learning-switch"><input type="checkbox" checked={config.learningMode} onChange={(event) => setConfig((current) => ({ ...current, learningMode: event.target.checked }))} /><span>{config.learningMode ? copy('ON', '已开启') : copy('OFF', '关闭')}</span></label>
-        </div>
-        <div className="kalshi-learning-status">
-          <div><span>{copy('STATUS', '状态')}</span><strong>{learningStatus}</strong><small>{learning?.lastReason || copy('Enable learning or apply the Learning Lab preset.', '开启学习，或应用“自适应学习实验室”预设。')}</small></div>
-          <div><span>{copy('REALIZED PROGRESS', '已实现样本进度')}</span><strong>{robotState?.strategy?.realizedSamples || robotState?.strategy?.settledSamples || 0} / {learning?.nextReviewSample ?? 12}</strong><small>{copy('next deterministic P/L review', '达到右侧数量后进行确定性盈亏复盘')}</small></div>
-          <div><span>{copy('RECENT WIN RATE', '近期胜率')}</span><strong>{learning?.recentWinRate == null ? '--' : probability(learning.recentWinRate)}</strong><small>{Math.min(Number(robotState?.strategy?.realizedSamples || 0), Number(learning?.windowSize || 24))} {copy('realized exits in the active window', '笔已实现退出（当前窗口）')}</small></div>
-          <div><span>{copy('RECENT NET P/L', '近期平均净盈亏')}</span><strong>{learning?.recentAveragePnl == null ? '--' : money(learning.recentAveragePnl)}</strong><small>{copy('after fees', '已扣除费用')}</small></div>
-          <div><span>{copy('ADJUSTMENTS', '已调整次数')}</span><strong>{auditedAdjustmentCount}</strong><small>{copy('audited changes', '可审计参数变更')}</small></div>
-          <div><span>{copy('SETTINGS AI', '设置 AI')}</span><strong>{learning?.aiStatus ? String(learning.aiStatus).toUpperCase() : copy('WAITING', '等待样本')}</strong><small>{[learning?.aiProvider, learning?.aiModel].filter(Boolean).join(' · ') || copy('Uses your configured provider', '调用设置中配置的模型')}</small></div>
-          <div><span>{copy('NORMAL DIRECTION', '原方向命中')}</span><strong>{learning?.observedDirectionalAccuracy == null ? '--' : probability(learning.observedDirectionalAccuracy)}</strong><small>{learning?.directionalWindowSamples ?? learning?.observedSamples ?? 0} {copy('forecasts in calculation window', '个计算窗口内预测')}</small></div>
-          <div><span>{copy('INVERSE COUNTERFACTUAL', '反向命中假设')}</span><strong>{learning?.observedInverseAccuracy == null ? '--' : probability(learning.observedInverseAccuracy)}</strong><small>{learning?.directionalWindowSamples ?? learning?.observedSamples ?? 0} {copy('same-window complement, not P/L', '个同窗口预测 · 互补命中率，非收益率')}</small></div>
-          <div><span>{copy('ACTIVE DIRECTION', '当前方向模式')}</span><strong>{learning?.contrarianMode ? copy('CONTRARIAN', '反向') : copy('NORMAL', '正常')}</strong><small>{copy('24+ stable samples required to flip', '至少 24 个稳定样本才可切换')}</small></div>
-        </div>
-        {learning?.lastAiDiagnosis && <div className="kalshi-ai-diagnosis"><RobotOutlined /><span><b>{copy('Latest AI calibration review', '最近一次 AI 校准复盘')}</b><p>{learning.lastAiDiagnosis}</p><div className="kalshi-ai-review-meta">{learning?.lastAiRootCause && <em>{copy('Root cause', '根因')} · {String(learning.lastAiRootCause).replace(/_/g, ' ')}</em>}{learning?.lastAiTargetMetric && <em>{copy('Target', '目标')} · {learning.lastAiTargetMetric}</em>}{learning?.lastAiExpectedEffect && <em>{copy('Expected', '预期')} · {learning.lastAiExpectedEffect}</em>}</div>{learning.lastAiReasons?.length ? <small>{learning.lastAiReasons.join(' · ')}</small> : null}</span></div>}
-        <div className="kalshi-learning-playbook">
-          <header><span>{copy('AI TRAINING PLAYBOOK', 'AI 调参培训规则')}</span><b>{copy('Diagnose first, adjust one cause', '先诊断，再针对一个根因调整')}</b></header>
-          <div>
-            <article><strong>01</strong><span><b>{copy('Calibration', '概率校准')}</b><small>{copy('Poor Brier or reliability gaps reduce forecast extremity and increase market blending.', 'Brier 或可靠性分箱较差时，降低预测极端程度并提高市场价格融合。')}</small></span></article>
-            <article><strong>02</strong><span><b>{copy('Entry selectivity', '入场选择')}</b><small>{copy('Calibration is sound but net P/L is weak: require more edge instead of taking more trades.', '校准正常但净盈亏偏弱时，提高边际要求，而不是增加交易次数。')}</small></span></article>
-            <article><strong>03</strong><span><b>{copy('Execution friction', '成交摩擦')}</b><small>{copy('Negative early exits or high fees tighten crossing tolerance, spread, and participation.', '早退亏损或费用过高时，收紧成交容差、点差和盘口参与率。')}</small></span></article>
-            <article><strong>04</strong><span><b>{copy('Direction and regime', '方向与行情状态')}</b><small>{copy('Direction changes need independent shadow and traded cohorts; unstable regimes produce no change.', '方向反转需要影子与交易样本独立支持；行情不稳定时保持不变。')}</small></span></article>
-          </div>
-        </div>
-        <div className="kalshi-adjustment-ledger">
-          <div className="kalshi-adjustment-head">
-            <div>
-              <span>{copy('LEARNING AUDIT', '学习审计')}</span>
-              <h4>{copy('What AI and the controller changed', 'AI 与控制器具体调整了什么')}</h4>
-              <p>{copy('Every applied parameter change keeps its previous value, new value, evidence, and source.', '每项已应用参数都会保留调整前后数值、触发证据与来源。')}</p>
-            </div>
-            <strong>{learningChanges.length}</strong>
-          </div>
-          {learningChanges.length ? <div className="kalshi-adjustment-list">
-            {learningChanges.map((change, changeIndex) => {
-              const source = String(change?.source || '').startsWith('settings_ai_')
-                ? copy('AI REVIEW', 'AI 复盘')
-                : copy('RULE CONTROLLER', '规则控制器');
-              const entries = Object.entries(change.applied || {});
-              return <article key={`${change.at || changeIndex}-${change.version || changeIndex}`}>
-                <header>
-                  <div><b>{source}</b><span>v{change.version || '--'} · {change.at ? new Date(change.at).toLocaleString(chinese ? 'zh-CN' : 'en-US') : '--'}</span></div>
-                  <small>{change?.metrics?.samples ? `${change.metrics.samples} ${copy('samples', '个样本')}` : change?.evidence?.realizedSamples ? `${change.evidence.realizedSamples} ${copy('realized', '笔已实现')}` : ''}</small>
-                </header>
-                <p>{change.summary}</p>
-                <div>
-                  {entries.map(([key, raw]: [string, any]) => {
-                    const before = raw?.before ?? change?.before?.[key];
-                    const after = raw?.after ?? raw?.value ?? change?.after?.[key];
-                    return <span key={key}>
-                      <em>{parameterLabel(key)}</em>
-                      <b>{adjustmentValue(key, before)} <i>→</i> {adjustmentValue(key, after)}</b>
-                      <small>{raw?.reason || change.summary}</small>
-                    </span>;
-                  })}
-                </div>
-                {!!Object.keys(change?.rejected || {}).length && <details>
-                  <summary>{copy(`${Object.keys(change.rejected).length} proposal(s) rejected by guardrails`, `${Object.keys(change.rejected).length} 项建议被护栏拒绝`)}</summary>
-                  {Object.entries(change.rejected).map(([key, raw]: [string, any]) => <p key={key}><b>{parameterLabel(key)}</b>: {raw?.reason}</p>)}
-                </details>}
-              </article>;
-            })}
-          </div> : <div className="kalshi-empty-row">{copy('No learning adjustment has been applied yet.', '尚未应用任何学习调整。')}</div>}
-        </div>
-        <div className="kalshi-learning-inputs">
-          <label><span>{copy('Pre-trade AI challenge', '进场前 AI 质检')}<small>{copy('may stop a new entry only', '只能阻止新开仓')}</small></span><input type="checkbox" checked={config.preTradeAiReview} onChange={(event) => setConfig((current) => ({ ...current, preTradeAiReview: event.target.checked }))} /></label>
-          <label><span>{copy('AI-assisted review', 'AI 辅助复盘')}<small>{copy('Settings provider, bounded changes', '使用设置模型，调整受限')}</small></span><input type="checkbox" checked={config.learningAiMode} disabled={!config.learningMode} onChange={(event) => setConfig((current) => ({ ...current, learningAiMode: event.target.checked }))} /></label>
-          <label><span>{copy('Exploration budget', '探索预算')}<small>{copy('more samples, still gated', '增加样本但仍受硬门控')}</small></span><input type="number" min="0" max="35" step="5" value={config.learningExplorationRate * 100} disabled={!config.learningMode} onChange={(event) => updateConfig('learningExplorationRate', event.target.valueAsNumber, 100)} /></label>
-          <label><span>{copy('Review cadence', '复盘频率')}<small>{copy('settled trades', '个结算交易')}</small></span><input type="number" min="4" max="24" step="1" value={config.learningReviewEvery} disabled={!config.learningMode} onChange={(event) => updateConfig('learningReviewEvery', event.target.valueAsNumber)} /></label>
-          <label><span>{copy('Evidence window', '证据窗口')}<small>{copy('recent settlements', '近期结算样本')}</small></span><input type="number" min="12" max="100" step="4" value={config.learningWindowSize} disabled={!config.learningMode} onChange={(event) => updateConfig('learningWindowSize', event.target.valueAsNumber)} /></label>
-          <label><span>{copy('Maximum learned risk', '学习风险上限')}<small>%</small></span><input type="number" min="0.1" max="1" step="0.05" value={config.learningMaxRiskPct} disabled={!config.learningMode} onChange={(event) => updateConfig('learningMaxRiskPct', event.target.valueAsNumber)} /></label>
-        </div>
-        <ol className="kalshi-learning-rules">
-          <li><b>01</b><span>{copy(`Warm up with 12 filled-and-settled ${modeLabel} trades; open signals and rejected orders never train the controller.`, `先收集 12 笔已成交且已结算的${modeLabel}交易；未成交订单和普通信号不会参与学习。`)}</span></li>
-          <li><b>02</b><span>{copy('Negative net P/L or a weak hit rate reduces size and exploration. Poor settlement calibration also de-extremizes probability forecasts.', '净盈亏为负或命中率偏弱时会降低仓位和探索；结算校准较差时还会降低概率预测的极端程度。')}</span></li>
-          <li><b>03</b><span>{copy('Only a profitable, calibrated 16+ trade window may expand risk, and never above the learned-risk cap.', '只有盈利且校准良好的 16 笔以上窗口才可小幅扩大风险，并且绝不超过学习风险上限。')}</span></li>
-          <li><b>04</b><span>{copy('Neutral windows may relax signal thresholds slightly, but execution tolerance, spread, depth, exposure, and order-size gates stay fixed.', '中性窗口可以轻微放宽信号阈值，但成交容差、点差、深度、敞口和订单大小门控保持不变。')}</span></li>
-          <li><b>05</b><span>{copy('AI proposals are semantically checked. It cannot loosen execution or exploration during losses, raise overconfident forecasts, size orders, or flip direction without agreement across independent cohorts.', 'AI 建议会经过语义护栏；亏损期不能放宽成交或探索，校准较差时不能提高置信度，也不能决定仓位，且不同证据组未达成一致时不能反转方向。')}</span></li>
-        </ol>
-      </div>
+      <div className="kalshi-policy-note"><SafetyCertificateOutlined /><span><b>{copy('One transparent deterministic strategy.', '只保留一套透明的确定性策略。')}</b>{copy(' Data, liquidity, fee-adjusted edge and exposure are hard controls. Trend and book pressure are adaptive confirmations: disagreement raises the required edge instead of vetoing every trade.', ' 数据、流动性、扣费后边际和敞口属于硬风控；趋势与盘口压力属于自适应确认，出现分歧时会提高所需边际，而不是直接封死交易。')}</span></div>
       <div className="kalshi-control-grid">
-        <label><span>{isRealMode ? copy('Real account equity', '实盘账户权益') : copy('Paper account equity', 'Paper 账户权益')}<small>{isRealMode ? copy('from signed Kalshi account', '来自 Kalshi 签名账户') : copy('maintained by AlphaLab', '由 AlphaLab 内置账本维护')}</small></span><input type="number" value={Number.isFinite(modeEquity) ? modeEquity.toFixed(2) : config.paperBankroll} disabled readOnly /></label>
-        <label><span>{copy('Risk per interval', '每时段风险')}<small>%</small></span><input type="number" min="0.1" max="2" step="0.1" value={config.riskPerTradePct} onChange={(event) => updateConfig('riskPerTradePct', event.target.valueAsNumber)} /></label>
-        <label><span>{copy('Favorite confidence floor', '优势侧置信下限')}<small>{copy('model win probability, %', '模型胜率下限，%')}</small></span><input type="number" min="50" max="90" step="1" value={config.minModelProbability * 100} onChange={(event) => updateConfig('minModelProbability', event.target.valueAsNumber, 100)} /></label>
-        <label><span>{copy('Price band', '价格区间下限')}<small>{copy('minimum entry price, cents', '最低进场价，美分')}</small></span><input type="number" min="30" max="60" step="1" value={config.minPrice * 100} onChange={(event) => updateConfig('minPrice', event.target.valueAsNumber, 100)} /></label>
-        <label><span>{copy('Price ceiling', '价格区间上限')}<small>{copy('maximum entry price, cents', '最高进场价，美分')}</small></span><input type="number" min="55" max="99" step="1" value={config.maxPrice * 100} onChange={(event) => updateConfig('maxPrice', event.target.valueAsNumber, 100)} /></label>
-        <label><span>{copy('Entry window start', '进场窗口起点')}<small>{copy('min seconds to close', '距结算最少秒数')}</small></span><input type="number" min="45" max="360" step="5" value={config.minSecondsToClose} onChange={(event) => updateConfig('minSecondsToClose', event.target.valueAsNumber)} /></label>
-        <label><span>{copy('Entry window end', '进场窗口终点')}<small>{copy('max seconds to close', '距结算最多秒数')}</small></span><input type="number" min="180" max="840" step="10" value={config.maxSecondsToClose} onChange={(event) => updateConfig('maxSecondsToClose', event.target.valueAsNumber)} /></label>
-        <label><span>{copy('Minimum net edge', '最低净边际')}<small>{copy('percentage points', '百分点')}</small></span><input type="number" min="0.5" max="15" step="0.25" value={config.minNetEdge * 100} onChange={(event) => updateConfig('minNetEdge', event.target.valueAsNumber, 100)} /></label>
-        <label><span>{copy('Conservative edge', '最低保守边际')}<small>{copy('after uncertainty', '扣除不确定性后')}</small></span><input type="number" min="0" max="8" step="0.25" value={config.minConservativeEdge * 100} onChange={(event) => updateConfig('minConservativeEdge', event.target.valueAsNumber, 100)} /></label>
-        <label><span>{copy('Maximum spread', '最大点差')}<small>{copy('cents', '美分')}</small></span><input type="number" min="1" max="20" step="0.5" value={config.maxSpread * 100} onChange={(event) => updateConfig('maxSpread', event.target.valueAsNumber, 100)} /></label>
-        <label><span>{copy('Maximum relative spread', '最大相对点差')}<small>{copy('spread / contract price', '点差 / 合约价格')}</small></span><input type="number" min="5" max="50" step="1" value={config.maxRelativeSpread * 100} onChange={(event) => updateConfig('maxRelativeSpread', event.target.valueAsNumber, 100)} /></label>
-        <label><span>{copy('Minimum ask depth', '最低卖方深度')}<small>{copy('contracts', '份')}</small></span><input type="number" min="1" max="10000" step="5" value={config.minDepthContracts} onChange={(event) => updateConfig('minDepthContracts', event.target.valueAsNumber)} /></label>
-        <label><span>{copy('Book participation cap', '盘口参与率上限')}<small>%</small></span><input type="number" min="5" max="50" step="5" value={config.maxBookParticipation * 100} onChange={(event) => updateConfig('maxBookParticipation', event.target.valueAsNumber, 100)} /></label>
-        <label><span>{copy('Portfolio exposure cap', '组合敞口上限')}<small>%</small></span><input type="number" min="2" max="50" step="1" value={config.maxPortfolioExposurePct} onChange={(event) => updateConfig('maxPortfolioExposurePct', event.target.valueAsNumber)} /></label>
-        <label><span>{copy('IOC crossing allowance', 'IOC 成交容差')}<small>{copy('cents, edge-capped', '美分，受边际约束')}</small></span><input type="number" min="0" max="3" step="0.5" value={config.executionPriceTolerance * 100} onChange={(event) => updateConfig('executionPriceTolerance', event.target.valueAsNumber, 100)} /></label>
-        <label><span>{copy('Model-market gap limit', '模型市场分歧上限')}<small>{copy('percentage points', '百分点')}</small></span><input type="number" min="10" max="40" step="1" value={config.maxModelMarketGap * 100} onChange={(event) => updateConfig('maxModelMarketGap', event.target.valueAsNumber, 100)} /></label>
-        <label><span>{copy('Protective probability gate', '保护性概率门槛')}<small>{copy('must also clear the loss gate', '必须同时满足亏损门槛')}</small></span><input type="number" min="10" max="49" step="1" value={config.exitProbabilityThreshold * 100} onChange={(event) => updateConfig('exitProbabilityThreshold', event.target.valueAsNumber, 100)} /></label>
-        <label><span>{copy('Minimum net exit profit', '最低净平仓盈利')}<small>{copy('dollars per contract, after both fees', '每份美元，已扣除两侧手续费')}</small></span><input type="number" min="0" max="10" step="0.5" value={config.minimumExitProfit * 100} onChange={(event) => updateConfig('minimumExitProfit', event.target.valueAsNumber, 100)} /></label>
-        <label><span>{copy('Protective stop-loss gate', '保护性止损门槛')}<small>{copy('loss from fee-adjusted break-even', '相对含费盈亏平衡点的亏损')}</small></span><input type="number" min="15" max="80" step="5" value={config.stopLossPct * 100} onChange={(event) => updateConfig('stopLossPct', event.target.valueAsNumber, 100)} /></label>
-        <label><span>{copy('Emergency stop-loss gate', '紧急止损门槛')}<small>{copy('only after probability collapse', '仅在概率严重恶化后启用')}</small></span><input type="number" min="10" max="60" step="5" value={config.emergencyStopLossPct * 100} onChange={(event) => updateConfig('emergencyStopLossPct', event.target.valueAsNumber, 100)} /></label>
+        <label><span>{isRealMode ? copy('Real account equity', '实盘账户权益') : copy('Paper account equity', '模拟账户权益')}<small>{copy('USD', '美元')}</small></span><input type="number" value={Number.isFinite(modeEquity) ? modeEquity.toFixed(2) : config.paperBankroll} disabled readOnly /></label>
+        {controls.map((control) => {
+          const scale = control.scale || 1;
+          return <label key={control.key}><span>{copy(control.label[0], control.label[1])}<small>{copy(control.unit[0], control.unit[1])}</small></span><input type="number" min={control.min} max={control.max} step={control.step} value={Number(config[control.key]) * scale} onChange={(event) => updateConfig(control.key, event.target.valueAsNumber, scale)} /></label>;
+        })}
       </div>
-      <div className="kalshi-policy-note"><SafetyCertificateOutlined /><span><b>{copy('Hard limits remain deterministic.', '硬限制始终由确定性规则控制。')}</b>{copy(' The robot follows your selected Kalshi environment and uses IOC limit orders only. AI may challenge a cleared new entry, but cannot approve a blocked trade, alter an exit, size an order, or route one.', ' 机器人会跟随你选择的 Kalshi 账户环境，并且只使用 IOC 限价单；AI 可以质疑已通过的新开仓，但不能放行被阻止的交易、修改退出、决定仓位或直接下单。')}</span></div>
+      <div className="kalshi-policy-note"><SafetyCertificateOutlined /><span><b>{copy('No trade-count cap.', '不限制交易次数。')}</b>{copy(' Every order still needs positive fee-adjusted edge, fresh data, sufficient liquidity, and available exposure. Positions are held to settlement unless a fee-adjusted exit or protective exit is better.', ' 但每次下单仍须满足扣费后正边际、数据新鲜、流动性充足和敞口可用；仓位默认持有至结算，只有扣费后平仓更优或触发保护性退出时才离场。')}</span></div>
     </section>;
   };
-
   const renderDecisionLog = () => {
-    const item: any = robotState?.decisions?.[0] || history[0];
+    const retainedDecisions: any[] = (robotState?.decisions?.length ? robotState.decisions : history) as any[];
+    const item: any = retainedDecisions[0];
     const intent = String(item?.executionIntent || '');
-    const decisionText = !item || item.action === 'WAIT'
+    const decisionText = !item
       ? copy('WAIT', '等待')
-      : `${intent.startsWith('CLOSE') ? copy('CLOSE', '平仓') : intent.startsWith('REVERSE') ? copy('REVERSE', '反手') : copy('BUY', '买入')} ${item.side || ''}`;
+      : `${intent.startsWith('CLOSE')
+        ? copy('CLOSE', '平仓')
+        : intent.startsWith('ADD')
+          ? copy('ADD', '加仓')
+          : intent.startsWith('HOLD')
+            ? copy('HOLD', '持有')
+            : item.action === 'WAIT'
+              ? copy('WAIT', '等待')
+              : copy('BUY', '买入')} ${item.side || ''}`;
     const reasonLabels: Record<string, string> = {
       contract_active: copy('Contract is not active', '合约当前不可交易'),
       entry_window: copy('Outside the permitted entry window', '不在允许进场时段'),
@@ -1020,14 +665,18 @@ const Kalshi: React.FC = () => {
       conservative_edge: copy('Conservative edge is below the minimum', '保守边际低于最低要求'),
       portfolio_exposure: copy('Portfolio exposure limit reached', '组合敞口已达上限'),
       loss_cooldown: copy('Loss-streak cooldown is active', '连败冷却中'),
-      position_already_aligned: copy('Existing position already matches the signal', '现有持仓已经与信号一致'),
-      ai_challenge: copy('AI found a material contradiction and requested a fresh snapshot', 'AI 发现重大矛盾，要求等待下一份行情快照'),
+      market_exposure: copy('Single-market exposure limit reached', '单一市场敞口已达上限'),
+      add_order_pending: copy('An add-on order is still pending', '加仓订单仍在处理中'),
+      add_interval: copy('Minimum add-on interval has not elapsed', '尚未达到最短加仓间隔'),
+      add_signal_not_improved: copy('The signal is not strong enough to add', '当前信号强度不足以加仓'),
+      add_exposure_full: copy('No exposure room remains for an add-on', '当前没有可用的加仓敞口'),
+      close_order_pending: copy('A close order is still pending', '平仓订单仍在处理中'),
+      minimum_hold_period: copy('Minimum hold time has not elapsed', '尚未达到最短持仓时间'),
     };
     const reasons = (item?.blockingReasons || []).map((reason: string) => reasonLabels[reason] || reason.replace(/_/g, ' '));
-    const itemAiReview = item?.aiReview?.status === 'reviewed' ? item.aiReview : undefined;
     return (
       <section className="kalshi-current-decision">
-        <div className="kalshi-section-head"><div><span>{copy('CURRENT 15-MINUTE DECISION', '当前 15 分钟决策')}</span><h2>{copy('What the robot is doing now', '机器人现在在做什么')}</h2><small>{copy('Only the latest decision is retained. Filled orders remain in the settlement ledger.', '只保留最新决策；已成交订单仍保留在结算记录中。')}</small></div><strong>{item?.ticker || '--'}</strong></div>
+        <div className="kalshi-section-head"><div><span>{copy('DECISION AUDIT', '决策审计')}</span><h2>{copy('What the robot is doing now', '机器人现在在做什么')}</h2><small>{copy('Up to 250 compact decisions are retained per mode; orders and fills remain in their execution ledgers.', '每个模式最多保留 250 条精简决策；订单与成交长期保留在执行账本中。')}</small></div><strong>{retainedDecisions.length}</strong></div>
         {item ? <div className="kalshi-current-decision-grid">
           <article className={item.action === 'WAIT' ? 'is-waiting' : 'is-trading'}><span>{copy('DECISION', '当前决定')}</span><strong>{decisionText}</strong><small>{new Date(item.generatedAt).toLocaleString(chinese ? 'zh-CN' : 'en-US')}</small></article>
           <article><span>{copy('ORDER RESULT', '订单结果')}</span><strong>{item.orderFilled ? copy('FILLED', '已成交') : item.orderSubmitted ? copy('NOT FILLED', '未成交') : copy('NO ORDER', '未下单')}</strong><small>{item.fillCount ? `${copy('Quantity', '数量')} ${item.fillCount}` : kalshiModeLabel}</small></article>
@@ -1035,11 +684,15 @@ const Kalshi: React.FC = () => {
           <article><span>{copy('SIGNAL QUALITY', '信号质量')}</span><strong>{Math.round(Number(item.signalQuality || 0))}/100</strong><small>{reasons.length ? copy(`${reasons.length} controls blocked`, `${reasons.length} 项条件未通过`) : copy('All controls passed', '所有条件已通过')}</small></article>
         </div> : <div className="kalshi-empty-row">{copy('Waiting for the first complete market decision.', '正在等待第一条完整市场决策。')}</div>}
         {item && <div className="kalshi-decision-explanation"><b>{reasons.length ? copy('Why it is waiting', '为什么等待') : copy('Why it can trade', '为什么可以交易')}</b>{reasons.length ? <ul>{reasons.slice(0, 5).map((reason: string) => <li key={reason}>{reason}</li>)}</ul> : <p>{copy('The signal, executable price, liquidity and account limits all passed.', '信号、可成交价格、流动性和账户限制均已通过。')}</p>}</div>}
-        {itemAiReview && <div className={`kalshi-ai-audit is-${itemAiReview.verdict}`}>
-          <div><RobotOutlined /><span><b>{copy('AI challenge audit', 'AI 质检记录')}</b><small>{[itemAiReview.provider, itemAiReview.model, itemAiReview.confidence == null ? '' : `${Math.round(itemAiReview.confidence * 100)}%`].filter(Boolean).join(' · ')}</small></span><strong>{itemAiReview.verdict === 'challenge' ? copy('CHALLENGE', '要求等待') : copy('CLEAR', '未发现矛盾')}</strong></div>
-          <p>{itemAiReview.summary}</p>
-          {!!(itemAiReview.contradictions?.length || itemAiReview.topRisks?.length) && <ul>{[...(itemAiReview.contradictions || []), ...(itemAiReview.topRisks || [])].slice(0, 4).map((value: string) => <li key={value}>{value}</li>)}</ul>}
-          {itemAiReview.nextCheck && <small>{copy('Next check', '下次检查')}: {itemAiReview.nextCheck}</small>}
+        {retainedDecisions.length > 1 && <div className="kalshi-decision-history">
+          {retainedDecisions.slice(1, 13).map((row: any, index: number) => <div key={`${row.generatedAt}-${index}`}>
+            <time>{row.generatedAt ? new Date(row.generatedAt).toLocaleTimeString(chinese ? 'zh-CN' : 'en-US') : '--'}</time>
+            <b>{row.executionIntent || row.action || 'WAIT'}</b>
+            <span>{row.ticker || '--'}</span>
+            <span>{row.side || '--'} · {cents(row.price)}</span>
+            <em>{probability(row.conservativeEdge)}</em>
+            <small>{(row.blockingReasons || []).length ? `${(row.blockingReasons || []).length} ${copy('hard blocks', '项硬阻断')}` : row.orderFilled ? copy('FILLED', '已成交') : copy('CLEAR', '通过')}</small>
+          </div>)}
         </div>}
       </section>
     );
@@ -1049,7 +702,7 @@ const Kalshi: React.FC = () => {
     <section className="kalshi-reference-page">
       <div className="kalshi-reference-column"><span>01</span><h2>{copy('Resolution rule', '结算规则')}</h2><p>{rulesPrimary || copy('Waiting for the active contract rule.', '正在等待当前合约规则。')}</p></div>
       <div className="kalshi-reference-column"><span>02</span><h2>{copy('Reference methodology', '参考方法')}</h2><p>{rulesSecondary || copy('The official result is a 60-second average of the CF Benchmarks Real-Time Index over the final minute, not the last Coinbase trade.', '官方结果为结算前最后一分钟 CF Benchmarks 实时指数的 60 秒均价，而不是 Coinbase 最后一笔成交。')}</p></div>
-      <div className="kalshi-reference-column"><span>03</span><h2>{copy('Model boundary', '模型边界')}</h2><p>{copy('Coinbase is an independent spot proxy. Basis differences against the CF Benchmarks index remain inside the uncertainty and edge buffers.', 'Coinbase 仅作为独立现货代理；它与 CF Benchmarks 指数的基准差被保留在不确定性和边际缓冲中。')}</p></div>
+      <div className="kalshi-reference-column"><span>03</span><h2>{copy('Model boundary', '模型边界')}</h2><p>{copy('The public reference is a labelled four-venue BRTI proxy, not the licensed index. Cross-venue dispersion and missing venues increase the uncertainty reserve.', '公开参考价是明确标注的四交易所 BRTI 代理，并非授权指数；跨所偏差或来源缺失会提高不确定性缓冲。')}</p></div>
     </section>
   );
 
@@ -1102,6 +755,7 @@ const Kalshi: React.FC = () => {
     const grossWin = pnlValues.filter((value) => value > 0).reduce((sum, value) => sum + value, 0);
     const grossLoss = pnlValues.filter((value) => value < 0).reduce((sum, value) => sum + Math.abs(value), 0);
     const profitFactor = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? Infinity : null);
+    const familyPerformance = (analytics.marketPerformance || {}) as Record<string, any>;
 
     if (view === 'orders') {
       return (
@@ -1148,6 +802,23 @@ const Kalshi: React.FC = () => {
     const returnClass = totalReturnPct === null ? '' : totalReturnPct >= 0 ? 'is-profit' : 'is-loss';
     return (
       <>
+        <section className="kalshi-family-performance">
+          {([
+            ['btc15m', copy('BTC 15-minute', 'BTC 15 分钟')],
+            ['btchourly', copy('BTC hourly strikes', 'BTC 整点执行价')],
+          ] as const).map(([family, label]) => {
+            const performance = familyPerformance[family];
+            const pnl = Number(performance?.realizedPnl || 0);
+            return (
+              <article key={family}>
+                <span>{label}</span>
+                <strong className={pnl >= 0 ? 'is-profit' : 'is-loss'}>{pnl >= 0 ? '+' : ''}{money(pnl)}</strong>
+                <small>{performance?.samples || 0} {copy('realized trades', '笔已实现交易')} · {copy('win rate', '胜率')} {performance?.winRate == null ? '--' : probability(performance.winRate)}</small>
+                <div><i style={{ width: `${Math.min(100, Math.max(0, Number(performance?.winRate || 0) * 100))}%` }} /></div>
+              </article>
+            );
+          })}
+        </section>
         <section className="kalshi-account-strip">
           <div className="is-headline">
             <span>{copy('ACCOUNT EQUITY', '账户权益')}</span>
@@ -1220,7 +891,7 @@ const Kalshi: React.FC = () => {
 
   const renderStrategy = () => (
     <section className="kalshi-strategy-section">
-      <div className="kalshi-section-head"><div><span>{copy('STRATEGY GOVERNANCE', '策略治理')}</span><h2>{robotState?.strategy?.name || 'BTC15 Favorite Carry v3'}</h2></div><strong>v{robotState?.strategy?.version || 3}</strong></div>
+      <div className="kalshi-section-head"><div><span>{copy('STRATEGY GOVERNANCE', '策略治理')}</span><h2>{robotState?.strategy?.name || 'BTC15 Settlement-Aligned Carry v5'}</h2></div><strong>v{robotState?.strategy?.version || 5}</strong></div>
       <div className="kalshi-strategy-grid">
         <article><span>{copy('PHILOSOPHY', '策略理念')}</span><p>{robotState?.strategy?.philosophy || copy('Probability, edge, liquidity, and risk must agree before an order is allowed.', '概率、边际、流动性与风险必须同时通过后才允许下单。')}</p></article>
         <article><span>{copy('MODEL INPUTS', '模型输入')}</span><ul>{(robotState?.strategy?.components || []).map((component) => <li key={component}>{component}</li>)}</ul></article>
@@ -1236,7 +907,7 @@ const Kalshi: React.FC = () => {
         [copy('Contract and quotes', '合约与报价'), 'Kalshi Trade API v2', 'KXBTC15M'],
         [copy('Order book', '订单簿'), 'Kalshi production public orderbook', copy('Sub-second hot cache for active contracts', '活跃合约亚秒级热缓存')],
         [copy('Settlement authority', '结算依据'), 'CF Benchmarks Real-Time Index', copy('60-second average over the final minute before close', '结算前最后一分钟的 60 秒均价')],
-        [copy('Independent spot', '独立现货'), 'Coinbase Exchange BTC-USD', copy('Ticker + 1-minute candles', '报价与一分钟 K 线')],
+        [copy('Settlement proxy', '结算代理'), 'Coinbase · Bitstamp · Gemini · Kraken', copy('Robust midpoint aggregate + Coinbase 1-minute candles', '稳健中间价聚合 + Coinbase 一分钟 K 线')],
       ].map(([title, source, detail]) => <div key={title}><DatabaseOutlined /><span>{title}</span><strong>{source}</strong><small>{detail}</small></div>)}
     </section>
   );
@@ -1256,6 +927,37 @@ const Kalshi: React.FC = () => {
     </section>
   );
 
+  const renderHourlyLadder = () => {
+    const candidates = (snapshot?.candidateSummary || []).slice().sort(
+      (left: any, right: any) => Number(left.strike || 0) - Number(right.strike || 0),
+    );
+    return (
+      <section className="kalshi-hourly-ladder">
+        <div className="kalshi-section-head">
+          <div>
+            <span>{copy('HOURLY STRIKE SCAN', '整点执行价扫描')}</span>
+            <h2>{snapshot?.eventTicker || 'KXBTCD'}</h2>
+            <small>{copy('Nearby contracts ranked after spread, fee, uncertainty and depth.', '附近合约按点差、手续费、不确定性和深度综合排序。')}</small>
+          </div>
+          <strong>{snapshot?.candidateCount || candidates.length} {copy('strikes', '个执行价')}</strong>
+        </div>
+        <div className="kalshi-hourly-grid">
+          {candidates.slice(0, 9).map((item: any) => {
+            const selected = item.ticker === decision?.market.ticker;
+            const blocked = Array.isArray(item.blockingReasons) ? item.blockingReasons.length : 0;
+            return (
+              <article key={item.ticker} className={selected ? 'is-selected' : ''}>
+                <span>{money(item.strike, 0)}</span>
+                <strong>{item.side || '--'} · {item.action === 'WAIT' ? copy('WAIT', '等待') : copy('READY', '可执行')}</strong>
+                <small>{copy('Net', '净边际')} {probability(item.netEdge)} · {blocked} {copy('blocks', '项阻断')}</small>
+              </article>
+            );
+          })}
+        </div>
+      </section>
+    );
+  };
+
   const renderBody = () => {
     if (view === 'rules') return renderRules();
     if (view === 'decisions') return renderDecisionLog();
@@ -1263,22 +965,31 @@ const Kalshi: React.FC = () => {
     if (view === 'positions' || view === 'orders') return renderPortfolio();
     if (view === 'data') return renderData();
     if (view === 'connection') return renderConnection();
-    if (view === 'bot') return <>{renderStrategy()}{renderDecision()}{renderGates()}</>;
-    return <>{renderMetrics()}{renderDecision()}{renderGates()}{renderBook()}</>;
+    if (view === 'bot') return <>{isHourly && renderHourlyLadder()}{renderStrategy()}{renderDecision()}{renderGates()}</>;
+    return <>{renderMetrics()}{isHourly && renderHourlyLadder()}{renderDecision()}{renderGates()}{renderBook()}</>;
   };
 
   const pageMeta: Record<KalshiView, { eyebrow: string; title: string; description: string }> = {
     desk: { eyebrow: copy('KALSHI / LIVE MARKET', 'KALSHI / 实时市场'), title: copy('BTC 15-minute contract desk', 'BTC 15 分钟合约工作台'), description: copy('Live contract, executable order book, reference price and model evidence.', '实时合约、可成交订单簿、参考价格与模型证据。') },
     rules: { eyebrow: copy('KALSHI / METHODOLOGY', 'KALSHI / 结算方法'), title: copy('Contract rules and settlement', '合约规则与结算'), description: copy('The exact market question, BRTI settlement authority and model boundary.', '准确的市场问题、BRTI 结算依据与模型边界。') },
-    bot: { eyebrow: copy('KALSHI / AUTOMATION', 'KALSHI / 自动化'), title: copy('BTC 15-minute robot monitor', 'BTC 15 分钟机器人监控'), description: copy('Current decision, AI challenge, sizing and deterministic trade gates.', '当前决策、AI 质检、仓位与确定性交易门控。') },
-    decisions: { eyebrow: copy('KALSHI / AUDIT', 'KALSHI / 审计'), title: copy('Decision audit log', '决策审计记录'), description: copy('The latest model decision, evidence, gate result and AI review.', '最近一次模型决策、证据、门控结果与 AI 复核。') },
-    risk: { eyebrow: copy('KALSHI / GOVERNANCE', 'KALSHI / 策略治理'), title: copy('Strategy and risk controls', '策略与风控'), description: copy('Choose a preset, manage saved strategies, learning and hard limits in one place.', '在一个页面管理预设、已保存策略、学习与硬限制。') },
+    bot: { eyebrow: copy('KALSHI / AUTOMATION', 'KALSHI / 自动化'), title: copy('BTC 15-minute robot monitor', 'BTC 15 分钟机器人监控'), description: copy('Current decision, position management, sizing and deterministic trade gates.', '当前决策、仓位管理、仓位大小与确定性交易门控。') },
+    decisions: { eyebrow: copy('KALSHI / AUDIT', 'KALSHI / 审计'), title: copy('Decision audit log', '决策审计记录'), description: copy('The latest model decision, evidence, gate result and execution outcome.', '最近一次模型决策、证据、门控结果与执行结果。') },
+    risk: { eyebrow: copy('KALSHI / GOVERNANCE', 'KALSHI / 策略治理'), title: copy('Strategy and risk controls', '策略与风控'), description: copy('Manage deterministic entry, add-on, exit and exposure limits.', '管理确定性的开仓、加仓、平仓与敞口限制。') },
     positions: { eyebrow: copy('KALSHI / PORTFOLIO', 'KALSHI / 组合'), title: copy('Portfolio overview', '投资组合总览'), description: copy('Account equity, open exposure, marked P/L and realized outcomes.', '账户权益、当前敞口、盯市盈亏与已实现结果。') },
     orders: { eyebrow: copy('KALSHI / EXECUTION', 'KALSHI / 执行'), title: copy('Order execution ledger', '订单执行流水'), description: copy('IOC requests, fills, executable prices, slippage, fees and rejects.', 'IOC 请求、成交、可成交价格、滑点、费用与拒单。') },
     data: { eyebrow: copy('KALSHI / DATA', 'KALSHI / 数据'), title: copy('Market data sources', '市场数据源'), description: copy('Contract, order-book, settlement and independent spot provenance.', '合约、订单簿、结算与独立现货的数据来源。') },
     connection: { eyebrow: copy('KALSHI / CONNECTION', 'KALSHI / 连接'), title: copy('Account connection', '账户连接'), description: copy('Public market data status and personal trading authorization.', '公开市场数据状态与个人交易授权。') },
   };
-  const currentPage = pageMeta[view];
+  const currentPage = isHourly && (view === 'desk' || view === 'bot')
+    ? {
+      eyebrow: copy('KALSHI / BTC HOURLY', 'KALSHI / BTC 整点市场'),
+      title: view === 'bot' ? copy('BTC hourly strike robot', 'BTC 整点执行价机器人') : copy('BTC hourly strike ladder', 'BTC 整点执行价阶梯'),
+      description: copy(
+        'Scans the active hourly event across nearby strikes and routes only the strongest fee-adjusted favorite.',
+        '扫描当前整点事件附近的执行价，只执行扣费后价值最高的优势方向。',
+      ),
+    }
+    : pageMeta[view];
   const showRobotActions = view === 'desk' || view === 'bot';
   const showPortfolioRefresh = view === 'positions' || view === 'orders';
   const showSafetyBanner = view === 'bot' || view === 'risk';
@@ -1299,6 +1010,14 @@ const Kalshi: React.FC = () => {
         </div>}
         {showPortfolioRefresh && <div className="kalshi-command-actions"><button type="button" className="is-secondary" onClick={() => void loadPaperPortfolio()} disabled={portfolioLoading}><ReloadOutlined className={portfolioLoading ? 'is-spinning' : ''} />{portfolioLoading ? copy('Refreshing…', '刷新中…') : copy('Refresh account', '刷新账户')}</button></div>}
       </header>
+      <section className="kalshi-context-rail" aria-label={copy('Kalshi workspace status', 'Kalshi 工作区状态')}>
+        <div><span>{copy('ENVIRONMENT', '运行环境')}</span><strong className={isRealMode ? 'is-real' : ''}>{kalshiModeLabel}</strong></div>
+        <div><span>{copy('ACTIVE CONTRACT', '当前合约')}</span><strong>{decision?.market.ticker || 'KXBTC15M'}</strong></div>
+        <div><span>{copy('TIME TO CLOSE', '距离关闭')}</span><strong>{countdown}</strong></div>
+        <div><span>{copy('ENGINE', '策略引擎')}</span><strong>{copy('DETERMINISTIC v4', '确定性 v4')}</strong></div>
+        <div><span>{copy('AUTOMATION', '自动交易')}</span><strong className={robotState?.enabled ? 'is-on' : ''}>{robotState?.enabled ? copy('RUNNING', '运行中') : copy('STOPPED', '已停止')}</strong></div>
+        <div><span>{copy('ACCOUNT SOURCE', '账户数据源')}</span><strong>{isRealMode ? 'KALSHI API' : 'ALPHALAB'}</strong></div>
+      </section>
 
       {showSafetyBanner && <div className={`kalshi-safety-banner${isRealMode ? ' is-real' : ''}`}><SafetyCertificateOutlined /><span><b>{isRealMode ? copy('Kalshi Real mode.', 'Kalshi 实盘模式。') : copy('AlphaLab Paper mode.', 'AlphaLab 内置模拟盘。')}</b>{isRealMode ? copy(' Public market data is still used for evidence; orders are signed on the backend with your saved Kalshi API key and sent to your real Kalshi account.', ' 行情证据仍使用公开数据；订单会在后端用你保存的 Kalshi API Key 签名，并发送到你的真实 Kalshi 账户。') : copy(' Fills use production Kalshi public executable quotes and the official taker-fee schedule, but no order is sent to Kalshi and profitability is not guaranteed.', ' 成交使用 Kalshi 正式公开可成交报价和官方 taker 手续费规则，但不会向 Kalshi 发送订单，也不保证盈利。')}</span></div>}
       {showDecisionLoading && loading && !decision && <div className="kalshi-loading"><ClockCircleOutlined /><span>{copy('Loading Kalshi contract and BTC reference data...', '正在加载 Kalshi 合约与 BTC 参考数据……')}</span></div>}

@@ -55,6 +55,7 @@ except ImportError:  # direct module import by the monolithic backend
 CONFIG_TYPE = "crypto_config"
 RUNTIME_TYPE = "crypto_runtime"
 DECISION_TYPE = "crypto_decision"
+TRADE_TYPE = "crypto_trade"
 PRIMARY_KEY = "primary"
 DATA_BASE_URL = "https://data.alpaca.markets"
 ALLOWED_ORDER_TYPES = frozenset({"market", "limit", "stop_limit"})
@@ -414,6 +415,59 @@ def _complete_bar_cutoff(now: datetime, timeframe: str) -> datetime:
     return current
 
 
+def _repair_isolated_live_bar_gaps(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    timeframe: str,
+    maximum_synthetic_bars: int = 8,
+) -> Sequence[Dict[str, Any]]:
+    """Carry forward only isolated missing aggregates from Alpaca.
+
+    Crypto can legitimately have a 15-minute interval with no trades at a
+    venue. Alpaca may omit that aggregate entirely. A single zero-volume
+    carry-forward bar preserves elapsed-time indicator semantics without
+    inventing a price move. Consecutive gaps, off-grid timestamps, or more
+    than two consecutive bars or eight repairs in the requested window still
+    fail closed in the engine.
+    """
+    interval_seconds = {"15Min": 900, "1Hour": 3600, "1Day": 86400}[timeframe]
+    ordered = sorted(
+        (dict(row) for row in rows if isinstance(row, Mapping)),
+        key=lambda row: str(row.get("t") or row.get("timestamp") or row.get("time") or ""),
+    )
+    if len(ordered) < 2:
+        return tuple(ordered)
+    repaired: list[Dict[str, Any]] = [ordered[0]]
+    synthetic_count = 0
+    for current in ordered[1:]:
+        previous = repaired[-1]
+        previous_time = _parse_utc_datetime(previous.get("t") or previous.get("timestamp") or previous.get("time"))
+        current_time = _parse_utc_datetime(current.get("t") or current.get("timestamp") or current.get("time"))
+        if previous_time is None or current_time is None:
+            repaired.append(current)
+            continue
+        elapsed = int((current_time - previous_time).total_seconds())
+        missing = elapsed // interval_seconds - 1 if elapsed > 0 and elapsed % interval_seconds == 0 else 0
+        if 1 <= missing <= 2 and synthetic_count + missing <= maximum_synthetic_bars:
+            close = _number(previous.get("c", previous.get("close")), float("nan"))
+            if math.isfinite(close) and close > 0:
+                for offset in range(1, missing + 1):
+                    timestamp = previous_time + timedelta(seconds=interval_seconds * offset)
+                    repaired.append({
+                        "t": _iso(timestamp),
+                        "o": close,
+                        "h": close,
+                        "l": close,
+                        "c": close,
+                        "v": 0.0,
+                        "synthetic": True,
+                        "syntheticReason": "bounded_missing_alpaca_aggregate",
+                    })
+                    synthetic_count += 1
+        repaired.append(current)
+    return tuple(repaired)
+
+
 def _repair_isolated_hourly_backtest_gaps(
     rows: Sequence[Mapping[str, Any]],
     *,
@@ -595,20 +649,22 @@ def _default_config() -> Dict[str, Any]:
         "mode": "paper",
         "symbols": list(SUPPORTED_SYMBOLS),
         "enabled": False,
-        "tradeHorizon": "long",
-        "intervalMinutes": 60,
+        "tradeHorizon": "short",
+        "intervalMinutes": 15,
         "liveAuthorized": False,
         "killSwitch": False,
-        "maxTotalExposure": 0.20,
-        "maxAssetExposurePct": 12.0,
-        "assetAllocationsPct": {"BTC/USD": 12.0, "ETH/USD": 8.0},
-        "riskPerTradePct": 0.35,
-        "minimumConfidence": 60.0,
+        "maxTotalExposure": 0.30,
+        "maxAssetExposurePct": 18.0,
+        "assetAllocationsPct": {"BTC/USD": 18.0, "ETH/USD": 12.0},
+        "riskPerTradePct": 0.25,
+        "minimumConfidence": 52.0,
         "riskProfile": "balanced",
         "maxOrderNotional": 1000.0,
         "minOrderNotional": 10.0,
         "allowAdds": True,
-        "aiReviewEnabled": True,
+        # Generative/deep-learning review is intentionally disabled. The live
+        # order path is deterministic, reproducible and token-free.
+        "aiReviewEnabled": False,
         "paperLearningEnabled": False,
         "calibrationEveryCycles": 24,
         "order": {
@@ -652,6 +708,9 @@ def _validate_config(payload: Mapping[str, Any], *, base: Optional[Mapping[str, 
 
     for field in ("enabled", "liveAuthorized", "killSwitch", "allowAdds", "aiReviewEnabled", "paperLearningEnabled"):
         resolved[field] = _boolean(resolved.get(field), field)
+    # Retain the legacy field for stored-config compatibility, but never allow
+    # it to affect an order decision.
+    resolved["aiReviewEnabled"] = False
 
     try:
         calibration_every = int(resolved.get("calibrationEveryCycles", 24))
@@ -779,21 +838,37 @@ def _validate_config(payload: Mapping[str, Any], *, base: Optional[Mapping[str, 
     if trade_horizon == "short":
         strategy.update({
             "bars_per_day": 96,
-            "ema_fast": 12,
-            "ema_slow": 48,
-            "momentum_fast_days": 2,
-            "momentum_slow_days": 7,
-            "atr_hours": 16,
-            "volatility_days": 3,
-            "breakout_days": 2,
+            "ema_fast": 8,
+            "ema_slow": 21,
+            "anchor_ema": 96,
+            "momentum_fast_days": 1,
+            "momentum_slow_days": 3,
+            "atr_hours": 12,
+            "volatility_days": 2,
+            "vol_fast_days": 1,
+            "breakout_days": 1,
             "breakdown_days": 1,
+            "rsi_period": 9,
+            "rsi_fast_period": 3,
+            "bollinger_period": 20,
+            "adx_period": 10,
+            "adx_trend_threshold": 18.0,
+            "meanrev_entry_z": -0.8,
+            "meanrev_rsi_buy": 38.0,
+            "meanrev_size_fraction": 0.65,
+            "panic_vol_ratio": 1.8,
             "entry_confirmation_bars": 1,
             "exit_confirmation_bars": 1,
-            "rebalance_band": min(_number(strategy.get("rebalance_band"), 0.01), 0.01),
-            "add_min_price_gain_pct": min(_number(strategy.get("add_min_price_gain_pct"), 0.01), 0.01),
-            "stop_atr_multiple": min(_number(strategy.get("stop_atr_multiple"), 2.0), 2.0),
-            "min_stop_distance_pct": min(_number(strategy.get("min_stop_distance_pct"), 0.01), 0.01),
-            "max_stop_distance_pct": min(_number(strategy.get("max_stop_distance_pct"), 0.06), 0.06),
+            "entry_score": minimum_confidence,
+            "add_score": max(64.0, minimum_confidence + 10.0),
+            "reduce_score": min(47.0, minimum_confidence - 5.0),
+            "rebalance_band": 0.005,
+            "add_min_price_gain_pct": 0.0035,
+            "stop_atr_multiple": 1.6,
+            "trail_atr_multiple": 1.8,
+            "min_stop_distance_pct": 0.0045,
+            "max_stop_distance_pct": 0.025,
+            "reduced_weight_fraction": 0.50,
             "data_stale_minutes": 25,
         })
     else:
@@ -867,6 +942,15 @@ def _runtime_default() -> Dict[str, Any]:
         "reconciliationMessage": "",
         "killReason": "",
         "equityCurve": [],
+        "cryptoPerformance": {
+            "realizedPnl": 0.0,
+            "estimatedFees": 0.0,
+            "tradeCount": 0,
+            "closedTradeCount": 0,
+            "wins": 0,
+            "losses": 0,
+            "curve": [],
+        },
         "cycleCount": 0,
         "calibration": {
             "status": "not_run", "lastRun": None, "symbol": None,
@@ -1215,6 +1299,13 @@ class _CryptoService:
         result["lastHeartbeat"] = result.get("lastHeartbeat") or heartbeat
         if not isinstance(result.get("progressDetail"), Mapping):
             result["progressDetail"] = deepcopy(_runtime_default()["progressDetail"])
+        performance_default = deepcopy(_runtime_default()["cryptoPerformance"])
+        stored_performance = result.get("cryptoPerformance")
+        if isinstance(stored_performance, Mapping):
+            performance_default.update(dict(stored_performance))
+        if not isinstance(performance_default.get("curve"), list):
+            performance_default["curve"] = []
+        result["cryptoPerformance"] = performance_default
         result["currentStage"] = str(
             result.get("currentStage")
             or result["progressDetail"].get("stage")
@@ -1773,6 +1864,13 @@ class _CryptoService:
             if timestamp is not None and timestamp < complete_before:
                 complete_rows.append(row)
         result = sorted(complete_rows, key=lambda row: str(row.get("t") or row.get("timestamp")))
+        result = list(_repair_isolated_live_bar_gaps(result, timeframe=timeframe))
+        synthetic_count = sum(1 for row in result if row.get("synthetic") is True)
+        if synthetic_count:
+            self.safe_print(
+                f"[CryptoData] repaired {synthetic_count} bounded {timeframe} "
+                f"aggregate gap(s) for {symbol}"
+            )
         result = result[-safe_limit:]
         _BARS_CACHE.put(cache_key, result, 45 if timeframe != "15Min" else 15)
         return tuple(result)
@@ -1939,6 +2037,90 @@ class _CryptoService:
         self._audit(
             uid, "crypto_decision", decision,
             f"crypto-audit:{uid}:{symbol_key}:{bucket}", actor="system",
+        )
+
+    def _save_trade_record(
+        self,
+        uid: str,
+        decision: Mapping[str, Any],
+        order: Mapping[str, Any],
+        bucket: int,
+    ):
+        """Persist one routed order as a durable, analysis-ready trade record.
+
+        Decisions remain useful for diagnosing skipped entries. Trade artifacts
+        are narrower and stable enough for Portfolio analytics and later
+        parameter research without replaying an unbounded audit stream.
+        """
+        symbol = _normalize_symbol(decision.get("symbol"))
+        symbol_key = _safe_symbol_key(symbol or "unknown")
+        client_order_id = str(
+            order.get("client_order_id", order.get("clientOrderId")) or ""
+        ).strip()
+        broker_order_id = str(order.get("id", order.get("orderId")) or "").strip()
+        identity = client_order_id or broker_order_id or f"{symbol_key}:{bucket}"
+        fill_price = _number(
+            order.get("filled_avg_price", order.get("filledAveragePrice")),
+            0.0,
+        )
+        filled_qty = _number(order.get("filled_qty", order.get("filledQty")), 0.0)
+        requested_notional = _number(order.get("notional"), 0.0)
+        requested_qty = _number(order.get("qty"), 0.0)
+        record = _jsonable({
+            "recordVersion": 1,
+            "assetClass": "crypto",
+            "symbol": symbol,
+            "mode": decision.get("mode"),
+            "action": decision.get("action"),
+            "side": order.get("side"),
+            "status": order.get("status"),
+            "orderId": broker_order_id or None,
+            "clientOrderId": client_order_id or None,
+            "submittedAt": order.get("submitted_at", order.get("submittedAt")) or _iso(),
+            "filledAt": order.get("filled_at", order.get("filledAt")),
+            "signalTimestamp": decision.get("timestamp"),
+            "cycleBucket": decision.get("cycleBucket", bucket),
+            "source": decision.get("source"),
+            "signalPrice": decision.get("price"),
+            "filledAveragePrice": fill_price or None,
+            "requestedQty": requested_qty or None,
+            "filledQty": filled_qty or None,
+            "requestedNotional": requested_notional or None,
+            "filledNotional": round(fill_price * filled_qty, 8) if fill_price and filled_qty else None,
+            "currentWeight": decision.get("currentWeight"),
+            "targetWeight": decision.get("targetWeight"),
+            "confidence": decision.get("confidence", decision.get("score")),
+            "score": decision.get("score"),
+            "regime": decision.get("regime"),
+            "reason": decision.get("reason"),
+            "reasons": list(decision.get("reasons") or []),
+            "stopDistancePct": decision.get("stop_distance_pct"),
+            "protectiveStop": (decision.get("positionState") or {}).get("protective_stop")
+                if isinstance(decision.get("positionState"), Mapping) else None,
+            "ensemble": decision.get("ensemble"),
+            "indicators": decision.get("indicators"),
+            "entryGate": decision.get("entryGate"),
+            "portfolioExposure": decision.get("portfolioExposure"),
+            "openOrderReservation": decision.get("openOrderReservation"),
+            "tradePerformance": decision.get("tradePerformance"),
+            "brokerOrder": dict(order),
+        })
+        key_digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+        artifact_key = f"{symbol_key}:{key_digest}"
+        idempotency_key = f"crypto-trade:{uid}:{key_digest}"
+        self.store.put_artifact(
+            uid,
+            TRADE_TYPE,
+            artifact_key,
+            payload=record,
+            idempotency_key=idempotency_key,
+        )
+        self._audit(
+            uid,
+            "crypto_trade_recorded",
+            record,
+            f"crypto-trade-audit:{uid}:{key_digest}",
+            actor="system",
         )
 
     def _existing_order(self, broker: Mapping[str, Any], client_order_id: str):
@@ -2285,6 +2467,76 @@ class _CryptoService:
             "protective_stop": protective_stop if protective_stop > 0 else None,
         }
 
+    @staticmethod
+    def _record_fill_performance(
+        runtime: Dict[str, Any],
+        *,
+        symbol: str,
+        action: str,
+        filled_qty: float,
+        fill_price: float,
+        average_entry_price: float,
+        fee_bps: float,
+        order_id: Optional[str],
+        client_order_id: Optional[str],
+        filled_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Append one incremental fill to the durable crypto-only P/L ledger."""
+
+        qty = max(0.0, _number(filled_qty))
+        price = max(0.0, _number(fill_price))
+        if qty <= 0 or price <= 0:
+            raise CryptoApiError("A confirmed fill needs positive quantity and price", code="invalid_fill")
+        normalized_action = str(action or "").strip().upper()
+        if normalized_action not in {"BUY", "ADD", "REDUCE", "EXIT"}:
+            raise CryptoApiError("A confirmed fill has an invalid action", code="invalid_fill")
+
+        defaults = deepcopy(_runtime_default()["cryptoPerformance"])
+        stored = runtime.get("cryptoPerformance")
+        if isinstance(stored, Mapping):
+            defaults.update(dict(stored))
+        curve = list(defaults.get("curve") or [])
+        notional = qty * price
+        fee = notional * max(0.0, _number(fee_bps)) / 10_000.0
+        basis = max(0.0, _number(average_entry_price))
+        gross_pnl = 0.0
+        basis_available = normalized_action in {"BUY", "ADD"} or basis > 0
+        if normalized_action in {"REDUCE", "EXIT"}:
+            # New orders always persist their pre-submit basis. Legacy pending
+            # sells may not have it, so preserve reconciliation continuity and
+            # disclose that only the fee was measurable for that fill.
+            gross_pnl = (price - basis) * qty if basis_available else 0.0
+        trade_pnl = gross_pnl - fee
+        realized_pnl = _number(defaults.get("realizedPnl")) + trade_pnl
+        event = {
+            "time": filled_at or _iso(),
+            "value": round(realized_pnl, 8),
+            "tradePnl": round(trade_pnl, 8),
+            "grossPnl": round(gross_pnl, 8),
+            "fee": round(fee, 8),
+            "symbol": _normalize_symbol(symbol),
+            "action": normalized_action,
+            "qty": round(qty, 12),
+            "fillPrice": round(price, 8),
+            "averageEntryPrice": round(basis, 8) if basis > 0 else None,
+            "orderId": str(order_id or "") or None,
+            "clientOrderId": str(client_order_id or "") or None,
+            "basisAvailable": basis_available,
+        }
+        curve.append(event)
+        closed = normalized_action in {"REDUCE", "EXIT"}
+        defaults.update({
+            "realizedPnl": event["value"],
+            "estimatedFees": round(_number(defaults.get("estimatedFees")) + fee, 8),
+            "tradeCount": int(defaults.get("tradeCount") or 0) + 1,
+            "closedTradeCount": int(defaults.get("closedTradeCount") or 0) + int(closed),
+            "wins": int(defaults.get("wins") or 0) + int(closed and trade_pnl > 0),
+            "losses": int(defaults.get("losses") or 0) + int(closed and trade_pnl < 0),
+            "curve": curve[-1000:],
+        })
+        runtime["cryptoPerformance"] = defaults
+        return event
+
     def _persist_reconciliation_state(
         self,
         uid: str,
@@ -2306,6 +2558,8 @@ class _CryptoService:
                 str(client_id): _jsonable(dict(record))
                 for client_id, record in pending.items()
             }
+            if isinstance(runtime.get("cryptoPerformance"), Mapping):
+                latest["cryptoPerformance"] = _jsonable(dict(runtime["cryptoPerformance"]))
             if clear_reconciliation_lock and latest.get("reconciliationRequired"):
                 resumed_running = runtime.get("status") == "running"
                 latest.update({
@@ -2329,6 +2583,7 @@ class _CryptoService:
             runtime.update({
                 "positionState": deepcopy(latest["positionState"]),
                 "pendingReconciliations": deepcopy(latest["pendingReconciliations"]),
+                "cryptoPerformance": deepcopy(latest["cryptoPerformance"]),
                 "reconciliationRequired": bool(latest.get("reconciliationRequired")),
                 "reconciliationMessage": str(latest.get("reconciliationMessage") or ""),
                 "locked": bool(latest.get("locked")),
@@ -2592,6 +2847,19 @@ class _CryptoService:
                         client_order_id=client_id,
                     )
                 incremental_price = incremental_notional / incremental_qty
+                config = self.get_config(uid)
+                performance_event = self._record_fill_performance(
+                    runtime,
+                    symbol=symbol,
+                    action=action,
+                    filled_qty=incremental_qty,
+                    fill_price=incremental_price,
+                    average_entry_price=_number(record.get("averageEntryPriceBefore")),
+                    fee_bps=_number((config.get("strategy") or {}).get("fee_bps"), 25.0),
+                    order_id=str(order.get("id") or record.get("orderId") or "") or None,
+                    client_order_id=client_id,
+                    filled_at=str(order.get("filledAt") or order.get("filled_at") or now.isoformat()),
+                )
                 asset = dict(asset_by_symbol.get(symbol) or {})
                 qty_increment = max(1e-12, _number(
                     asset.get("minTradeIncrement", asset.get("min_trade_increment")),
@@ -2615,7 +2883,9 @@ class _CryptoService:
                     )
                 record["appliedFilledQty"] = filled_qty
                 record["appliedFilledNotional"] = cumulative_notional
-                reconciled_events.append((client_id, symbol, action, filled_qty, filled_average))
+                reconciled_events.append((
+                    client_id, symbol, action, filled_qty, filled_average, performance_event,
+                ))
             record.update({
                 "orderId": order.get("id") or record.get("orderId"),
                 "lastSeenStatus": status,
@@ -2641,7 +2911,7 @@ class _CryptoService:
             clear_reconciliation_lock=True,
             key=f"crypto-runtime-reconciled:{uid}:{time.time_ns()}",
         )
-        for client_id, symbol, action, filled_qty, filled_average in reconciled_events:
+        for client_id, symbol, action, filled_qty, filled_average, performance_event in reconciled_events:
             fill_key = _decimal_string(_decimal(filled_qty))
             self._audit(
                 uid,
@@ -2652,6 +2922,7 @@ class _CryptoService:
                     "action": action,
                     "cumulativeFilledQty": filled_qty,
                     "filledAveragePrice": filled_average,
+                    "tradePerformance": performance_event,
                 },
                 f"crypto-fill-reconciled:{uid}:{client_id}:{fill_key}",
             )
@@ -2980,6 +3251,17 @@ class _CryptoService:
                     timeframe=strategy_timeframe,
                     limit=required_history_bars(config["strategy"]) + 4,
                 )
+                # Re-apply the bounded repair at the strategy boundary. This
+                # also covers rows served by a pre-existing adapter cache and
+                # makes the exact evidence passed to the pure engine explicit.
+                rows = _repair_isolated_live_bar_gaps(
+                    rows,
+                    timeframe=strategy_timeframe,
+                    maximum_synthetic_bars=12,
+                )
+                synthetic_bar_count = sum(
+                    1 for row in rows if isinstance(row, Mapping) and row.get("synthetic") is True
+                )
                 current = positions_by_symbol.get(symbol) or {}
                 current_value = _number(current.get("marketValue"))
                 current_qty = max(0.0, _number(current.get("qty")))
@@ -2992,6 +3274,12 @@ class _CryptoService:
                 }
                 signal = generate_signal(rows, config["strategy"], position=position, risk_state=risk_state, now=_utc_now())
                 signal = _jsonable(signal)
+                signal["dataQuality"] = {
+                    "timeframe": strategy_timeframe,
+                    "sourceBars": len(rows) - synthetic_bar_count,
+                    "syntheticBars": synthetic_bar_count,
+                    "repairPolicy": "max_2_consecutive_max_12_window",
+                }
                 exit_only = symbol in exit_only_symbols
                 if exit_only:
                     # A supported broker position that predates the current
@@ -3102,6 +3390,7 @@ class _CryptoService:
                 *,
                 stop_distance_pct: Optional[float],
                 position_state_before: Mapping[str, Any],
+                average_entry_price_before: float,
             ) -> Dict[str, Any]:
                 """Durably capture reconciliation evidence before broker submission."""
 
@@ -3127,6 +3416,9 @@ class _CryptoService:
                     "stopDistancePct": stop_distance_pct,
                     "submittedAt": submitted_at,
                     "positionStateBefore": self._clean_position_state(position_state_before),
+                    "averageEntryPriceBefore": (
+                        max(0.0, _number(average_entry_price_before)) or None
+                    ),
                     "appliedFilledQty": 0.0,
                     "appliedFilledNotional": 0.0,
                     "lastSeenStatus": "submission_pending",
@@ -3371,6 +3663,7 @@ class _CryptoService:
                                     order_payload,
                                     stop_distance_pct=submitted_stop_distance,
                                     position_state_before=submitted_state_before,
+                                    average_entry_price_before=_number(current.get("averageEntryPrice")),
                                 )
                                 remaining_buying_power = max(0.0, remaining_buying_power - notional)
                         elif continue_entry:
@@ -3409,6 +3702,7 @@ class _CryptoService:
                                 order_payload,
                                 stop_distance_pct=None,
                                 position_state_before=submitted_state_before,
+                                average_entry_price_before=_number(current.get("averageEntryPrice")),
                             )
                 decision["order"] = _jsonable(order_result) if order_result else None
                 position_state = self._clean_position_state(next_position_states.get(symbol))
@@ -3512,6 +3806,24 @@ class _CryptoService:
                                 "Confirmed broker fill is missing its average fill price",
                                 client_order_id=submitted_client_id,
                             )
+                        performance_event = self._record_fill_performance(
+                            runtime,
+                            symbol=symbol,
+                            action=action,
+                            filled_qty=filled_qty,
+                            fill_price=fill_price,
+                            average_entry_price=_number(
+                                pending_record.get("averageEntryPriceBefore"),
+                            ),
+                            fee_bps=_number((config.get("strategy") or {}).get("fee_bps"), 25.0),
+                            order_id=str(order_result.get("id") or "") or None,
+                            client_order_id=submitted_client_id,
+                            filled_at=str(
+                                order_result.get("filled_at", order_result.get("filledAt"))
+                                or _iso()
+                            ),
+                        )
+                        decision["tradePerformance"] = performance_event
                         asset = dict(asset_by_symbol.get(symbol) or {})
                         qty_increment = _number(
                             asset.get("minTradeIncrement", asset.get("min_trade_increment")),
@@ -3553,6 +3865,8 @@ class _CryptoService:
                     )
                 else:
                     self._save_decision(uid, decision, bucket)
+                    if isinstance(order_result, Mapping):
+                        self._save_trade_record(uid, decision, order_result, bucket)
                 if action != "HOLD" and not dry_run:
                     self._notify(uid, "recommendation", {
                         "assetType": "crypto", "assetClass": "crypto",

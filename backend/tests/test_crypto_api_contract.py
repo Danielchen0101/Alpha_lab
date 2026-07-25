@@ -565,7 +565,10 @@ def test_strategy_library_exposes_curated_sources_without_executable_patches(mon
 def test_paper_calibration_uses_three_cost_aware_windows_and_tracks_history(monkeypatch):
     store = FakeStore()
     config = crypto_api._default_config()
-    config.update({"mode": "paper", "paperLearningEnabled": True})
+    config.update({
+        "mode": "paper", "paperLearningEnabled": True,
+        "tradeHorizon": "long", "intervalMinutes": 60,
+    })
     store.put_artifact(
         "user-a", crypto_api.CONFIG_TYPE, crypto_api.PRIMARY_KEY,
         payload=config, idempotency_key="seed-paper-learning",
@@ -1224,6 +1227,13 @@ def test_short_term_strategy_allows_fifteen_minute_scheduler(monkeypatch):
         assert config["tradeHorizon"] == "short"
         assert config["intervalMinutes"] == 15
         assert config["strategy"]["bars_per_day"] == 96
+        assert config["strategy"]["ema_fast"] == 8
+        assert config["strategy"]["ema_slow"] == 21
+        assert config["strategy"]["momentum_fast_days"] == 1
+        assert config["strategy"]["momentum_slow_days"] == 3
+        assert config["strategy"]["entry_score"] == 52
+        assert config["strategy"]["add_score"] == 64
+        assert config["strategy"]["reduce_score"] == 47
         assert config["strategy"]["data_stale_minutes"] == 25
 
         denied = client.put("/api/crypto/config", json={"tradeHorizon": "long", "intervalMinutes": 15})
@@ -1356,7 +1366,7 @@ def test_entry_gate_rejects_stale_wide_and_illiquid_quotes(monkeypatch):
             "stale_quote", "spread_too_wide", "insufficient_daily_liquidity",
             "insufficient_quote_depth",
         }
-        assert decision["entryGate"]["requiredAskNotional"] == 700.0
+        assert decision["entryGate"]["requiredAskNotional"] == 500.0
     finally:
         controls["stop"]()
 
@@ -1446,6 +1456,7 @@ def test_pending_buys_across_all_crypto_consume_headroom_and_sells_do_not_create
     service = controls["service"]
     try:
         _prepare_cycle(service, monkeypatch, open_orders=open_orders, symbols=["BTC/USD"])
+        service.save_config("user-a", {"maxTotalExposure": 0.20}, "test-exposure-cap")
         monkeypatch.setattr(service, "positions", lambda *_args: [{
             "symbol": "DOGE/USD", "qty": 1500.0, "marketValue": 1500.0,
             "currentPrice": 1.0, "averageEntryPrice": 0.8, "side": "long",
@@ -1686,10 +1697,17 @@ def test_confirmed_fill_updates_and_persists_position_state(monkeypatch):
             "id": "filled-1", "status": "filled", "filled_qty": "0.01",
             "filled_avg_price": "50000",
         })
-        service.run_cycle("user-a")
-        state = service.get_runtime("user-a")["positionState"]["BTC/USD"]
+        result = service.run_cycle("user-a")
+        saved_runtime = service.get_runtime("user-a")
+        state = saved_runtime["positionState"]["BTC/USD"]
         assert state["last_add_price"] == 50_000.0
         assert state["protective_stop"] == 47_500.0
+        performance = saved_runtime["cryptoPerformance"]
+        assert performance["tradeCount"] == 1
+        assert performance["realizedPnl"] == pytest.approx(-1.25)
+        assert performance["estimatedFees"] == pytest.approx(1.25)
+        assert performance["curve"][0]["action"] == "BUY"
+        assert result["decisions"][0]["tradePerformance"]["value"] == pytest.approx(-1.25)
     finally:
         controls["stop"]()
 
@@ -1813,14 +1831,81 @@ def test_async_partial_and_final_fills_reconcile_cumulatively_once(monkeypatch):
             51_666.6666667,
         )
         assert third["runtime"]["positionState"]["BTC/USD"]["protective_stop"] == pytest.approx(49_600.0)
+        performance = third["runtime"]["cryptoPerformance"]
+        assert performance["tradeCount"] == 2
+        assert performance["realizedPnl"] == pytest.approx(-1.275)
+        assert [row["qty"] for row in performance["curve"]] == pytest.approx([0.004, 0.006])
         fill_events = [row for row in store.audit if row["event_type"] == "crypto_order_fill_reconciled"]
         assert [row["payload"]["cumulativeFilledQty"] for row in fill_events] == [0.004, 0.01]
 
         fourth = service.run_cycle("user-a")
         assert fourth["idempotent"] is True
         assert len([row for row in store.audit if row["event_type"] == "crypto_order_fill_reconciled"]) == 2
+        assert fourth["runtime"]["cryptoPerformance"]["tradeCount"] == 2
     finally:
         controls["stop"]()
+
+
+def test_live_bar_repair_fills_one_isolated_fifteen_minute_gap():
+    rows = [
+        {"t": "2026-07-25T18:00:00Z", "o": 100, "h": 101, "l": 99, "c": 100, "v": 2},
+        {"t": "2026-07-25T18:30:00Z", "o": 102, "h": 103, "l": 101, "c": 102, "v": 3},
+    ]
+    repaired = crypto_api._repair_isolated_live_bar_gaps(rows, timeframe="15Min")
+    assert len(repaired) == 3
+    assert repaired[1]["t"] == "2026-07-25T18:15:00+00:00"
+    assert repaired[1]["o"] == repaired[1]["h"] == repaired[1]["l"] == repaired[1]["c"] == 100
+    assert repaired[1]["v"] == 0
+    assert repaired[1]["synthetic"] is True
+
+
+def test_live_bar_repair_does_not_hide_large_consecutive_missing_intervals():
+    rows = [
+        {"t": "2026-07-25T18:00:00Z", "o": 100, "h": 101, "l": 99, "c": 100, "v": 2},
+        {"t": "2026-07-25T19:00:00Z", "o": 102, "h": 103, "l": 101, "c": 102, "v": 3},
+    ]
+    repaired = crypto_api._repair_isolated_live_bar_gaps(rows, timeframe="15Min")
+    assert len(repaired) == 2
+
+
+def test_crypto_performance_ledger_starts_at_zero_and_records_realized_sale_pnl():
+    runtime = crypto_api._runtime_default()
+    buy = crypto_api._CryptoService._record_fill_performance(
+        runtime,
+        symbol="BTC/USD",
+        action="BUY",
+        filled_qty=0.01,
+        fill_price=50_000.0,
+        average_entry_price=0.0,
+        fee_bps=25.0,
+        order_id="buy-1",
+        client_order_id="client-buy-1",
+        filled_at="2026-07-25T12:00:00+00:00",
+    )
+    sale = crypto_api._CryptoService._record_fill_performance(
+        runtime,
+        symbol="BTC/USD",
+        action="EXIT",
+        filled_qty=0.01,
+        fill_price=52_000.0,
+        average_entry_price=50_000.0,
+        fee_bps=25.0,
+        order_id="sell-1",
+        client_order_id="client-sell-1",
+        filled_at="2026-07-25T13:00:00+00:00",
+    )
+
+    assert buy["tradePnl"] == pytest.approx(-1.25)
+    assert sale["grossPnl"] == pytest.approx(20.0)
+    assert sale["tradePnl"] == pytest.approx(18.7)
+    assert runtime["cryptoPerformance"]["realizedPnl"] == pytest.approx(17.45)
+    assert runtime["cryptoPerformance"]["estimatedFees"] == pytest.approx(2.55)
+    assert runtime["cryptoPerformance"]["tradeCount"] == 2
+    assert runtime["cryptoPerformance"]["closedTradeCount"] == 1
+    assert runtime["cryptoPerformance"]["wins"] == 1
+    assert [point["value"] for point in runtime["cryptoPerformance"]["curve"]] == pytest.approx(
+        [-1.25, 17.45],
+    )
 
 
 def test_missing_buy_reconciliation_metadata_locks_and_cannot_be_acknowledged_away(monkeypatch):
