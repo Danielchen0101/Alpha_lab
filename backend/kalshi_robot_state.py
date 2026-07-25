@@ -686,6 +686,10 @@ class KalshiRobotState:
             state["lastError"] = None
             state["runs"] = int(state.get("runs") or 0) + 1
             bucket["lastRunAt"] = state["lastRunAt"]
+            # A successful retry clears the mode-local diagnostic as well as
+            # the legacy top-level mirror. Deployment handoff CAS conflicts
+            # must not remain visible forever after normal cycles resume.
+            bucket["lastError"] = None
             bucket["runs"] = int(bucket.get("runs") or 0) + 1
             self._sync_mode_mirror(state, environment)
             self._save()

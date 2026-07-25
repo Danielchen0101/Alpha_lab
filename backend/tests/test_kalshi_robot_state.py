@@ -50,6 +50,25 @@ def test_robot_state_restores_from_durable_user_store_without_local_file(tmp_pat
     assert restored.enabled_users() == ["user-1"]
 
 
+def test_successful_cycle_clears_mode_local_transient_error(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    store.configure("user-1", True, {"executionMode": "paper"})
+    store.error("user-1", "Artifact changed concurrently")
+
+    state = store.record("user-1", {
+        "generatedAt": "2026-07-21T00:00:00Z",
+        "action": "WAIT",
+        "side": "YES",
+        "blockingReasons": ["net_edge"],
+        "config": {"executionMode": "paper"},
+        "market": {"ticker": "KXBTC15M-TEST"},
+        "edge": {"fairProbability": 0.60, "price": 0.65, "netEdge": -0.05},
+    })
+
+    assert state["lastError"] is None
+    assert state["modeState"]["paper"]["lastError"] is None
+
+
 
 
 def test_pre_v6_trade_and_learning_data_is_removed_during_upgrade(tmp_path):
