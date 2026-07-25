@@ -59,6 +59,66 @@ def test_paper_account_restores_from_durable_user_store_without_local_file(tmp_p
     assert restored["positions"][0]["yes_count_fp"] == 2
 
 
+def test_live_mark_refresh_does_not_write_the_durable_ledger(tmp_path):
+    durable = {}
+    saves = []
+
+    def save(user_id, payload):
+        durable[user_id] = payload
+        saves.append((user_id, payload))
+
+    store = KalshiPaperAccountStore(
+        str(tmp_path / "paper.json"),
+        account_loader=durable.get,
+        account_saver=save,
+    )
+    store.submit_taker(
+        "u", ticker="T", side="YES", price=0.50,
+        contracts=2, available_depth=10,
+    )
+    writes_after_fill = len(saves)
+
+    store.update_mark("u", "T", {
+        "yes_bid_dollars": 0.61,
+        "no_bid_dollars": 0.38,
+    })
+    portfolio = store.portfolio("u")
+
+    assert len(saves) == writes_after_fill
+    assert portfolio["positions"][0]["market_value_dollars"] == 1.22
+
+
+def test_durable_version_is_advanced_and_stale_cache_is_invalidated(tmp_path):
+    durable = {}
+    calls = []
+
+    def save(user_id, payload):
+        calls.append(payload)
+        if len(calls) == 1:
+            durable[user_id] = payload
+            return {"version": 12}
+        raise RuntimeError("stale durable version")
+
+    store = KalshiPaperAccountStore(
+        str(tmp_path / "paper.json"),
+        account_loader=durable.get,
+        account_saver=save,
+    )
+    store.submit_taker(
+        "u", ticker="T", side="YES", price=0.50,
+        contracts=1, available_depth=2,
+    )
+
+    assert store._users["u"]["_operationsVersion"] == 12
+    try:
+        store.reset("u")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("stale write must fail")
+    assert "u" not in store._users
+
+
 def test_repeated_client_order_id_is_idempotent(tmp_path):
     store = KalshiPaperAccountStore(str(tmp_path / "paper.json"))
     first = store.submit_taker(
@@ -123,6 +183,27 @@ def test_ioc_uses_book_levels_average_price_and_slippage(tmp_path):
     assert portfolio["positions"][0]["yes_count_fp"] == 7
 
 
+def test_multi_level_ioc_applies_kalshi_rounding_accumulator_rebates(tmp_path):
+    store = KalshiPaperAccountStore(str(tmp_path / "paper.json"))
+    order = store.submit_taker(
+        "u",
+        ticker="T",
+        side="YES",
+        price=0.055,
+        limit_price=0.057,
+        contracts=3,
+        orderbook={"no": [[0.945, 1], [0.944, 1], [0.943, 1]]},
+    )
+
+    assert order["fill_count_fp"] == 3
+    assert len(order["matched_levels"]) == 3
+    assert sum(level["rounding_rebate_dollars"] for level in order["matched_levels"]) == 0.01
+    assert order["fee_cost_dollars"] < sum(
+        level["trade_fee_dollars"] + level["rounding_fee_dollars"]
+        for level in order["matched_levels"]
+    )
+
+
 def test_settlement_has_no_fee_and_credits_winning_contracts(tmp_path):
     store = KalshiPaperAccountStore(str(tmp_path / "paper.json"))
     store.submit_taker("u", ticker="T", side="NO", price=0.25, contracts=4, available_depth=10)
@@ -133,6 +214,29 @@ def test_settlement_has_no_fee_and_credits_winning_contracts(tmp_path):
     assert settlement["settlement_fee_dollars"] == 0.0
     assert portfolio["balance"]["balance"] == cash_after_fill + 400
     assert portfolio["positions"] == []
+
+
+def test_read_only_settlement_updates_response_without_persisting(tmp_path):
+    saves = []
+
+    def save(_user_id, _payload):
+        saves.append(1)
+
+    store = KalshiPaperAccountStore(
+        str(tmp_path / "paper.json"),
+        account_saver=save,
+    )
+    store.submit_taker(
+        "u", ticker="T", side="YES", price=0.50,
+        contracts=1, available_depth=2,
+    )
+    writes_after_fill = len(saves)
+
+    settlement = store.settle("u", "T", "YES", persist=False)
+
+    assert settlement["revenue_dollars"] == 1.0
+    assert len(saves) == writes_after_fill
+    assert store.portfolio("u")["positions"] == []
 
 
 def test_reduce_only_close_sells_held_side_and_realizes_profit(tmp_path):

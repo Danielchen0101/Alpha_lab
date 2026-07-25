@@ -3,8 +3,8 @@ import api from './api';
 export type KalshiDecisionAction = 'BUY_YES' | 'BUY_NO' | 'SELL_YES' | 'SELL_NO' | 'WAIT';
 export type KalshiExecutionMode = 'paper' | 'real';
 
-// v6 adds settlement-aligned reference and improved scale-in controls.
-export const KALSHI_CONFIG_STORAGE_KEY = 'alphalab:kalshi:btc15m:config:v6';
+// v7 adds the official BRTI stream, normal-CDF calibration, and ladder fitting.
+export const KALSHI_CONFIG_STORAGE_KEY = 'alphalab:kalshi:btc15m:config:v7';
 export const KALSHI_CONFIG_CHANGED_EVENT = 'alphalab:kalshi-config-changed';
 
 export interface KalshiBotConfig {
@@ -61,13 +61,13 @@ export const DEFAULT_KALSHI_BOT_CONFIG: KalshiBotConfig = {
   minDepthContracts: 5,
   maxBookParticipation: 0.20,
   minSecondsToClose: 60,
-  maxSecondsToClose: 720,
-  minPrice: 0.50,
+  maxSecondsToClose: 840,
+  minPrice: 0.47,
   maxPrice: 0.95,
   minModelProbability: 0.58,
-  marketBlendWeight: 0.20,
+  marketBlendWeight: 0.45,
   maxModelMarketGap: 0.30,
-  probabilityLogitScale: 1.95,
+  probabilityLogitScale: 1.70,
   momentumProjectionScale: 0.07,
   basisReserveBps: 3,
   maxVolatilityRatio: 3,
@@ -146,6 +146,11 @@ export interface KalshiDecision {
     horizonVolatility?: number | null;
     settlementEffectiveHorizonMinutes?: number | null;
     referenceModel?: string;
+    isOfficialBrti?: boolean;
+    referenceRawPrice?: number | null;
+    settlementWindowAverage?: number | null;
+    settlementWindowSamples?: number;
+    settlementWindowProgress?: number | null;
     referenceVenueCount?: number;
     referenceDispersionBps?: number | null;
     basisReserveBpsApplied?: number | null;
@@ -155,6 +160,10 @@ export interface KalshiDecision {
     volatilityRatio?: number | null;
     jumpSigma?: number | null;
     marketYesProbability?: number | null;
+    rawMarketYesProbability?: number | null;
+    ladderRawProbability?: number | null;
+    ladderSmoothedProbability?: number | null;
+    ladderDislocation?: number | null;
     modelYesProbability?: number | null;
     fairYesProbability?: number | null;
     selectedModelProbability?: number | null;
@@ -170,6 +179,7 @@ export interface KalshiDecision {
     fairProbability?: number | null;
     modelProbability?: number | null;
     minimumModelProbability?: number;
+    effectiveMinimumPrice?: number;
     grossEdge?: number | null;
     feePerContract?: number | null;
     netEdge?: number | null;
@@ -194,10 +204,21 @@ export interface KalshiDecision {
   gates: KalshiGate[];
   config: KalshiBotConfig;
   methodology: Record<string, string>;
+  dataQuality?: {
+    referenceModel?: string;
+    officialBrti?: boolean;
+    referenceAgeSeconds?: number | null;
+    bookAgeSeconds?: number | null;
+    snapshotLatencyMs?: number | null;
+    settlementWindowSamples?: number | null;
+    warnings?: string[];
+    candidateCount?: number;
+  };
 }
 
 export interface KalshiSnapshot {
   asOf: string;
+  latencyMs?: number;
   selection: 'active' | 'upcoming' | 'recent' | 'unavailable';
   seriesTicker: string;
   market: Record<string, unknown>;
@@ -219,12 +240,64 @@ export interface KalshiSnapshot {
     rejectedVenues?: string[];
     dispersionBps?: number;
     candleCount?: number;
+    rawPrice?: number | null;
+    trailing60sAverage?: number | null;
+    settlementWindowAverage?: number | null;
+    settlementWindowSamples?: number;
+    settlementWindowProgress?: number;
+    streamAgeSeconds?: number;
+    streamStatus?: string;
   };
   warnings: string[];
   sources: Record<string, string>;
   eventTicker?: string;
   candidateCount?: number;
   candidateSummary?: Array<Record<string, any>>;
+  ladderFit?: Record<string, {
+    rawProbability: number;
+    smoothedProbability: number;
+    dislocation: number;
+  }>;
+}
+
+export interface KalshiFamilyDiagnostics {
+  family: 'btc15m' | 'btchourly';
+  label: string;
+  observations: number;
+  uniqueMarkets: number;
+  latestAt?: string | null;
+  funnel: Record<'observations' | 'dataReady' | 'entryWindow' | 'liquidityReady' | 'positiveNetEdge' | 'positiveConservativeEdge' | 'routable' | 'orders', number>;
+  blockers: Array<{ key: string; count: number }>;
+  referenceSources: Array<{ key: string; count: number }>;
+  officialBrtiSamples: number;
+  averageSnapshotLatencyMs?: number | null;
+  edgeTimeline: Array<{
+    at: string;
+    ticker: string;
+    action: string;
+    secondsToClose?: number;
+    netEdge?: number | null;
+    conservativeEdge?: number | null;
+    signalQuality?: number;
+  }>;
+  nearMisses: Array<Record<string, any>>;
+}
+
+export interface KalshiAnalyticsResponse {
+  success: boolean;
+  environment: KalshiExecutionMode;
+  windowHours: number;
+  analytics: {
+    generatedAt: string;
+    families: Record<'btc15m' | 'btchourly', KalshiFamilyDiagnostics>;
+  };
+  referenceFeed?: {
+    status: string;
+    fresh: boolean;
+    ageSeconds?: number | null;
+    lastError?: string;
+    source?: string;
+  };
 }
 
 export interface KalshiEvaluationResponse {
@@ -323,6 +396,9 @@ export interface KalshiPortfolioAnalytics {
     family: 'btc15m' | 'btchourly';
     label: string;
     samples: number;
+    uniqueMarkets: number;
+    settlementEvents: number;
+    saleEvents: number;
     wins: number;
     losses: number;
     winRate: number | null;
@@ -403,6 +479,10 @@ const kalshiAPI = {
   runPaperRobotTick: (mode: KalshiExecutionMode = 'paper', family: 'btc15m' | 'btchourly' = 'btc15m') => api.post<KalshiPaperResponse>('/kalshi/paper/robot/tick', { mode, family }, { timeout: 30000 }),
   resetPaperAccount: (mode: KalshiExecutionMode = 'paper') => api.delete<KalshiPaperResponse>('/kalshi/paper/portfolio', { params: { mode }, timeout: 15000 }),
   status: () => api.get('/kalshi/status', { timeout: 10000 }),
+  analytics: (mode: KalshiExecutionMode = 'paper', hours = 24) => api.get<KalshiAnalyticsResponse>(
+    '/kalshi/analytics',
+    { params: { mode, hours }, timeout: 15000 },
+  ),
   getConnectionConfig: () => api.get<KalshiConnectionConfigResponse>('/kalshi/config', { timeout: 10000 }),
   saveConnectionConfig: (payload: { environment: KalshiEnvironment; apiKeyId?: string; privateKey?: string }) => (
     api.post('/kalshi/config', payload, { timeout: 15000 })

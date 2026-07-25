@@ -630,4 +630,9 @@ def test_kalshi_observation_upsert_and_worker_lease_use_local_fallback(tmp_path)
     assert first["action"] == "WAIT"
     assert second["action"] == "BUY_YES"
     assert len(store._local["kalshi_observations"]) == 1
+    assert store.list_kalshi_observations("user-a", environment="paper") == [second]
+    assert store.list_kalshi_observations("user-a", environment="real") == []
+    assert store.list_kalshi_observations(
+        "user-a", since="2026-07-25T12:00:01Z"
+    ) == []
     assert store.claim_worker_lease("kalshi-btc15-robot", "worker-a") is True

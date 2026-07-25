@@ -68,7 +68,7 @@ def test_confirmed_favorite_can_pass_all_paper_gates():
     candles, spot = _candles()
 
     result = evaluate_btc15_contract(
-        _market(now, floor_strike=64_660.0),
+        _market(now, floor_strike=64_650.0),
         spot_price=spot,
         candles=candles,
         now=now,
@@ -157,7 +157,7 @@ def test_position_size_is_not_capped_by_legacy_max_contracts():
     result = evaluate_btc15_contract(
         _market(
             now,
-            floor_strike=64_660.0,
+            floor_strike=64_650.0,
             yes_ask_size_fp="1000.0",
             no_ask_size_fp="1000.0",
         ),
@@ -253,6 +253,45 @@ def test_missing_book_never_becomes_zero_probability_or_a_trade():
     assert result["edge"]["price"] is None
     assert "two_sided_quote" in result["blockingReasons"]
     assert result["signalQuality"] < 50
+
+
+def test_official_brti_avoids_single_venue_proxy_uncertainty_penalty():
+    now = datetime.now(timezone.utc)
+    candles, spot = _candles()
+    # Keep distance-to-strike at zero so proxy basis reserves cannot alter the
+    # model/market disagreement term; this isolates the venue-count penalty.
+    market = _market(now, floor_strike=spot)
+    common = {
+        "market": market,
+        "spot_price": spot,
+        "candles": candles,
+        "now": now,
+        "reference_time": now,
+        "book_time": now,
+    }
+
+    official = evaluate_btc15_contract(
+        **common,
+        reference_metadata={
+            "model": "kalshi_cf_benchmarks_brti",
+            "isOfficialBrti": True,
+            "venueCount": 1,
+            "dispersionBps": 0,
+        },
+    )
+    single_venue_proxy = evaluate_btc15_contract(
+        **common,
+        reference_metadata={
+            "model": "brti_constituent_proxy",
+            "isOfficialBrti": False,
+            "venueCount": 1,
+            "dispersionBps": 0,
+        },
+    )
+
+    assert official["model"]["uncertainty"] == pytest.approx(
+        single_venue_proxy["model"]["uncertainty"] - 0.01
+    )
 
 
 def test_paper_account_gates_prevent_duplicate_or_over_budget_entries():

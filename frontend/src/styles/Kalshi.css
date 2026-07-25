@@ -878,6 +878,124 @@
 .kalshi-source-grid strong { margin: 8px 0; font-size: 17px; line-height: 1.35; }
 .kalshi-source-grid small { color: var(--kalshi-muted); font-size: 11px; }
 
+.kalshi-diagnostics-section {
+  margin-top: 18px;
+  padding: 24px;
+  background: var(--kalshi-surface);
+  border: 1px solid var(--kalshi-rule);
+}
+
+.kalshi-source-health {
+  display: grid;
+  min-width: 180px;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 3px 8px;
+  padding: 9px 11px;
+  color: var(--kalshi-orange);
+  background: color-mix(in srgb, var(--kalshi-orange) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--kalshi-orange) 30%, var(--kalshi-rule));
+  font: 750 9.5px/1.15 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.kalshi-source-health > i {
+  width: 7px;
+  height: 7px;
+  grid-row: 1 / 3;
+  background: currentColor;
+  border-radius: 50%;
+}
+
+.kalshi-source-health > small { color: var(--kalshi-muted); font-size: 9px; font-weight: 600; }
+.kalshi-source-health.is-live { color: var(--kalshi-green); background: color-mix(in srgb, var(--kalshi-green) 5%, transparent); border-color: color-mix(in srgb, var(--kalshi-green) 30%, var(--kalshi-rule)); }
+.kalshi-source-health.is-live > i { box-shadow: 0 0 0 4px color-mix(in srgb, var(--kalshi-green) 12%, transparent); }
+
+.kalshi-diagnostic-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 20px;
+  border-top: 1px solid var(--kalshi-rule-soft);
+  border-left: 1px solid var(--kalshi-rule-soft);
+}
+
+.kalshi-diagnostic-stats > div {
+  display: grid;
+  min-height: 96px;
+  align-content: center;
+  gap: 6px;
+  padding: 14px 16px;
+  border-right: 1px solid var(--kalshi-rule-soft);
+  border-bottom: 1px solid var(--kalshi-rule-soft);
+}
+
+.kalshi-diagnostic-stats span,
+.kalshi-diagnostic-title > span {
+  color: var(--kalshi-muted);
+  font: 750 9.5px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .09em;
+}
+
+.kalshi-diagnostic-stats strong { font-size: 24px; font-variant-numeric: tabular-nums; }
+.kalshi-diagnostic-stats small,
+.kalshi-diagnostic-title > small { color: var(--kalshi-muted); font-size: 10px; line-height: 1.35; }
+
+.kalshi-diagnostic-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, .9fr) minmax(440px, 1.55fr) minmax(230px, .7fr);
+  margin-top: 18px;
+  border-top: 1px solid var(--kalshi-rule-soft);
+  border-left: 1px solid var(--kalshi-rule-soft);
+}
+
+.kalshi-diagnostic-grid > article {
+  min-width: 0;
+  min-height: 300px;
+  padding: 17px;
+  border-right: 1px solid var(--kalshi-rule-soft);
+  border-bottom: 1px solid var(--kalshi-rule-soft);
+}
+
+.kalshi-diagnostic-title { display: flex; min-height: 34px; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.kalshi-diagnostic-title > small { display: flex; align-items: center; gap: 6px; text-align: right; }
+.kalshi-diagnostic-title > small i { width: 15px; height: 2px; background: var(--kalshi-blue); }
+.kalshi-diagnostic-title > small i.is-conservative { margin-left: 5px; background: var(--kalshi-green); }
+
+.kalshi-funnel-list { display: grid; gap: 11px; margin-top: 16px; }
+.kalshi-funnel-list > div { display: grid; grid-template-columns: minmax(105px, .8fr) minmax(80px, 1fr) 36px; align-items: center; gap: 10px; }
+.kalshi-funnel-list span { overflow: hidden; color: var(--kalshi-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.kalshi-funnel-list > div > i { height: 5px; overflow: hidden; background: color-mix(in srgb, var(--kalshi-muted) 13%, transparent); }
+.kalshi-funnel-list > div > i b { display: block; height: 100%; background: var(--kalshi-green); }
+.kalshi-funnel-list strong { font: 750 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; }
+
+.kalshi-edge-chart { display: block; width: 100%; height: 224px; margin-top: 5px; overflow: visible; }
+.kalshi-edge-chart path { fill: none; vector-effect: non-scaling-stroke; }
+.kalshi-edge-chart path.is-net { stroke: var(--kalshi-blue); stroke-width: 2; }
+.kalshi-edge-chart path.is-conservative { stroke: var(--kalshi-green); stroke-width: 2; stroke-dasharray: 5 4; }
+.kalshi-edge-grid { stroke: color-mix(in srgb, var(--kalshi-rule) 55%, transparent); stroke-dasharray: 2 7; }
+.kalshi-edge-zero { stroke: var(--kalshi-rule); stroke-dasharray: 4 5; }
+.kalshi-edge-axis { fill: var(--kalshi-muted); font: 700 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.kalshi-edge-empty { display: grid; min-height: 224px; place-items: center; color: var(--kalshi-muted); font: 10.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; }
+
+.kalshi-blocker-list { margin-top: 15px; border-top: 1px solid var(--kalshi-rule-soft); }
+.kalshi-blocker-list > div { display: grid; min-height: 34px; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; border-bottom: 1px solid var(--kalshi-rule-soft); }
+.kalshi-blocker-list span { overflow: hidden; color: var(--kalshi-muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.kalshi-blocker-list strong { min-width: 29px; padding: 3px 6px; color: var(--kalshi-orange); background: color-mix(in srgb, var(--kalshi-orange) 7%, transparent); font: 750 9.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; }
+.kalshi-blocker-list p { margin: 17px 0 0; color: var(--kalshi-muted); font-size: 10.5px; line-height: 1.5; }
+
+.kalshi-near-miss-table { margin-top: 18px; overflow-x: auto; border: 1px solid var(--kalshi-rule-soft); }
+.kalshi-near-miss-head,
+.kalshi-near-miss-row { display: grid; min-width: 920px; grid-template-columns: 140px minmax(220px, 1.25fr) 135px 145px minmax(230px, 1fr); align-items: center; }
+.kalshi-near-miss-head { min-height: 38px; background: color-mix(in srgb, var(--kalshi-paper) 70%, var(--kalshi-surface)); color: var(--kalshi-muted); font: 750 9px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; }
+.kalshi-near-miss-row { min-height: 43px; border-top: 1px solid var(--kalshi-rule-soft); font-size: 10.5px; }
+.kalshi-near-miss-head > *,
+.kalshi-near-miss-row > * { min-width: 0; padding: 8px 11px; overflow: hidden; border-right: 1px solid var(--kalshi-rule-soft); text-overflow: ellipsis; white-space: nowrap; }
+.kalshi-near-miss-head > *:last-child,
+.kalshi-near-miss-row > *:last-child { border-right: 0; }
+.kalshi-near-miss-row time,
+.kalshi-near-miss-row span,
+.kalshi-near-miss-row small { color: var(--kalshi-muted); font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.kalshi-near-miss-row b { font-size: 10.5px; }
+
 .kalshi-connection-page > div { min-height: 220px; padding: 26px; border-right: 1px solid var(--kalshi-rule); }
 .kalshi-connection-page > div:last-child { border-right: 0; }
 .kalshi-connection-page strong { display: block; margin: 34px 0 9px; font: 740 19px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -920,6 +1038,10 @@
   .kalshi-execution-strip > div:nth-child(n + 3) { border-top: 1px solid var(--kalshi-rule-soft); }
   .kalshi-source-grid > div:nth-child(2n) { border-right: 0; }
   .kalshi-source-grid > div:nth-child(n + 3) { border-top: 1px solid var(--kalshi-rule); }
+  .kalshi-diagnostic-grid { grid-template-columns: minmax(260px, .8fr) minmax(420px, 1.4fr); }
+  .kalshi-blocker-panel { grid-column: 1 / -1; min-height: 0 !important; }
+  .kalshi-blocker-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-left: 1px solid var(--kalshi-rule-soft); }
+  .kalshi-blocker-list > div { padding: 0 10px; border-right: 1px solid var(--kalshi-rule-soft); }
 }
 
 @media (max-width: 900px) {
@@ -952,6 +1074,10 @@
   .kalshi-ledger-table { overflow-x: auto; }
   .kalshi-ledger-head,
   .kalshi-ledger-row { min-width: 920px; }
+  .kalshi-diagnostic-grid { grid-template-columns: 1fr; }
+  .kalshi-blocker-panel { grid-column: auto; }
+  .kalshi-blocker-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kalshi-diagnostic-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 640px) {
@@ -969,6 +1095,7 @@
   .kalshi-source-grid,
   .kalshi-connection-page,
   .kalshi-empty-workspace { border-right: 0; border-left: 0; }
+  .kalshi-diagnostics-section { padding: 17px 13px; border-right: 0; border-left: 0; }
   .kalshi-execution-strip { grid-template-columns: 1fr; border-right: 0; border-left: 0; }
   .kalshi-execution-strip > div { min-height: 82px; border-right: 0; border-bottom: 1px solid var(--kalshi-rule-soft); }
   .kalshi-execution-strip > div:last-child { border-bottom: 0; }
@@ -1008,6 +1135,11 @@
   .kalshi-source-grid > div:last-child { border-bottom: 0; }
   .kalshi-section-head { align-items: flex-start; flex-direction: column; }
   .kalshi-section-head > small { text-align: left; }
+  .kalshi-source-health { width: 100%; }
+  .kalshi-diagnostic-stats { grid-template-columns: 1fr 1fr; }
+  .kalshi-diagnostic-stats > div { min-height: 82px; padding: 11px; }
+  .kalshi-diagnostic-grid > article { min-height: 0; padding: 13px; }
+  .kalshi-blocker-list { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

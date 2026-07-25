@@ -21,6 +21,8 @@ import kalshiAPI, {
   KalshiPaperPortfolio,
   KalshiPaperRobotState,
   KalshiEvaluationResponse,
+  KalshiAnalyticsResponse,
+  KalshiFamilyDiagnostics,
   KalshiGate,
   KalshiSnapshot,
 } from '../services/kalshiApi';
@@ -174,6 +176,41 @@ const PnlChart: React.FC<{ points: Array<{ at: string; cumulativePnl: number }>;
   );
 };
 
+const EdgeTimelineChart: React.FC<{
+  points: KalshiFamilyDiagnostics['edgeTimeline'];
+  emptyLabel: string;
+}> = ({ points, emptyLabel }) => {
+  const clean = points.filter((point) => number(point.netEdge) !== null || number(point.conservativeEdge) !== null);
+  if (clean.length < 2) return <div className="kalshi-edge-empty">{emptyLabel}</div>;
+  const width = 820;
+  const height = 218;
+  const paddingX = 48;
+  const paddingY = 24;
+  const values = clean.flatMap((point) => [number(point.netEdge), number(point.conservativeEdge)]).filter((value): value is number => value !== null);
+  const low = Math.min(0, ...values);
+  const high = Math.max(0, ...values);
+  const span = Math.max(0.01, high - low);
+  const x = (index: number) => paddingX + (index / Math.max(1, clean.length - 1)) * (width - paddingX * 2);
+  const y = (value: number) => paddingY + ((high - value) / span) * (height - paddingY * 2);
+  const pathFor = (key: 'netEdge' | 'conservativeEdge') => clean
+    .map((point, index) => `${index ? 'L' : 'M'} ${x(index).toFixed(2)} ${y(number(point[key]) || 0).toFixed(2)}`)
+    .join(' ');
+  const start = clean[0]?.at ? new Date(clean[0].at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  const end = clean[clean.length - 1]?.at ? new Date(clean[clean.length - 1].at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  return (
+    <svg className="kalshi-edge-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={emptyLabel}>
+      {[0.25, 0.5, 0.75].map((ratio) => <line key={ratio} x1={paddingX} y1={paddingY + ratio * (height - paddingY * 2)} x2={width - paddingX} y2={paddingY + ratio * (height - paddingY * 2)} className="kalshi-edge-grid" />)}
+      <line x1={paddingX} y1={y(0)} x2={width - paddingX} y2={y(0)} className="kalshi-edge-zero" />
+      <path d={pathFor('netEdge')} className="is-net" />
+      <path d={pathFor('conservativeEdge')} className="is-conservative" />
+      <text x={paddingX} y={height - 5} className="kalshi-edge-axis">{start}</text>
+      <text x={width - paddingX} y={height - 5} textAnchor="end" className="kalshi-edge-axis">{end}</text>
+      <text x={paddingX - 8} y={y(high) + 4} textAnchor="end" className="kalshi-edge-axis">{(high * 100).toFixed(1)}%</text>
+      <text x={paddingX - 8} y={y(low) + 4} textAnchor="end" className="kalshi-edge-axis">{(low * 100).toFixed(1)}%</text>
+    </svg>
+  );
+};
+
 const actionLabel = (decision: KalshiDecision | null, chinese: boolean) => {
   if (!decision || decision.action === 'WAIT') return chinese ? '等待' : 'WAIT';
   if (decision.action === 'BUY_YES') return chinese ? '买入信号 YES' : 'BUY SIGNAL YES';
@@ -216,6 +253,7 @@ const Kalshi: React.FC = () => {
   const [robotBusy, setRobotBusy] = React.useState(false);
   const [applyBusy, setApplyBusy] = React.useState(false);
   const [applyMessage, setApplyMessage] = React.useState('');
+  const [analytics, setAnalytics] = React.useState<KalshiAnalyticsResponse | null>(null);
   const [clock, setClock] = React.useState(Date.now());
   const inFlightRef = React.useRef(false);
   const mountedRef = React.useRef(true);
@@ -301,6 +339,19 @@ const Kalshi: React.FC = () => {
     }
   }, [copy]);
 
+  const loadAnalytics = React.useCallback(async (
+    modeOverride: KalshiBotConfig['executionMode'] = modeRef.current,
+  ) => {
+    try {
+      const response = await kalshiAPI.analytics(modeOverride, 24);
+      if (!mountedRef.current || modeRef.current !== modeOverride || !response.data?.success) return;
+      setAnalytics(response.data);
+    } catch {
+      // Trading/evaluation stays available if the durable diagnostics endpoint
+      // is temporarily unavailable; its source card will show no samples.
+    }
+  }, []);
+
   React.useEffect(() => {
     const handleExternalConfigChange = (event: Event) => {
       const detail = (event as CustomEvent<Partial<KalshiBotConfig> | undefined>).detail;
@@ -314,12 +365,14 @@ const Kalshi: React.FC = () => {
       setDecision(null);
       setHistory([]);
       setRobotState(null);
+      setAnalytics(null);
       setRefreshing(true);
       inFlightRef.current = false;
       const evaluationRequestId = evaluationRequestRef.current + 1;
       evaluationRequestRef.current = evaluationRequestId;
       void Promise.all([
         loadPaperPortfolio(nextMode),
+        loadAnalytics(nextMode),
         (isHourly ? kalshiAPI.evaluateHourly(nextMode) : kalshiAPI.evaluate(nextConfig)).then((response) => {
           if (evaluationRequestRef.current === evaluationRequestId && response.data?.success) {
             acceptPayload(response.data, nextMode);
@@ -339,7 +392,7 @@ const Kalshi: React.FC = () => {
     };
     window.addEventListener(KALSHI_CONFIG_CHANGED_EVENT, handleExternalConfigChange);
     return () => window.removeEventListener(KALSHI_CONFIG_CHANGED_EVENT, handleExternalConfigChange);
-  }, [acceptPayload, copy, isHourly, loadPaperPortfolio]);
+  }, [acceptPayload, copy, isHourly, loadAnalytics, loadPaperPortfolio]);
 
   React.useEffect(() => {
     const mode = executionMode;
@@ -350,7 +403,8 @@ const Kalshi: React.FC = () => {
       })
       .catch(() => undefined);
     void loadPaperPortfolio(mode);
-  }, [executionMode, loadPaperPortfolio]);
+    void loadAnalytics(mode);
+  }, [executionMode, loadAnalytics, loadPaperPortfolio]);
 
   React.useEffect(() => {
     const serverConfig = robotState?.config;
@@ -401,6 +455,11 @@ const Kalshi: React.FC = () => {
     const timer = window.setInterval(() => void loadPaperPortfolio(), PORTFOLIO_REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [loadPaperPortfolio]);
+
+  React.useEffect(() => {
+    const timer = window.setInterval(() => void loadAnalytics(), 30_000);
+    return () => window.clearInterval(timer);
+  }, [loadAnalytics]);
 
   const toggleRobot = async () => {
     if (robotBusy) return;
@@ -467,7 +526,7 @@ const Kalshi: React.FC = () => {
       <div><span>{copy('CONTRACT', '合约')}</span><strong>{decision?.market.ticker || 'KXBTC15M'}</strong><small>{active ? copy('Trading now', '正在交易') : copy('Next available interval', '下一个可用时段')}</small></div>
       <div><span>{copy('TIME LEFT', '剩余时间')}</span><strong>{countdown}</strong><small>{copy('Entry closes before settlement', '进场早于结算')}</small></div>
       <div><span>{copy('STRIKE', '结算基准')}</span><strong>{money(decision?.market.strike)}</strong><small>{copy('Reference at window open', '开盘参考价')}</small></div>
-      <div><span>{copy('BTC REFERENCE', 'BTC 参考价')}</span><strong>{money(decision?.model.spot)}</strong><small>{decision?.model.referenceModel === 'brti_constituent_proxy' ? `BRTI proxy · ${decision.model.referenceVenueCount || 0} venues` : 'BTC-USD fallback'}</small></div>
+      <div><span>{copy('BTC REFERENCE', 'BTC 参考价')}</span><strong>{money(decision?.model.spot)}</strong><small>{decision?.model.isOfficialBrti ? `Official BRTI · ${decision.model.settlementWindowSamples || 0}/60` : decision?.model.referenceModel === 'brti_constituent_proxy' ? `BRTI proxy · ${decision.model.referenceVenueCount || 0} venues` : 'BTC-USD fallback'}</small></div>
       <div><span>{copy('YES / NO ASK', 'YES / NO 卖价')}</span><strong>{cents(decision?.market.yesAsk)} / {cents(decision?.market.noAsk)}</strong><small>{copy('Executable quotes', '可成交报价')}</small></div>
       <div><span>{copy('VOLUME / OI', '成交量 / 持仓量')}</span><strong>{compact(decision?.market.volume)} / {compact(decision?.market.openInterest)}</strong><small>{copy('Contract units', '合约份数')}</small></div>
     </section>
@@ -614,7 +673,7 @@ const Kalshi: React.FC = () => {
 
     return <section className="kalshi-controls-section">
       <div className="kalshi-section-head">
-        <div><span>{isRealMode ? copy('REAL RISK POLICY', '实盘风控策略') : copy('PAPER RISK POLICY', '模拟风控策略')}</span><h2>{copy('BTC 15-minute deterministic carry v4', 'BTC 15 分钟确定性策略 v4')}</h2></div>
+        <div><span>{isRealMode ? copy('REAL RISK POLICY', '实盘风控策略') : copy('PAPER RISK POLICY', '模拟风控策略')}</span><h2>{isHourly ? copy('BTC hourly monotone ladder v2', 'BTC 整点单调阶梯策略 v2') : copy('BTC 15-minute settlement-aligned v6', 'BTC 15 分钟结算对齐策略 v6')}</h2></div>
         <div className="kalshi-apply-action">
           {applyMessage && <small>{applyMessage}</small>}
           <button type="button" onClick={() => void applyConfig()} disabled={applyBusy}><ThunderboltOutlined className={applyBusy ? 'is-spinning' : ''} />{applyBusy ? copy('Applying…', '正在应用…') : copy('Apply and evaluate', '应用并评估')}</button>
@@ -702,7 +761,7 @@ const Kalshi: React.FC = () => {
     <section className="kalshi-reference-page">
       <div className="kalshi-reference-column"><span>01</span><h2>{copy('Resolution rule', '结算规则')}</h2><p>{rulesPrimary || copy('Waiting for the active contract rule.', '正在等待当前合约规则。')}</p></div>
       <div className="kalshi-reference-column"><span>02</span><h2>{copy('Reference methodology', '参考方法')}</h2><p>{rulesSecondary || copy('The official result is a 60-second average of the CF Benchmarks Real-Time Index over the final minute, not the last Coinbase trade.', '官方结果为结算前最后一分钟 CF Benchmarks 实时指数的 60 秒均价，而不是 Coinbase 最后一笔成交。')}</p></div>
-      <div className="kalshi-reference-column"><span>03</span><h2>{copy('Model boundary', '模型边界')}</h2><p>{copy('The public reference is a labelled four-venue BRTI proxy, not the licensed index. Cross-venue dispersion and missing venues increase the uncertainty reserve.', '公开参考价是明确标注的四交易所 BRTI 代理，并非授权指数；跨所偏差或来源缺失会提高不确定性缓冲。')}</p></div>
+      <div className="kalshi-reference-column"><span>03</span><h2>{copy('Model boundary', '模型边界')}</h2><p>{copy('The primary input is Kalshi\'s authenticated official BRTI stream. If it is unavailable, the engine clearly falls back to a four-venue proxy, raises its basis reserve, and keeps the stricter 50-cent price floor.', '模型主要使用 Kalshi 认证的官方 BRTI 实时流；若不可用，会明确回退到四交易所代理、提高基差缓冲，并保持更严格的 50 美分价格下限。')}</p></div>
     </section>
   );
 
@@ -813,7 +872,7 @@ const Kalshi: React.FC = () => {
               <article key={family}>
                 <span>{label}</span>
                 <strong className={pnl >= 0 ? 'is-profit' : 'is-loss'}>{pnl >= 0 ? '+' : ''}{money(pnl)}</strong>
-                <small>{performance?.samples || 0} {copy('realized trades', '笔已实现交易')} · {copy('win rate', '胜率')} {performance?.winRate == null ? '--' : probability(performance.winRate)}</small>
+                <small>{performance?.uniqueMarkets || 0} {copy('markets', '个市场')} · {performance?.samples || 0} {copy('realized events', '笔已实现事件')} · {copy('event win rate', '事件胜率')} {performance?.winRate == null ? '--' : probability(performance.winRate)}</small>
                 <div><i style={{ width: `${Math.min(100, Math.max(0, Number(performance?.winRate || 0) * 100))}%` }} /></div>
               </article>
             );
@@ -833,7 +892,7 @@ const Kalshi: React.FC = () => {
         </section>
         <section className="kalshi-performance-section">
           <div className="kalshi-performance-summary">
-            <div><span>{copy('REALIZED WIN RATE', '已实现胜率')}</span><strong>{winRate === null ? '--' : probability(winRate)}</strong><small><em className="is-profit">{wins}{copy('W', ' 胜')}</em> · <em className="is-loss">{losses}{copy('L', ' 负')}</em> / {realizedSamples} {copy('trades', '笔')}</small></div>
+            <div><span>{copy('REALIZED EVENT WIN RATE', '已实现事件胜率')}</span><strong>{winRate === null ? '--' : probability(winRate)}</strong><small><em className="is-profit">{wins}{copy('W', ' 胜')}</em> · <em className="is-loss">{losses}{copy('L', ' 负')}</em> / {realizedSamples} {copy('events', '笔事件')}</small></div>
             <div><span>{copy('AVERAGE / TRADE', '单笔平均')}</span><strong className={Number(averagePnl) >= 0 ? 'is-profit' : Number(averagePnl) < 0 ? 'is-loss' : ''}>{averagePnl === null ? '--' : money(averagePnl)}</strong><small>{copy('Profit factor', '盈亏比')} {profitFactor === null ? '--' : profitFactor === Infinity ? '∞' : profitFactor.toFixed(2)}</small></div>
             <div><span>{copy('BEST / WORST', '最佳 / 最差')}</span><strong>{bestTrade === null ? '--' : <><em className="is-profit">{money(bestTrade)}</em></>}</strong><small>{copy('Worst', '最差')} {worstTrade === null ? '--' : <em className="is-loss">{money(worstTrade)}</em>}</small></div>
           </div>
@@ -889,9 +948,103 @@ const Kalshi: React.FC = () => {
     );
   };
 
+  const renderDiagnostics = () => {
+    const familyKey: 'btc15m' | 'btchourly' = isHourly ? 'btchourly' : 'btc15m';
+    const diagnostics = analytics?.analytics?.families?.[familyKey];
+    const referenceFeed = analytics?.referenceFeed;
+    const funnel = diagnostics?.funnel;
+    const funnelSteps: Array<{ key: keyof KalshiFamilyDiagnostics['funnel']; en: string; zh: string }> = [
+      { key: 'observations', en: 'Observed', zh: '已观察' },
+      { key: 'dataReady', en: 'Fresh data', zh: '数据有效' },
+      { key: 'entryWindow', en: 'Entry window', zh: '进场时窗' },
+      { key: 'liquidityReady', en: 'Executable book', zh: '盘口可成交' },
+      { key: 'positiveNetEdge', en: 'Positive net edge', zh: '扣费后正边际' },
+      { key: 'positiveConservativeEdge', en: 'Conservative edge', zh: '保守边际为正' },
+      { key: 'routable', en: 'Order candidate', zh: '可下单候选' },
+      { key: 'orders', en: 'Order recorded', zh: '已记录订单' },
+    ];
+    const denominator = Math.max(1, Number(funnel?.observations || 0));
+    const blockerLabels: Record<string, [string, string]> = {
+      conservative_edge: ['Conservative edge', '保守边际'],
+      net_edge: ['Net edge after fees', '扣费后边际'],
+      entry_window: ['Entry window', '进场时窗'],
+      model_probability: ['Favorite confidence', '优势方向置信度'],
+      depth: ['Executable depth', '可成交深度'],
+      price_band: ['Contract price band', '合约价格区间'],
+      spread: ['Absolute spread', '绝对点差'],
+      relative_spread: ['Relative spread', '相对点差'],
+      data_freshness: ['Data freshness', '数据新鲜度'],
+      reference_ready: ['BRTI reference', 'BRTI 参考价'],
+    };
+    const blockerName = (key: string) => {
+      const label = blockerLabels[key];
+      if (label) return copy(label[0], label[1]);
+      return key.replace(/_/g, ' ');
+    };
+    const officialNow = Boolean(decision?.dataQuality?.officialBrti || referenceFeed?.fresh);
+    return (
+      <section className="kalshi-diagnostics-section">
+        <div className="kalshi-section-head">
+          <div>
+            <span>{copy('24H OPPORTUNITY AUDIT', '24 小时机会审计')}</span>
+            <h2>{copy('Why the robot traded — or waited', '机器人为何交易或等待')}</h2>
+            <small>{copy('Every server evaluation is stored durably and reduced to an auditable funnel.', '服务端每次评估都会持久保存，并汇总为可审计漏斗。')}</small>
+          </div>
+          <span className={`kalshi-source-health${officialNow ? ' is-live' : ''}`}>
+            <i />
+            <b>{officialNow ? copy('OFFICIAL BRTI LIVE', '官方 BRTI 实时') : copy('PROXY FALLBACK', '代理源回退')}</b>
+            <small>{referenceFeed?.ageSeconds == null ? '--' : `${Number(referenceFeed.ageSeconds).toFixed(1)}s`}</small>
+          </span>
+        </div>
+        <div className="kalshi-diagnostic-stats">
+          <div><span>{copy('OBSERVATIONS', '评估次数')}</span><strong>{diagnostics?.observations?.toLocaleString() || '0'}</strong><small>{copy('durable server samples', '服务端持久样本')}</small></div>
+          <div><span>{copy('MARKETS SCANNED', '扫描市场')}</span><strong>{diagnostics?.uniqueMarkets || 0}</strong><small>{isHourly ? copy('hourly strike contracts', '整点执行价合约') : copy('rolling 15-minute contracts', '滚动 15 分钟合约')}</small></div>
+          <div><span>{copy('OFFICIAL FEED', '官方行情')}</span><strong>{diagnostics?.officialBrtiSamples || 0}</strong><small>{copy('BRTI-confirmed samples', 'BRTI 确认样本')}</small></div>
+          <div><span>{copy('SNAPSHOT LATENCY', '快照延迟')}</span><strong>{diagnostics?.averageSnapshotLatencyMs == null ? '--' : `${Math.round(diagnostics.averageSnapshotLatencyMs)}ms`}</strong><small>{copy('market + reference acquisition', '市场与参考价获取')}</small></div>
+        </div>
+        <div className="kalshi-diagnostic-grid">
+          <article className="kalshi-funnel-panel">
+            <div className="kalshi-diagnostic-title"><span>{copy('OPPORTUNITY FUNNEL', '机会漏斗')}</span><small>{copy('Counts are independent gate passes, not a forced trade quota.', '统计为各门控独立通过数，不是强制交易配额。')}</small></div>
+            <div className="kalshi-funnel-list">
+              {funnelSteps.map((step) => {
+                const value = Number(funnel?.[step.key] || 0);
+                const width = Math.max(value > 0 ? 2 : 0, Math.min(100, value / denominator * 100));
+                return <div key={step.key}><span>{copy(step.en, step.zh)}</span><i><b style={{ width: `${width}%` }} /></i><strong>{value}</strong></div>;
+              })}
+            </div>
+          </article>
+          <article className="kalshi-edge-panel">
+            <div className="kalshi-diagnostic-title">
+              <span>{copy('EDGE TIMELINE', '边际时间线')}</span>
+              <small><i className="is-net" />{copy('Net', '净边际')}<i className="is-conservative" />{copy('Conservative', '保守边际')}</small>
+            </div>
+            <EdgeTimelineChart points={diagnostics?.edgeTimeline || []} emptyLabel={copy('Waiting for durable edge samples.', '正在等待持久化边际样本。')} />
+          </article>
+          <article className="kalshi-blocker-panel">
+            <div className="kalshi-diagnostic-title"><span>{copy('TOP BLOCKERS', '主要阻断原因')}</span><small>{copy('Used to tune gates from evidence.', '用于根据证据校准门槛。')}</small></div>
+            <div className="kalshi-blocker-list">
+              {(diagnostics?.blockers || []).slice(0, 7).map((item) => <div key={item.key}><span>{blockerName(item.key)}</span><strong>{item.count}</strong></div>)}
+              {!diagnostics?.blockers?.length && <p>{copy('No blockers recorded in this window.', '本时间窗尚无阻断记录。')}</p>}
+            </div>
+          </article>
+        </div>
+        {!!diagnostics?.nearMisses?.length && <div className="kalshi-near-miss-table">
+          <div className="kalshi-near-miss-head"><span>{copy('NEAR-MISS TIME', '接近成交时间')}</span><span>{copy('CONTRACT', '合约')}</span><span>{copy('SIDE / PRICE', '方向 / 价格')}</span><span>{copy('NET / CONS. EDGE', '净 / 保守边际')}</span><span>{copy('REMAINING BLOCKS', '剩余阻断')}</span></div>
+          {diagnostics.nearMisses.slice(0, 5).map((item: any, index) => <div className="kalshi-near-miss-row" key={`${item.at}-${item.ticker}-${index}`}>
+            <time>{item.at ? new Date(item.at).toLocaleTimeString() : '--'}</time>
+            <b>{item.ticker || '--'}</b>
+            <span>{item.side || '--'} / {cents(item.price)}</span>
+            <span>{probability(item.netEdge)} / {probability(item.conservativeEdge)}</span>
+            <small>{(item.blockingReasons || []).map(blockerName).join(' · ') || copy('None', '无')}</small>
+          </div>)}
+        </div>}
+      </section>
+    );
+  };
+
   const renderStrategy = () => (
     <section className="kalshi-strategy-section">
-      <div className="kalshi-section-head"><div><span>{copy('STRATEGY GOVERNANCE', '策略治理')}</span><h2>{robotState?.strategy?.name || 'BTC15 Settlement-Aligned Carry v5'}</h2></div><strong>v{robotState?.strategy?.version || 5}</strong></div>
+      <div className="kalshi-section-head"><div><span>{copy('STRATEGY GOVERNANCE', '策略治理')}</span><h2>{isHourly ? copy('BTC Hourly Monotone Strike Ladder', 'BTC 整点单调执行价阶梯') : (robotState?.strategy?.name || 'BTC15 Settlement-Aligned v6')}</h2></div><strong>{isHourly ? 'v2' : `v${robotState?.strategy?.version || 6}`}</strong></div>
       <div className="kalshi-strategy-grid">
         <article><span>{copy('PHILOSOPHY', '策略理念')}</span><p>{robotState?.strategy?.philosophy || copy('Probability, edge, liquidity, and risk must agree before an order is allowed.', '概率、边际、流动性与风险必须同时通过后才允许下单。')}</p></article>
         <article><span>{copy('MODEL INPUTS', '模型输入')}</span><ul>{(robotState?.strategy?.components || []).map((component) => <li key={component}>{component}</li>)}</ul></article>
@@ -901,16 +1054,17 @@ const Kalshi: React.FC = () => {
     </section>
   );
 
-  const renderData = () => (
+  const renderData = () => (<>
     <section className="kalshi-source-grid">
       {[
-        [copy('Contract and quotes', '合约与报价'), 'Kalshi Trade API v2', 'KXBTC15M'],
-        [copy('Order book', '订单簿'), 'Kalshi production public orderbook', copy('Sub-second hot cache for active contracts', '活跃合约亚秒级热缓存')],
+        [copy('Contract and quotes', '合约与报价'), 'Kalshi Trade API v2', isHourly ? 'KXBTCD' : 'KXBTC15M'],
+        [copy('Order book', '订单簿'), 'Kalshi batch orderbooks', copy('One batched request with a sub-second hot cache', '单次批量请求，并使用亚秒级热缓存')],
         [copy('Settlement authority', '结算依据'), 'CF Benchmarks Real-Time Index', copy('60-second average over the final minute before close', '结算前最后一分钟的 60 秒均价')],
-        [copy('Settlement proxy', '结算代理'), 'Coinbase · Bitstamp · Gemini · Kraken', copy('Robust midpoint aggregate + Coinbase 1-minute candles', '稳健中间价聚合 + Coinbase 一分钟 K 线')],
+        [copy('Live reference', '实时参考价'), 'Official BRTI WebSocket', copy('Authenticated one-second stream; four-venue proxy is failover only', '认证的一秒实时流；四交易所代理仅用于故障回退')],
       ].map(([title, source, detail]) => <div key={title}><DatabaseOutlined /><span>{title}</span><strong>{source}</strong><small>{detail}</small></div>)}
     </section>
-  );
+    {renderDiagnostics()}
+  </>);
 
   const renderConnection = () => (
     <section className="kalshi-connection-page">
@@ -965,8 +1119,8 @@ const Kalshi: React.FC = () => {
     if (view === 'positions' || view === 'orders') return renderPortfolio();
     if (view === 'data') return renderData();
     if (view === 'connection') return renderConnection();
-    if (view === 'bot') return <>{isHourly && renderHourlyLadder()}{renderStrategy()}{renderDecision()}{renderGates()}</>;
-    return <>{renderMetrics()}{isHourly && renderHourlyLadder()}{renderDecision()}{renderGates()}{renderBook()}</>;
+    if (view === 'bot') return <>{isHourly && renderHourlyLadder()}{renderStrategy()}{renderDecision()}{renderDiagnostics()}{renderGates()}</>;
+    return <>{renderMetrics()}{isHourly && renderHourlyLadder()}{renderDecision()}{renderDiagnostics()}{renderGates()}{renderBook()}</>;
   };
 
   const pageMeta: Record<KalshiView, { eyebrow: string; title: string; description: string }> = {
@@ -1014,7 +1168,7 @@ const Kalshi: React.FC = () => {
         <div><span>{copy('ENVIRONMENT', '运行环境')}</span><strong className={isRealMode ? 'is-real' : ''}>{kalshiModeLabel}</strong></div>
         <div><span>{copy('ACTIVE CONTRACT', '当前合约')}</span><strong>{decision?.market.ticker || 'KXBTC15M'}</strong></div>
         <div><span>{copy('TIME TO CLOSE', '距离关闭')}</span><strong>{countdown}</strong></div>
-        <div><span>{copy('ENGINE', '策略引擎')}</span><strong>{copy('DETERMINISTIC v4', '确定性 v4')}</strong></div>
+        <div><span>{copy('ENGINE', '策略引擎')}</span><strong>{isHourly ? copy('LADDER v2', '阶梯 v2') : copy('SETTLEMENT v6', '结算对齐 v6')}</strong></div>
         <div><span>{copy('AUTOMATION', '自动交易')}</span><strong className={robotState?.enabled ? 'is-on' : ''}>{robotState?.enabled ? copy('RUNNING', '运行中') : copy('STOPPED', '已停止')}</strong></div>
         <div><span>{copy('ACCOUNT SOURCE', '账户数据源')}</span><strong>{isRealMode ? 'KALSHI API' : 'ALPHALAB'}</strong></div>
       </section>

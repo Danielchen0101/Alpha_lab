@@ -12,3 +12,4 @@ PyJWT>=2.8.0
 supabase>=2.31.0
 cryptography>=49.0.0
 python-dotenv>=1.0.0
+websockets>=14.2,<16.0

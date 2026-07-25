@@ -66,7 +66,7 @@ def test_pre_v6_trade_and_learning_data_is_removed_during_upgrade(tmp_path):
 
     restored = KalshiRobotState(str(path)).get("user-1")
 
-    assert restored["storageVersion"] == 8
+    assert restored["storageVersion"] == 9
     assert restored["enabled"] is True
     assert restored["decisions"] == []
     assert restored["filledTrades"] == []
@@ -74,7 +74,7 @@ def test_pre_v6_trade_and_learning_data_is_removed_during_upgrade(tmp_path):
     assert "learningExamples" not in restored
     assert "strategyLibrary" not in restored
     # Old longshot-era tuning is replaced by the deterministic v4 favorite band.
-    assert restored["config"]["minPrice"] == 0.50
+    assert restored["config"]["minPrice"] == 0.47
     assert restored["config"]["maxPrice"] == 0.95
     assert restored["config"]["minModelProbability"] == 0.58
 
@@ -95,9 +95,12 @@ def test_v6_state_adopts_calibrated_defaults_without_losing_records(tmp_path):
 
     restored = KalshiRobotState(str(path)).get("user-1")
 
-    assert restored["storageVersion"] == 8
+    assert restored["storageVersion"] == 9
     assert restored["config"]["minNetEdge"] == 0.0075
     assert restored["config"]["minModelProbability"] == 0.58
+    assert restored["config"]["marketBlendWeight"] == 0.45
+    assert restored["config"]["probabilityLogitScale"] == 1.70
+    assert restored["strategy"]["version"] == 6
     assert restored["decisions"][0]["ticker"] == "KXBTC15M-KEEP"
     assert restored["filledTrades"][0]["ticker"] == "KXBTC15M-KEEP"
 
@@ -370,3 +373,180 @@ def test_reconcile_backfills_reduce_only_fills_into_realized_analytics(tmp_path)
     assert record["entryPrice"] == 0.4
     assert record["exitPrice"] == 0.62
     assert record["fees"] == 0.3
+
+
+def test_repeated_settlement_reconciliation_does_not_rewrite_unchanged_state(tmp_path):
+    durable = {}
+    saves = []
+
+    def save(user_id, payload):
+        durable[user_id] = payload
+        saves.append((user_id, payload))
+
+    store = KalshiRobotState(
+        str(tmp_path / "state.json"),
+        state_loader=durable.get,
+        state_saver=save,
+    )
+    store.record("u", {
+        "generatedAt": "2026-07-25T12:00:00Z",
+        "action": "BUY_YES",
+        "side": "YES",
+        "market": {"ticker": "KXBTC15M-IDEMPOTENT"},
+        "edge": {"fairProbability": 0.70, "price": 0.50},
+    }, {
+        "order_id": "entry-1",
+        "status": "filled",
+        "fill_count": 1,
+        "environment": "paper",
+    })
+    settlement = {
+        "ticker": "KXBTC15M-IDEMPOTENT",
+        "settled_time": "2026-07-25T12:15:00Z",
+        "market_result": "YES",
+        "yes_count_fp": 1,
+        "revenue_dollars": 1.0,
+        "yes_total_cost_dollars": 0.5,
+    }
+    store.reconcile_settlements("u", [settlement], [], environment="paper")
+    writes_after_first_reconciliation = len(saves)
+
+    store.reconcile_settlements("u", [settlement], [], environment="paper")
+
+    assert len(saves) == writes_after_first_reconciliation
+
+
+def test_robot_state_tracks_durable_version_and_invalidates_after_conflict(tmp_path):
+    calls = []
+
+    def save(_user_id, payload):
+        calls.append(payload)
+        if len(calls) == 1:
+            return {"version": 41}
+        raise RuntimeError("stale durable version")
+
+    store = KalshiRobotState(
+        str(tmp_path / "state.json"),
+        state_saver=save,
+    )
+    store.configure("u", True, {"executionMode": "paper"})
+
+    assert store._users["u"]["_operationsVersion"] == 41
+    try:
+        store.configure("u", False, {"executionMode": "paper"})
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("stale write must fail")
+    assert "u" not in store._users
+
+
+def test_paper_reconciliation_removes_stale_conflict_artifacts_for_same_market(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    state = store._state("u")
+    strategy = state["modeState"]["paper"]["strategy"]
+    strategy["closedTradeRecords"] = [{
+        "orderId": "stale-close",
+        "ticker": "KXBTC15M-CONFLICT",
+        "environment": "paper",
+        "closedAt": "2026-07-25T12:12:00Z",
+        "side": "YES",
+        "count": 1,
+        "pnl": 0.20,
+    }]
+    strategy["settlementRecords"] = [{
+        "key": "paper:KXBTC15M-CONFLICT:2026-07-25T12:15:00Z:YES",
+        "ticker": "KXBTC15M-CONFLICT",
+        "environment": "paper",
+        "settledAt": "2026-07-25T12:15:00Z",
+        "side": "YES",
+        "result": "YES",
+        "contracts": 1,
+        "pnl": 0.40,
+    }]
+    canonical_fill = {
+        "fill_id": "canonical-close-fill",
+        "order_id": "canonical-close",
+        "ticker": "KXBTC15M-CONFLICT",
+        "environment": "paper",
+        "action": "SELL",
+        "reduce_only": True,
+        "outcome_side": "YES",
+        "fill_count_fp": 1,
+        "average_price_dollars": 0.70,
+        "position_cost_dollars": 0.50,
+        "gross_proceeds_dollars": 0.70,
+        "entry_fee_allocated_dollars": 0.01,
+        "fee_cost_dollars": 0.01,
+        "realized_pnl_dollars": 0.18,
+        "created_time": "2026-07-25T12:13:00Z",
+    }
+    canonical_entry = {
+        "fill_id": "canonical-entry-fill",
+        "order_id": "canonical-entry",
+        "ticker": "KXBTC15M-CONFLICT",
+        "environment": "paper",
+        "action": "BUY",
+        "outcome_side": "YES",
+        "fill_count_fp": 2,
+        "price_dollars": 0.50,
+        "position_cost_dollars": 1.0,
+        "fee_cost_dollars": 0.02,
+        "created_time": "2026-07-25T12:10:00Z",
+    }
+    canonical_settlement = {
+        "ticker": "KXBTC15M-CONFLICT",
+        "settled_time": "2026-07-25T12:15:05Z",
+        "market_result": "YES",
+        "yes_count_fp": 1,
+        "revenue_dollars": 1.0,
+        "yes_total_cost_dollars": 0.50,
+        "fee_cost_dollars": 0.01,
+    }
+
+    reconciled = store.reconcile_settlements(
+        "u", [canonical_settlement], [canonical_entry, canonical_fill], environment="paper",
+    )
+    strategy = reconciled["strategy"]
+
+    assert [row["orderId"] for row in strategy["closedTradeRecords"]] == ["canonical-close"]
+    assert [row["key"] for row in strategy["settlementRecords"]] == [
+        "paper:KXBTC15M-CONFLICT:2026-07-25T12:15:05Z:YES"
+    ]
+
+
+def test_read_only_reconciliation_returns_analytics_without_durable_write(tmp_path):
+    saves = []
+
+    def save(_user_id, _payload):
+        saves.append(1)
+
+    store = KalshiRobotState(
+        str(tmp_path / "state.json"),
+        state_saver=save,
+    )
+    store.record("u", {
+        "generatedAt": "2026-07-25T12:00:00Z",
+        "action": "BUY_YES",
+        "side": "YES",
+        "market": {"ticker": "KXBTC15M-READONLY"},
+        "edge": {"fairProbability": 0.70, "price": 0.50},
+    }, {
+        "order_id": "entry-readonly",
+        "status": "filled",
+        "fill_count": 1,
+        "environment": "paper",
+    })
+    writes_after_entry = len(saves)
+
+    state = store.reconcile_settlements("u", [{
+        "ticker": "KXBTC15M-READONLY",
+        "settled_time": "2026-07-25T12:15:00Z",
+        "market_result": "YES",
+        "yes_count_fp": 1,
+        "revenue_dollars": 1.0,
+        "yes_total_cost_dollars": 0.50,
+    }], None, environment="paper", persist=False)
+
+    assert state["strategy"]["settledSamples"] == 1
+    assert len(saves) == writes_after_entry

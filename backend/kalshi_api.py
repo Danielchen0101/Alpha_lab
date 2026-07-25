@@ -5,13 +5,15 @@ from __future__ import annotations
 import base64
 import copy
 import math
+import os
 import re
 import statistics
 import threading
 import time
 import uuid
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 import requests
@@ -41,6 +43,10 @@ try:
     from kalshi_paper import KalshiPaperAccountStore, executable_bid_levels, taker_fill_amounts
 except ImportError:  # pragma: no cover - package-style test imports
     from .kalshi_paper import KalshiPaperAccountStore, executable_bid_levels, taker_fill_amounts
+try:
+    from kalshi_reference_stream import KalshiReferenceStream
+except ImportError:  # pragma: no cover - package-style test imports
+    from .kalshi_reference_stream import KalshiReferenceStream
 
 
 KALSHI_PUBLIC_BASE = "https://external-api.kalshi.com/trade-api/v2"
@@ -106,6 +112,17 @@ def _family_performance(strategy: Mapping[str, Any]) -> Dict[str, Dict[str, Any]
             "family": family,
             "label": label,
             "samples": len(selected),
+            "uniqueMarkets": len({
+                str(row.get("ticker") or "") for row in selected if row.get("ticker")
+            }),
+            "settlementEvents": sum(
+                str(row.get("exitType") or "").lower() == "settlement"
+                for row in selected
+            ),
+            "saleEvents": sum(
+                str(row.get("exitType") or "").lower() == "sale"
+                for row in selected
+            ),
             "wins": wins,
             "losses": max(0, len(selected) - wins),
             "winRate": round(wins / len(selected), 4) if selected else None,
@@ -115,6 +132,118 @@ def _family_performance(strategy: Mapping[str, Any]) -> Dict[str, Dict[str, Any]
             "equityCurve": curve,
         }
     return output
+
+
+def _observation_analytics(rows) -> Dict[str, Any]:
+    """Build a compact, auditable opportunity funnel for both strategy families."""
+    clean = [dict(row) for row in rows or [] if isinstance(row, Mapping)]
+    result: Dict[str, Any] = {"generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "families": {}}
+    for family, prefix, label in (
+        ("btc15m", str(BTC_15M_SERIES), "BTC 15-minute"),
+        ("btchourly", BTC_HOURLY_SERIES, "BTC hourly strikes"),
+    ):
+        selected = [row for row in clean if str(row.get("ticker") or "").upper().startswith(prefix)]
+        blocker_counts = Counter(
+            str(reason)
+            for row in selected
+            for reason in (row.get("blocked_reasons") or [])
+        )
+        sources = Counter(
+            str(((row.get("features") or {}).get("model") or {}).get("referenceModel") or "unknown")
+            for row in selected
+        )
+        latencies = [
+            _finite_number(((row.get("features") or {}).get("dataQuality") or {}).get("snapshotLatencyMs"), -1.0)
+            for row in selected
+        ]
+        latencies = [value for value in latencies if value >= 0]
+        positive_net = sum(_finite_number(row.get("net_edge"), -99.0) > 0 for row in selected)
+        positive_conservative = sum(
+            _finite_number(row.get("conservative_edge"), -99.0) > 0 for row in selected
+        )
+        entry_ready = sum("entry_window" not in set(row.get("blocked_reasons") or []) for row in selected)
+        data_ready = sum(
+            not set(row.get("blocked_reasons") or []).intersection({
+                "contract_active", "reference_ready", "data_freshness", "history_sample",
+            })
+            for row in selected
+        )
+        liquidity_ready = sum(
+            not set(row.get("blocked_reasons") or []).intersection({
+                "two_sided_quote", "spread", "relative_spread", "depth",
+            })
+            for row in selected
+        )
+        routed = sum(str(row.get("action") or "").startswith("BUY_") for row in selected)
+        orders = sum(bool(row.get("order_result")) for row in selected)
+        near_misses = [
+            row for row in selected
+            if str(row.get("action") or "") == "WAIT"
+            and _finite_number(row.get("conservative_edge"), -99.0) > 0
+        ]
+        near_misses.sort(
+            key=lambda row: _finite_number(row.get("conservative_edge"), -99.0),
+            reverse=True,
+        )
+        timeline_rows = list(reversed(selected[:160]))
+        result["families"][family] = {
+            "family": family,
+            "label": label,
+            "observations": len(selected),
+            "uniqueMarkets": len({str(row.get("ticker") or "") for row in selected}),
+            "latestAt": selected[0].get("observed_at") if selected else None,
+            "funnel": {
+                "observations": len(selected),
+                "dataReady": data_ready,
+                "entryWindow": entry_ready,
+                "liquidityReady": liquidity_ready,
+                "positiveNetEdge": positive_net,
+                "positiveConservativeEdge": positive_conservative,
+                "routable": routed,
+                "orders": orders,
+            },
+            "blockers": [
+                {"key": key, "count": count}
+                for key, count in blocker_counts.most_common(10)
+            ],
+            "referenceSources": [
+                {"key": key, "count": count}
+                for key, count in sources.most_common()
+            ],
+            "officialBrtiSamples": sum(
+                bool(((row.get("features") or {}).get("model") or {}).get("isOfficialBrti"))
+                for row in selected
+            ),
+            "averageSnapshotLatencyMs": (
+                round(sum(latencies) / len(latencies), 1) if latencies else None
+            ),
+            "edgeTimeline": [
+                {
+                    "at": row.get("observed_at"),
+                    "ticker": row.get("ticker"),
+                    "action": row.get("action"),
+                    "secondsToClose": row.get("seconds_to_close"),
+                    "netEdge": row.get("net_edge"),
+                    "conservativeEdge": row.get("conservative_edge"),
+                    "signalQuality": row.get("signal_quality"),
+                }
+                for row in timeline_rows
+            ],
+            "nearMisses": [
+                {
+                    "at": row.get("observed_at"),
+                    "ticker": row.get("ticker"),
+                    "side": row.get("side"),
+                    "price": row.get("executable_price"),
+                    "netEdge": row.get("net_edge"),
+                    "conservativeEdge": row.get("conservative_edge"),
+                    "secondsToClose": row.get("seconds_to_close"),
+                    "blockingReasons": list(row.get("blocked_reasons") or []),
+                }
+                for row in near_misses[:8]
+            ],
+        }
+    return result
 
 
 class KalshiApiError(RuntimeError):
@@ -189,6 +318,91 @@ def _brti_proxy(quotes) -> Optional[Dict[str, Any]]:
         "rejectedVenues": [row["venue"] for row in clean if row not in accepted],
         "dispersionBps": dispersion,
         "quotes": accepted,
+    }
+
+
+def _book_mid_probability(
+    market: Mapping[str, Any],
+    book: Optional[Mapping[str, Any]] = None,
+) -> Optional[Tuple[float, float]]:
+    """Return an executable YES midpoint and a bounded liquidity weight."""
+    book = dict(book or {})
+    yes_levels = [
+        (_finite_number(row[0], -1.0), _finite_number(row[1], 0.0))
+        for row in (book.get("yes") or []) if isinstance(row, (list, tuple)) and len(row) >= 2
+    ]
+    no_levels = [
+        (_finite_number(row[0], -1.0), _finite_number(row[1], 0.0))
+        for row in (book.get("no") or []) if isinstance(row, (list, tuple)) and len(row) >= 2
+    ]
+    yes_levels = [row for row in yes_levels if 0 < row[0] < 1 and row[1] > 0]
+    no_levels = [row for row in no_levels if 0 < row[0] < 1 and row[1] > 0]
+    yes_bid = max(yes_levels, default=(None, 0.0), key=lambda row: row[0])
+    no_bid = max(no_levels, default=(None, 0.0), key=lambda row: row[0])
+    direct_bid = _finite_number(market.get("yes_bid_dollars"), -1.0)
+    direct_ask = _finite_number(market.get("yes_ask_dollars"), -1.0)
+    bid = yes_bid[0] if yes_bid[0] is not None else direct_bid
+    ask = 1.0 - no_bid[0] if no_bid[0] is not None else direct_ask
+    if not (0.0 < bid < 1.0 and 0.0 < ask < 1.0 and ask >= bid):
+        return None
+    bid_size = yes_bid[1] or _finite_number(market.get("yes_bid_size_fp"), 0.0)
+    ask_size = no_bid[1] or _finite_number(market.get("yes_ask_size_fp"), 0.0)
+    weight = max(1.0, min(5000.0, math.sqrt(max(1.0, bid_size * ask_size))))
+    return _clamp_probability((bid + ask) / 2.0), weight
+
+
+def _clamp_probability(value: float) -> float:
+    return max(0.001, min(0.999, float(value)))
+
+
+def _monotone_ladder_probabilities(
+    markets: list[Mapping[str, Any]],
+    books: Mapping[str, Mapping[str, Any]],
+) -> Dict[str, Dict[str, float]]:
+    """Liquidity-weighted PAV fit for a decreasing strike probability curve."""
+    points = []
+    for market in markets:
+        ticker = str(market.get("ticker") or "")
+        strike = _finite_number(market.get("floor_strike"), -1.0)
+        quote = _book_mid_probability(market, books.get(ticker) or {})
+        if ticker and strike > 0 and quote:
+            probability, weight = quote
+            points.append((strike, ticker, probability, weight))
+    points.sort(key=lambda row: row[0])
+    blocks = []
+    for index, (_strike, _ticker, probability, weight) in enumerate(points):
+        blocks.append({
+            "start": index,
+            "end": index,
+            "weight": weight,
+            "weighted": probability * weight,
+        })
+        # For increasing strikes, P(YES) must not increase.
+        while len(blocks) >= 2:
+            left = blocks[-2]
+            right = blocks[-1]
+            left_mean = left["weighted"] / left["weight"]
+            right_mean = right["weighted"] / right["weight"]
+            if left_mean >= right_mean:
+                break
+            blocks[-2:] = [{
+                "start": left["start"],
+                "end": right["end"],
+                "weight": left["weight"] + right["weight"],
+                "weighted": left["weighted"] + right["weighted"],
+            }]
+    fitted = [0.5] * len(points)
+    for block in blocks:
+        mean = _clamp_probability(block["weighted"] / block["weight"])
+        for index in range(block["start"], block["end"] + 1):
+            fitted[index] = mean
+    return {
+        ticker: {
+            "rawProbability": round(raw, 6),
+            "smoothedProbability": round(fitted[index], 6),
+            "dislocation": round(fitted[index] - raw, 6),
+        }
+        for index, (_strike, ticker, raw, _weight) in enumerate(points)
     }
 
 
@@ -287,7 +501,11 @@ def _market_observation(
                     "marketYesProbability", "uncertainty", "sampleSize",
                     "settlementEffectiveHorizonMinutes", "referenceModel",
                     "referenceVenueCount", "referenceDispersionBps",
-                    "basisReserveBpsApplied",
+                    "basisReserveBpsApplied", "isOfficialBrti",
+                    "referenceRawPrice", "settlementWindowAverage",
+                    "settlementWindowSamples", "settlementWindowProgress",
+                    "rawMarketYesProbability", "ladderRawProbability",
+                    "ladderSmoothedProbability", "ladderDislocation",
                 )
             },
             "execution": {
@@ -304,6 +522,7 @@ def _market_observation(
                 )
             },
             "positionManagement": dict(decision.get("positionManagement") or {}),
+            "dataQuality": dict(decision.get("dataQuality") or {}),
             "exitAnalysis": {
                 key: (decision.get("exitAnalysis") or {}).get(key)
                 for key in (
@@ -1271,6 +1490,7 @@ class _PublicDataClient:
         self.http_get = http_get or requests.get
         self.safe_print = safe_print
         self._cache: Dict[str, Tuple[float, Any]] = {}
+        self._cache_meta: Dict[str, Dict[str, Any]] = {}
         self._cache_lock = threading.RLock()
         self._headers = {
             "Accept": "application/json",
@@ -1290,24 +1510,82 @@ class _PublicDataClient:
         with self._cache_lock:
             cached = self._cache.get(key)
             if cached and now - cached[0] <= ttl:
+                meta = self._cache_meta.setdefault(key, {})
+                meta.update({
+                    "servedStale": False,
+                    "ageSeconds": round(max(0.0, now - cached[0]), 3),
+                })
                 return cached[1]
 
-        try:
-            response = self.http_get(url, params=dict(params or {}), headers=self._headers, timeout=timeout)
-            if hasattr(response, "raise_for_status"):
-                response.raise_for_status()
-            payload = response.json() if hasattr(response, "json") else response
-        except Exception as exc:
+        response = None
+        error: Optional[Exception] = None
+        for attempt in range(2):
+            try:
+                response = self.http_get(
+                    url,
+                    params=dict(params or {}),
+                    headers=self._headers,
+                    timeout=timeout,
+                )
+                if hasattr(response, "raise_for_status"):
+                    response.raise_for_status()
+                payload = response.json() if hasattr(response, "json") else response
+                error = None
+                break
+            except Exception as exc:
+                error = exc
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                if attempt == 0 and (status == 429 or (status is not None and status >= 500)):
+                    time.sleep(0.08)
+                    continue
+                break
+        if error is not None:
             with self._cache_lock:
                 stale = self._cache.get(key)
             if stale:
-                self.safe_print(f"[Kalshi] public request failed key={key} error={type(exc).__name__}; serving stale cache")
+                age = max(0.0, time.monotonic() - stale[0])
+                with self._cache_lock:
+                    meta = self._cache_meta.setdefault(key, {})
+                    meta.update({"servedStale": True, "ageSeconds": round(age, 3)})
+                self.safe_print(f"[Kalshi] public request failed key={key} error={type(error).__name__}; serving stale cache")
                 return stale[1]
-            self.safe_print(f"[Kalshi] public request failed key={key} error={type(exc).__name__}")
-            raise KalshiApiError(f"Public data request failed for {key}") from exc
+            self.safe_print(f"[Kalshi] public request failed key={key} error={type(error).__name__}")
+            raise KalshiApiError(f"Public data request failed for {key}") from error
+        fetched_monotonic = time.monotonic()
+        fetched_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         with self._cache_lock:
-            self._cache[key] = (now, payload)
+            self._cache[key] = (fetched_monotonic, payload)
+            self._cache_meta[key] = {
+                "fetchedAt": fetched_at,
+                "servedStale": False,
+                "ageSeconds": 0.0,
+            }
         return payload
+
+    def _cache_status(self, key: str) -> Dict[str, Any]:
+        with self._cache_lock:
+            meta = dict(self._cache_meta.get(key) or {})
+            cached = self._cache.get(key)
+        if cached:
+            meta["ageSeconds"] = round(max(0.0, time.monotonic() - cached[0]), 3)
+        return meta
+
+    @staticmethod
+    def _top_book_from_market(market: Mapping[str, Any]) -> Dict[str, Any]:
+        """Build a valid top-level fallback from Kalshi's market quote fields."""
+        yes_bid = _finite_number(market.get("yes_bid_dollars"), -1.0)
+        no_bid = _finite_number(market.get("no_bid_dollars"), -1.0)
+        yes_size = _finite_number(market.get("yes_bid_size_fp"), 0.0)
+        # A YES ask is the reciprocal NO bid.  Kalshi exposes the matching YES
+        # ask size on the market object even when no_bid_size_fp is omitted.
+        no_size = _finite_number(
+            market.get("no_bid_size_fp", market.get("yes_ask_size_fp")),
+            0.0,
+        )
+        return {
+            "yes": [[yes_bid, yes_size]] if 0.0 < yes_bid < 1.0 and yes_size > 0 else [],
+            "no": [[no_bid, no_size]] if 0.0 < no_bid < 1.0 and no_size > 0 else [],
+        }
 
     def _market_candidates(self, now: datetime, base_url: str):
         environment_key = "production"
@@ -1339,7 +1617,14 @@ class _PublicDataClient:
         )
         return dict((payload or {}).get("market") or payload or {})
 
-    def snapshot(self, *, now: Optional[datetime] = None, base_url: str = KALSHI_PUBLIC_BASE) -> Dict[str, Any]:
+    def snapshot(
+        self,
+        *,
+        now: Optional[datetime] = None,
+        base_url: str = KALSHI_PUBLIC_BASE,
+        reference_override: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        started_at = time.perf_counter()
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         warnings = []
         market, selection = self._market_candidates(now, base_url)
@@ -1350,9 +1635,10 @@ class _PublicDataClient:
         orderbook_as_of = None
         ticker = str(market.get("ticker") or "")
         if ticker and selection == "active":
+            book_key = f"kalshi-orderbook:{base_url}:{ticker}"
             try:
                 book_payload = self._cached_json(
-                    f"kalshi-orderbook:{base_url}:{ticker}",
+                    book_key,
                     f"{base_url}/markets/{ticker}/orderbook",
                     params={"depth": 10},
                     ttl=0.75,
@@ -1362,41 +1648,70 @@ class _PublicDataClient:
                     "yes": fixed.get("yes_dollars") or [],
                     "no": fixed.get("no_dollars") or [],
                 }
-                orderbook_as_of = now.isoformat().replace("+00:00", "Z")
+                book_status = self._cache_status(book_key)
+                orderbook_as_of = book_status.get("fetchedAt")
+                if book_status.get("servedStale"):
+                    warnings.append("kalshi_orderbook_stale")
             except KalshiApiError:
                 warnings.append("kalshi_orderbook_unavailable")
+            if not orderbook["yes"] or not orderbook["no"]:
+                fallback_book = self._top_book_from_market(market)
+                if fallback_book["yes"] and fallback_book["no"]:
+                    orderbook = fallback_book
+                    orderbook_as_of = (
+                        market.get("updated_time")
+                        or now.isoformat().replace("+00:00", "Z")
+                    )
+                    warnings.append("kalshi_top_quote_fallback")
 
         ticker_payload: Mapping[str, Any] = {}
         venue_payloads: Dict[str, Mapping[str, Any]] = {}
         candles = []
+        official_reference = (
+            dict(reference_override or {})
+            if _finite_number((reference_override or {}).get("price"), 0.0) > 0
+            and bool((reference_override or {}).get("isOfficialBrti"))
+            else {}
+        )
         venue_requests = {
             "coinbase": ("coinbase-btc-ticker", f"{COINBASE_EXCHANGE_BASE}/products/BTC-USD/ticker"),
             "bitstamp": ("bitstamp-btc-ticker", f"{BITSTAMP_BASE}/ticker/btcusd/"),
             "gemini": ("gemini-btc-ticker", f"{GEMINI_BASE}/pubticker/btcusd"),
             "kraken": ("kraken-btc-ticker", f"{KRAKEN_BASE}/Ticker?pair=XBTUSD"),
         }
-        with ThreadPoolExecutor(max_workers=len(venue_requests)) as executor:
-            futures = {
-                venue: executor.submit(self._cached_json, cache_key, url, ttl=1.0, timeout=4.0)
-                for venue, (cache_key, url) in venue_requests.items()
-            }
-            for venue, future in futures.items():
-                try:
-                    venue_payloads[venue] = future.result() or {}
-                except KalshiApiError:
-                    warnings.append(f"{venue}_reference_unavailable")
-        ticker_payload = venue_payloads.get("coinbase") or {}
-        venue_quotes = [
-            quote for quote in (
-                _venue_quote(venue, payload)
-                for venue, payload in venue_payloads.items()
-            ) if quote
-        ]
-        proxy = _brti_proxy(venue_quotes)
-        if not proxy:
-            warnings.append("btc_reference_unavailable")
-        elif int(proxy.get("venueCount") or 0) < 2:
-            warnings.append("brti_proxy_single_venue")
+        proxy = None
+        accepted_statuses = []
+        if not official_reference:
+            with ThreadPoolExecutor(max_workers=len(venue_requests)) as executor:
+                futures = {
+                    venue: executor.submit(self._cached_json, cache_key, url, ttl=1.0, timeout=4.0)
+                    for venue, (cache_key, url) in venue_requests.items()
+                }
+                for venue, future in futures.items():
+                    try:
+                        venue_payloads[venue] = future.result() or {}
+                    except KalshiApiError:
+                        warnings.append(f"{venue}_reference_unavailable")
+            ticker_payload = venue_payloads.get("coinbase") or {}
+            venue_quotes = [
+                quote for quote in (
+                    _venue_quote(venue, payload)
+                    for venue, payload in venue_payloads.items()
+                ) if quote
+            ]
+            proxy = _brti_proxy(venue_quotes)
+            if not proxy:
+                warnings.append("btc_reference_unavailable")
+            elif int(proxy.get("venueCount") or 0) < 2:
+                warnings.append("brti_proxy_single_venue")
+            accepted_venues = set((proxy or {}).get("venues") or [])
+            accepted_statuses = [
+                self._cache_status(cache_key)
+                for venue, (cache_key, _url) in venue_requests.items()
+                if venue in accepted_venues
+            ]
+            if any(item.get("servedStale") for item in accepted_statuses):
+                warnings.append("brti_proxy_stale")
         try:
             candles = self._cached_json(
                 "coinbase-btc-candles-1m",
@@ -1411,50 +1726,103 @@ class _PublicDataClient:
             warnings.append("btc_history_unavailable")
 
         fetched_at = now.isoformat().replace("+00:00", "Z")
-        reference_price = (proxy or {}).get("price") or ticker_payload.get("price")
+        reference_price = (
+            official_reference.get("price")
+            or (proxy or {}).get("price")
+            or ticker_payload.get("price")
+        )
+        proxy_fetch_times = [
+            str(item.get("fetchedAt")) for item in accepted_statuses if item.get("fetchedAt")
+        ]
+        fallback_timestamp = (
+            min(proxy_fetch_times)
+            if proxy and proxy_fetch_times
+            else fetched_at if proxy else ticker_payload.get("time")
+        )
+        reference = {
+            "symbol": "BTC-USD",
+            "price": reference_price,
+            "bid": ticker_payload.get("bid"),
+            "ask": ticker_payload.get("ask"),
+            "timestamp": official_reference.get("timestamp") or fallback_timestamp,
+            "model": official_reference.get("model") or (
+                "brti_constituent_proxy" if proxy else "coinbase_fallback"
+            ),
+            "isOfficialBrti": bool(official_reference),
+            "venueCount": int(
+                official_reference.get("venueCount")
+                or (proxy or {}).get("venueCount")
+                or 0
+            ),
+            "venues": list(
+                official_reference.get("venues")
+                or (proxy or {}).get("venues")
+                or []
+            ),
+            "rejectedVenues": list(
+                official_reference.get("rejectedVenues")
+                or (proxy or {}).get("rejectedVenues")
+                or []
+            ),
+            "dispersionBps": round(
+                _finite_number(
+                    official_reference.get("dispersionBps", (proxy or {}).get("dispersionBps"))
+                ),
+                4,
+            ),
+            "venueQuotes": list((proxy or {}).get("quotes") or []),
+            "candles": candles,
+            "candleCount": len(candles),
+        }
+        for key in (
+            "rawPrice", "trailing60sAverage", "settlementWindowAverage",
+            "settlementWindowSamples", "settlementWindowProgress", "receivedAt",
+            "streamAgeSeconds", "streamStatus", "sourceSequence",
+        ):
+            if key in official_reference:
+                reference[key] = official_reference.get(key)
         return {
             "asOf": fetched_at,
+            "latencyMs": int(round((time.perf_counter() - started_at) * 1000)),
             "selection": selection,
             "seriesTicker": BTC_15M_SERIES,
             "market": market,
             "orderbook": orderbook,
             "orderbookAsOf": orderbook_as_of,
-            "reference": {
-                "symbol": "BTC-USD",
-                "price": reference_price,
-                "bid": ticker_payload.get("bid"),
-                "ask": ticker_payload.get("ask"),
-                # The aggregate is computed at fetch time; individual venue
-                # timestamps remain available below for audit.
-                "timestamp": fetched_at if proxy else ticker_payload.get("time"),
-                "model": "brti_constituent_proxy" if proxy else "coinbase_fallback",
-                "isOfficialBrti": False,
-                "venueCount": int((proxy or {}).get("venueCount") or 0),
-                "venues": list((proxy or {}).get("venues") or []),
-                "rejectedVenues": list((proxy or {}).get("rejectedVenues") or []),
-                "dispersionBps": round(_finite_number((proxy or {}).get("dispersionBps")), 4),
-                "venueQuotes": list((proxy or {}).get("quotes") or []),
-                "candles": candles,
-                "candleCount": len(candles),
-            },
+            "reference": reference,
             "warnings": warnings,
             "sources": {
                 "contract": f"Kalshi {BTC_15M_SERIES}",
                 "orderbook": "Kalshi public market orderbook",
                 "settlement": "CF Benchmarks BRTI",
-                "spotReference": "BRTI constituent-exchange proxy (Coinbase, Bitstamp, Gemini, Kraken)",
+                "spotReference": (
+                    "Official CF Benchmarks BRTI via Kalshi WebSocket"
+                    if official_reference
+                    else "BRTI constituent-exchange proxy (Coinbase, Bitstamp, Gemini, Kraken)"
+                ),
             },
         }
 
-    def hourly_snapshot(self, *, now: Optional[datetime] = None, base_url: str = KALSHI_PUBLIC_BASE) -> Dict[str, Any]:
+    def hourly_snapshot(
+        self,
+        *,
+        now: Optional[datetime] = None,
+        base_url: str = KALSHI_PUBLIC_BASE,
+        reference_override: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Return the nearest active KXBTCD event and executable strike books.
 
         The hourly event is a ladder of binary strike contracts.  It is kept
         separate from the 15-minute contract selector, while sharing the same
         BRTI-proxy reference evidence and candle history.
         """
+        started_at = time.perf_counter()
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        reference_snapshot = self.snapshot(now=now, base_url=base_url)
+        reference_snapshot = self.snapshot(
+            now=now,
+            base_url=base_url,
+            reference_override=reference_override,
+        )
         payload = self._cached_json(
             f"kalshi-btchourly-open:{base_url}",
             f"{base_url}/markets",
@@ -1473,45 +1841,75 @@ class _PublicDataClient:
         nearest_seconds, event_ticker, _ = min(eligible, key=lambda item: item[0])
         event_markets = [market for seconds, event, market in eligible if event == event_ticker]
         spot = _finite_number((reference_snapshot.get("reference") or {}).get("price"), 0.0)
-        event_markets.sort(key=lambda market: abs(_finite_number(market.get("floor_strike"), spot) - spot))
-        # Sixteen nearby strikes cover both liquid favorites around spot while
-        # keeping the five-second public-data cadence bounded.
-        selected_markets = event_markets[:16]
-
-        def load_book(market: Mapping[str, Any]):
-            ticker = str(market.get("ticker") or "")
-            payload = self._cached_json(
-                f"kalshi-orderbook:{base_url}:{ticker}",
-                f"{base_url}/markets/{ticker}/orderbook",
-                params={"depth": 20},
-                ttl=0.75,
-            )
-            fixed = (payload or {}).get("orderbook_fp") or {}
-            return ticker, {
-                "yes": fixed.get("yes_dollars") or [],
-                "no": fixed.get("no_dollars") or [],
-            }
+        event_markets.sort(
+            key=lambda market: abs(_finite_number(market.get("floor_strike"), spot) - spot)
+        )
+        # The batch endpoint makes a wider ladder cheap.  Keep all contracts
+        # with a two-sided direct quote plus nearby strikes, then cap at 32 so
+        # the probability fit remains focused on the liquid part of the event.
+        quoted = [
+            market for market in event_markets
+            if 0.0 < _finite_number(market.get("yes_bid_dollars"), -1.0) < 1.0
+            and 0.0 < _finite_number(market.get("yes_ask_dollars"), -1.0) < 1.0
+        ]
+        selected_by_ticker = {
+            str(market.get("ticker") or ""): market
+            for market in (event_markets[:16] + quoted)
+            if str(market.get("ticker") or "")
+        }
+        selected_markets = list(selected_by_ticker.values())
+        selected_markets.sort(
+            key=lambda market: abs(_finite_number(market.get("floor_strike"), spot) - spot)
+        )
+        selected_markets = selected_markets[:32]
 
         books: Dict[str, Dict[str, Any]] = {}
         warnings = list(reference_snapshot.get("warnings") or [])
-        with ThreadPoolExecutor(max_workers=min(8, max(1, len(selected_markets)))) as pool:
-            futures = [pool.submit(load_book, market) for market in selected_markets]
-            for future in futures:
-                try:
-                    ticker, book = future.result()
-                    books[ticker] = book
-                except Exception:
-                    warnings.append("hourly_orderbook_unavailable")
+        tickers = [str(market.get("ticker") or "") for market in selected_markets]
+        batch_key = f"kalshi-orderbooks:{base_url}:{event_ticker}:{','.join(tickers)}"
+        try:
+            batch = self._cached_json(
+                batch_key,
+                f"{base_url}/markets/orderbooks",
+                params={"tickers": tickers},
+                ttl=0.75,
+                timeout=6.0,
+            )
+            for row in (batch or {}).get("orderbooks") or []:
+                ticker = str((row or {}).get("ticker") or "")
+                fixed = (row or {}).get("orderbook_fp") or {}
+                if ticker:
+                    books[ticker] = {
+                        "yes": fixed.get("yes_dollars") or [],
+                        "no": fixed.get("no_dollars") or [],
+                    }
+            batch_status = self._cache_status(batch_key)
+            if batch_status.get("servedStale"):
+                warnings.append("hourly_orderbooks_stale")
+        except KalshiApiError:
+            warnings.append("hourly_orderbooks_unavailable")
+        for market in selected_markets:
+            ticker = str(market.get("ticker") or "")
+            book = books.get(ticker) or {}
+            if not book.get("yes") or not book.get("no"):
+                fallback = self._top_book_from_market(market)
+                if fallback["yes"] and fallback["no"]:
+                    books[ticker] = fallback
+                    warnings.append("hourly_top_quote_fallback")
+        ladder_fit = _monotone_ladder_probabilities(selected_markets, books)
         as_of = now.isoformat().replace("+00:00", "Z")
+        orderbook_as_of = self._cache_status(batch_key).get("fetchedAt") or as_of
         return {
             "asOf": as_of,
+            "latencyMs": int(round((time.perf_counter() - started_at) * 1000)),
             "selection": "active",
             "seriesTicker": BTC_HOURLY_SERIES,
             "eventTicker": event_ticker,
             "secondsToClose": nearest_seconds,
             "markets": selected_markets,
             "orderbooks": books,
-            "orderbookAsOf": as_of,
+            "orderbookAsOf": orderbook_as_of,
+            "ladderFit": ladder_fit,
             "reference": dict(reference_snapshot.get("reference") or {}),
             "warnings": sorted(set(warnings)),
             "sources": {
@@ -1533,6 +1931,7 @@ class _PaperRobotController:
         notifier: Optional[Callable[[str, str, Mapping[str, Any]], Any]] = None,
         observation_saver: Optional[Callable[[str, Mapping[str, Any]], Any]] = None,
         scheduler_lease_acquirer: Optional[Callable[[], bool]] = None,
+        reference_stream: Optional[KalshiReferenceStream] = None,
         safe_print=print,
         start_background=False,
     ):
@@ -1544,6 +1943,7 @@ class _PaperRobotController:
         self.notifier = notifier
         self.observation_saver = observation_saver
         self.scheduler_lease_acquirer = scheduler_lease_acquirer
+        self.reference_stream = reference_stream
         self.safe_print = safe_print
         self._stop_event = threading.Event()
         self._tick_locks: Dict[str, threading.RLock] = {}
@@ -1551,8 +1951,14 @@ class _PaperRobotController:
         self._historical_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self._historical_cache_lock = threading.RLock()
         self._last_hourly_tick: Dict[str, float] = {}
-        if start_background:
+        scheduler_disabled = str(
+            os.environ.get("ALPHALAB_DISABLE_KALSHI_SCHEDULER") or ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        self.persist_derived_state = not scheduler_disabled
+        if start_background and not scheduler_disabled:
             threading.Thread(target=self._loop, name="kalshi-robot", daemon=True).start()
+        elif start_background and scheduler_disabled:
+            self.safe_print("[KalshiRobot] background scheduler disabled by environment")
 
     def _real_config(self, user_id: str) -> Mapping[str, Any]:
         if not callable(self.connection_loader):
@@ -1786,7 +2192,13 @@ class _PaperRobotController:
             if _is_supported_kalshi_ticker(normalized.get("ticker") or normalized.get("market_ticker")):
                 settlements.append(normalized)
 
-        state = self.state.reconcile_settlements(user_id, settlements, fills, environment="real")
+        state = self.state.reconcile_settlements(
+            user_id,
+            settlements,
+            fills,
+            environment="real",
+            persist=self.persist_derived_state,
+        )
         analytics = {
             key: (state.get("strategy") or {}).get(key)
             for key in (
@@ -1819,18 +2231,43 @@ class _PaperRobotController:
         if environment == "real":
             return self._live_portfolio(user_id)
         open_tickers = set(self.paper_accounts.open_tickers(user_id))
-        for ticker in open_tickers:
-            try:
-                market = self.client.market(ticker)
-            except Exception as exc:
-                self.safe_print(f"[KalshiPaper] market refresh failed ticker={ticker} error={type(exc).__name__}")
+        refreshed_markets: Dict[str, Mapping[str, Any]] = {}
+        if open_tickers:
+            # A user can hold several rolling contracts at once. Sequential
+            # market refreshes used to exceed the frontend's ten-second poll,
+            # causing every completed response to be discarded as stale. Fetch
+            # the independent marks concurrently, then update the ledger in a
+            # deterministic single-threaded pass.
+            with ThreadPoolExecutor(
+                max_workers=min(8, len(open_tickers)),
+                thread_name_prefix="kalshi-paper-marks",
+            ) as pool:
+                futures = {ticker: pool.submit(self.client.market, ticker) for ticker in open_tickers}
+                for ticker, future in futures.items():
+                    try:
+                        refreshed_markets[ticker] = future.result()
+                    except Exception as exc:
+                        self.safe_print(
+                            f"[KalshiPaper] market refresh failed ticker={ticker} "
+                            f"error={type(exc).__name__}"
+                        )
+        for ticker in sorted(open_tickers):
+            market = refreshed_markets.get(ticker)
+            if not market:
                 continue
             result_value = str(market.get("result") or market.get("market_result") or "").upper()
             if result_value in {"YES", "NO"}:
                 settled_time = str(market.get("settlement_ts") or market.get("determined_time") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
-                settlement = self.paper_accounts.settle(user_id, ticker, result_value, settled_time=settled_time)
+                settlement = self.paper_accounts.settle(
+                    user_id,
+                    ticker,
+                    result_value,
+                    settled_time=settled_time,
+                    persist=self.persist_derived_state,
+                )
                 if settlement:
-                    self._notify_settlement(user_id, settlement)
+                    if self.persist_derived_state:
+                        self._notify_settlement(user_id, settlement)
             else:
                 self.paper_accounts.update_mark(user_id, ticker, market)
         result = self.paper_accounts.portfolio(user_id)
@@ -1844,6 +2281,7 @@ class _PaperRobotController:
             result["settlements"],
             result["fills"],
             environment=environment,
+            persist=self.persist_derived_state,
         )
         result["analytics"] = {
             key: (state.get("strategy") or {}).get(key)
@@ -1937,13 +2375,29 @@ class _PaperRobotController:
         strategy_config["paperBankroll"] = bankroll
         strategy_config = normalize_strategy_config(strategy_config)
         family = "btchourly" if str(family).lower() == "btchourly" else "btc15m"
+        reference_override = None
+        if self.reference_stream is not None:
+            try:
+                reference_override = self.reference_stream.snapshot(user_id)
+            except Exception as exc:
+                self.safe_print(
+                    f"[KalshiBRTI] snapshot unavailable user={str(user_id)[:8]} "
+                    f"error={type(exc).__name__}"
+                )
         if family == "btchourly":
-            ladder = self.client.hourly_snapshot(base_url=KALSHI_PUBLIC_BASE)
+            hourly_snapshot_args: Dict[str, Any] = {"base_url": KALSHI_PUBLIC_BASE}
+            if reference_override is not None:
+                hourly_snapshot_args["reference_override"] = reference_override
+            ladder = self.client.hourly_snapshot(**hourly_snapshot_args)
             hourly_config = {
                 **strategy_config,
                 "riskPerTradePct": min(_finite_number(strategy_config.get("riskPerTradePct"), 0.75), 0.50),
                 "minNetEdge": max(0.005, min(_finite_number(strategy_config.get("minNetEdge"), 0.0075), 0.0075)),
                 "minConservativeEdge": max(0.001, min(_finite_number(strategy_config.get("minConservativeEdge"), 0.002), 0.002)),
+                "marketBlendWeight": max(
+                    0.45,
+                    min(_finite_number(strategy_config.get("marketBlendWeight"), 0.45), 0.65),
+                ),
                 "minSecondsToClose": 120,
                 "maxSecondsToClose": 1800,
                 "minPrice": 0.48,
@@ -1960,6 +2414,10 @@ class _PaperRobotController:
                 if context.get("hasPosition"):
                     context["hasPosition"] = False
                     context["alreadyTraded"] = False
+                candidate_reference = dict(ladder.get("reference") or {})
+                candidate_reference.update(
+                    dict((ladder.get("ladderFit") or {}).get(candidate_ticker) or {})
+                )
                 candidate = evaluate_btc15_contract(
                     market,
                     spot_price=(ladder.get("reference") or {}).get("price"),
@@ -1967,7 +2425,7 @@ class _PaperRobotController:
                     config=hourly_config,
                     orderbook=book,
                     reference_time=(ladder.get("reference") or {}).get("timestamp"),
-                    reference_metadata=ladder.get("reference") or {},
+                    reference_metadata=candidate_reference,
                     book_time=ladder.get("orderbookAsOf"),
                     account_context=context,
                 )
@@ -2004,7 +2462,10 @@ class _PaperRobotController:
                 ],
             }
         else:
-            snapshot = self.client.snapshot(base_url=KALSHI_PUBLIC_BASE)
+            snapshot_args: Dict[str, Any] = {"base_url": KALSHI_PUBLIC_BASE}
+            if reference_override is not None:
+                snapshot_args["reference_override"] = reference_override
+            snapshot = self.client.snapshot(**snapshot_args)
             candidate_ticker = str((snapshot.get("market") or {}).get("ticker") or "")
             context = _paper_account_context(portfolio, robot_state, candidate_ticker, bankroll)
             if context.get("hasPosition"):
@@ -2023,7 +2484,17 @@ class _PaperRobotController:
             )
         decision = dict(decision)
         decision["marketFamily"] = family
-        decision["engine"] = "btchourly-strike-ladder-v1" if family == "btchourly" else decision.get("engine")
+        decision["engine"] = "btchourly-strike-ladder-v2" if family == "btchourly" else decision.get("engine")
+        decision["dataQuality"] = {
+            "referenceModel": (snapshot.get("reference") or {}).get("model"),
+            "officialBrti": bool((snapshot.get("reference") or {}).get("isOfficialBrti")),
+            "referenceAgeSeconds": (decision.get("model") or {}).get("referenceAgeSeconds"),
+            "bookAgeSeconds": (decision.get("market") or {}).get("bookAgeSeconds"),
+            "snapshotLatencyMs": snapshot.get("latencyMs"),
+            "settlementWindowSamples": (snapshot.get("reference") or {}).get("settlementWindowSamples"),
+            "warnings": list(snapshot.get("warnings") or []),
+            "candidateCount": snapshot.get("candidateCount", 1),
+        }
         ticker = str((snapshot.get("market") or {}).get("ticker") or "")
         account_context = _paper_account_context(portfolio, robot_state, ticker, bankroll)
         position_context = _position_execution_context(portfolio, ticker)
@@ -2341,7 +2812,15 @@ class _PaperRobotController:
                     )
                 if order and execution_mode != "real":
                     self._notify_order(user_id, order, decision)
-        state = self.state.record(user_id, decision, order)
+        # Only the lease-owning execution cycle mutates durable robot state.
+        # Browser refreshes still persist their compact research observation
+        # below, but must not race the online scheduler or overwrite its
+        # enabled flag, decision history, and fill guards from another process.
+        state = (
+            self.state.record(user_id, decision, order)
+            if submit_order
+            else robot_state
+        )
         observation = _market_observation(environment, decision, order)
         if observation and callable(self.observation_saver):
             try:
@@ -2471,7 +2950,7 @@ class _PaperRobotController:
                     mode = _execution_mode((state.get("config") or {}).get("executionMode"))
                     self.tick(user_id, submit_order=True, mode=mode, family="btc15m")
                     now_monotonic = time.monotonic()
-                    if now_monotonic - self._last_hourly_tick.get(str(user_id), 0.0) >= 15.0:
+                    if now_monotonic - self._last_hourly_tick.get(str(user_id), 0.0) >= 5.0:
                         try:
                             self.tick(user_id, submit_order=True, mode=mode, family="btchourly")
                         except Exception as exc:
@@ -2525,6 +3004,7 @@ def register_kalshi_api(
     paper_account_loader=None,
     paper_account_saver=None,
     observation_saver=None,
+    observation_loader=None,
     scheduler_lease_acquirer=None,
 ):
     """Register Kalshi research and per-user connection APIs once per app."""
@@ -2701,11 +3181,21 @@ def register_kalshi_api(
                 pass
             raise KalshiApiError(detail or f"Kalshi {environment} account request failed", status=502, code="kalshi_account_request_failed") from exc
 
+    scheduler_disabled = str(
+        os.environ.get("ALPHALAB_DISABLE_KALSHI_SCHEDULER") or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    reference_stream = KalshiReferenceStream(
+        connection_loader=load_connection,
+        header_factory=_signed_headers,
+        safe_print=safe_print,
+        enabled=start_background,
+    )
     robot_state = KalshiRobotState(
         robot_state_path,
         state_loader=robot_state_loader,
         state_saver=robot_state_saver,
         enabled_users_loader=enabled_users_loader,
+        persist_migrations=not scheduler_disabled,
     )
     paper_accounts = KalshiPaperAccountStore(
         paper_account_path,
@@ -2721,6 +3211,7 @@ def register_kalshi_api(
         notifier=notifier,
         observation_saver=observation_saver,
         scheduler_lease_acquirer=scheduler_lease_acquirer,
+        reference_stream=reference_stream,
         safe_print=safe_print,
         start_background=start_background,
     )
@@ -2860,7 +3351,10 @@ def register_kalshi_api(
     def btc15_snapshot():
         try:
             user = authenticated_user()
-            snapshot = client.snapshot(base_url=KALSHI_PUBLIC_BASE)
+            snapshot = client.snapshot(
+                base_url=KALSHI_PUBLIC_BASE,
+                reference_override=reference_stream.snapshot(user["id"]),
+            )
             decision = evaluate_btc15_contract(
                 snapshot["market"],
                 spot_price=snapshot["reference"].get("price"),
@@ -2883,7 +3377,10 @@ def register_kalshi_api(
             if body is not None and not isinstance(body, Mapping):
                 raise KalshiApiError("JSON body must be an object", status=400, code="invalid_request")
             config = normalize_strategy_config((body or {}).get("config") or {})
-            snapshot = client.snapshot(base_url=KALSHI_PUBLIC_BASE)
+            snapshot = client.snapshot(
+                base_url=KALSHI_PUBLIC_BASE,
+                reference_override=reference_stream.snapshot(user["id"]),
+            )
             decision = evaluate_btc15_contract(
                 snapshot["market"],
                 spot_price=snapshot["reference"].get("price"),
@@ -2903,8 +3400,11 @@ def register_kalshi_api(
     @blueprint.get("/api/kalshi/btc-hourly/snapshot")
     def btc_hourly_snapshot():
         try:
-            authenticated_user()
-            snapshot = client.hourly_snapshot(base_url=KALSHI_PUBLIC_BASE)
+            user = authenticated_user()
+            snapshot = client.hourly_snapshot(
+                base_url=KALSHI_PUBLIC_BASE,
+                reference_override=reference_stream.snapshot(user["id"]),
+            )
             snapshot["reference"].pop("candles", None)
             return ok({"success": True, "snapshot": snapshot})
         except Exception as exc:
@@ -3066,13 +3566,52 @@ def register_kalshi_api(
                 "personalApiConfigured": active_summary["configured"],
                 "liveTradingConfigured": active_summary["configured"],
                 "connectionStatus": active_summary["testStatus"],
+                "referenceFeed": reference_stream.status(user["id"]),
+            })
+        except Exception as exc:
+            return fail(exc)
+
+    @blueprint.get("/api/kalshi/analytics")
+    def kalshi_analytics():
+        try:
+            user = authenticated_user()
+            if not callable(observation_loader):
+                raise KalshiApiError(
+                    "Kalshi analytics storage is unavailable",
+                    status=503,
+                    code="kalshi_analytics_unavailable",
+                )
+            mode = request_mode("paper")
+            try:
+                hours = max(1, min(int(request.args.get("hours") or 24), 168))
+            except (TypeError, ValueError):
+                hours = 24
+            since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+            rows = observation_loader(
+                user["id"],
+                environment=mode,
+                since=since,
+                limit=5000,
+            )
+            return ok({
+                "success": True,
+                "environment": mode,
+                "windowHours": hours,
+                "analytics": _observation_analytics(rows),
+                "referenceFeed": reference_stream.status(user["id"]),
             })
         except Exception as exc:
             return fail(exc)
 
 
     app.register_blueprint(blueprint)
-    controls = {"client": client, "robot_state": robot_state, "paper_accounts": paper_accounts, "paper_robot": paper_robot}
+    controls = {
+        "client": client,
+        "robot_state": robot_state,
+        "paper_accounts": paper_accounts,
+        "paper_robot": paper_robot,
+        "reference_stream": reference_stream,
+    }
     app.extensions["alphalab_kalshi_api"] = controls
     return controls
 

@@ -19,6 +19,7 @@ from kalshi_api import (
     _exit_economic_state,
     _intent_client_order_id,
     _market_observation,
+    _monotone_ladder_probabilities,
     _paper_order_payload,
     _position_execution_context,
     _position_side_and_count,
@@ -26,6 +27,7 @@ from kalshi_api import (
     _recent_filled_entry_age,
     _recent_filled_exit_age,
     _venue_quote,
+    _PublicDataClient,
     register_kalshi_api,
 )
 
@@ -42,6 +44,89 @@ def test_brti_proxy_uses_crossed_safe_robust_constituent_midpoints():
     assert result["price"] == 10000.5
     assert result["venueCount"] == 2
     assert result["rejectedVenues"] == ["gemini"]
+
+
+def test_hourly_strike_ladder_fit_is_monotone_by_strike():
+    markets = [
+        {"ticker": "LOW", "floor_strike": 64_000},
+        {"ticker": "MID", "floor_strike": 65_000},
+        {"ticker": "HIGH", "floor_strike": 66_000},
+    ]
+    books = {
+        "LOW": {"yes": [["0.39", "100"]], "no": [["0.59", "100"]]},
+        "MID": {"yes": [["0.59", "100"]], "no": [["0.39", "100"]]},
+        "HIGH": {"yes": [["0.29", "100"]], "no": [["0.69", "100"]]},
+    }
+
+    fitted = _monotone_ladder_probabilities(markets, books)
+    probabilities = [fitted[ticker]["smoothedProbability"] for ticker in ("LOW", "MID", "HIGH")]
+
+    assert probabilities[0] >= probabilities[1] >= probabilities[2]
+    assert probabilities[0] == probabilities[1] == 0.5
+
+
+def test_hourly_snapshot_fetches_strike_books_in_one_batch():
+    now = datetime.now(timezone.utc)
+    calls = []
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        params = dict(params or {})
+        calls.append((url, params))
+        if url.endswith("/markets") and params.get("series_ticker") == "KXBTC15M":
+            return _Response({"markets": [{
+                "ticker": "KXBTC15M-TEST",
+                "status": "active",
+                "open_time": (now - timedelta(minutes=3)).isoformat(),
+                "close_time": (now + timedelta(minutes=12)).isoformat(),
+                "floor_strike": 65_000,
+            }]})
+        if url.endswith("/markets") and params.get("series_ticker") == "KXBTCD":
+            return _Response({"markets": [
+                {
+                    "ticker": "KXBTCD-E-T64000", "event_ticker": "KXBTCD-E",
+                    "status": "active", "open_time": (now - timedelta(minutes=30)).isoformat(),
+                    "close_time": (now + timedelta(minutes=30)).isoformat(),
+                    "floor_strike": 64_000, "yes_bid_dollars": "0.70", "yes_ask_dollars": "0.72",
+                },
+                {
+                    "ticker": "KXBTCD-E-T65000", "event_ticker": "KXBTCD-E",
+                    "status": "active", "open_time": (now - timedelta(minutes=30)).isoformat(),
+                    "close_time": (now + timedelta(minutes=30)).isoformat(),
+                    "floor_strike": 65_000, "yes_bid_dollars": "0.49", "yes_ask_dollars": "0.51",
+                },
+            ]})
+        if url.endswith("/markets/orderbooks"):
+            return _Response({"orderbooks": [
+                {"ticker": ticker, "orderbook_fp": {
+                    "yes_dollars": [["0.49", "100"]],
+                    "no_dollars": [["0.49", "100"]],
+                }} for ticker in params.get("tickers", [])
+            ]})
+        if url.endswith("/orderbook"):
+            return _Response({"orderbook_fp": {
+                "yes_dollars": [["0.49", "100"]],
+                "no_dollars": [["0.49", "100"]],
+            }})
+        if url.endswith("/candles"):
+            return _Response([[index, 65_000, 65_001, 65_000, 65_000, 10] for index in range(90)])
+        raise AssertionError((url, params))
+
+    snapshot = _PublicDataClient(http_get=fake_get).hourly_snapshot(
+        now=now,
+        reference_override={
+            "price": 65_000,
+            "timestamp": now.isoformat(),
+            "model": "kalshi_cf_benchmarks_brti",
+            "isOfficialBrti": True,
+            "venueCount": 1,
+        },
+    )
+
+    batch_calls = [call for call in calls if call[0].endswith("/markets/orderbooks")]
+    assert len(batch_calls) == 1
+    assert set(batch_calls[0][1]["tickers"]) == {"KXBTCD-E-T64000", "KXBTCD-E-T65000"}
+    assert len(snapshot["markets"]) == 2
+    assert len(snapshot["ladderFit"]) == 2
 
 
 def test_venue_quote_rejects_empty_or_crossed_without_last():
@@ -412,6 +497,64 @@ def test_status_has_no_removed_ai_learning_surface(tmp_path):
     payload = _app(tmp_path).test_client().get("/api/kalshi/status").get_json()
 
     assert "ai" not in payload
+
+
+def test_analytics_exposes_per_family_opportunity_funnels(tmp_path):
+    rows = [
+        {
+            "ticker": "KXBTC15M-TEST-00",
+            "environment": "paper",
+            "observed_at": "2026-07-25T12:00:00Z",
+            "action": "WAIT",
+            "side": "YES",
+            "seconds_to_close": 300,
+            "net_edge": 0.02,
+            "conservative_edge": 0.01,
+            "blocked_reasons": ["depth"],
+            "features": {
+                "model": {
+                    "referenceModel": "kalshi_cf_benchmarks_brti",
+                    "isOfficialBrti": True,
+                },
+                "dataQuality": {"snapshotLatencyMs": 210},
+            },
+        },
+        {
+            "ticker": "KXBTCD-26JUL2515-T65000",
+            "environment": "paper",
+            "observed_at": "2026-07-25T12:00:01Z",
+            "action": "BUY_NO",
+            "side": "NO",
+            "seconds_to_close": 600,
+            "net_edge": 0.03,
+            "conservative_edge": 0.012,
+            "blocked_reasons": [],
+            "order_result": {"status": "filled"},
+            "features": {
+                "model": {"referenceModel": "kalshi_cf_benchmarks_brti"},
+                "dataQuality": {"snapshotLatencyMs": 400},
+            },
+        },
+    ]
+    app = Flask(__name__)
+    register_kalshi_api(
+        app,
+        require_auth=lambda: {"id": "user-1"},
+        http_get=_fake_get,
+        observation_loader=lambda *_args, **_kwargs: rows,
+        robot_state_path=str(tmp_path / "state.json"),
+        paper_account_path=str(tmp_path / "paper.json"),
+    )
+
+    response = app.test_client().get("/api/kalshi/analytics?mode=paper&hours=24")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["analytics"]["families"]["btc15m"]["officialBrtiSamples"] == 1
+    assert payload["analytics"]["families"]["btc15m"]["blockers"] == [
+        {"key": "depth", "count": 1}
+    ]
+    assert payload["analytics"]["families"]["btchourly"]["funnel"]["orders"] == 1
 
 
 def test_paper_order_payload_uses_yes_book_shape():

@@ -662,6 +662,52 @@ class OperationsStore:
         rows = self._data(response)
         return dict(rows[0]) if rows else row
 
+    def list_kalshi_observations(
+        self,
+        user_id: object,
+        *,
+        environment: object | None = None,
+        since: object | None = None,
+        limit: int = 1000,
+    ) -> list[dict]:
+        """Read recent user-scoped samples for diagnostics and calibration."""
+        uid = self._uid(user_id)
+        mode = str(environment or "").strip().lower()
+        if mode and mode not in {"paper", "real"}:
+            raise ValueError("Kalshi observation environment must be paper or real")
+        since_value = str(since or "").strip()
+        safe_limit = max(1, min(int(limit or 1000), 5000))
+        if self._client is None:
+            if not self._allow_local_fallback:
+                raise OperationsStoreUnavailable("Durable operations store is not configured")
+            with self._lock:
+                rows = [
+                    deepcopy(row)
+                    for row in self._local["kalshi_observations"].values()
+                    if row.get("user_id") == uid
+                    and (not mode or row.get("environment") == mode)
+                    and (not since_value or str(row.get("observed_at") or "") >= since_value)
+                ]
+            rows.sort(key=lambda row: str(row.get("observed_at") or ""), reverse=True)
+            return rows[:safe_limit]
+
+        def operation():
+            query = self._client.table(self.KALSHI_OBSERVATION_TABLE).select(
+                "ticker,environment,observed_at,action,side,execution_intent,"
+                "signal_quality,seconds_to_close,model_yes_probability,"
+                "fair_yes_probability,executable_price,net_edge,"
+                "conservative_edge,spread,book_imbalance,blocked_reasons,"
+                "features,order_result"
+            ).eq("user_id", uid)
+            if mode:
+                query = query.eq("environment", mode)
+            if since_value:
+                query = query.gte("observed_at", since_value)
+            return query.order("observed_at", desc=True).limit(safe_limit).execute()
+
+        response = self._execute(operation, "Kalshi observation list")
+        return [dict(row) for row in self._data(response)]
+
     def claim_worker_lease(
         self,
         lease_name: object,

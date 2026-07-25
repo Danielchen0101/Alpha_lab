@@ -22,7 +22,7 @@ def _now() -> str:
 MAX_DECISION_RECORDS = 250
 MAX_SETTLEMENT_RECORDS = 1000
 MAX_TRADED_TICKERS = 2000
-PAPER_STATE_VERSION = 8
+PAPER_STATE_VERSION = 9
 KALSHI_MODES = ("paper", "real")
 
 
@@ -131,9 +131,67 @@ class KalshiRobotState:
                     bucket["config"] = update_config(bucket.get("config") or {}, environment)
                     if isinstance(bucket.get("strategy"), dict):
                         update_changes(bucket["strategy"])
-        state["storageVersion"] = PAPER_STATE_VERSION
+        state["storageVersion"] = max(8, int(state.get("storageVersion") or 0))
         strategy = state.setdefault("strategy", {})
         update_changes(strategy)
+
+    @staticmethod
+    def _apply_v9_strategy_defaults(state: Dict[str, Any]) -> None:
+        """Adopt official-BRTI v6 model calibration without deleting records."""
+        model_fields = (
+            "maxSecondsToClose",
+            "minPrice",
+            "marketBlendWeight",
+            "probabilityLogitScale",
+        )
+
+        def update_bucket(bucket: Dict[str, Any], environment: Optional[str] = None) -> None:
+            configured = normalize_strategy_config(bucket.get("config") or {})
+            for field in model_fields:
+                configured[field] = DEFAULT_STRATEGY_CONFIG[field]
+            if environment:
+                configured["executionMode"] = _execution_environment(environment)
+            bucket["config"] = configured
+            strategy = bucket.setdefault("strategy", {})
+            strategy.update({
+                "name": "BTC15 Settlement-Aligned v6",
+                "version": 6,
+                "philosophy": (
+                    "Trade only a fresh, executable favorite with positive fee-adjusted and "
+                    "uncertainty-adjusted edge. Use Kalshi's official BRTI and final-minute "
+                    "settlement average when available, while preserving hold-to-settlement, "
+                    "partial exits, and bounded scale-ins."
+                ),
+                "components": [
+                    "official CF Benchmarks BRTI one-second reference stream",
+                    "final-60-second settlement-average estimator",
+                    "normal-CDF distance and realized-volatility probability model",
+                    "Kalshi microprice plus monotone hourly strike-ladder prior",
+                    "fee-adjusted and uncertainty-adjusted executable edge",
+                    "bounded scale-ins, partial economic exits, and settlement carry",
+                    "freshness, depth, spread, exposure, cooldown, and stop gates",
+                ],
+            })
+            changes = list(strategy.get("changes") or [])
+            if not changes or "official-brti v6" not in str(changes[0].get("summary") or "").lower():
+                changes.insert(0, {
+                    "at": _now(),
+                    "version": 6,
+                    "summary": (
+                        "Official-BRTI v6: authenticated one-second settlement reference, "
+                        "normal-CDF calibration, wider evidence-backed entry window, and "
+                        "monotone hourly strike-ladder pricing."
+                    ),
+                })
+            strategy["changes"] = changes[:50]
+
+        update_bucket(state)
+        mode_state = state.get("modeState")
+        if isinstance(mode_state, dict):
+            for environment, bucket in mode_state.items():
+                if isinstance(bucket, dict):
+                    update_bucket(bucket, environment)
+        state["storageVersion"] = PAPER_STATE_VERSION
 
     def __init__(
         self,
@@ -142,11 +200,13 @@ class KalshiRobotState:
         state_loader=None,
         state_saver=None,
         enabled_users_loader=None,
+        persist_migrations: bool = True,
     ):
         self.path = path
         self._state_loader = state_loader
         self._state_saver = state_saver
         self._enabled_users_loader = enabled_users_loader
+        self._persist_migrations = bool(persist_migrations)
         self._lock = threading.RLock()
         self._users: Dict[str, Dict[str, Any]] = {}
         if path and os.path.exists(path) and not callable(self._state_loader):
@@ -191,10 +251,13 @@ class KalshiRobotState:
                 }]
                 self._users[user_id] = replacement
                 migrated = True
-            if int(self._users[user_id].get("storageVersion") or 0) < PAPER_STATE_VERSION:
+            if int(self._users[user_id].get("storageVersion") or 0) < 8:
                 self._apply_v8_strategy_defaults(self._users[user_id])
                 migrated = True
-        if migrated:
+            if int(self._users[user_id].get("storageVersion") or 0) < PAPER_STATE_VERSION:
+                self._apply_v9_strategy_defaults(self._users[user_id])
+                migrated = True
+        if migrated and self._persist_migrations:
             self._save()
 
     @staticmethod
@@ -215,25 +278,22 @@ class KalshiRobotState:
             "decisions": [],
             "decisionLimit": MAX_DECISION_RECORDS,
             "strategy": {
-                "name": "BTC15 Settlement-Aligned Carry v5",
-                "version": 5,
+                "name": "BTC15 Settlement-Aligned v6",
+                "version": 6,
                 "philosophy": (
-                    "Buy only the model-confirmed FAVORITE side in the final minutes of the "
-                    "quarter-hour, priced 50-95c, and normally hold to settlement. Expected "
-                    "win rate comes from measured calibration, never a guaranteed headline. Never "
-                    "buy the longshot side; that is what produced the old ~20% win rate."
+                    "Trade only a fresh, executable favorite with positive fee-adjusted and "
+                    "uncertainty-adjusted edge. Use Kalshi's official BRTI and final-minute "
+                    "settlement average when available, while preserving hold-to-settlement, "
+                    "partial exits, and bounded scale-ins."
                 ),
                 "components": [
-                    "distance to settlement strike over remaining diffusion horizon",
-                    "BRTI constituent-exchange proxy with cross-venue dispersion reserve",
-                    "final-60-second settlement-average variance horizon",
-                    "bounded time-scaled logistic distance model",
-                    "bounded 5m momentum logit shift",
-                    "favorite-side selection with minimum model probability",
-                    "Kalshi microprice blend, fee-adjusted and uncertainty-adjusted edge",
-                    "bounded same-side scale-ins under incremental edge and exposure gates",
-                    "economic exits versus hold-to-settlement value with deep protective stops",
-                    "depth participation, exposure, loss-stop, and cooldown gates",
+                    "official CF Benchmarks BRTI one-second reference stream",
+                    "final-60-second settlement-average estimator",
+                    "normal-CDF distance and realized-volatility probability model",
+                    "Kalshi microprice plus monotone hourly strike-ladder prior",
+                    "fee-adjusted and uncertainty-adjusted executable edge",
+                    "bounded scale-ins, partial economic exits, and settlement carry",
+                    "freshness, depth, spread, exposure, cooldown, and stop gates",
                 ],
                 "settledSamples": 0,
                 "wins": 0,
@@ -263,7 +323,7 @@ class KalshiRobotState:
                 "lastEntryAt": None,
                 "lastExitTicker": None,
                 "lastExitAt": None,
-                "changes": [{"at": _now(), "version": 4, "summary": "Introduced deterministic v4 position management and durable online execution."}],
+                "changes": [{"at": _now(), "version": 6, "summary": "Introduced official-BRTI v6 calibration and durable dual-market execution."}],
             },
         }
 
@@ -352,8 +412,11 @@ class KalshiRobotState:
         if key not in self._users:
             restored = self._state_loader(key) if callable(self._state_loader) else None
             self._users[key] = dict(restored) if isinstance(restored, Mapping) else self._initial()
-            if int(self._users[key].get("storageVersion") or 0) < PAPER_STATE_VERSION:
+            if int(self._users[key].get("storageVersion") or 0) < 8:
                 self._apply_v8_strategy_defaults(self._users[key])
+                migrated = True
+            if int(self._users[key].get("storageVersion") or 0) < PAPER_STATE_VERSION:
+                self._apply_v9_strategy_defaults(self._users[key])
                 migrated = True
         else:
             initial = self._initial()
@@ -403,14 +466,23 @@ class KalshiRobotState:
         for environment in KALSHI_MODES:
             self._mode_bucket(self._users[key], environment)
         self._sync_mode_mirror(self._users[key], active_environment, activate=True)
-        if migrated:
+        if migrated and self._persist_migrations:
             self._save()
         return self._users[key]
 
     def _save(self) -> None:
         if callable(self._state_saver):
-            for user_id, state in self._users.items():
-                self._state_saver(str(user_id), copy.deepcopy(state))
+            for user_id, state in list(self._users.items()):
+                try:
+                    saved = self._state_saver(str(user_id), copy.deepcopy(state))
+                except Exception:
+                    # A failed compare-and-swap means another runtime owns a
+                    # newer state. Invalidate this cache so the next operation
+                    # reloads that canonical version rather than overwriting it.
+                    self._users.pop(str(user_id), None)
+                    raise
+                if isinstance(saved, Mapping) and saved.get("version") is not None:
+                    state["_operationsVersion"] = int(saved.get("version") or 0)
         if not self.path:
             return
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -478,7 +550,7 @@ class KalshiRobotState:
                 "version": 4,
                 "source": "fresh_strategy",
                 "summary": (
-                    f"Started {(name or 'BTC15 Settlement-Aligned Carry v5')[:80]} "
+                    f"Started {(name or 'BTC15 Settlement-Aligned v6')[:80]} "
                     f"with a ${bankroll:,.2f} Paper bankroll "
                     "and zero trading history."
                 ),
@@ -783,12 +855,15 @@ class KalshiRobotState:
         fills=None,
         *,
         environment: str = "paper",
+        persist: bool = True,
     ) -> Dict[str, Any]:
         """Build realized analytics from actually filled and settled contracts."""
         environment = _execution_environment(environment)
         with self._lock:
             state = self._state(user_id)
             bucket = self._mode_bucket(state, environment)
+            strategy_before = copy.deepcopy(bucket.get("strategy") or {})
+            processed_before = list(bucket.get("processedSettlements") or [])
             processed = {
                 str(value) for value in (bucket.get("processedSettlements") or [])
                 if str(value).startswith(f"{environment}:")
@@ -800,10 +875,33 @@ class KalshiRobotState:
                 if _execution_environment((row or {}).get("environment") or environment) == environment
             ]
             strategy = bucket["strategy"]
+            canonical_close_order_ids = {
+                str(row.get("order_id") or row.get("client_order_id") or row.get("fill_id") or "")
+                for row in fill_rows
+                if (
+                    _order_fill_count(row) > 0
+                    and row.get("realized_pnl_dollars") is not None
+                    and (
+                        row.get("reduce_only")
+                        or str(row.get("action") or "").upper() == "SELL"
+                        or str(row.get("action") or "").upper().startswith("SELL_")
+                    )
+                )
+            }
+            canonical_fill_tickers = {
+                str(row.get("ticker") or row.get("market_ticker") or "")
+                for row in fill_rows
+                if str(row.get("ticker") or row.get("market_ticker") or "")
+            }
             closed_by_order = {
                 str(row.get("orderId")): dict(row)
                 for row in strategy.get("closedTradeRecords") or []
                 if row.get("orderId")
+                and not (
+                    environment == "paper"
+                    and str(row.get("ticker") or "") in canonical_fill_tickers
+                    and str(row.get("orderId") or "") not in canonical_close_order_ids
+                )
             }
             for fill in fill_rows:
                 action = str(fill.get("action") or "").upper()
@@ -866,6 +964,24 @@ class KalshiRobotState:
                 list(settlements or []),
                 key=lambda row: str(row.get("settled_time") or ""),
             )
+            canonical_settlement_keys: Dict[str, set[str]] = {}
+            for settlement in ordered_settlements:
+                ticker = str(settlement.get("ticker") or settlement.get("market_ticker") or "")
+                settled_at = str(settlement.get("settled_time") or settlement.get("created_time") or "")
+                result = _settlement_result(settlement)
+                if ticker and result in {"YES", "NO"}:
+                    canonical_settlement_keys.setdefault(ticker, set()).add(
+                        f"{environment}:{ticker}:{settled_at}:{result}"
+                    )
+            if environment == "paper" and canonical_settlement_keys:
+                for key, record in list(existing_records.items()):
+                    ticker = str(record.get("ticker") or "")
+                    if (
+                        ticker in canonical_settlement_keys
+                        and key not in canonical_settlement_keys[ticker]
+                    ):
+                        existing_records.pop(key, None)
+                        changed = True
             for settlement in ordered_settlements:
                 ticker = str(settlement.get("ticker") or settlement.get("market_ticker") or "")
                 settled_at = str(settlement.get("settled_time") or settlement.get("created_time") or "")
@@ -1003,14 +1119,19 @@ class KalshiRobotState:
                 strategy["brierScore"] = round(brier, 5)
             self._sync_realized_analytics(strategy, environment)
             realized_records = list(reversed(strategy.get("realizedTradeRecords") or []))
-            if changed or records or realized_records:
+            derived_changed = (
+                strategy != strategy_before
+                or list(bucket.get("processedSettlements") or []) != processed_before
+            )
+            if changed or derived_changed:
                 preserved_processed = [
                     str(value) for value in (bucket.get("processedSettlements") or [])
                     if not str(value).startswith(f"{environment}:")
                 ][-1000:]
                 bucket["processedSettlements"] = (preserved_processed + list(processed))[-1000:]
                 self._sync_mode_mirror(state, environment)
-                self._save()
+                if persist:
+                    self._save()
             return copy.deepcopy(state)
 
 __all__ = ["KalshiRobotState"]

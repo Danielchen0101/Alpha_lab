@@ -44940,13 +44940,25 @@ def _pa_prune_pipeline_results_locked(now=None):
 
 
 def _pa_cache_pipeline_debug_dump(uid, run_id, trigger, dump):
-    now = time.time()
-    entries = [
-        ((uid, run_id), dump),
-        ((uid, '__last__'), dump),
-        ((uid, '__last_manual__' if trigger == 'manual' else '__last_auto__'), dump),
-    ]
     with _PA_LAST_PIPELINE_RESULTS_LOCK:
+        now = time.time()
+        # Windows can return the same wall-clock value for several very fast
+        # writes. Keep per-user cache timestamps strictly increasing so the
+        # retention sort always preserves the newest run on ties.
+        previous = max(
+            (
+                float(value or 0)
+                for key, value in _PA_LAST_PIPELINE_RESULT_TIMESTAMPS.items()
+                if isinstance(key, tuple) and key and key[0] == uid
+            ),
+            default=0.0,
+        )
+        now = max(now, previous + 0.000001)
+        entries = [
+            ((uid, run_id), dump),
+            ((uid, '__last__'), dump),
+            ((uid, '__last_manual__' if trigger == 'manual' else '__last_auto__'), dump),
+        ]
         for key, value in entries:
             _PA_LAST_PIPELINE_RESULTS[key] = value
             _PA_LAST_PIPELINE_RESULT_TIMESTAMPS[key] = now
@@ -48731,19 +48743,30 @@ _KALSHI_ARTIFACT_KEY = 'current'
 def _kalshi_load_artifact(user_id, artifact_type):
     row = operations_store.get_artifact(user_id, artifact_type, _KALSHI_ARTIFACT_KEY)
     payload = (row or {}).get('payload') if isinstance(row, dict) else None
-    return dict(payload) if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    restored = dict(payload)
+    # Local-only compare-and-swap metadata. It is removed before persistence,
+    # but lets each runtime prove that it is saving the exact version it read.
+    # Without this, a long-lived local tab or an overlapping deploy could read
+    # a newer database version and then replace it with an older cached ledger.
+    restored['_operationsVersion'] = int((row or {}).get('version') or 0)
+    return restored
 
 
 def _kalshi_save_artifact(user_id, artifact_type, payload):
-    serialized = json.dumps(payload, sort_keys=True, separators=(',', ':'), default=str)
+    durable_payload = dict(payload)
+    expected_version = durable_payload.pop('_operationsVersion', None)
+    serialized = json.dumps(durable_payload, sort_keys=True, separators=(',', ':'), default=str)
     return operations_store.put_artifact(
         user_id,
         artifact_type,
         _KALSHI_ARTIFACT_KEY,
-        payload=dict(payload),
+        payload=durable_payload,
         idempotency_key=_operations_deterministic_key(
             'kalshi-artifact', user_id, artifact_type, serialized,
         ),
+        expected_version=expected_version,
     )
 
 
@@ -48796,6 +48819,7 @@ _KALSHI_API_CONTROLS = register_kalshi_api(
     paper_account_loader=lambda user_id: _kalshi_load_artifact(user_id, _KALSHI_PAPER_ARTIFACT_TYPE),
     paper_account_saver=lambda user_id, account: _kalshi_save_artifact(user_id, _KALSHI_PAPER_ARTIFACT_TYPE, account),
     observation_saver=_kalshi_save_observation,
+    observation_loader=lambda user_id, **kwargs: operations_store.list_kalshi_observations(user_id, **kwargs),
     scheduler_lease_acquirer=_kalshi_claim_scheduler_lease,
 )
 

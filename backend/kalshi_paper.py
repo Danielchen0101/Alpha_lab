@@ -132,51 +132,81 @@ def _aggregate_fill(
 ) -> Dict[str, Any]:
     fills: List[Dict[str, Any]] = []
     remaining = max(0, int(requested))
-    total_cost = 0.0
-    total_trade_fee = 0.0
+    total_cost = Decimal("0")
+    total_trade_fee = Decimal("0")
     total_debit_cents = 0
+    rounding_accumulator = Decimal("0")
+    multiplier = Decimal(str(max(0.0, _number(fee_multiplier, 1.0))))
+
+    def level_amounts(level_price: float, count: int, accumulator: Decimal):
+        p = Decimal(str(level_price))
+        count_decimal = Decimal(count)
+        cost = p * count_decimal
+        trade_fee = _ceil(
+            multiplier * Decimal("0.07") * count_decimal * p * (Decimal(1) - p),
+            Decimal("0.0001"),
+        )
+        gross_debit = cost + trade_fee
+        rounded_debit = _ceil(gross_debit, Decimal("0.01"))
+        rounding_fee = rounded_debit - gross_debit
+        next_accumulator = accumulator + rounding_fee
+        rebate_units = (next_accumulator / Decimal("0.01")).to_integral_value(
+            rounding=ROUND_FLOOR
+        )
+        rebate = rebate_units * Decimal("0.01")
+        next_accumulator -= rebate
+        net_debit = rounded_debit - rebate
+        return {
+            "cost": cost,
+            "tradeFee": trade_fee,
+            "roundingFee": rounding_fee,
+            "rebate": rebate,
+            "netDebit": net_debit,
+            "accumulator": next_accumulator,
+        }
+
     for level_price, level_size in levels:
         if remaining <= 0 or level_price > limit_price + 1e-9:
             break
         count = min(remaining, int(level_size))
         while count > 0:
-            amounts = taker_fill_amounts(
-                level_price, count, fee_multiplier=fee_multiplier
-            )
-            debit_cents = int(round(amounts["debit"] * 100))
+            amounts = level_amounts(level_price, count, rounding_accumulator)
+            debit_cents = int(amounts["netDebit"] * 100)
             if total_debit_cents + debit_cents <= cash_cents:
                 break
             count -= 1
         if count <= 0:
             break
-        amounts = taker_fill_amounts(
-            level_price, count, fee_multiplier=fee_multiplier
-        )
-        debit_cents = int(round(amounts["debit"] * 100))
+        amounts = level_amounts(level_price, count, rounding_accumulator)
+        debit_cents = int(amounts["netDebit"] * 100)
+        net_fee = amounts["tradeFee"] + amounts["roundingFee"] - amounts["rebate"]
         fills.append({
             "price_dollars": round(level_price, 4),
             "count_fp": count,
-            "position_cost_dollars": round(amounts["positionCost"], 4),
-            "trade_fee_dollars": round(amounts["tradeFee"], 4),
-            "rounding_fee_dollars": round(amounts["roundingFee"], 4),
-            "fee_cost_dollars": round(amounts["fee"], 4),
-            "debit_dollars": round(amounts["debit"], 4),
+            "position_cost_dollars": float(amounts["cost"]),
+            "trade_fee_dollars": float(amounts["tradeFee"]),
+            "rounding_fee_dollars": float(amounts["roundingFee"]),
+            "rounding_rebate_dollars": float(amounts["rebate"]),
+            "fee_cost_dollars": float(net_fee),
+            "debit_dollars": float(amounts["netDebit"]),
         })
-        total_cost += amounts["positionCost"]
+        total_cost += amounts["cost"]
         total_trade_fee += amounts["tradeFee"]
         total_debit_cents += debit_cents
+        rounding_accumulator = amounts["accumulator"]
         remaining -= count
     fill_count = sum(int(item["count_fp"]) for item in fills)
-    average_price = total_cost / fill_count if fill_count else 0.0
+    average_price = float(total_cost / Decimal(fill_count)) if fill_count else 0.0
     return {
         "fills": fills,
         "fill_count": fill_count,
         "remaining_count": max(0, requested - fill_count),
         "average_price": average_price,
-        "position_cost": total_cost,
-        "trade_fee": total_trade_fee,
+        "position_cost": float(total_cost),
+        "trade_fee": float(total_trade_fee),
         "debit_cents": total_debit_cents,
-        "fee_cost": (total_debit_cents / 100.0) - total_cost,
+        "fee_cost": (total_debit_cents / 100.0) - float(total_cost),
+        "rounding_accumulator_dollars": float(rounding_accumulator),
     }
 
 
@@ -307,8 +337,17 @@ class KalshiPaperAccountStore:
 
     def _save(self) -> None:
         if callable(self._account_saver):
-            for user_id, account in self._users.items():
-                self._account_saver(str(user_id), copy.deepcopy(account))
+            for user_id, account in list(self._users.items()):
+                try:
+                    saved = self._account_saver(str(user_id), copy.deepcopy(account))
+                except Exception:
+                    # The cached ledger no longer has write authority. Drop it
+                    # so the next request reloads the canonical Supabase copy
+                    # instead of repeatedly retrying a stale financial state.
+                    self._users.pop(str(user_id), None)
+                    raise
+                if isinstance(saved, Mapping) and saved.get("version") is not None:
+                    account["_operationsVersion"] = int(saved.get("version") or 0)
         if not self.path:
             return
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
@@ -352,7 +391,13 @@ class KalshiPaperAccountStore:
                 position["noMark"] = no_bid
             position["lastMarkedAt"] = _now()
             self._account(user_id)["updatedAt"] = _now()
-            self._save()
+            # Marks are derived from the current public book and are refreshed
+            # before every portfolio response. Persisting them used to turn a
+            # read-only page poll into a durable ledger write. Two healthy app
+            # instances (for example during a deploy) could then collide even
+            # though neither cash, positions, orders, nor fills had changed.
+            # Keep the fresh mark in this process for valuation, while only
+            # durable financial events call ``_save``.
 
     def submit_taker(
         self,
@@ -646,7 +691,15 @@ class KalshiPaperAccountStore:
             self._save()
             return copy.deepcopy(order)
 
-    def settle(self, user_id: str, ticker: str, result: str, *, settled_time: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def settle(
+        self,
+        user_id: str,
+        ticker: str,
+        result: str,
+        *,
+        settled_time: Optional[str] = None,
+        persist: bool = True,
+    ) -> Optional[Dict[str, Any]]:
         result = str(result or "").upper()
         if result not in {"YES", "NO"}:
             return None
@@ -676,7 +729,8 @@ class KalshiPaperAccountStore:
             account["settlements"].insert(0, row)
             account["settlements"] = account["settlements"][:MAX_LEDGER_ROWS]
             account["updatedAt"] = _now()
-            self._save()
+            if persist:
+                self._save()
             return copy.deepcopy(row)
 
     def open_tickers(self, user_id: str):

@@ -28,17 +28,23 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     # Entries live in the final minutes, where distance to the strike carries
     # more information and exposure duration remains short.
     "minSecondsToClose": 60,
-    "maxSecondsToClose": 720,
+    "maxSecondsToClose": 840,
     # Buy the model-confirmed favorite side only. Longshot buying (the old
     # 12-88c band) is what produced a ~20% realized win rate.
-    "minPrice": 0.50,
+    "minPrice": 0.47,
     "maxPrice": 0.95,
     "minModelProbability": 0.58,
-    "marketBlendWeight": 0.20,
+    # Logged out-of-sample contract outcomes show that Kalshi's executable
+    # probability is a stronger prior than the old spot-only model early in a
+    # contract.  Keep enough model weight to identify dislocations, but do not
+    # let a noisy reference proxy overwhelm the traded market.
+    "marketBlendWeight": 0.45,
     "maxModelMarketGap": 0.30,
-    # The engine steepens the distance-to-strike logit as expiry approaches.
-    "probabilityLogitScale": 1.95,
-    # Momentum enters as a bounded logit shift, not a drift projection.
+    # The engine steepens the standardized distance score as expiry approaches.
+    # 1.70 maps the standardised distance to a normal digital-option CDF.
+    # The setting remains tunable as a transparent calibration multiplier.
+    "probabilityLogitScale": 1.70,
+    # Momentum enters as a bounded score shift, not a drift projection.
     "momentumProjectionScale": 0.07,
     "basisReserveBps": 3.0,
     "maxVolatilityRatio": 3.0,
@@ -60,8 +66,8 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "addMinEdgeImprovement": 0.001,
     "addSizeFraction": 0.50,
     "exitValueBuffer": 0.010,
-    # Entries happen at most ~5 minutes before settlement, so the default is
-    # to HOLD TO SETTLEMENT.  Crystallizing losses mid-window was a major
+    # Entries happen only inside the contract's bounded final window, so the
+    # default is to HOLD TO SETTLEMENT. Crystallizing losses mid-window was a major
     # driver of the old strategy's poor realized win rate: exits must either
     # clear the fee-adjusted profit floor or meet both a deep probability
     # deterioration gate and a large mark-to-market loss gate.
@@ -117,13 +123,13 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
         "minDepthContracts": (1.0, 10_000.0),
         "maxBookParticipation": (0.05, 0.50),
         "minSecondsToClose": (45.0, 360.0),
-        # The 15-minute robot still defaults to 720 seconds.  The wider upper
+        # The 15-minute robot defaults to 840 seconds.  The wider upper
         # validation bound is used only by the separate hourly-strike robot.
         "maxSecondsToClose": (180.0, 2400.0),
         "minPrice": (0.30, 0.60),
         "maxPrice": (0.55, 0.99),
         "minModelProbability": (0.50, 0.90),
-        "marketBlendWeight": (0.0, 0.50),
+        "marketBlendWeight": (0.0, 0.75),
         "maxModelMarketGap": (0.10, 0.40),
         "probabilityLogitScale": (1.40, 2.60),
         "momentumProjectionScale": (0.0, 0.30),
@@ -324,8 +330,8 @@ def _normal_cdf(value: float) -> float:
     return 0.5 * (1.0 + math.erf(value / math.sqrt(2.0)))
 
 
-def _time_scaled_logit(base_scale: float, seconds_to_close: float) -> float:
-    """Steepen the bounded logistic scale as settlement approaches."""
+def _time_scaled_probability_scale(base_scale: float, seconds_to_close: float) -> float:
+    """Steepen the distance calibration modestly as settlement approaches."""
     ramp = _clamp((300.0 - float(seconds_to_close)) / 180.0, 0.0, 1.0)
     return float(base_scale) * (1.0 + 0.12 * ramp)
 
@@ -507,7 +513,18 @@ def evaluate_btc15_contract(
     venue_count = int(_number(reference.get("venueCount"), 0.0) or 0)
     dispersion_bps = max(0.0, _number(reference.get("dispersionBps"), 0.0) or 0.0)
 
-    market_mid = indicative_market_yes
+    raw_market_mid = indicative_market_yes
+    ladder_probability = _number(reference.get("smoothedProbability"))
+    ladder_raw_probability = _number(reference.get("rawProbability"))
+    ladder_dislocation = _number(reference.get("dislocation"))
+    if ladder_probability is not None and 0.0 < ladder_probability < 1.0:
+        market_mid = (
+            _clamp(indicative_market_yes * 0.60 + ladder_probability * 0.40, 0.001, 0.999)
+            if indicative_market_yes is not None
+            else ladder_probability
+        )
+    else:
+        market_mid = indicative_market_yes
     if spot and strike and spot > 0 and strike > 0 and sigma_minute is not None and seconds_to_close > 0:
         # KXBTC15M resolves from the arithmetic mean of the final 60 one-second
         # BRTI samples. Under a Brownian approximation, variance of that future
@@ -517,24 +534,37 @@ def evaluate_btc15_contract(
         effective_horizon_minutes = minutes
         # Public constituent quotes are a proxy for licensed BRTI. Charge the
         # observed cross-venue dispersion and missing-venue risk explicitly.
+        official_brti = bool(reference.get("isOfficialBrti")) or str(
+            reference.get("model") or ""
+        ) == "kalshi_cf_benchmarks_brti"
         quality_reserve_bps = dispersion_bps * 0.50 + max(0, 3 - venue_count) * 2.0
-        basis_reserve = max(float(settings["basisReserveBps"]), quality_reserve_bps) / 10_000.0
+        # The authenticated Kalshi stream is the actual settlement index.  It
+        # needs only a small timing reserve; public constituent quotes retain
+        # the full observed basis and missing-venue reserve.
+        configured_basis = (
+            min(float(settings["basisReserveBps"]), 0.50)
+            if official_brti else float(settings["basisReserveBps"])
+        )
+        basis_reserve = max(
+            configured_basis,
+            quality_reserve_bps if not official_brti else 0.0,
+        ) / 10_000.0
         horizon_sigma = math.sqrt(max(sigma_minute, 0.00035) ** 2 * minutes + basis_reserve ** 2)
         momentum_3m = math.exp(sum(returns[-3:])) - 1.0 if returns else 0.0
         momentum_5m = math.exp(sum(returns[-5:])) - 1.0 if returns else 0.0
         momentum_15m = math.exp(sum(returns[-15:])) - 1.0 if returns else 0.0
-        # Momentum is a small, bounded logit shift (fit: ~0.07 per standardized
+        # Momentum is a small, bounded probability-score shift (fit: ~0.07 per standardized
         # 5-minute move), not a projected drift. Projected drift plus the old
         # reliability shrink systematically under-confident forecasts, which
         # made the engine "find value" on the longshot side and buy ~20%
-        # winners. See docs/kalshi_btc15m_strategy_v4.md.
+        # winners. See docs/kalshi_dual_market_strategy_v6.md.
         momentum_z = _clamp(
             sum(returns[-5:]) / max(sigma_minute * math.sqrt(5.0), 1e-9),
             -3.0,
             3.0,
         ) if len(returns) >= 5 else 0.0
         distance_z = math.log(spot / strike) / max(horizon_sigma, 1e-9)
-        scale = _time_scaled_logit(float(settings["probabilityLogitScale"]), seconds_to_close)
+        scale = _time_scaled_probability_scale(float(settings["probabilityLogitScale"]), seconds_to_close)
         # Per-regime MLE fits show marginal favorites decay in elevated
         # volatility (hit 67.6% -> 61.6% as the 10m/60m vol ratio moves from
         # calm to 1.5-2.5). Damp confidence up to 5% across that band so
@@ -542,12 +572,13 @@ def evaluate_btc15_contract(
         # entering over-priced.
         if volatility_ratio is not None and volatility_ratio > 1.5:
             scale *= 1.0 - 0.05 * _clamp((volatility_ratio - 1.5) / 1.0, 0.0, 1.0)
-        logit = _clamp(
-            distance_z * scale + momentum_z * float(settings["momentumProjectionScale"]),
+        distribution_z = _clamp(
+            distance_z * (scale / 1.70)
+            + momentum_z * float(settings["momentumProjectionScale"]),
             -8.0,
             8.0,
         )
-        model_raw = 1.0 / (1.0 + math.exp(-logit))
+        model_raw = _normal_cdf(distribution_z)
         model_yes = _clamp(model_raw, 0.02, 0.98)
         original_model_yes = model_yes
 
@@ -574,7 +605,10 @@ def evaluate_btc15_contract(
         )
         uncertainty = _clamp(
             uncertainty + min(0.025, dispersion_bps / 10_000.0 * 2.0)
-            + (0.01 if venue_count == 1 else 0.0),
+            # A one-venue public quote is fragile; the official BRTI stream is
+            # itself a regulated multi-exchange composite and must not receive
+            # that proxy-only penalty merely because it is one index feed.
+            + (0.01 if venue_count == 1 and not official_brti else 0.0),
             0.02,
             0.14,
         )
@@ -643,9 +677,18 @@ def evaluate_btc15_contract(
         and relative_spread <= settings["maxRelativeSpread"]
     )
     depth_ok = selected_depth >= settings["minDepthContracts"]
+    official_reference = bool(reference.get("isOfficialBrti")) or str(
+        reference.get("model") or ""
+    ) == "kalshi_cf_benchmarks_brti"
+    # Model-confirmed dislocations below 50c are allowed only when the model
+    # is driven by the exact settlement index.  The public proxy keeps the old
+    # 50c favorite-carry floor to avoid basis-driven longshot entries.
+    effective_min_price = (
+        settings["minPrice"] if official_reference else max(0.50, settings["minPrice"])
+    )
     price_ok = (
         selected_price is not None
-        and settings["minPrice"] <= selected_price <= settings["maxPrice"]
+        and effective_min_price <= selected_price <= settings["maxPrice"]
     )
     edge_ok = net_edge is not None and net_edge >= settings["minNetEdge"]
     conservative_edge_ok = (
@@ -694,7 +737,7 @@ def evaluate_btc15_contract(
     if selected_fair is not None and conservative_probability is not None:
         eligible_levels = [
             (price, size) for price, size in selected_levels
-            if settings["minPrice"] <= price <= settings["maxPrice"]
+            if effective_min_price <= price <= settings["maxPrice"]
             and selected_fair - price - kalshi_fee(price) >= effective_min_net_edge
             and conservative_probability - price - kalshi_fee(price) >= effective_min_conservative_edge
         ]
@@ -737,7 +780,18 @@ def evaluate_btc15_contract(
         _gate("relative_spread", relative_spread_ok, "Relative spread", "相对点差", f"{(relative_spread or 0.0) * 100:.1f}% / max {settings['maxRelativeSpread'] * 100:.1f}%" if relative_spread is not None else "relative spread unavailable", category="execution"),
         _gate("depth", depth_ok, "Edge-eligible depth", "可执行深度", f"{selected_depth:.0f} top / {edge_eligible_depth:.0f} positive marginal edge / min {settings['minDepthContracts']:.0f}", category="execution"),
         _gate("book_pressure", book_pressure_ok, "Adverse book pressure", "盘口逆向压力", f"YES imbalance {(book_imbalance or 0.0) * 100:.0f}%", severity="adaptive", category="execution"),
-        _gate("price_band", price_ok, "Price band", "价格区间", f"{selected_price * 100:.1f}c" if selected_price is not None else "no executable price", category="execution"),
+        _gate(
+            "price_band",
+            price_ok,
+            "Price band",
+            "价格区间",
+            (
+                f"{selected_price * 100:.1f}c / min {effective_min_price * 100:.0f}c "
+                f"({'official BRTI' if official_reference else 'proxy reference'})"
+                if selected_price is not None else "no executable price"
+            ),
+            category="execution",
+        ),
         _gate("net_edge", edge_ok, "Fee-adjusted edge", "扣费后边际", f"{net_edge * 100:.1f}pp / adaptive min {effective_min_net_edge * 100:.2f}pp" if net_edge is not None else "edge unavailable", category="signal"),
         _gate("conservative_edge", conservative_edge_ok, "Uncertainty-adjusted edge", "不确定性后边际", f"{conservative_edge * 100:.1f}pp / adaptive min {effective_min_conservative_edge * 100:.2f}pp" if conservative_edge is not None else "edge unavailable", category="signal"),
     ]
@@ -830,7 +884,7 @@ def evaluate_btc15_contract(
     distance_bps = ((spot / strike) - 1.0) * 10_000.0 if spot and strike else None
     is_real_execution = settings.get("executionMode") == "real"
     return {
-        "engine": "btc15_settlement_aligned_v5",
+        "engine": "btc15_settlement_aligned_v6",
         "generatedAt": _iso(now),
         "paperOnly": not is_real_execution,
         "executionEnvironment": "kalshi_real" if is_real_execution else "alphalab_paper",
@@ -873,6 +927,11 @@ def evaluate_btc15_contract(
             "horizonVolatility": horizon_sigma,
             "settlementEffectiveHorizonMinutes": effective_horizon_minutes,
             "referenceModel": reference.get("model") or "unspecified_spot_proxy",
+            "isOfficialBrti": official_reference,
+            "referenceRawPrice": _number(reference.get("rawPrice")),
+            "settlementWindowAverage": _number(reference.get("settlementWindowAverage")),
+            "settlementWindowSamples": int(_number(reference.get("settlementWindowSamples"), 0.0) or 0),
+            "settlementWindowProgress": _number(reference.get("settlementWindowProgress"), 0.0),
             "referenceVenueCount": venue_count,
             "referenceDispersionBps": dispersion_bps,
             "basisReserveBpsApplied": basis_reserve * 10_000.0 if basis_reserve is not None else None,
@@ -882,6 +941,10 @@ def evaluate_btc15_contract(
             "volatilityRatio": volatility_ratio,
             "jumpSigma": jump_sigma,
             "marketYesProbability": market_mid,
+            "rawMarketYesProbability": raw_market_mid,
+            "ladderRawProbability": ladder_raw_probability,
+            "ladderSmoothedProbability": ladder_probability,
+            "ladderDislocation": ladder_dislocation,
             "rawModelYesProbability": model_raw,
             "originalModelYesProbability": original_model_yes if 'original_model_yes' in locals() else model_yes,
             "modelYesProbability": model_yes,
@@ -899,6 +962,7 @@ def evaluate_btc15_contract(
             "fairProbability": selected_fair,
             "modelProbability": selected_model_probability,
             "minimumModelProbability": settings["minModelProbability"],
+            "effectiveMinimumPrice": effective_min_price,
             "grossEdge": gross_edge,
             "feePerContract": fee_per_contract,
             "netEdge": net_edge,
@@ -928,14 +992,14 @@ def evaluate_btc15_contract(
         "methodology": {
             "settlementReference": "CF Benchmarks real-time index, 60-second settlement average",
             "spotReference": (
-                "BRTI constituent-exchange proxy; licensed BRTI is the target settlement reference"
-                if reference.get("model") == "brti_constituent_proxy"
-                else "BTC-USD spot proxy; licensed BRTI is the target settlement reference"
+                "Official CF Benchmarks BRTI with final-minute settlement-average progress"
+                if official_reference
+                else "BRTI constituent-exchange proxy; official BRTI is the target settlement reference"
             ),
             "feeModel": "Kalshi general taker fee estimate",
             "probabilityModel": (
-                "favorite-carry: bounded time-scaled logistic on distance-to-strike, "
-                "bounded momentum logit shift, and market microprice blend"
+                "favorite-carry: normal digital probability on distance-to-strike, "
+                "bounded momentum shift, market microprice blend, and monotone ladder prior"
             ),
             "directionMode": "normal",
             "samplePolicy": "deterministic fee-adjusted entry; no AI or random exploration overrides",
