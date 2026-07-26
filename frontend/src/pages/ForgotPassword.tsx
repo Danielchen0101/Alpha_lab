@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Form, Input, Typography } from 'antd';
-import { ArrowLeftOutlined, MailOutlined } from '@ant-design/icons';
+import { MailOutlined } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
 import Turnstile, { BoundTurnstileObject } from 'react-turnstile';
 import { supabase } from '../lib/supabaseClient';
+import { getPasswordRecoveryRedirect } from '../lib/authRedirect';
+import AuthPageNav from '../components/AuthPageNav';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTheme } from '../contexts/ThemeContext';
 import '../styles/Auth.css';
@@ -26,7 +28,7 @@ const useCompactCaptcha = () => {
 };
 
 const ForgotPassword: React.FC = () => {
-  const { t, language, setLanguage } = useLanguage();
+  const { t, language } = useLanguage();
   const { resolvedTheme } = useTheme();
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
@@ -50,11 +52,13 @@ const ForgotPassword: React.FC = () => {
 
   const handleSend = async ({ email }: { email: string }) => {
     if (!EMAIL_RE.test(email)) { setError(t.auth.enterValidEmail); return; }
+    if (!captchaConfigured && !isDev) { setError(t.auth.captchaNotConfigured); return; }
+    if (captchaConfigured && !captchaToken) { setError(t.auth.captchaRequired); return; }
     setError('');
     setSubmitting(true);
     try {
       const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/reset-password`,
+        redirectTo: getPasswordRecoveryRedirect(),
         captchaToken,
       });
       if (resetError) {
@@ -77,10 +81,7 @@ const ForgotPassword: React.FC = () => {
 
   return (
     <main className="auth-shell">
-      <nav className="auth-nav-top" aria-label={t.auth.backToHome}>
-        <Link to="/" className="auth-back-link-top"><ArrowLeftOutlined aria-hidden="true" />{t.auth.backToHome}</Link>
-        <button type="button" className="lang-toggle-btn" onClick={() => setLanguage(language === 'zh-CN' ? 'en-US' : 'zh-CN')} aria-label={language === 'zh-CN' ? 'Switch language to English' : '切换语言为中文'}>{language === 'zh-CN' ? 'EN' : '中文'}</button>
-      </nav>
+      <AuthPageNav backLabel={t.auth.backToHome} />
       <div className="auth-card-container">
         <section className="auth-card signup auth-card--compact">
           <header className="auth-card-header">
@@ -103,7 +104,7 @@ const ForgotPassword: React.FC = () => {
                     <Input className="auth-input" type="email" autoComplete="email" prefix={<MailOutlined aria-hidden="true" />} placeholder={t.auth.emailPlaceholder} />
                   </Form.Item>
                   <div className="auth-captcha-wrapper">
-                    {captchaConfigured ? <Turnstile key={`${resolvedTheme}-${language}`} sitekey={turnstileSiteKey || ''} className="auth-turnstile" size={compactCaptcha ? 'compact' : 'flexible'} fixedSize onLoad={(_id, bound) => { turnstileRef.current = bound; }} onVerify={setCaptchaToken} onExpire={() => setCaptchaToken('')} onError={() => setCaptchaToken('')} theme={resolvedTheme} language={language === 'zh-CN' ? 'zh-CN' : 'en'} /> : isDev ? <div className="auth-captcha-placeholder">{t.auth.captchaBypassDev}</div> : <div className="auth-captcha-placeholder error">{t.auth.captchaNotConfigured}</div>}
+                    {captchaConfigured ? <Turnstile key={`${resolvedTheme}-${language}`} sitekey={turnstileSiteKey || ''} className="auth-turnstile" size={compactCaptcha ? 'compact' : 'flexible'} fixedSize onLoad={(_id, bound) => { turnstileRef.current = bound; }} onVerify={setCaptchaToken} onExpire={() => setCaptchaToken('')} onError={() => setCaptchaToken('')} theme={resolvedTheme} language={language === 'zh-CN' ? 'zh-CN' : 'en'} /> : isDev ? <div className="auth-captcha-placeholder">{t.auth.captchaBypassDev}</div> : <div className="auth-captcha-placeholder error" role="alert">{t.auth.captchaNotConfigured}</div>}
                   </div>
                   <Button htmlType="submit" type="primary" block className="auth-btn" loading={submitting} disabled={!canSubmit || submitting}>{submitting ? t.auth.sending : t.auth.sendResetLink}</Button>
                 </Form>

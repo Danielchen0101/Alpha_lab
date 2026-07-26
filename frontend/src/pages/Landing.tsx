@@ -484,7 +484,13 @@ const Landing: React.FC = () => {
         )}
 
         <section className="market-story-mobile" aria-label={copy.storyEyebrow}>
-          <div className="market-mobile-track" ref={mobileTrackRef} onScroll={handleMobileScroll}>
+          <div
+            className="market-mobile-track"
+            ref={mobileTrackRef}
+            onScroll={handleMobileScroll}
+            tabIndex={0}
+            aria-label={isZh ? '研究流程阶段，可横向滚动' : 'Research workflow stages, horizontally scrollable'}
+          >
             {stages.map((stage, index) => (
               <article className="market-mobile-slide" key={stage.id}>
                 <div className="market-mobile-slide-copy">

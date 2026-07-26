@@ -5,9 +5,11 @@ import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { supabase } from '../lib/supabaseClient';
+import { getSafeInternalRedirect } from '../lib/safeRedirect';
+import AuthPageNav from '../components/AuthPageNav';
 import '../styles/Auth.css';
 
-const safeNext = (value: string | null) => value && value.startsWith('/') && !value.startsWith('//') ? value : '/dashboard';
+const safeNext = (value: string | null) => getSafeInternalRedirect(value) || '/dashboard';
 
 const MfaChallenge: React.FC = () => {
   const navigate = useNavigate();
@@ -21,9 +23,9 @@ const MfaChallenge: React.FC = () => {
   const [error, setError] = useState('');
   const next = useMemo(() => safeNext(new URLSearchParams(location.search).get('next')), [location.search]);
   const copy = zh ? {
-    eyebrow: '02 / 双重验证', title: '验证你的安全代码', body: '打开身份验证器并输入当前的 6 位验证码。验证成功后才会进入交易工作区。', code: '验证码', placeholder: '000000', submit: '验证并继续', checking: '正在检查安全设置…', missing: '当前账户没有可用的验证器。请重新登录或联系管理员。', failed: '验证码不正确或已过期，请使用新的验证码重试。', signOut: '退出并返回登录',
+    eyebrow: '02 / 双重验证', title: '验证你的安全代码', body: '打开身份验证器并输入当前的 6 位验证码。验证成功后才会进入交易工作区。', code: '验证码', placeholder: '000000', submit: '验证并继续', checking: '正在检查安全设置…', missing: '当前账户没有可用的验证器。请重新登录或联系管理员。', failed: '验证码不正确或已过期，请使用新的验证码重试。', signOut: '退出并返回登录', backHome: '返回首页',
   } : {
-    eyebrow: '02 / TWO-FACTOR VERIFICATION', title: 'Verify your security code', body: 'Open your authenticator app and enter the current 6-digit code. The trading workspace remains locked until verification succeeds.', code: 'Authenticator code', placeholder: '000000', submit: 'Verify and continue', checking: 'Checking security settings…', missing: 'No verified authenticator is available for this account. Sign in again or contact an administrator.', failed: 'The code is incorrect or expired. Use a new authenticator code and try again.', signOut: 'Sign out and return to login',
+    eyebrow: '02 / TWO-FACTOR VERIFICATION', title: 'Verify your security code', body: 'Open your authenticator app and enter the current 6-digit code. The trading workspace remains locked until verification succeeds.', code: 'Authenticator code', placeholder: '000000', submit: 'Verify and continue', checking: 'Checking security settings…', missing: 'No verified authenticator is available for this account. Sign in again or contact an administrator.', failed: 'The code is incorrect or expired. Use a new authenticator code and try again.', signOut: 'Sign out and return to login', backHome: 'Back to Home',
   };
 
   useEffect(() => {
@@ -69,6 +71,7 @@ const MfaChallenge: React.FC = () => {
 
   return (
     <main className="auth-shell">
+      <AuthPageNav backLabel={copy.backHome} />
       <div className="auth-card-container">
         <section className="auth-card auth-card--compact mfa-challenge-card" aria-labelledby="mfa-title">
           <span className="auth-card-eyebrow"><SafetyCertificateOutlined /> {copy.eyebrow}</span>

@@ -47,6 +47,7 @@ class OperationsStore:
     READINESS_TABLE = "user_readiness_status"
     ARTIFACT_TABLE = "user_operation_artifacts"
     KALSHI_OBSERVATION_TABLE = "user_kalshi_market_observations"
+    WORKER_LEASE_TABLE = "app_worker_leases"
 
     def __init__(
         self,
@@ -70,6 +71,7 @@ class OperationsStore:
             "artifacts": {},
             "kalshi_observations": {},
             "worker_leases": {},
+            "worker_lease_fencing": 0,
         }
         if self._client is None and self._allow_local_fallback:
             self._load_local()
@@ -128,6 +130,7 @@ class OperationsStore:
                 "orders": [], "readiness": {}, "artifacts": {},
                 "kalshi_observations": {},
                 "worker_leases": {},
+                "worker_lease_fencing": 0,
             }
 
     def _save_local(self):
@@ -750,16 +753,162 @@ class OperationsStore:
             data = data[0] if data else False
         return bool(data)
 
+    @staticmethod
+    def _lease_result(response) -> dict:
+        data = getattr(response, "data", response)
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        if isinstance(data, bool):
+            return {"acquired": data, "renewed": data}
+        if not isinstance(data, dict):
+            return {}
+        return dict(data)
+
+    def claim_worker_lease_fenced(
+        self,
+        lease_name: object,
+        owner_id: object,
+        *,
+        ttl_seconds: int = 20,
+        metadata: dict | None = None,
+    ) -> dict:
+        """Claim a lease generation and return its immutable fencing token.
+
+        Unlike the compatibility ``claim_worker_lease`` method, this call never
+        falls back to an unfenced RPC. Live broker routes use it so a worker
+        paused beyond the TTL cannot resume with an obsolete lease generation.
+        """
+        name = str(lease_name or "").strip()
+        owner = str(owner_id or "").strip()
+        if not name or not owner:
+            raise ValueError("lease_name and owner_id are required")
+        ttl = max(5, min(int(ttl_seconds or 20), 300))
+        if self._client is None:
+            if not self._allow_local_fallback:
+                raise OperationsStoreUnavailable("Durable operations store is not configured")
+            with self._lock:
+                now_epoch = datetime.now(timezone.utc).timestamp()
+                current = self._local["worker_leases"].get(name) or {}
+                current_owner = str(current.get("owner_id") or "")
+                current_expiry = float(current.get("lease_expires_epoch") or 0)
+                if current_owner and current_owner != owner and current_expiry > now_epoch:
+                    return {"acquired": False, "fencingToken": None}
+                if current_owner == owner and current_expiry > now_epoch:
+                    fencing_token = int(current.get("fencing_token") or 0)
+                else:
+                    fencing_token = int(self._local.get("worker_lease_fencing") or 0) + 1
+                    self._local["worker_lease_fencing"] = fencing_token
+                expires_epoch = now_epoch + ttl
+                self._local["worker_leases"][name] = {
+                    "owner_id": owner,
+                    "fencing_token": fencing_token,
+                    "lease_expires_epoch": expires_epoch,
+                    "metadata": dict(metadata or {}),
+                    "updated_at": utc_now_iso(),
+                }
+                self._save_local()
+                return {
+                    "acquired": True,
+                    "fencingToken": fencing_token,
+                    "leaseExpiresAt": datetime.fromtimestamp(
+                        expires_epoch, timezone.utc
+                    ).isoformat(),
+                }
+        response = self._execute(
+            lambda: self._client.rpc(
+                "claim_app_worker_lease_fenced",
+                {
+                    "p_lease_name": name,
+                    "p_owner_id": owner,
+                    "p_ttl_seconds": ttl,
+                    "p_metadata": dict(metadata or {}),
+                },
+            ).execute(),
+            "fenced worker lease claim",
+        )
+        result = self._lease_result(response)
+        token = result.get("fencingToken")
+        if result.get("acquired") and (
+            isinstance(token, bool) or not isinstance(token, (int, float)) or int(token) <= 0
+        ):
+            raise OperationsStoreUnavailable(
+                "Fenced worker lease claim returned no fencing token"
+            )
+        return result
+
+    def renew_worker_lease(
+        self,
+        lease_name: object,
+        owner_id: object,
+        fencing_token: object,
+        *,
+        ttl_seconds: int = 20,
+        metadata: dict | None = None,
+    ) -> bool:
+        """Renew only an unexpired, exact lease generation."""
+        name = str(lease_name or "").strip()
+        owner = str(owner_id or "").strip()
+        try:
+            token = int(fencing_token)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("fencing_token must be a positive integer") from exc
+        if not name or not owner or token <= 0:
+            raise ValueError("lease_name, owner_id, and fencing_token are required")
+        ttl = max(5, min(int(ttl_seconds or 20), 300))
+        if self._client is None:
+            if not self._allow_local_fallback:
+                raise OperationsStoreUnavailable("Durable operations store is not configured")
+            with self._lock:
+                now_epoch = datetime.now(timezone.utc).timestamp()
+                current = self._local["worker_leases"].get(name) or {}
+                if (
+                    str(current.get("owner_id") or "") != owner
+                    or int(current.get("fencing_token") or 0) != token
+                    or float(current.get("lease_expires_epoch") or 0) <= now_epoch
+                ):
+                    return False
+                current.update({
+                    "lease_expires_epoch": now_epoch + ttl,
+                    "metadata": dict(metadata or current.get("metadata") or {}),
+                    "updated_at": utc_now_iso(),
+                })
+                self._save_local()
+                return True
+        response = self._execute(
+            lambda: self._client.rpc(
+                "renew_app_worker_lease",
+                {
+                    "p_lease_name": name,
+                    "p_owner_id": owner,
+                    "p_fencing_token": token,
+                    "p_ttl_seconds": ttl,
+                    "p_metadata": dict(metadata or {}),
+                },
+            ).execute(),
+            "fenced worker lease renewal",
+        )
+        result = self._lease_result(response)
+        return bool(result.get("renewed"))
+
     def release_worker_lease(
         self,
         lease_name: object,
         owner_id: object,
+        fencing_token: object = None,
     ) -> bool:
         """Release one worker lease only when the caller still owns it."""
         name = str(lease_name or "").strip()
         owner = str(owner_id or "").strip()
         if not name or not owner:
             raise ValueError("lease_name and owner_id are required")
+        token = None
+        if fencing_token is not None:
+            try:
+                token = int(fencing_token)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("fencing_token must be a positive integer") from exc
+            if token <= 0:
+                raise ValueError("fencing_token must be a positive integer")
         if self._client is None:
             if not self._allow_local_fallback:
                 raise OperationsStoreUnavailable("Durable operations store is not configured")
@@ -767,15 +916,20 @@ class OperationsStore:
                 current = self._local["worker_leases"].get(name) or {}
                 if str(current.get("owner_id") or "") != owner:
                     return False
+                if token is not None and int(current.get("fencing_token") or 0) != token:
+                    return False
                 self._local["worker_leases"].pop(name, None)
+                self._save_local()
                 return True
+        arguments = {"p_lease_name": name, "p_owner_id": owner}
+        rpc_name = "release_app_worker_lease"
+        if token is not None:
+            arguments["p_fencing_token"] = token
+            rpc_name = "release_app_worker_lease_fenced"
         response = self._execute(
             lambda: self._client.rpc(
-                "release_app_worker_lease",
-                {
-                    "p_lease_name": name,
-                    "p_owner_id": owner,
-                },
+                rpc_name,
+                arguments,
             ).execute(),
             "worker lease release",
         )
@@ -783,6 +937,50 @@ class OperationsStore:
         if isinstance(data, list):
             data = data[0] if data else False
         return bool(data)
+
+    def probe_worker_lease_runtime(self, probe_id: object) -> dict:
+        """Verify the fenced claim/renew/release migration without live work."""
+        suffix = hashlib.sha256(str(probe_id or uuid.uuid4()).encode("utf-8")).hexdigest()[:24]
+        lease_name = "runtime-readiness:%s" % suffix
+        owner_id = "runtime-readiness:%s" % uuid.uuid4().hex
+        token = None
+        released = False
+        try:
+            claim = self.claim_worker_lease_fenced(
+                lease_name,
+                owner_id,
+                ttl_seconds=5,
+                metadata={"component": "runtime_readiness"},
+            )
+            token = claim.get("fencingToken")
+            acquired = bool(claim.get("acquired") and token)
+            renewed = bool(
+                acquired
+                and self.renew_worker_lease(
+                    lease_name,
+                    owner_id,
+                    token,
+                    ttl_seconds=5,
+                    metadata={"component": "runtime_readiness"},
+                )
+            )
+            if acquired:
+                released = self.release_worker_lease(
+                    lease_name, owner_id, token,
+                )
+            return {
+                "healthy": bool(acquired and renewed and released),
+                "claim": acquired,
+                "renew": renewed,
+                "release": released,
+                "fencing": bool(token),
+            }
+        finally:
+            if token is not None and not released:
+                try:
+                    self.release_worker_lease(lease_name, owner_id, token)
+                except Exception:
+                    pass
 
     def delete_artifact(
         self,

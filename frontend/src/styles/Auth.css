@@ -393,6 +393,7 @@ button.auth-brand-logo-text {
 }
 
 .auth-password-rule.is-met { color: #477241; }
+.auth-password-rule-mark { margin-right: 6px; }
 
 .auth-trust-summary {
   justify-content: center;
@@ -753,6 +754,7 @@ button.auth-brand-logo-text {
 .spinner { border-color: rgba(255,255,255,.28); border-top-color: #fff; }
 .spinner.is-dark { width: 20px; height: 20px; border-color: rgba(23,26,23,.18); border-top-color: #2b5fae; }
 .auth-status-panel { display: flex; align-items: center; flex-direction: column; gap: 18px; padding: 18px 0 6px; }
+.auth-state-actions { display: grid; width: 100%; gap: 10px; }
 .auth-status-mark { display: flex; align-items: center; justify-content: center; width: 58px; height: 58px; border: 1px solid currentColor; border-radius: 50%; font: 650 1.45rem ui-monospace, monospace; }
 .auth-status-mark.is-success { color: #687b5b; background: rgba(104,123,91,.06); }
 .auth-status-mark.is-error { color: #b86f4b; background: rgba(184,111,75,.06); }
@@ -774,9 +776,215 @@ button.auth-brand-logo-text {
   outline-offset: 3px;
 }
 
-/* Authentication stays deliberately light, even when the signed-in workspace
-   uses dark mode. This keeps sign-in, account creation, and recovery visually
-   consistent and prevents an old saved workspace theme from changing them. */
+.auth-nav-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.auth-nav-actions .ant-btn {
+  width: 31px !important;
+  height: 31px !important;
+  color: #4f554f !important;
+  border: 1px solid rgba(23,26,23,.2) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.auth-nav-actions .ant-btn:hover {
+  color: #171a17 !important;
+  border-color: #171a17 !important;
+  background: #faf8f2 !important;
+}
+
+/* Authentication follows the same stored light/dark/system preference as the
+   workspace. Keep these rules auth-scoped so public marketing pages retain
+   their own theme system. */
+:root[data-theme="dark"] .auth-shell {
+  color-scheme: dark;
+  color: #eee9df;
+  background:
+    radial-gradient(circle at 8% 3%, rgba(214,164,95,.08), transparent 28%),
+    repeating-radial-gradient(circle at 27% 31%, rgba(238,233,223,.045) 0 .45px, transparent .65px 4px),
+    #121114;
+}
+:root[data-theme="dark"] .auth-shell::before {
+  background: rgba(238,233,223,.14);
+}
+:root[data-theme="dark"] .auth-nav-top {
+  border-bottom-color: rgba(238,233,223,.14);
+  background: rgba(18,17,20,.92);
+}
+:root[data-theme="dark"] .auth-back-link-top {
+  color: #b6afb9 !important;
+}
+:root[data-theme="dark"] .auth-back-link-top:hover {
+  color: #e4bd82 !important;
+}
+:root[data-theme="dark"] .lang-toggle-btn,
+:root[data-theme="dark"] .auth-nav-actions .ant-btn {
+  color: #c1bac4 !important;
+  border-color: rgba(238,233,223,.24) !important;
+  background: transparent !important;
+}
+:root[data-theme="dark"] .lang-toggle-btn:hover,
+:root[data-theme="dark"] .auth-nav-actions .ant-btn:hover {
+  color: #fffaf0 !important;
+  border-color: #d6a45f !important;
+  background: rgba(214,164,95,.08) !important;
+}
+:root[data-theme="dark"] .auth-card {
+  color: #eee9df;
+  border-color: rgba(238,233,223,.28);
+  background: #1c1a20;
+  box-shadow: 0 28px 78px rgba(0,0,0,.34);
+}
+:root[data-theme="dark"] .auth-brand-logo-text,
+:root[data-theme="dark"] .auth-brand-logo-text .accent,
+:root[data-theme="dark"] .auth-title,
+:root[data-theme="dark"] .auth-form-title,
+:root[data-theme="dark"] .auth-feature-title,
+:root[data-theme="dark"] .auth-loading-card strong {
+  color: #fffaf0 !important;
+  -webkit-text-fill-color: currentColor;
+}
+:root[data-theme="dark"] .auth-card-eyebrow,
+:root[data-theme="dark"] .auth-feature-icon {
+  color: #e4bd82;
+}
+:root[data-theme="dark"] .auth-feature-icon {
+  border-color: rgba(214,164,95,.42);
+  background: rgba(214,164,95,.08);
+}
+:root[data-theme="dark"] .auth-subtitle,
+:root[data-theme="dark"] .auth-feature-desc,
+:root[data-theme="dark"] .auth-trust-microcopy,
+:root[data-theme="dark"] .auth-loading-card span:not(.spinner),
+:root[data-theme="dark"] .auth-status-panel .ant-typography,
+:root[data-theme="dark"] .auth-inline-action .ant-typography {
+  color: #aaa3ae !important;
+}
+:root[data-theme="dark"] .auth-button-tip,
+:root[data-theme="dark"] .auth-password-rules,
+:root[data-theme="dark"] .auth-trust-summary {
+  color: #c8c1cb;
+}
+:root[data-theme="dark"] .auth-password-rule.is-met {
+  color: #a9cc94;
+}
+:root[data-theme="dark"] .auth-feature-item {
+  border-top-color: rgba(238,233,223,.12);
+}
+:root[data-theme="dark"] .auth-shell .auth-input,
+:root[data-theme="dark"] .auth-shell .ant-input-affix-wrapper {
+  color: #eee9df !important;
+  border-color: rgba(238,233,223,.24) !important;
+  background: #17151a !important;
+}
+:root[data-theme="dark"] .auth-shell .ant-input-affix-wrapper > input.ant-input {
+  color: #eee9df !important;
+  background: transparent !important;
+}
+:root[data-theme="dark"] .auth-shell .auth-input::placeholder,
+:root[data-theme="dark"] .auth-shell .ant-input-affix-wrapper .ant-input::placeholder {
+  color: rgba(202,195,205,.5) !important;
+}
+:root[data-theme="dark"] .auth-shell .ant-input-prefix,
+:root[data-theme="dark"] .auth-shell .ant-input-password-icon {
+  color: #9f98a3 !important;
+}
+:root[data-theme="dark"] .auth-shell .auth-input:focus,
+:root[data-theme="dark"] .auth-shell .ant-input-affix-wrapper-focused {
+  border-color: #d6a45f !important;
+  box-shadow: 0 0 0 3px rgba(214,164,95,.12) !important;
+}
+:root[data-theme="dark"] .auth-shell .ant-form-item-label > label,
+:root[data-theme="dark"] .auth-shell .auth-checkbox {
+  color: #c1bac4 !important;
+}
+:root[data-theme="dark"] .auth-shell .ant-checkbox-inner {
+  border-color: rgba(238,233,223,.34) !important;
+  background: #17151a !important;
+}
+:root[data-theme="dark"] .auth-shell .ant-checkbox-checked .ant-checkbox-inner {
+  border-color: #d6a45f !important;
+  background: #d6a45f !important;
+}
+:root[data-theme="dark"] .auth-link-forgot,
+:root[data-theme="dark"] .auth-bottom-switch .link {
+  color: #e4bd82 !important;
+}
+:root[data-theme="dark"] .auth-btn {
+  color: #171312 !important;
+  background: #d6a45f !important;
+  box-shadow: 0 10px 22px rgba(0,0,0,.24) !important;
+}
+:root[data-theme="dark"] .auth-btn:hover:not(:disabled) {
+  background: #e4bd82 !important;
+}
+:root[data-theme="dark"] .auth-btn:disabled {
+  color: rgba(238,233,223,.48) !important;
+  background: #4f4952 !important;
+}
+:root[data-theme="dark"] .auth-divider .line {
+  background: rgba(238,233,223,.13);
+}
+:root[data-theme="dark"] .auth-divider .text,
+:root[data-theme="dark"] .auth-oauth-footer,
+:root[data-theme="dark"] .auth-bottom-switch .text,
+:root[data-theme="dark"] .trust-item,
+:root[data-theme="dark"] .proof-item {
+  color: #aaa3ae !important;
+}
+:root[data-theme="dark"] .oauth-btn {
+  color: #ddd6e0;
+  border-color: rgba(238,233,223,.22);
+  background: transparent;
+}
+:root[data-theme="dark"] .oauth-btn:hover:not(:disabled) {
+  color: #fffaf0;
+  border-color: #d6a45f;
+  background: rgba(214,164,95,.07);
+}
+:root[data-theme="dark"] .auth-bottom-switch {
+  border-top-color: rgba(238,233,223,.12);
+}
+:root[data-theme="dark"] .product-proof-bar {
+  border-color: rgba(238,233,223,.18);
+  background: rgba(28,26,32,.68);
+}
+:root[data-theme="dark"] .proof-dot {
+  background: #d6a45f;
+}
+:root[data-theme="dark"] .auth-captcha-placeholder {
+  color: #e6bd9d;
+  border-color: rgba(223,123,104,.42);
+  background: rgba(223,123,104,.08);
+}
+:root[data-theme="dark"] .spinner.is-dark {
+  border-color: rgba(238,233,223,.2);
+  border-top-color: #d6a45f;
+}
+:root[data-theme="dark"] .auth-status-mark.is-success {
+  color: #9db58c;
+  background: rgba(157,181,140,.08);
+}
+:root[data-theme="dark"] .auth-status-mark.is-error {
+  color: #df7b68;
+  background: rgba(223,123,104,.08);
+}
+:root[data-theme="dark"] .auth-state-actions .ant-btn-default {
+  color: #ddd6e0 !important;
+  border-color: rgba(238,233,223,.24) !important;
+  background: transparent !important;
+}
+:root[data-theme="dark"] .mfa-challenge-loading {
+  color: #aaa3ae;
+}
+:root[data-theme="dark"] .auth-shell button:focus-visible,
+:root[data-theme="dark"] .auth-shell a:focus-visible,
+:root[data-theme="dark"] .auth-shell input:focus-visible {
+  outline-color: #d6a45f;
+}
 
 @media (max-width: 1024px) {
   .auth-card.signin, .auth-card.signup { max-width: 620px; padding: 36px 40px; }
@@ -831,6 +1039,13 @@ button.auth-brand-logo-text {
   .proof-item { color: #3f443f !important; }
   .auth-shell .auth-input,
   .auth-shell .ant-input-affix-wrapper { border-color: #4c514c !important; }
+  :root[data-theme="dark"] .auth-card { border-color: #eee9df; }
+  :root[data-theme="dark"] .auth-subtitle,
+  :root[data-theme="dark"] .auth-feature-desc,
+  :root[data-theme="dark"] .auth-bottom-switch .text,
+  :root[data-theme="dark"] .proof-item { color: #eee9df !important; }
+  :root[data-theme="dark"] .auth-shell .auth-input,
+  :root[data-theme="dark"] .auth-shell .ant-input-affix-wrapper { border-color: #eee9df !important; }
 }
 
 @media (forced-colors: active) {

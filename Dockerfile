@@ -98,7 +98,9 @@ ENV MALLOC_ARENA_MAX=2
 # Expose port
 EXPOSE 8080
 
-# Health check
+# Keep the container probe as process liveness. Dependency-aware readiness is
+# monitored separately at /api/ready so a transient provider failure cannot
+# turn into a container restart loop.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -f http://127.0.0.1:8080/api/health || exit 1
 

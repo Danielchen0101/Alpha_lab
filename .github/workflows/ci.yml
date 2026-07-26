@@ -37,6 +37,13 @@ jobs:
       run: |
         cd frontend
         npm test -- --watchAll=false
+
+    - name: Verify Pages middleware
+      working-directory: frontend
+      run: npm run test:functions
+
+    - name: Verify branded authentication email templates
+      run: node supabase/email-templates/verify-templates.mjs
     
     - name: Build frontend
       run: |

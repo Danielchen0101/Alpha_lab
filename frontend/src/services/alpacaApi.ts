@@ -60,6 +60,9 @@ api.interceptors.response.use(
       
       // 处理认证错误
       if (error.response.status === 401) {
+        if (process.env.NODE_ENV === 'development' && window.location.pathname === '/agent-preview') {
+          return Promise.reject(error);
+        }
         const requestConfig = error.config as any;
         if (requestConfig && !requestConfig._authRetry) {
           requestConfig._authRetry = true;

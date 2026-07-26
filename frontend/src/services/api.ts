@@ -88,6 +88,11 @@ api.interceptors.request.use(attachSupabaseToken);
 // failure should not destroy an otherwise persisted Supabase session.
 const handle401 = async (error: any) => {
   if (error.response?.status !== 401) return Promise.reject(error);
+  // This route exists only in the development bundle and intentionally has no
+  // session or trading authority. Keep expected 401s on-screen for UI QA.
+  if (process.env.NODE_ENV === 'development' && window.location.pathname === '/agent-preview') {
+    return Promise.reject(error);
+  }
 
   const requestConfig = error.config as any;
   if (requestConfig && !requestConfig._authRetry) {
@@ -774,7 +779,8 @@ export const pipelineAutoAPI = {
     api.post('/ai-agent/pipeline/run', data),
   getPipelineResult: (runId?: string, kind?: 'manual' | 'auto') =>
     api.get('/ai-agent/pipeline/result', { params: { runId, kind } }),
-  stopPipeline: () => api.post('/ai-agent/pipeline/stop'),
+  stopPipeline: (runId: string, reason = 'user_requested') =>
+    api.post('/ai-agent/pipeline/stop', { runId, reason }),
   // Shared Continue Scan + Fine Scan — delegates to backend shared helpers.
   // Fine Scan can run AI trader review across 30 symbols, so it needs a longer timeout than normal UI calls.
   runContinueScan: (data: { scannerResults: any[]; riskProfile?: string; timeHorizon?: string; pipelineMode?: string; tradeMode?: string }) =>

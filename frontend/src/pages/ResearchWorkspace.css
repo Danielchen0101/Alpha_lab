@@ -888,9 +888,14 @@
 }
 
 .rw-evidence-score {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+}
+
+.rw-evidence-score > div {
   display: flex;
   align-items: baseline;
-  justify-content: flex-end;
   gap: 3px;
 }
 
@@ -914,6 +919,14 @@
   font-family: var(--rw-number);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+
+.rw-evidence-score small {
+  color: var(--rw-muted);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: right;
 }
 
 .rw-review-reason {

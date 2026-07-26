@@ -105,6 +105,8 @@ backend/kalshi_paper_accounts.json
 backend/crypto_paper_state.json
 backend/crypto_paper_state.json.corrupt
 backend/crypto_paper_ml.json
+backend/*.lock
+backend/.*.lock
 
 # Debug dumps — never commit
 backend/debug_manual_pipeline_result.json

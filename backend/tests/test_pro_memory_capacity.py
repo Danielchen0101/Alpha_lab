@@ -12,6 +12,21 @@ def test_health_reports_memory_budget_and_scan_capacity(monkeypatch):
         "_pa_scheduler_health_snapshot",
         lambda: {"running": True},
     )
+    monkeypatch.setattr(
+        backend,
+        "_background_thread_readiness_snapshot",
+        lambda: {"required": True, "healthy": True},
+    )
+    monkeypatch.setattr(
+        backend,
+        "_supabase_dependency_snapshot",
+        lambda: {
+            "required": True,
+            "healthy": True,
+            "migrations": {"required": True, "healthy": True},
+            "leases": {"required": True, "healthy": True},
+        },
+    )
 
     response = backend.app.test_client().get("/api/health")
     payload = response.get_json()
@@ -24,6 +39,9 @@ def test_health_reports_memory_budget_and_scan_capacity(monkeypatch):
     assert payload["memory"]["pressure"] is False
     assert payload["scannerCapacity"] == {"active": 0, "capacity": 2, "available": 2}
     assert payload["heavyWorkCapacity"] == payload["scannerCapacity"]
+    assert payload["threads"]["healthy"] is True
+    assert payload["migrations"]["healthy"] is True
+    assert payload["leases"]["healthy"] is True
 
 
 def test_pro_scan_capacity_allows_two_heavy_scans_and_rejects_third():

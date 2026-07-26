@@ -10,6 +10,7 @@
     "eject": "react-scripts eject",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
+    "test:functions": "node --experimental-vm-modules --test functions/_middleware.test.mjs",
     "serve:e2e": "node scripts/serve-spa.mjs"
   },
   "engines": {

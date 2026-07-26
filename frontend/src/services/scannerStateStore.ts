@@ -1,10 +1,15 @@
 /**
  * Persistent Scanner State Store
- * Stores Market Scanner, Continue Scan, and Fine Scan state outside React components.
+ * Stores research display state outside React components.
  * Survives route changes, page refreshes, and component unmounts.
+ *
+ * Entry plans, execution candidates and user-removal markers are deliberately
+ * volatile. They are order-capable state and must be rebuilt from an
+ * authenticated backend run; an unscoped browser cache must never become order
+ * authority.
  */
 
-const STORAGE_KEY = 'alpha_lab_scanner_state_v1';
+export const SCANNER_STATE_STORAGE_KEY = 'alpha_lab_scanner_state_v1';
 
 export type ScannerStatus = 'idle' | 'running' | 'completed' | 'failed' | 'stopped' | 'scheduled';
 export type ContinueScanStatus = 'idle' | 'processing' | 'completed' | 'error';
@@ -174,6 +179,8 @@ export interface AiExecutionCandidate {
   // Metadata
   source: string;
   addedAt: string;
+  strategyFingerprint?: string;
+  pipelineRunId?: string;
   // Full entry plan snapshot (for detail view)
   entryPlan?: any;
 }
@@ -303,7 +310,14 @@ const DEFAULT_STATE: ScannerStoreState = {
   version: 1,
 };
 
-class ScannerStateStore {
+export const getPersistableScannerState = (state: ScannerStoreState): ScannerStoreState => ({
+  ...state,
+  entryPlan: { ...DEFAULT_STATE.entryPlan },
+  aiExecutionCandidates: [],
+  removedExecutionSymbols: [],
+});
+
+export class ScannerStateStore {
   private state: ScannerStoreState;
   private listeners: Set<Listener> = new Set();
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -314,7 +328,7 @@ class ScannerStateStore {
 
   private loadFromStorage(): ScannerStoreState {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(SCANNER_STATE_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && parsed.version === 1) {
@@ -342,10 +356,13 @@ class ScannerStateStore {
             fineScan: { ...DEFAULT_STATE.fineScan, ...parsed.fineScan },
             deeperValidation: { ...DEFAULT_STATE.deeperValidation, ...parsed.deeperValidation },
             admission: { ...DEFAULT_STATE.admission, ...parsed.admission },
-            entryPlan: { ...DEFAULT_STATE.entryPlan, ...parsed.entryPlan },
+            // Entry plans contain executable prices and sizing. Keep upstream
+            // research display caches, but require a fresh authenticated plan.
+            entryPlan: { ...DEFAULT_STATE.entryPlan },
             exitScan: migratedExitScan,
-            aiExecutionCandidates: Array.isArray(parsed.aiExecutionCandidates) ? parsed.aiExecutionCandidates : [],
-            removedExecutionSymbols: Array.isArray(parsed.removedExecutionSymbols) ? parsed.removedExecutionSymbols : [],
+            // Never recover order-capable state from the legacy, unscoped cache.
+            aiExecutionCandidates: [],
+            removedExecutionSymbols: [],
             pipelineSchedule: { ...DEFAULT_STATE.pipelineSchedule, ...parsed.pipelineSchedule },
           };
         }
@@ -359,7 +376,7 @@ class ScannerStateStore {
   private saveToStorage(): void {
     try {
       this.state.lastUpdated = new Date().toISOString();
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
+      localStorage.setItem(SCANNER_STATE_STORAGE_KEY, JSON.stringify(getPersistableScannerState(this.state)));
     } catch (e) {
       if (process.env.NODE_ENV !== 'production') console.warn('[ScannerStateStore] Failed to save to storage:', e);
     }
@@ -560,7 +577,7 @@ class ScannerStateStore {
     this.notify();
   }
 
-  // ── AI Execution Candidates ──
+  // ── AI Execution Candidates (memory only; never browser-persisted) ──
 
   getAiExecutionCandidates(): AiExecutionCandidate[] {
     return JSON.parse(JSON.stringify(this.state.aiExecutionCandidates));
@@ -605,7 +622,7 @@ class ScannerStateStore {
     this.notify();
   }
 
-  // ── Removed Execution Symbols (persisted markers) ──
+  // ── Removed Execution Symbols (memory only; current mounted run) ──
 
   getRemovedExecutionSymbols(): string[] {
     return [...(this.state.removedExecutionSymbols || [])];
@@ -668,7 +685,7 @@ class ScannerStateStore {
   }
 
   clearStorage(): void {
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(SCANNER_STATE_STORAGE_KEY);
     this.state = { ...DEFAULT_STATE };
     this.notify();
   }

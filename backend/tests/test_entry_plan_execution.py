@@ -52,7 +52,7 @@ def test_entry_ai_overlay_can_only_confirm_or_downgrade():
     assert backend._merge_entry_ai_decision('SKIP', 'WATCH') == ('SKIP', True, 'WATCH')
 
 
-def test_entry_preflight_uses_executable_ask_and_whole_share_bracket():
+def test_entry_preflight_uses_executable_ask_and_whole_share_oto_stop():
     result = backend._build_entry_limit_preflight(
         _plan(),
         {'bid': 100.00, 'ask': 100.05, 'last': 100.02},
@@ -63,11 +63,27 @@ def test_entry_preflight_uses_executable_ask_and_whole_share_bracket():
     assert result['ok'] is True
     assert result['limitPrice'] == 100.05
     assert result['shares'] == 99
-    assert result['orderClass'] == 'bracket'
-    assert result['protectionMode'] == 'alpaca_bracket'
+    assert result['orderClass'] == 'oto'
+    assert result['protectionMode'] == 'alpaca_oto_stop'
     assert result['marketable'] is True
     assert result['notional'] <= 10_000
     assert result['riskDollars'] <= 500
+
+
+def test_whole_share_entry_payload_attaches_stop_without_full_target():
+    payload = backend._build_entry_order_payload(
+        "AAPL",
+        25,
+        100.05,
+        97.0,
+        "alphalab-entry-aapl-test",
+        "oto",
+    )
+
+    assert payload["qty"] == "25"
+    assert payload["order_class"] == "oto"
+    assert payload["stop_loss"] == {"stop_price": "97.0"}
+    assert "take_profit" not in payload
 
 
 def test_entry_preflight_resizes_to_cash_funded_buying_power():
@@ -84,7 +100,7 @@ def test_entry_preflight_resizes_to_cash_funded_buying_power():
     assert result['shares'] == 9
     assert result['notional'] <= 950
     assert result['riskDollars'] <= 500
-    assert result['orderClass'] == 'bracket'
+    assert result['orderClass'] == 'oto'
 
 
 def test_entry_preflight_never_submits_when_ask_is_outside_zone():

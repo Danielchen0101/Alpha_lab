@@ -1791,7 +1791,12 @@ class _CryptoService:
         if not callable(self.notifier):
             return None
         try:
-            return self.notifier(uid, event_type, _jsonable(dict(payload)))
+            body = dict(payload)
+            body.setdefault("source", "Crypto Automation")
+            body.setdefault("notificationScope", "crypto")
+            body.setdefault("assetClass", "crypto")
+            body.setdefault("assetType", "crypto")
+            return self.notifier(uid, event_type, _jsonable(body))
         except Exception as exc:
             self.safe_print("[Crypto] notification failed: %s" % type(exc).__name__)
             return None
@@ -2486,12 +2491,67 @@ class _CryptoService:
                 self._routing_locks[uid] = threading.RLock()
             return self._routing_locks[uid]
 
-    def _renew_durable_routing_lease(self, uid: str) -> None:
+    def _renew_durable_routing_lease(
+        self,
+        uid: str,
+        *,
+        require_fencing: bool = False,
+    ) -> Optional[int]:
         leases = getattr(self._routing_lease_state, "distributed", None)
         lease = leases.get(str(uid)) if isinstance(leases, dict) else None
-        if not isinstance(lease, tuple) or len(lease) != 2:
-            return
-        lease_name, owner_id = lease
+        if isinstance(lease, Mapping):
+            lease_name = str(lease.get("lease_name") or "")
+            owner_id = str(lease.get("owner_id") or "")
+            fencing_token = lease.get("fencing_token")
+        elif isinstance(lease, tuple) and len(lease) == 2:
+            lease_name, owner_id = lease
+            fencing_token = None
+        else:
+            if require_fencing:
+                raise CryptoApiError(
+                    "Fenced crypto order-routing coordination is unavailable",
+                    status=503,
+                    code="routing_fence_unavailable",
+                )
+            return None
+        if fencing_token is not None:
+            renew = getattr(self.store, "renew_worker_lease", None)
+            if not callable(renew):
+                raise CryptoApiError(
+                    "Fenced crypto order-routing coordination is unavailable",
+                    status=503,
+                    code="routing_fence_unavailable",
+                )
+            try:
+                renewed = bool(renew(
+                    lease_name,
+                    owner_id,
+                    fencing_token,
+                    ttl_seconds=ROUTING_DURABLE_LEASE_TTL_SECONDS,
+                    metadata={
+                        "component": "crypto_order_routing",
+                        "userScope": str(lease_name).rsplit(":", 1)[-1],
+                    },
+                ))
+            except Exception as exc:
+                raise CryptoApiError(
+                    "Durable crypto order-routing coordination is unavailable",
+                    status=503,
+                    code="routing_lease_unavailable",
+                ) from exc
+            if not renewed:
+                raise CryptoApiError(
+                    "This backend no longer owns the fenced crypto routing lease",
+                    status=423,
+                    code="routing_lease_lost",
+                )
+            return int(fencing_token)
+        if require_fencing:
+            raise CryptoApiError(
+                "Fenced crypto order-routing coordination is unavailable",
+                status=503,
+                code="routing_fence_unavailable",
+            )
         claim = getattr(self.store, "claim_worker_lease", None)
         if not callable(claim):
             raise CryptoApiError(
@@ -2521,6 +2581,7 @@ class _CryptoService:
                 status=423,
                 code="routing_lease_lost",
             )
+        return None
 
     @contextmanager
     def _routing_guard(
@@ -2528,6 +2589,7 @@ class _CryptoService:
         uid: str,
         *,
         timeout_seconds: float = ROUTING_LEASE_TIMEOUT_SECONDS,
+        require_fencing: bool = False,
     ) -> Iterator[None]:
         """Serialize policy writes and final broker submission across workers.
 
@@ -2558,6 +2620,17 @@ class _CryptoService:
         key = str(uid)
         try:
             if int(depths.get(key) or 0) > 0:
+                if require_fencing:
+                    nested_lease = distributed_leases.get(key)
+                    if (
+                        not isinstance(nested_lease, Mapping)
+                        or not nested_lease.get("fencing_token")
+                    ):
+                        raise CryptoApiError(
+                            "Fenced crypto order-routing coordination is unavailable",
+                            status=503,
+                            code="routing_fence_unavailable",
+                        )
                 depths[key] = int(depths[key]) + 1
                 try:
                     yield
@@ -2574,10 +2647,28 @@ class _CryptoService:
                         code="routing_lease_timeout",
                     )
                 claim = getattr(self.store, "claim_worker_lease", None)
+                claim_fenced = getattr(
+                    self.store, "claim_worker_lease_fenced", None,
+                )
+                renew = getattr(self.store, "renew_worker_lease", None)
                 release = getattr(self.store, "release_worker_lease", None)
                 distributed_lease_name = ""
                 distributed_owner_id = ""
-                if callable(claim) and callable(release):
+                distributed_fencing_token = None
+                if require_fencing and not (
+                    callable(claim_fenced)
+                    and callable(renew)
+                    and callable(release)
+                ):
+                    raise CryptoApiError(
+                        "Fenced crypto order-routing coordination is unavailable",
+                        status=503,
+                        code="routing_fence_unavailable",
+                    )
+                if (
+                    (require_fencing and callable(claim_fenced))
+                    or (not require_fencing and callable(claim) and callable(release))
+                ):
                     uid_digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
                     distributed_lease_name = f"crypto-routing:{uid_digest}"
                     distributed_owner_id = (
@@ -2585,15 +2676,35 @@ class _CryptoService:
                     )
                     while True:
                         try:
-                            acquired = bool(claim(
-                                distributed_lease_name,
-                                distributed_owner_id,
-                                ttl_seconds=ROUTING_DURABLE_LEASE_TTL_SECONDS,
-                                metadata={
-                                    "component": "crypto_order_routing",
-                                    "userScope": uid_digest,
-                                },
-                            ))
+                            if require_fencing:
+                                claim_result = claim_fenced(
+                                    distributed_lease_name,
+                                    distributed_owner_id,
+                                    ttl_seconds=ROUTING_DURABLE_LEASE_TTL_SECONDS,
+                                    metadata={
+                                        "component": "crypto_order_routing",
+                                        "userScope": uid_digest,
+                                    },
+                                )
+                                acquired = bool(
+                                    isinstance(claim_result, Mapping)
+                                    and claim_result.get("acquired")
+                                    and claim_result.get("fencingToken")
+                                )
+                                distributed_fencing_token = (
+                                    int(claim_result["fencingToken"])
+                                    if acquired else None
+                                )
+                            else:
+                                acquired = bool(claim(
+                                    distributed_lease_name,
+                                    distributed_owner_id,
+                                    ttl_seconds=ROUTING_DURABLE_LEASE_TTL_SECONDS,
+                                    metadata={
+                                        "component": "crypto_order_routing",
+                                        "userScope": uid_digest,
+                                    },
+                                ))
                         except Exception as exc:
                             raise CryptoApiError(
                                 "Durable crypto order-routing coordination is unavailable",
@@ -2612,10 +2723,11 @@ class _CryptoService:
                         time.sleep(min(ROUTING_LEASE_RETRY_SECONDS, remaining))
                 depths[key] = 1
                 if distributed_lease_name and distributed_owner_id:
-                    distributed_leases[key] = (
-                        distributed_lease_name,
-                        distributed_owner_id,
-                    )
+                    distributed_leases[key] = {
+                        "lease_name": distributed_lease_name,
+                        "owner_id": distributed_owner_id,
+                        "fencing_token": distributed_fencing_token,
+                    }
                 try:
                     yield
                 finally:
@@ -2623,7 +2735,14 @@ class _CryptoService:
                     distributed_leases.pop(key, None)
                     if distributed_lease_name and distributed_owner_id:
                         try:
-                            release(distributed_lease_name, distributed_owner_id)
+                            if distributed_fencing_token is None:
+                                release(distributed_lease_name, distributed_owner_id)
+                            else:
+                                release(
+                                    distributed_lease_name,
+                                    distributed_owner_id,
+                                    distributed_fencing_token,
+                                )
                         except Exception as exc:
                             # The finite TTL remains the fail-safe release if
                             # the explicit RPC is temporarily unavailable.
@@ -2924,7 +3043,7 @@ class _CryptoService:
         source: str,
     ):
         """Perform the final policy and open-order checks immediately before submit."""
-        with self._routing_guard(uid):
+        with self._routing_guard(uid, require_fencing=mode == "live"):
             self._assert_order_routing_allowed(
                 uid,
                 mode=mode,
@@ -2947,14 +3066,18 @@ class _CryptoService:
             # Open-order lookup can take long enough for configuration or
             # scheduler ownership to change. Re-run the complete fence while
             # the distributed per-user routing mutex is still held.
-            self._renew_durable_routing_lease(uid)
+            self._renew_durable_routing_lease(
+                uid, require_fencing=mode == "live",
+            )
             self._assert_order_routing_allowed(
                 uid,
                 mode=mode,
                 expected_config_version=expected_config_version,
                 source=source,
             )
-            self._renew_durable_routing_lease(uid)
+            self._renew_durable_routing_lease(
+                uid, require_fencing=mode == "live",
+            )
             return self._submit_order(
                 uid,
                 mode,
@@ -2981,7 +3104,9 @@ class _CryptoService:
         # routing lease covers the complete bounded broker POST timeout. A
         # lease that expired and was released can be reacquired here, so the
         # durable lifecycle/configuration fence must also be re-read.
-        self._renew_durable_routing_lease(uid)
+        self._renew_durable_routing_lease(
+            uid, require_fencing=mode == "live",
+        )
         if expected_config_version is not None:
             self._assert_order_routing_allowed(
                 uid,
@@ -2989,7 +3114,9 @@ class _CryptoService:
                 expected_config_version=expected_config_version,
                 source=source,
             )
-        self._renew_durable_routing_lease(uid)
+        self._renew_durable_routing_lease(
+            uid, require_fencing=mode == "live",
+        )
         try:
             result = _request_json(
                 "POST", f"{broker['base_url']}/v2/orders", headers=self._headers(broker),
@@ -3103,8 +3230,15 @@ class _CryptoService:
         self._audit(uid, "crypto_cycle_error", {"error": str(exc)[:500], "locked": locked}, f"crypto-error:{uid}:{time.time_ns()}")
         if locked:
             self._notify(uid, "risk_alert", {
-                "assetType": "crypto", "assetClass": "crypto",
-                "event": "Crypto automation locked", "error": str(exc)[:300],
+                "event_id": f"crypto-locked:{type(exc).__name__}",
+                "fingerprint": f"crypto-locked:{type(exc).__name__}",
+                "severity": "high",
+                "step": "Crypto automation",
+                "status": "blocked",
+                "reason": f"Crypto cycles failed {errors} consecutive times ({type(exc).__name__}); order routing was locked.",
+                "reasonZh": f"Crypto 周期已连续失败 {errors} 次（{type(exc).__name__}）；订单路由已锁定。",
+                "action": "Review broker/data health and acknowledge the lock before restarting.",
+                "actionZh": "请检查券商与行情健康状态，确认锁定原因后再重新启动。",
                 "consecutiveErrors": errors,
             })
         return result
@@ -3364,11 +3498,16 @@ class _CryptoService:
             f"crypto-reconciliation-required:{uid}:{digest}",
         )
         self._notify(uid, "risk_alert", {
-            "assetType": "crypto",
-            "assetClass": "crypto",
-            "event": "Crypto fill reconciliation required",
+            "event_id": f"crypto-reconciliation:{digest}",
+            "fingerprint": f"crypto-reconciliation:{digest}",
+            "severity": "high",
+            "step": "Crypto fill reconciliation",
+            "status": "blocked",
+            "reason": safe_message,
+            "reasonZh": f"Crypto 成交对账需要人工复核：{safe_message}",
+            "action": "Order routing remains locked until broker evidence and local position state agree.",
+            "actionZh": "在券商证据与本地持仓状态一致前，订单路由将保持锁定。",
             "clientOrderId": client_order_id or None,
-            "error": safe_message,
         })
         raise CryptoApiError(safe_message, status=423, code="reconciliation_required")
 
@@ -3433,6 +3572,7 @@ class _CryptoService:
 
         now = _utc_now()
         reconciled_events = []
+        terminal_events = []
 
         def submitted_time(item: Tuple[str, Dict[str, Any]]) -> datetime:
             value = _parse_utc_datetime(item[1].get("submittedAt"))
@@ -3519,6 +3659,7 @@ class _CryptoService:
                     client_order_id=client_id,
                 )
             status = str(order.get("status") or "").strip().lower()
+            previous_status = str(record.get("lastSeenStatus") or "").strip().lower()
             expected_side = "buy" if action in {"BUY", "ADD"} else "sell"
             if (
                 _normalize_symbol(order.get("symbol")) != symbol
@@ -3623,7 +3764,10 @@ class _CryptoService:
                 record["appliedFilledQty"] = filled_qty
                 record["appliedFilledNotional"] = cumulative_notional
                 reconciled_events.append((
-                    client_id, symbol, action, filled_qty, filled_average, performance_event,
+                    client_id, symbol, action, filled_qty, filled_average,
+                    str(order.get("id") or record.get("orderId") or ""),
+                    status,
+                    performance_event,
                 ))
             record.update({
                 "orderId": order.get("id") or record.get("orderId"),
@@ -3633,6 +3777,12 @@ class _CryptoService:
                 "lastCheckedAt": now.isoformat(),
             })
             if status in TERMINAL_ORDER_STATUSES:
+                if status in {"canceled", "cancelled", "expired", "rejected"} and status != previous_status:
+                    terminal_events.append((
+                        client_id, symbol, action, status,
+                        str(order.get("id") or record.get("orderId") or ""),
+                        filled_qty, filled_average,
+                    ))
                 pending.pop(client_id, None)
             elif expired:
                 self._raise_reconciliation_required(
@@ -3650,7 +3800,7 @@ class _CryptoService:
             clear_reconciliation_lock=True,
             key=f"crypto-runtime-reconciled:{uid}:{time.time_ns()}",
         )
-        for client_id, symbol, action, filled_qty, filled_average, performance_event in reconciled_events:
+        for client_id, symbol, action, filled_qty, filled_average, order_id, status, performance_event in reconciled_events:
             fill_key = _decimal_string(_decimal(filled_qty))
             self._audit(
                 uid,
@@ -3665,6 +3815,31 @@ class _CryptoService:
                 },
                 f"crypto-fill-reconciled:{uid}:{client_id}:{fill_key}",
             )
+            self._notify(uid, "order", {
+                "event_id": f"crypto-fill:{client_id}:{fill_key}",
+                "symbol": symbol,
+                "action": action,
+                "side": "buy" if action in {"BUY", "ADD"} else "sell",
+                "orderId": order_id,
+                "status": status or "partially_filled",
+                "qty": filled_qty,
+                "price": filled_average,
+                "mode": mode,
+                "reason": "Broker fill confirmed during durable reconciliation.",
+            })
+        for client_id, symbol, action, status, order_id, filled_qty, filled_average in terminal_events:
+            self._notify(uid, "order", {
+                "event_id": f"crypto-terminal:{client_id}:{status}",
+                "symbol": symbol,
+                "action": action,
+                "side": "buy" if action in {"BUY", "ADD"} else "sell",
+                "orderId": order_id,
+                "status": status,
+                "qty": filled_qty or None,
+                "price": filled_average or None,
+                "mode": mode,
+                "reason": "Broker terminal order state confirmed during durable reconciliation.",
+            })
         return position_states, pending
 
     def calibrate_paper_strategy(
@@ -4350,6 +4525,7 @@ class _CryptoService:
                     prior_reason = str(decision.get("reason") or "").strip()
                     decision["reason"] = "; ".join(filter(None, (prior_reason, reservation_reason)))[:1000]
                 order_result = None
+                order_payload: Dict[str, Any] = {}
                 submitted_client_id = ""
                 submitted_stop_distance: Optional[float] = None
                 submitted_state_before = self._clean_position_state(next_position_states.get(symbol))
@@ -4661,13 +4837,32 @@ class _CryptoService:
                         "symbol": symbol, "action": action, "mode": mode,
                         "confidence": decision.get("confidence"), "regime": decision.get("regime"),
                         "targetWeight": decision.get("targetWeight"), "reason": decision.get("reason"),
+                        "recommendations": [{
+                            "symbol": symbol,
+                            "action": action,
+                            "reason": decision.get("reason"),
+                            "confidence": decision.get("confidence"),
+                            "regime": decision.get("regime"),
+                        }],
                     })
                 if order_result:
                     self._notify(uid, "order", {
                         "assetType": "crypto", "assetClass": "crypto",
+                        "event_id": order_result.get("id") or submitted_client_id,
                         "symbol": symbol, "action": action,
+                        "side": order_result.get("side") or ("buy" if action in {"BUY", "ADD"} else "sell"),
                         "orderId": order_result.get("id"), "status": order_result.get("status"),
                         "mode": mode,
+                        "qty": (
+                            order_result.get("filled_qty")
+                            or order_result.get("qty")
+                            or order_payload.get("qty")
+                        ),
+                        "notional": order_payload.get("notional"),
+                        "orderType": order_result.get("type") or order_payload.get("type") or "market",
+                        "price": order_result.get("filled_avg_price"),
+                        "limitPrice": order_result.get("limit_price") or order_payload.get("limit_price"),
+                        "reason": decision.get("reason"),
                     })
                 decisions.append(_jsonable(decision))
 
@@ -4723,6 +4918,21 @@ class _CryptoService:
                         "cycleCount": int(runtime.get("cycleCount") or 0) + 1,
                     })
                     self.save_runtime(uid, runtime, f"crypto-runtime-complete:{uid}:{bucket}")
+                    decision_counts: Dict[str, int] = {}
+                    for row in decisions:
+                        decision_action = str((row or {}).get("action") or "HOLD").upper()
+                        decision_counts[decision_action] = int(decision_counts.get(decision_action, 0)) + 1
+                    self._notify(uid, "cycle_digest", {
+                        "event_id": f"crypto-cycle:{bucket}",
+                        "result": "completed",
+                        "mode": mode,
+                        "processedSymbols": len(cycle_symbols),
+                        "ordersSubmitted": sum(1 for row in decisions if (row or {}).get("order")),
+                        "decisionCounts": decision_counts,
+                        "durationSeconds": round(time.monotonic() - started, 3),
+                        "description": "Crypto automation completed one broker-connected cycle.",
+                        "descriptionZh": "Crypto 自动化已完成一个连接券商的交易周期。",
+                    })
             audit_event = "crypto_dry_run_completed" if dry_run else "crypto_cycle_completed"
             audit_key = (
                 f"crypto-dry-run:{uid}:{cycle_key}"
@@ -5847,6 +6057,16 @@ def register_crypto_api(
                 key,
                 actor="user",
             )
+            service._notify(uid, "lifecycle", {
+                "event_id": f"{key}:discord",
+                "component": "Crypto Automation",
+                "state": "started",
+                "mode": config["mode"],
+                "trigger": "user",
+                "nextRunAt": runtime.get("nextRun"),
+                "description": "Crypto automation is armed for 24/7 broker-connected cycles.",
+                "descriptionZh": "Crypto 自动化已启动，将按 24/7 周期连接券商运行。",
+            })
             return ok({"success": True, "config": config, "runtime": runtime})
         except Exception as exc:
             return fail(exc)
@@ -5877,6 +6097,15 @@ def register_crypto_api(
                 })
                 service.save_runtime(uid, runtime, f"crypto-runtime-stop:{uid}:{time.time_ns()}")
             service._audit(uid, "crypto_automation_stopped", {"mode": config["mode"]}, key, actor="user")
+            service._notify(uid, "lifecycle", {
+                "event_id": f"{key}:discord",
+                "component": "Crypto Automation",
+                "state": "stopped",
+                "mode": config["mode"],
+                "trigger": "user",
+                "description": "Crypto automation is stopped; no new crypto orders will be routed.",
+                "descriptionZh": "Crypto 自动化已停止，不会再路由新的 Crypto 订单。",
+            })
             return ok({"success": True, "config": config, "runtime": runtime})
         except Exception as exc:
             return fail(exc)
@@ -5928,6 +6157,30 @@ def register_crypto_api(
                 uid, "crypto_kill_switch_activated" if enabled else "crypto_kill_switch_reset",
                 {"mode": config["mode"], "enabled": enabled, "reason": reason}, key, actor="user",
             )
+            if enabled:
+                service._notify(uid, "risk_alert", {
+                    "event_id": f"{key}:discord",
+                    "fingerprint": "crypto-kill-switch",
+                    "severity": "critical",
+                    "component": "Crypto Automation",
+                    "step": "Crypto kill switch",
+                    "status": "killed",
+                    "mode": config["mode"],
+                    "reason": f"Crypto automation was stopped by the kill switch: {reason}",
+                    "reasonZh": f"Crypto 自动化已被紧急停止开关关闭：{reason}",
+                    "action": "Automation and live authority remain disabled until explicitly reviewed and restarted.",
+                    "actionZh": "自动化和实盘授权会保持关闭，直至人工复核并重新启动。",
+                })
+            else:
+                service._notify(uid, "lifecycle", {
+                    "event_id": f"{key}:discord",
+                    "component": "Crypto Automation",
+                    "state": "stopped",
+                    "mode": config["mode"],
+                    "trigger": "kill_switch_reset",
+                    "description": "The Crypto kill switch was reset; automation remains stopped.",
+                    "descriptionZh": "Crypto 紧急停止开关已重置；自动化仍保持停止。",
+                })
             return ok({"success": True, "config": config, "runtime": runtime})
         except Exception as exc:
             return fail(exc)

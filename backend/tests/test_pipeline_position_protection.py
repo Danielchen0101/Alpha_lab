@@ -506,6 +506,101 @@ def test_dynamic_exit_plan_moves_to_break_even_without_moving_target():
     assert plan["targetPolicy"] == "fixed_structural"
 
 
+def test_first_target_reduction_quantity_comes_from_authoritative_mandate():
+    low = backend._strategy_policy("low", "mid")
+    medium = backend._strategy_policy("medium", "mid")
+    high = backend._strategy_policy("high", "mid")
+
+    assert low["target1ReducePct"] == 60
+    assert medium["target1ReducePct"] == 50
+    assert high["target1ReducePct"] == 40
+    assert backend._pa_target1_reduction_quantity(10, medium["target1ReducePct"]) == 5
+    assert backend._pa_target1_reduction_quantity(1, medium["target1ReducePct"]) == 0.5
+    assert backend._pa_target1_reduction_quantity(10, 100) < 10
+
+
+def test_second_target_and_time_stops_are_terminal_exit_actions():
+    common_position = {
+        "symbol": "AAPL",
+        "avg_entry_price": "100",
+        "qty": "5",
+        "market_value": "595",
+    }
+    common_plan = {
+        "initialStop": 95,
+        "currentStop": 100,
+        "takeProfit1": 112,
+        "takeProfit2": 118,
+        "initialRiskPerShare": 5,
+        "highWaterMark": 119,
+        "target1Completed": True,
+        "target1ReductionStatus": "filled",
+        "createdAt": "2026-07-10T14:00:00Z",
+    }
+
+    second_target = backend._pa_build_dynamic_exit_plan(
+        {**common_position, "current_price": "119"},
+        common_plan,
+        initial_stop=95,
+        target_1=112,
+        target_2=118,
+        indicators={"atr14": 2, "trendState": "uptrend", "historyDays": 180},
+        risk_profile="medium",
+        time_horizon="mid",
+        now=datetime(2026, 7, 13, 14, 1, tzinfo=timezone.utc),
+    )
+    time_stop = backend._pa_build_dynamic_exit_plan(
+        {
+            **common_position,
+            "current_price": "99",
+            "market_value": "495",
+        },
+        {
+            **common_plan,
+            "currentStop": 95,
+            "highWaterMark": 103,
+            "createdAt": "2026-05-20T14:00:00Z",
+        },
+        initial_stop=95,
+        target_1=112,
+        target_2=118,
+        indicators={"atr14": 2, "trendState": "mixed", "historyDays": 180},
+        risk_profile="medium",
+        time_horizon="mid",
+        now=datetime(2026, 7, 13, 14, 1, tzinfo=timezone.utc),
+    )
+    leveraged_time_stop = backend._pa_build_dynamic_exit_plan(
+        {
+            **common_position,
+            "symbol": "TQQQ",
+            "current_price": "106",
+            "market_value": "530",
+        },
+        {
+            **common_plan,
+            "isLeveraged": True,
+            "currentStop": 95,
+            "highWaterMark": 106,
+            "target1Completed": False,
+            "target1ReductionStatus": "eligible",
+            "createdAt": "2026-07-11T14:00:00Z",
+        },
+        initial_stop=95,
+        target_1=112,
+        target_2=118,
+        indicators={"atr14": 2, "trendState": "uptrend", "historyDays": 180},
+        risk_profile="high",
+        time_horizon="short",
+        now=datetime(2026, 7, 13, 14, 1, tzinfo=timezone.utc),
+    )
+
+    assert second_target["action"] == "target2_reached"
+    assert time_stop["action"] == "time_exit"
+    assert leveraged_time_stop["action"] == "time_exit"
+    assert leveraged_time_stop["timeStopDays"] == 1
+    assert leveraged_time_stop["isLeveraged"] is True
+
+
 def test_exit_indicators_exclude_incomplete_daily_bar_and_use_wilder_inputs():
     bars = []
     start = datetime(2026, 5, 13, tzinfo=timezone.utc)
@@ -725,16 +820,545 @@ def test_unified_exit_scan_uses_persisted_entry_geometry(monkeypatch):
 
     assert summary["error"] is None
     assert summary["holdingsScanned"] == 1
-    assert summary["scanPolicy"]["engine"] == "position_lifecycle_v2"
+    assert summary["scanPolicy"]["engine"] == "position_lifecycle_v3_staged_exits"
     signal = summary["signals"][0]
     assert signal["exitPlanSource"] == "managed_plan"
-    assert signal["exitPlan"]["version"] == 2
+    assert signal["exitPlan"]["version"] == 3
     assert signal["exitPlan"]["currentStop"] == 100
     assert signal["exitPlan"]["target1"] == 112
     assert signal["plPct"] == 6
     assert signal["protection"]["stopCoveragePct"] == 0
     assert signal["protection"]["hasFullStopCoverage"] is False
-    assert updates and updates[0]["exitPolicyVersion"] == 2
+    assert updates and updates[0]["exitPolicyVersion"] == 3
+
+
+def test_exit_scan_reduces_half_once_then_closes_remainder_at_target2(monkeypatch):
+    position = {
+        "symbol": "AAPL",
+        "qty": "10",
+        "side": "long",
+        "avg_entry_price": "100",
+        "current_price": "113",
+        "market_value": "1130",
+        "unrealized_pl": "130",
+        "unrealized_plpc": "0.13",
+    }
+    managed = {
+        "symbol": "AAPL",
+        "initialStop": 95,
+        "currentStop": 100,
+        "takeProfit1": 112,
+        "takeProfit2": 118,
+        "initialRiskPerShare": 5,
+        "highWaterMark": 113,
+        "createdAt": "2026-07-10T14:00:00Z",
+        "target1Completed": False,
+        "target1ReductionStatus": "eligible",
+    }
+    submitted_bodies = []
+
+    monkeypatch.setattr(
+        backend,
+        "_pa_fetch_positions_for_mode",
+        lambda uid, mode: ([dict(position)], None),
+    )
+    monkeypatch.setattr(
+        backend,
+        "resolve_alpaca_config_for_user",
+        lambda uid, mode: {
+            "api_key": "",
+            "api_secret": "",
+            "base_url": "https://paper.example.com",
+        },
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_fetch_exit_market_context",
+        lambda uid, symbols, mode: ({
+            "AAPL": {"indicators": {
+                "price": float(position["current_price"]),
+                "atr14": 2,
+                "trendState": "uptrend",
+                "quoteTime": "2026-07-13T14:00:00Z",
+                "quoteAgeSeconds": 1,
+                "historyDays": 180,
+            }},
+            "SPY": {"indicators": {"trendState": "uptrend"}},
+        }, {"source": "test"}),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_get_managed_position_plan",
+        lambda uid, mode, symbol: dict(managed),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_update_managed_position",
+        lambda uid, mode, symbol, **values: managed.update(values),
+    )
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: {"mode": "ai"})
+    monkeypatch.setattr(
+        backend,
+        "_pa_exit_ai_challenge",
+        lambda uid, signals, enabled=True: {"used": False, "status": "disabled"},
+    )
+
+    def fake_call(uid, path, view_func, body):
+        submitted_bodies.append(dict(body))
+        return ({
+            "success": True,
+            "status": "submitted",
+            "order": {"id": "order-%d" % len(submitted_bodies)},
+        }, 200)
+
+    monkeypatch.setattr(backend, "_pa_call_endpoint", fake_call)
+
+    first = backend._pa_exit_scan_headless(
+        "user-1", [], "ai", trade_mode="paper", run_id="run-first", ai_review=False,
+    )
+    assert first["signals"][0]["action"] == "target1_reduce_submitted"
+    assert submitted_bodies[0]["qty"] == 5
+    assert submitted_bodies[0]["type"] == "market"
+    assert submitted_bodies[0]["executionSource"] == "exit_scan_target1_reduce"
+    assert managed["target1ReductionStatus"] == "submitted"
+    assert managed["target1PositionQtyBefore"] == 10
+
+    second = backend._pa_exit_scan_headless(
+        "user-1", [], "ai", trade_mode="paper", run_id="run-second", ai_review=False,
+    )
+    assert second["signals"][0]["action"] == "target1_pending_reconciliation"
+    assert len(submitted_bodies) == 1
+
+    position.update({
+        "qty": "5",
+        "current_price": "119",
+        "market_value": "595",
+        "unrealized_pl": "95",
+        "unrealized_plpc": "0.19",
+    })
+    third = backend._pa_exit_scan_headless(
+        "user-1", [], "ai", trade_mode="paper", run_id="run-third", ai_review=False,
+    )
+    assert third["signals"][0]["action"] == "target2_exit_submitted"
+    assert submitted_bodies[1]["qty"] == 5
+    assert submitted_bodies[1]["executionSource"] == "exit_scan_target2"
+    assert managed["target1Completed"] is True
+
+
+def _install_exit_runtime_scenario(monkeypatch, position_specs, on_submit=None):
+    positions = []
+    managed_by_symbol = {}
+    for spec in position_specs:
+        symbol = spec["symbol"]
+        price = float(spec["price"])
+        qty = float(spec.get("qty", 10))
+        avg_entry = float(spec.get("avgEntry", 100))
+        positions.append({
+            "symbol": symbol,
+            "qty": str(qty),
+            "side": "long",
+            "avg_entry_price": str(avg_entry),
+            "current_price": str(price),
+            "market_value": str(price * qty),
+            "unrealized_pl": str((price - avg_entry) * qty),
+            "unrealized_plpc": str((price - avg_entry) / avg_entry),
+        })
+        managed_by_symbol[symbol] = {
+            "symbol": symbol,
+            "initialStop": spec.get("stop", 95),
+            "currentStop": spec.get("stop", 95),
+            "takeProfit1": spec.get("target1", 112),
+            "takeProfit2": spec.get("target2", 125),
+            "initialRiskPerShare": avg_entry - float(spec.get("stop", 95)),
+            "highWaterMark": max(price, avg_entry),
+            "createdAt": spec.get("createdAt", "2026-07-24T14:00:00Z"),
+            "isLeveraged": bool(spec.get("isLeveraged", False)),
+            "target1Completed": False,
+            "target1ReductionStatus": "eligible",
+        }
+
+    submitted_bodies = []
+    monkeypatch.setattr(
+        backend,
+        "_pa_fetch_positions_for_mode",
+        lambda uid, mode: ([dict(position) for position in positions], None),
+    )
+    monkeypatch.setattr(
+        backend,
+        "resolve_alpaca_config_for_user",
+        lambda uid, mode: {
+            "api_key": "",
+            "api_secret": "",
+            "base_url": "https://paper.example.com",
+        },
+    )
+
+    def market_context(uid, symbols, mode):
+        rows = {"SPY": {"indicators": {"trendState": "uptrend"}}}
+        for position in positions:
+            symbol = position["symbol"]
+            price = float(position["current_price"])
+            rows[symbol] = {"indicators": {
+                "price": price,
+                "atr14": 2,
+                "trendState": "downtrend" if price <= 95 else "uptrend",
+                "rsi14": 35 if price <= 95 else 55,
+                "quoteTime": "2026-07-25T14:00:00Z",
+                "quoteAgeSeconds": 1,
+                "historyDays": 180,
+            }}
+        return rows, {"source": "test"}
+
+    monkeypatch.setattr(backend, "_pa_fetch_exit_market_context", market_context)
+    monkeypatch.setattr(
+        backend,
+        "_pa_get_managed_position_plan",
+        lambda uid, mode, symbol: dict(managed_by_symbol[symbol]),
+    )
+
+    def update_managed(uid, mode, symbol, **values):
+        managed_by_symbol[symbol].update(values)
+        return True
+
+    monkeypatch.setattr(backend, "_pa_update_managed_position", update_managed)
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: {"mode": "ai"})
+    monkeypatch.setattr(
+        backend,
+        "_pa_exit_ai_challenge",
+        lambda uid, signals, enabled=True: {"used": False, "status": "disabled"},
+    )
+
+    def fake_call(uid, path, view_func, body):
+        submitted_bodies.append(dict(body))
+        if on_submit is not None:
+            on_submit(dict(body))
+        return ({
+            "success": True,
+            "status": "submitted",
+            "order": {"id": "runtime-order-%d" % len(submitted_bodies)},
+        }, 200)
+
+    monkeypatch.setattr(backend, "_pa_call_endpoint", fake_call)
+    return submitted_bodies, managed_by_symbol
+
+
+def test_run_stop_between_two_target1_candidates_blocks_second_discretionary_order(
+    monkeypatch,
+):
+    stop_state = {"requested": False}
+
+    def request_stop_after_first_submission(_body):
+        stop_state["requested"] = True
+
+    submitted, managed = _install_exit_runtime_scenario(
+        monkeypatch,
+        [
+            {"symbol": "AAPL", "price": 113},
+            {"symbol": "MSFT", "price": 113},
+        ],
+        on_submit=request_stop_after_first_submission,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_check_stop_requested",
+        lambda uid, expected_run_id=None: stop_state["requested"],
+    )
+    monkeypatch.setattr(backend, "_backend_enforce_runtime_budget", lambda: None)
+
+    summary = backend._pa_exit_scan_headless(
+        "user-1",
+        [],
+        "ai",
+        trade_mode="paper",
+        run_id="run-stop-between-targets",
+        ai_review=False,
+    )
+    signals = {signal["symbol"]: signal for signal in summary["signals"]}
+
+    assert [body["executionSource"] for body in submitted] == [
+        "exit_scan_target1_reduce"
+    ]
+    assert signals["AAPL"]["action"] == "target1_reduce_submitted"
+    assert signals["MSFT"]["action"] == "stopped_before_target1_reduce"
+    assert signals["MSFT"]["pauseReason"] == "run_stop_requested"
+    assert managed["MSFT"]["target1ReductionStatus"] == "eligible"
+    assert summary["stoppedAfterProtection"] is True
+    assert summary["discretionaryPauseReason"] == "run_stop_requested"
+
+
+def test_deadline_blocks_discretionary_target_but_allows_hard_exit_and_protection(
+    monkeypatch,
+):
+    submitted, managed = _install_exit_runtime_scenario(
+        monkeypatch,
+        [
+            {"symbol": "AAPL", "price": 113},
+            {"symbol": "MSFT", "price": 94},
+            {"symbol": "NVDA", "price": 106},
+        ],
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_check_stop_requested",
+        lambda uid, expected_run_id=None: False,
+    )
+
+    def expired_stage_budget():
+        raise backend._BackendStageDeadlineExceeded("exit_scan", 11, 10)
+
+    monkeypatch.setattr(
+        backend,
+        "_backend_enforce_runtime_budget",
+        expired_stage_budget,
+    )
+
+    summary = backend._pa_exit_scan_headless(
+        "user-1",
+        [],
+        "ai",
+        trade_mode="paper",
+        run_id="run-deadline-safety",
+        ai_review=False,
+    )
+    signals = {signal["symbol"]: signal for signal in summary["signals"]}
+    sources = [body["executionSource"] for body in submitted]
+
+    assert "exit_scan_target1_reduce" not in sources
+    assert sources == ["exit_scan_hard_stop", "exit_scan_stop_protection"]
+    assert signals["AAPL"]["action"] == "stopped_before_target1_reduce"
+    assert signals["AAPL"]["pauseReason"] == "pipeline_stage_deadline_exceeded"
+    assert managed["AAPL"]["target1ReductionStatus"] == "eligible"
+    assert signals["MSFT"]["action"] == "emergency_exit_submitted"
+    assert signals["NVDA"]["action"] == "attach_protection"
+    assert summary["deadlineExceeded"] is True
+    assert summary["error"] == "exit_deadline_exceeded"
+    assert summary["discretionaryPauseReason"] == "pipeline_stage_deadline_exceeded"
+
+
+def test_stop_blocks_target2_and_ordinary_time_exit_but_not_leveraged_time_stop(
+    monkeypatch,
+):
+    submitted, _managed = _install_exit_runtime_scenario(
+        monkeypatch,
+        [
+            {"symbol": "AAPL", "price": 126, "target2": 125},
+            {
+                "symbol": "MSFT",
+                "price": 94,
+                "stop": 90,
+                "createdAt": "2026-01-01T14:00:00Z",
+            },
+            {
+                "symbol": "TQQQ",
+                "price": 100,
+                "stop": 90,
+                "createdAt": "2026-07-23T14:00:00Z",
+                "isLeveraged": True,
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_check_stop_requested",
+        lambda uid, expected_run_id=None: True,
+    )
+    monkeypatch.setattr(backend, "_backend_enforce_runtime_budget", lambda: None)
+
+    summary = backend._pa_exit_scan_headless(
+        "user-1",
+        [],
+        "ai",
+        trade_mode="paper",
+        run_id="run-stop-terminal-boundary",
+        ai_review=False,
+    )
+    signals = {signal["symbol"]: signal for signal in summary["signals"]}
+
+    assert [body["executionSource"] for body in submitted] == [
+        "exit_scan_time_stop"
+    ]
+    assert signals["AAPL"]["triggerAction"] == "target2_reached"
+    assert signals["AAPL"]["action"] == "stopped_before_terminal_exit"
+    assert signals["MSFT"]["triggerAction"] == "time_exit"
+    assert signals["MSFT"]["action"] == "stopped_before_terminal_exit"
+    assert signals["TQQQ"]["triggerAction"] == "time_exit"
+    assert signals["TQQQ"]["action"] == "time_exit_submitted"
+    assert signals["TQQQ"]["exitPlan"]["isLeveraged"] is True
+    assert summary["stoppedAfterProtection"] is True
+    assert summary["discretionaryPauseReason"] == "run_stop_requested"
+
+
+def test_target1_fill_reconciliation_marks_position_reduced_not_closed(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return [{
+                "id": "reduce-1",
+                "client_order_id": "alphalab-run-aapl-t1-reduce-1",
+                "symbol": "AAPL",
+                "side": "sell",
+                "type": "market",
+                "status": "filled",
+                "qty": "5",
+                "filled_qty": "5",
+                "filled_avg_price": "112.5",
+                "filled_at": datetime.now(timezone.utc).isoformat(),
+            }]
+
+    record = {
+        "symbol": "AAPL",
+        "target1ReductionOrderId": "reduce-1",
+        "target1ReductionClientOrderId": "alphalab-run-aapl-t1-reduce-1",
+        "target1ReductionStatus": "submitted",
+        "target1Completed": False,
+    }
+    updates = []
+    monkeypatch.setattr(
+        backend,
+        "resolve_alpaca_config_for_user",
+        lambda uid, mode: {
+            "api_key": "P" * 24,
+            "api_secret": "S" * 40,
+            "base_url": "https://paper.example.com",
+        },
+    )
+    monkeypatch.setattr(backend.requests, "get", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(
+        backend,
+        "_pa_managed_records_for_user",
+        lambda uid, mode: {"user-1:paper:AAPL": record},
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_update_managed_position",
+        lambda uid, mode, symbol, **values: updates.append(values),
+    )
+    monkeypatch.setattr(backend, "_record_order_lifecycle", lambda *args, **kwargs: None)
+
+    summary = backend._pa_reconcile_order_lifecycle("user-1", "paper", notify=False)
+
+    assert summary["filled"] == 1
+    assert updates[0]["status"] == "position_reduced"
+    assert updates[0]["target1ReductionStatus"] == "filled"
+    assert updates[0]["target1Completed"] is True
+    assert updates[0]["protectionRefreshRequired"] is True
+
+
+def test_exit_scan_never_cancels_external_sell_order(monkeypatch):
+    position = {
+        "symbol": "AAPL",
+        "qty": "10",
+        "side": "long",
+        "avg_entry_price": "100",
+        "current_price": "94",
+        "market_value": "940",
+        "unrealized_pl": "-60",
+        "unrealized_plpc": "-0.06",
+    }
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    def fake_get(url, **kwargs):
+        if url.endswith("/v2/orders"):
+            return FakeResponse([{
+                "id": "manual-stop",
+                "client_order_id": "manual-order",
+                "symbol": "AAPL",
+                "side": "sell",
+                "type": "stop",
+                "status": "new",
+                "qty": "10",
+                "stop_price": "95",
+            }])
+        if url.endswith("/v2/account"):
+            return FakeResponse({
+                "equity": "100000",
+                "last_equity": "100000",
+                "buying_power": "50000",
+            })
+        raise AssertionError("unexpected broker request %s" % url)
+
+    monkeypatch.setattr(
+        backend,
+        "_pa_fetch_positions_for_mode",
+        lambda uid, mode: ([position], None),
+    )
+    monkeypatch.setattr(
+        backend,
+        "resolve_alpaca_config_for_user",
+        lambda uid, mode: {
+            "api_key": "P" * 24,
+            "api_secret": "S" * 40,
+            "base_url": "https://paper.example.com",
+        },
+    )
+    monkeypatch.setattr(backend.requests, "get", fake_get)
+    monkeypatch.setattr(
+        backend.requests,
+        "delete",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("external order must never be canceled")
+        ),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_call_endpoint",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("blocked exit must not submit")
+        ),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_fetch_exit_market_context",
+        lambda uid, symbols, mode: ({
+            "AAPL": {"indicators": {
+                "price": 94,
+                "atr14": 2,
+                "trendState": "downtrend",
+                "quoteTime": "2026-07-13T14:00:00Z",
+                "quoteAgeSeconds": 1,
+                "historyDays": 180,
+            }},
+            "SPY": {"indicators": {"trendState": "mixed"}},
+        }, {"source": "test"}),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_get_managed_position_plan",
+        lambda uid, mode, symbol: {
+            "symbol": symbol,
+            "initialStop": 95,
+            "currentStop": 95,
+            "takeProfit1": 112,
+            "takeProfit2": 118,
+            "initialRiskPerShare": 5,
+            "highWaterMark": 103,
+            "createdAt": "2026-07-10T14:00:00Z",
+        },
+    )
+    monkeypatch.setattr(backend, "_pa_update_managed_position", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend, "_pa_get_config", lambda uid: {"mode": "ai"})
+    monkeypatch.setattr(
+        backend,
+        "_pa_exit_ai_challenge",
+        lambda uid, signals, enabled=True: {"used": False, "status": "disabled"},
+    )
+
+    summary = backend._pa_exit_scan_headless(
+        "user-1", [], "ai", trade_mode="paper", run_id="run-external", ai_review=False,
+    )
+
+    assert summary["signals"][0]["action"] == "manual_intervention"
+    assert summary["signals"][0]["status"] == "blocked_external_order"
+    assert "will not be canceled" in summary["signals"][0]["reason"]
 
 
 def test_exit_ai_cannot_delay_emergency_exit(monkeypatch):

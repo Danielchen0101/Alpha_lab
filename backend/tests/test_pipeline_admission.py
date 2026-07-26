@@ -249,3 +249,94 @@ def test_admission_blocks_when_platform_daily_order_cap_is_reached():
     assert "Daily filled-order limit reached (20/20)" in rows[0]["blockers"]
     assert summary["maxDailyFilledOrders"] == 20
     assert summary["strategyPolicy"]["platformHardLimits"] == backend.PLATFORM_HARD_LIMITS
+
+
+def test_admission_blocks_new_risk_when_gross_exposure_cap_is_full():
+    rows, summary = backend._pa_run_admission(
+        "test-user",
+        [_candidate()],
+        fine_results=[_fine()],
+        market_results=[_market()],
+        account_state=_account(
+            portfolioValue=100_000,
+            equity=100_000,
+            holdingSymbols=["MSFT", "XOM"],
+            positions=[
+                {"symbol": "MSFT", "market_value": "35000", "sector": "Technology"},
+                {"symbol": "XOM", "market_value": "25000", "sector": "Energy"},
+            ],
+            positionCount=2,
+        ),
+        risk_profile="medium",
+        ai_enabled=False,
+    )
+
+    assert rows[0]["admissionDecision"] == "BLOCK"
+    assert "Gross exposure limit" in " ".join(rows[0]["blockers"])
+    assert summary["currentGrossExposure"] == 60_000
+    assert summary["availableGrossExposure"] == 0
+
+
+def test_admission_diversifies_highly_correlated_candidate_batch():
+    rows, summary = backend._pa_run_admission(
+        "test-user",
+        [
+            _candidate(
+                "AAA",
+                validationScore=90,
+                sector="Technology",
+                marketCorrelation=0.95,
+            ),
+            _candidate(
+                "BBB",
+                validationScore=85,
+                sector="Healthcare",
+                marketCorrelation=0.95,
+            ),
+        ],
+        fine_results=[
+            _fine("AAA", sector="Technology"),
+            _fine("BBB", sector="Healthcare"),
+        ],
+        market_results=[
+            _market("AAA", sector="Technology", marketCorrelation=0.95),
+            _market("BBB", sector="Healthcare", marketCorrelation=0.95),
+        ],
+        account_state=_account(),
+        risk_profile="medium",
+        ai_enabled=False,
+    )
+
+    by_symbol = {row["symbol"]: row for row in rows}
+    assert by_symbol["AAA"]["admissionDecision"] == "ADMIT"
+    assert by_symbol["BBB"]["admissionDecision"] == "HOLD"
+    assert "correlation proxy" in " ".join(by_symbol["BBB"]["warnings"])
+    assert by_symbol["BBB"]["portfolioContext"]["averageCandidateCorrelation"] == 0.9025
+    assert summary["correlationSoftCap"] == 0.75
+
+
+def test_admission_holds_sector_when_existing_dollar_exposure_is_at_cap():
+    rows, summary = backend._pa_run_admission(
+        "test-user",
+        [_candidate("AAA", sector="Technology")],
+        fine_results=[_fine("AAA", sector="Technology")],
+        market_results=[_market("AAA", sector="Technology")],
+        account_state=_account(
+            portfolioValue=100_000,
+            equity=100_000,
+            holdingSymbols=["MSFT"],
+            positions=[{
+                "symbol": "MSFT",
+                "market_value": "20000",
+                "sector": "Technology",
+            }],
+            positionCount=1,
+        ),
+        risk_profile="low",
+        ai_enabled=False,
+    )
+
+    assert rows[0]["admissionDecision"] == "HOLD"
+    assert "sector cap" in " ".join(rows[0]["warnings"])
+    assert rows[0]["portfolioContext"]["availableSectorExposure"] == 0
+    assert summary["counts"]["HOLD"] == 1

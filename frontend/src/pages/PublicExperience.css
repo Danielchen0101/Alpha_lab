@@ -12,6 +12,32 @@
   background: #3569c8;
 }
 
+html[data-theme='dark'] .public-page .platform-module-panel,
+html[data-theme='dark'] .public-page .research-ledger-frame,
+html[data-theme='dark'] .public-page .security-control-layout {
+  background: rgba(255, 255, 255, .035);
+  box-shadow: 0 20px 62px rgba(0, 0, 0, .24);
+}
+
+html[data-theme='dark'] .public-page .workflow-step-rail {
+  background: rgba(21, 25, 26, .96);
+}
+
+html[data-theme='dark'] .public-page .platform-module-rail button.is-active {
+  background: rgba(145, 186, 255, .11);
+}
+
+html[data-theme='dark'] .public-page .workflow-step-rail button.is-active,
+html[data-theme='dark'] .public-page .research-ledger-tabs button.is-active {
+  background: var(--public-paper-bright);
+}
+
+.public-platform-page .public-topic-section .public-card-grid:focus-visible,
+.examples-reading-strip .public-card-grid:focus-visible {
+  outline: 2px solid var(--public-blue);
+  outline-offset: 4px;
+}
+
 .public-page .public-section .public-section-heading {
   display: block;
   width: min(100%, 1000px);

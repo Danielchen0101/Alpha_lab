@@ -44,7 +44,11 @@ const Examples: React.FC = () => {
 
         <section className="public-section is-dark examples-reading-strip">
           <SectionHeading eyebrow={isZh ? '阅读规范' : 'HOW TO READ AN EXAMPLE'} title={isZh ? '一个漂亮曲线，不足以证明策略可靠。' : 'An attractive curve is not enough.'} description={isZh ? '公开案例必须同时展示成本、回撤、基准、样本外窗口和明确局限。缺少其中任何一项，都只能被视为待验证假设。' : 'A public example should show costs, drawdown, benchmark, out-of-sample windows, and explicit limitations together. Without them, it remains a hypothesis.'} />
-          <div className="public-card-grid">
+          <div
+            className="public-card-grid"
+            tabIndex={0}
+            aria-label={isZh ? '案例阅读规范，可横向滚动' : 'Example reading guide, horizontally scrollable'}
+          >
             {[
               [isZh ? '假设' : 'THESIS', isZh ? '策略试图解释什么现象，哪些条件必须成立。' : 'What the strategy attempts to explain and which conditions must hold.'],
               [isZh ? '验证' : 'VALIDATION', isZh ? '独立样本外窗口、基准和参数敏感度。' : 'Independent out-of-sample windows, benchmark, and parameter sensitivity.'],

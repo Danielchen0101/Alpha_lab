@@ -30,6 +30,27 @@ test.describe('Public application smoke tests', () => {
     await expect(page.locator('a[href="/forgot-password"]')).toBeVisible();
   });
 
+  test('OAuth callback errors are localized and removed from the address bar', async ({ page }) => {
+    const preservedHistoryState = {
+      idx: 7,
+      key: 'oauth-error-state',
+      usr: { returnContext: 'preserved' },
+    };
+    await page.addInitScript((state) => {
+      window.history.replaceState(state, document.title, window.location.href);
+    }, preservedHistoryState);
+    await page.goto('/signin?error=access_denied&error_description=Provider+cancelled');
+    await expect(page.getByRole('alert')).toContainText('OAuth login failed. Please try again.');
+    await expect(page).toHaveURL('/signin');
+    await expect.poll(() => page.evaluate(() => window.history.state)).toEqual(preservedHistoryState);
+  });
+
+  test('OAuth fragment errors are localized without discarding a safe next target', async ({ page }) => {
+    await page.goto('/signin?next=%2Fresearch#error=access_denied&error_description=Provider+cancelled');
+    await expect(page.getByRole('alert')).toContainText('OAuth login failed. Please try again.');
+    await expect(page).toHaveURL('/signin?next=%2Fresearch');
+  });
+
   test('account creation and recovery forms remain available without credentials', async ({ page }) => {
     await page.goto('/signup');
     await expect(page.locator('input[type="email"]')).toBeVisible();
@@ -60,11 +81,13 @@ test.describe('Public application smoke tests', () => {
     });
   }
 
-  test('unsafe redirect targets cannot escape the application', async ({ page }) => {
-    await page.goto('/signin?next=//malicious.example/path');
-    await expect(page).toHaveURL(/\/signin\?/);
-    await expect(page.locator('input[type="email"]')).toBeVisible();
-  });
+  for (const unsafeNext of ['//malicious.example/path', '/%5C%5Cmalicious.example/path']) {
+    test(`unsafe redirect target ${unsafeNext} cannot escape the application`, async ({ page }) => {
+      await page.goto(`/signin?next=${encodeURIComponent(unsafeNext)}`);
+      await expect(page).toHaveURL(/\/signin\?/);
+      await expect(page.locator('input[type="email"]')).toBeVisible();
+    });
+  }
 
   test('homepage and sign-in have no critical axe violations', async ({ page }) => {
     await page.goto('/');
