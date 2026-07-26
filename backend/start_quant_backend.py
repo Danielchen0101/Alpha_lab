@@ -6974,10 +6974,14 @@ def _background_thread_readiness_snapshot():
             crypto = dict(crypto_reader() or {})
         except Exception as exc:
             crypto = {'lastError': type(exc).__name__}
+    crypto_commands_available = crypto.get('schedulerCommandsAvailable')
+    if crypto_commands_available is None:
+        crypto_commands_available = crypto.get('schedulerHealthy')
     crypto_thread_healthy = bool(
         not crypto_required
         or (
             crypto.get('schedulerAlive')
+            and crypto_commands_available is True
             and (
                 crypto.get('heartbeatAgeSeconds') is None
                 or float(crypto.get('heartbeatAgeSeconds')) <= float(
@@ -52678,6 +52682,7 @@ _CRYPTO_API_CONTROLS = register_crypto_api(
     ai_reviewer=None,
     ai_status_resolver=None,
     notifier=_crypto_discord_notify,
+    start_background=False,
 )
 
 try:
@@ -52774,7 +52779,7 @@ _KALSHI_API_CONTROLS = register_kalshi_api(
     mask_key=mask_key,
     robot_state_path=os.path.join(os.path.dirname(__file__), "kalshi_robot_state.json"),
     paper_account_path=os.path.join(os.path.dirname(__file__), "kalshi_paper_accounts.json"),
-    start_background=True,
+    start_background=False,
     notifier=send_discord_notification,
     robot_state_loader=lambda user_id: _kalshi_load_artifact(user_id, _KALSHI_ROBOT_ARTIFACT_TYPE),
     robot_state_saver=lambda user_id, state: _kalshi_save_artifact(user_id, _KALSHI_ROBOT_ARTIFACT_TYPE, state),
@@ -52791,7 +52796,78 @@ _KALSHI_API_CONTROLS = register_kalshi_api(
 
 _pa_load_managed_positions()
 _pa_restore_runtime_state()
-_pa_ensure_scheduler()
+
+
+_BACKGROUND_SERVICES_LOCK = threading.RLock()
+_BACKGROUND_SERVICES_PID = None
+_BACKGROUND_SERVICES_LAST_CHECK = 0.0
+_BACKGROUND_SERVICES_CHECK_INTERVAL_SECONDS = 5.0
+
+
+def start_background_services():
+    """Start or recover every scheduler in the current serving process.
+
+    Gunicorn may preload the Flask module in its master process before forking
+    request workers. Starting threads during module import leaves child workers
+    with inherited, permanently-dead ``Thread`` objects. This worker-lifecycle
+    entrypoint is safe to call repeatedly: each scheduler owns its own
+    idempotent start guard, while the short throttle keeps request overhead
+    negligible and lets Render health traffic recover a dead scheduler.
+    """
+    global _BACKGROUND_SERVICES_PID, _BACKGROUND_SERVICES_LAST_CHECK
+
+    if (
+        os.getenv('PYTEST_CURRENT_TEST')
+        and str(
+            os.getenv('ALPHALAB_ENABLE_TEST_BACKGROUND_SERVICES') or ''
+        ).strip().lower() not in {'1', 'true', 'yes', 'on'}
+    ):
+        # Contract tests must never inherit a developer's production .env and
+        # begin scanning real accounts merely because test_client made a
+        # request. The fork integration test opts in explicitly.
+        return
+
+    current_pid = os.getpid()
+    current_time = time.monotonic()
+    with _BACKGROUND_SERVICES_LOCK:
+        if (
+            _BACKGROUND_SERVICES_PID == current_pid
+            and current_time - _BACKGROUND_SERVICES_LAST_CHECK
+            < _BACKGROUND_SERVICES_CHECK_INTERVAL_SECONDS
+        ):
+            return
+
+        crypto_start = (
+            _CRYPTO_API_CONTROLS.get('start')
+            if isinstance(_CRYPTO_API_CONTROLS, dict)
+            else None
+        )
+        kalshi_start = (
+            _KALSHI_API_CONTROLS.get('start')
+            if isinstance(_KALSHI_API_CONTROLS, dict)
+            else None
+        )
+        if not callable(crypto_start) or not callable(kalshi_start):
+            raise RuntimeError('Background scheduler lifecycle controls are unavailable')
+
+        crypto_start()
+        kalshi_start()
+        _pa_ensure_scheduler()
+
+        process_changed = _BACKGROUND_SERVICES_PID != current_pid
+        _BACKGROUND_SERVICES_PID = current_pid
+        _BACKGROUND_SERVICES_LAST_CHECK = time.monotonic()
+        if process_changed:
+            safe_print(
+                '[Runtime] background schedulers started in serving worker '
+                'pid=%s' % current_pid
+            )
+
+
+@app.before_request
+def _ensure_background_services_for_request():
+    """Recover schedulers after a fork or an unexpected thread exit."""
+    start_background_services()
 
 
 # 主程序入口
@@ -52802,6 +52878,7 @@ if __name__ == '__main__':
     print("================================================================================")
 
     print("\n启动服务器...")
+    start_background_services()
     debug_enabled = os.environ.get('FLASK_DEBUG', '').strip().lower() in ('1', 'true', 'yes', 'on')
     app.run(
         host='127.0.0.1',

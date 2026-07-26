@@ -105,6 +105,12 @@ FILL_CONFIRMING_ORDER_STATUSES = frozenset({
 })
 
 
+def _environment_flag_enabled(name: str) -> bool:
+    return str(os.getenv(name) or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def _scheduler_lock_path() -> str:
     configured = str(os.getenv("CRYPTO_SCHEDULER_LOCK_PATH") or "").strip()
     if configured:
@@ -5031,9 +5037,9 @@ class _CryptoService:
             heartbeat_age is not None
             and heartbeat_age <= SCHEDULER_HEARTBEAT_STALE_SECONDS
         )
-        scheduler_disabled = os.getenv(
-            "ALPHALAB_DISABLE_CRYPTO_SCHEDULER", ""
-        ).strip().lower() in {"1", "true", "yes"}
+        scheduler_disabled = _environment_flag_enabled(
+            "ALPHALAB_DISABLE_CRYPTO_SCHEDULER"
+        )
         if scheduler_disabled:
             scheduler_status = "disabled"
             scheduler_healthy = False
@@ -5312,7 +5318,7 @@ class _CryptoService:
                 return
 
     def start(self):
-        if os.getenv("ALPHALAB_DISABLE_CRYPTO_SCHEDULER", "").strip().lower() in {"1", "true", "yes"}:
+        if _environment_flag_enabled("ALPHALAB_DISABLE_CRYPTO_SCHEDULER"):
             return
         with self._lifecycle_lock:
             if self._thread and self._thread.is_alive():
@@ -5345,17 +5351,20 @@ class _CryptoService:
             executor = self._scheduler_executor
             should_shutdown = not self._scheduler_executor_stopped
             stop_event.set()
-        if thread and thread.is_alive() and thread is not threading.current_thread():
-            thread.join(timeout=5.0)
-        if should_shutdown:
-            executor.shutdown(wait=False, cancel_futures=True)
-        with self._lifecycle_lock:
+            if (
+                thread
+                and thread.is_alive()
+                and thread is not threading.current_thread()
+            ):
+                thread.join(timeout=5.0)
+            if should_shutdown:
+                executor.shutdown(wait=False, cancel_futures=True)
             if executor is self._scheduler_executor:
                 self._scheduler_executor_stopped = True
             if thread is self._thread and (thread is None or not thread.is_alive()):
                 self._thread = None
-        with self._scheduler_futures_guard:
-            self._scheduler_futures.clear()
+            with self._scheduler_futures_guard:
+                self._scheduler_futures.clear()
 
 
 def register_crypto_api(
@@ -5370,11 +5379,16 @@ def register_crypto_api(
     ai_reviewer=None,
     ai_status_resolver=None,
     notifier=None,
+    start_background=True,
 ):
-    """Register user-scoped crypto routes and start the 24/7 scheduler.
+    """Register user-scoped crypto routes and optionally start the scheduler.
 
-    Returns a mapping containing callable ``runtime`` and ``stop`` controls so
-    the host process and tests can inspect or shut down the daemon cleanly.
+    ``start_background`` defaults to ``True`` for backward compatibility.
+    Hosts that preload the application can defer the daemon until the serving
+    worker is ready, then use the returned idempotent ``start`` control.
+
+    Returns callable ``runtime``, ``start``, and ``stop`` controls plus the
+    underlying ``service`` so the host process and tests can manage the daemon.
     """
 
     existing = app.extensions.get("alphalab_crypto_api")
@@ -6186,9 +6200,15 @@ def register_crypto_api(
             return fail(exc)
 
     app.register_blueprint(blueprint)
-    service.start()
-    controls = {"runtime": service.runtime_snapshot, "stop": service.stop, "service": service}
+    controls = {
+        "runtime": service.runtime_snapshot,
+        "start": service.start,
+        "stop": service.stop,
+        "service": service,
+    }
     app.extensions["alphalab_crypto_api"] = controls
+    if start_background:
+        controls["start"]()
     return controls
 
 

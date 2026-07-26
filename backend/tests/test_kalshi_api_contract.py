@@ -497,6 +497,75 @@ def _app(tmp_path, *, auth=True):
     return app
 
 
+def test_registered_scheduler_controls_are_idempotent_and_restartable(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.delenv("ALPHALAB_DISABLE_KALSHI_SCHEDULER", raising=False)
+    app = Flask(__name__)
+    controls = register_kalshi_api(
+        app,
+        require_auth=lambda: {"id": "user-1"},
+        http_get=_fake_get,
+        robot_state_path=str(tmp_path / "state.json"),
+        paper_account_path=str(tmp_path / "paper.json"),
+        start_background=False,
+    )
+
+    assert controls["runtime"]()["required"] is False
+    assert controls["runtime"]()["threadAlive"] is False
+    assert controls["reference_stream"].enabled is False
+
+    try:
+        started = controls["start"]()
+        first_thread = controls["paper_robot"]._thread
+        assert started["required"] is True
+        assert started["threadAlive"] is True
+        assert started["healthy"] is True
+        assert controls["reference_stream"].enabled is True
+
+        repeated = controls["start"]()
+        assert repeated["required"] is True
+        assert controls["paper_robot"]._thread is first_thread
+
+        stopped = controls["stop"]()
+        assert stopped["required"] is False
+        assert stopped["threadAlive"] is False
+        assert controls["reference_stream"].enabled is False
+        assert controls["stop"]()["threadAlive"] is False
+
+        restarted = controls["start"]()
+        assert restarted["required"] is True
+        assert restarted["threadAlive"] is True
+        assert controls["reference_stream"].enabled is True
+        assert controls["paper_robot"]._thread is not first_thread
+    finally:
+        controls["stop"]()
+
+
+def test_start_background_uses_the_same_registered_scheduler_lifecycle(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.delenv("ALPHALAB_DISABLE_KALSHI_SCHEDULER", raising=False)
+    app = Flask(__name__)
+    controls = register_kalshi_api(
+        app,
+        require_auth=lambda: {"id": "user-1"},
+        http_get=_fake_get,
+        robot_state_path=str(tmp_path / "state.json"),
+        paper_account_path=str(tmp_path / "paper.json"),
+        start_background=True,
+    )
+
+    try:
+        snapshot = controls["runtime"]()
+        assert snapshot["required"] is True
+        assert snapshot["threadAlive"] is True
+        assert snapshot["healthy"] is True
+        assert controls["reference_stream"].enabled is True
+    finally:
+        controls["stop"]()
+
+
 def test_snapshot_uses_production_public_data_and_is_paper_only(tmp_path):
     payload = _app(tmp_path).test_client().get("/api/kalshi/btc-15m/snapshot").get_json()
     assert payload["success"] is True

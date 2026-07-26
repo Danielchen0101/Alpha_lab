@@ -1,4 +1,16 @@
+import json
+import os
+import re
+import signal
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,6 +61,9 @@ def test_nginx_has_no_backend_port_collision_and_supports_supabase():
 
 def test_render_start_command_keeps_scheduler_singleton():
     deployment = (ROOT / "DEPLOYMENT.md").read_text(encoding="utf-8")
+    gunicorn_config = (
+        ROOT / "backend" / "gunicorn.conf.py"
+    ).read_text(encoding="utf-8")
 
     assert "MALLOC_ARENA_MAX=2 gunicorn" in deployment
     assert "--workers 1 --threads 4 --timeout 900" in deployment
@@ -57,6 +72,153 @@ def test_render_start_command_keeps_scheduler_singleton():
     assert "SUPABASE_SERVICE_ROLE_KEY" in deployment
     assert "FERNET_KEY" in deployment
     assert "managed stop/target plans are" in deployment
+    assert "preload_app = False" in gunicorn_config
+    assert "def post_worker_init(worker):" in gunicorn_config
+    assert "start_background_services()" in gunicorn_config
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Gunicorn requires a POSIX runtime")
+def test_gunicorn_preload_starts_all_schedulers_inside_worker(tmp_path):
+    """Exercise the production master/worker fork that unit tests cannot model."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    environment = os.environ.copy()
+    for key in tuple(environment):
+        if key.startswith("RENDER"):
+            environment.pop(key, None)
+    for key in (
+        "ALPHALAB_DISABLE_CRYPTO_SCHEDULER",
+        "ALPHALAB_DISABLE_KALSHI_SCHEDULER",
+        "GUNICORN_CMD_ARGS",
+    ):
+        environment.pop(key, None)
+    environment.update({
+        "APP_ENV": "test",
+        "FLASK_ENV": "test",
+        "SUPABASE_URL": "",
+        "SUPABASE_SERVICE_ROLE_KEY": "",
+        "ALPACA_API_KEY": "",
+        "ALPACA_API_SECRET": "",
+        "FINNHUB_API_KEY": "",
+        "ALPHALAB_RUNTIME_LOCK_DIR": str(tmp_path),
+        "CRYPTO_SCHEDULER_LOCK_PATH": str(tmp_path / "crypto-scheduler.lock"),
+        "ALPHALAB_ENABLE_TEST_BACKGROUND_SERVICES": "1",
+        "PYTHONUNBUFFERED": "1",
+    })
+
+    command = [
+        sys.executable,
+        "-m",
+        "gunicorn",
+        "--preload",
+        "--workers",
+        "1",
+        "--threads",
+        "2",
+        "--bind",
+        f"127.0.0.1:{port}",
+        "--timeout",
+        "60",
+        "--access-logfile",
+        "-",
+        "--error-logfile",
+        "-",
+        "start_quant_backend:app",
+    ]
+    log_path = tmp_path / "gunicorn-preload.log"
+    with log_path.open("w+", encoding="utf-8") as log_file:
+        process = subprocess.Popen(
+            command,
+            cwd=ROOT / "backend",
+            env=environment,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + 35
+        payload = None
+        worker_pid = None
+        try:
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    break
+                output = log_path.read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                match = re.search(
+                    r"\[Runtime\] background schedulers started in serving "
+                    r"worker pid=(\d+)",
+                    output,
+                )
+                if match:
+                    worker_pid = int(match.group(1))
+                    break
+                time.sleep(0.1)
+
+            assert worker_pid is not None, (
+                "Gunicorn post_worker_init did not start the schedulers before "
+                "the first HTTP request"
+            )
+            assert worker_pid != process.pid
+
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    break
+                try:
+                    with urllib.request.urlopen(
+                        f"http://127.0.0.1:{port}/api/health",
+                        timeout=2,
+                    ) as response:
+                        payload = json.load(response)
+                    threads = (payload or {}).get("threads") or {}
+                    equity = threads.get("equityScheduler") or {}
+                    crypto = threads.get("cryptoScheduler") or {}
+                    kalshi = threads.get("kalshiScheduler") or {}
+                    if (
+                        equity.get("threadAlive") is True
+                        and equity.get("source") == "process_local"
+                        and crypto.get("schedulerAlive") is True
+                        and crypto.get("schedulerCommandsAvailable") is True
+                        and kalshi.get("threadAlive") is True
+                        and kalshi.get("schedulerLeaseCheckedAt")
+                    ):
+                        break
+                except (OSError, urllib.error.URLError, json.JSONDecodeError):
+                    time.sleep(0.25)
+
+            if payload is None:
+                log_file.flush()
+                log_file.seek(0)
+                output = log_file.read()
+                pytest.fail(
+                    "Gunicorn worker did not become healthy after preload fork:\n"
+                    + output[-4000:]
+                )
+
+            threads = payload["threads"]
+            assert threads["equityScheduler"]["threadAlive"] is True
+            assert threads["equityScheduler"]["source"] == "process_local"
+            assert threads["cryptoScheduler"]["schedulerAlive"] is True
+            assert threads["cryptoScheduler"]["schedulerCommandsAvailable"] is True
+            assert threads["kalshiScheduler"]["threadAlive"] is True
+            assert threads["kalshiScheduler"]["schedulerLeaseCheckedAt"]
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
 
 
 def test_supabase_schema_has_explicit_data_api_grants_and_owner_rls():

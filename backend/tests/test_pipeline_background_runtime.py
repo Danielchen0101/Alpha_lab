@@ -2099,6 +2099,106 @@ def test_scheduler_start_is_singleton(monkeypatch):
     assert first_thread.is_alive() is True
 
 
+def test_background_services_start_after_fork_and_are_periodically_rechecked(
+    monkeypatch,
+):
+    starts = []
+    process_id = [101]
+    clock = [100.0]
+
+    monkeypatch.setenv("ALPHALAB_ENABLE_TEST_BACKGROUND_SERVICES", "1")
+    monkeypatch.setattr(
+        backend,
+        "_CRYPTO_API_CONTROLS",
+        {"start": lambda: starts.append(("crypto", process_id[0]))},
+    )
+    monkeypatch.setattr(
+        backend,
+        "_KALSHI_API_CONTROLS",
+        {"start": lambda: starts.append(("kalshi", process_id[0]))},
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_ensure_scheduler",
+        lambda: starts.append(("equity", process_id[0])),
+    )
+    monkeypatch.setattr(backend.os, "getpid", lambda: process_id[0])
+    monkeypatch.setattr(backend.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(backend, "_BACKGROUND_SERVICES_PID", None)
+    monkeypatch.setattr(backend, "_BACKGROUND_SERVICES_LAST_CHECK", 0.0)
+
+    backend.start_background_services()
+    backend.start_background_services()
+    assert starts == [
+        ("crypto", 101),
+        ("kalshi", 101),
+        ("equity", 101),
+    ]
+
+    clock[0] += backend._BACKGROUND_SERVICES_CHECK_INTERVAL_SECONDS
+    backend.start_background_services()
+    assert starts[-3:] == [
+        ("crypto", 101),
+        ("kalshi", 101),
+        ("equity", 101),
+    ]
+    assert len(starts) == 6
+
+    process_id[0] = 202
+    backend.start_background_services()
+    assert starts[-3:] == [
+        ("crypto", 202),
+        ("kalshi", 202),
+        ("equity", 202),
+    ]
+
+
+def test_background_readiness_rejects_crypto_when_commands_are_unavailable(
+    monkeypatch,
+):
+    monkeypatch.delenv("ALPHALAB_DISABLE_CRYPTO_SCHEDULER", raising=False)
+    monkeypatch.setattr(
+        backend,
+        "_pa_scheduler_health_snapshot",
+        lambda: {"threadAlive": True, "running": True},
+    )
+    monkeypatch.setattr(
+        backend,
+        "_CRYPTO_API_CONTROLS",
+        {
+            "runtime": lambda: {
+                "schedulerAlive": True,
+                "schedulerHealthy": False,
+                "schedulerCommandsAvailable": False,
+                "heartbeatAgeSeconds": 1,
+                "staleAfterSeconds": 75,
+                "lastError": "APIError",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        backend,
+        "_KALSHI_API_CONTROLS",
+        {
+            "runtime": lambda: {
+                "required": True,
+                "healthy": True,
+                "threadAlive": True,
+            },
+        },
+    )
+
+    snapshot = backend._background_thread_readiness_snapshot()
+
+    assert snapshot["healthy"] is False
+    assert snapshot["cryptoScheduler"]["healthy"] is False
+    assert snapshot["cryptoScheduler"]["schedulerAlive"] is True
+    assert (
+        snapshot["cryptoScheduler"]["schedulerCommandsAvailable"]
+        is False
+    )
+
+
 def test_reserved_thread_start_failure_releases_only_its_token(monkeypatch):
     uid = "thread-start-failure-user"
     token = "reservation-token-1"

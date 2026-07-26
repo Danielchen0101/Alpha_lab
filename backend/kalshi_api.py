@@ -2129,6 +2129,7 @@ class _PaperRobotController:
         self._loop_alerted: set[str] = set()
         self._portfolio_display_lock = threading.RLock()
         self._local_portfolio_display: Dict[str, Dict[str, Any]] = {}
+        self._lifecycle_lock = threading.RLock()
         self._runtime_lock = threading.RLock()
         self._thread = None
         self._loop_started_at = datetime.now(timezone.utc).isoformat()
@@ -2146,16 +2147,67 @@ class _PaperRobotController:
         scheduler_disabled = str(
             os.environ.get("ALPHALAB_DISABLE_KALSHI_SCHEDULER") or ""
         ).strip().lower() in {"1", "true", "yes", "on"}
-        self._background_requested = bool(start_background)
+        self._background_requested = False
         self._scheduler_disabled = scheduler_disabled
         self.persist_derived_state = not scheduler_disabled
-        if start_background and not scheduler_disabled:
+        if start_background:
+            self.start()
+
+    def start(self) -> Dict[str, Any]:
+        """Start the background scheduler once and make later restarts safe."""
+        with self._lifecycle_lock:
+            self._background_requested = True
+            if self._scheduler_disabled:
+                if self.reference_stream is not None:
+                    self.reference_stream.set_enabled(False)
+                self.safe_print(
+                    "[KalshiRobot] background scheduler disabled by environment"
+                )
+                return self.runtime_snapshot()
+            if self._thread and self._thread.is_alive():
+                return self.runtime_snapshot()
+
+            if self.reference_stream is not None:
+                self.reference_stream.set_enabled(True)
+            self._stop_event = threading.Event()
+            stop_event = self._stop_event
+            started_at = datetime.now(timezone.utc).isoformat()
+            with self._runtime_lock:
+                self._loop_started_at = started_at
+                self._loop_last_heartbeat_monotonic = time.monotonic()
+                self._loop_last_heartbeat_at = started_at
+                self._loop_last_error = ""
+                self._scheduler_lease_owned = None
+                self._scheduler_lease_checked_at = ""
             self._thread = threading.Thread(
-                target=self._loop, name="kalshi-robot", daemon=True,
+                target=self._loop,
+                args=(stop_event,),
+                name="kalshi-robot",
+                daemon=True,
             )
             self._thread.start()
-        elif start_background and scheduler_disabled:
-            self.safe_print("[KalshiRobot] background scheduler disabled by environment")
+            return self.runtime_snapshot()
+
+    def stop(self) -> Dict[str, Any]:
+        """Stop the active scheduler idempotently without poisoning a restart."""
+        with self._lifecycle_lock:
+            self._background_requested = False
+            stop_event = self._stop_event
+            thread = self._thread
+            stop_event.set()
+            if self.reference_stream is not None:
+                self.reference_stream.set_enabled(False)
+            if (
+                thread
+                and thread.is_alive()
+                and thread is not threading.current_thread()
+            ):
+                thread.join(timeout=5.0)
+            if thread is self._thread and (
+                thread is None or not thread.is_alive()
+            ):
+                self._thread = None
+            return self.runtime_snapshot()
 
     def _load_portfolio_display(self, user_id: str, *, strict: bool = False) -> Dict[str, Any]:
         if callable(self.portfolio_display_loader):
@@ -3476,8 +3528,9 @@ class _PaperRobotController:
             },
         )
 
-    def _loop(self):
-        while not self._stop_event.wait(5.0):
+    def _loop(self, stop_event: Optional[threading.Event] = None):
+        active_stop = stop_event or self._stop_event
+        while not active_stop.wait(5.0):
             with self._runtime_lock:
                 self._loop_last_heartbeat_monotonic = time.monotonic()
                 self._loop_last_heartbeat_at = datetime.now(timezone.utc).isoformat()
@@ -3535,15 +3588,17 @@ class _PaperRobotController:
                     self._record_loop_failure(user_id, "btc15m", mode, exc)
 
     def runtime_snapshot(self) -> Dict[str, Any]:
+        with self._lifecycle_lock:
+            thread_alive = bool(self._thread and self._thread.is_alive())
+            background_requested = self._background_requested
         with self._runtime_lock:
             heartbeat_mono = self._loop_last_heartbeat_monotonic
             heartbeat_at = self._loop_last_heartbeat_at
             last_error = self._loop_last_error
             lease_owned = self._scheduler_lease_owned
             lease_checked_at = self._scheduler_lease_checked_at
-        thread_alive = bool(self._thread and self._thread.is_alive())
         heartbeat_age = max(0.0, time.monotonic() - heartbeat_mono)
-        required = bool(self._background_requested and not self._scheduler_disabled)
+        required = bool(background_requested and not self._scheduler_disabled)
         healthy = bool(
             (not required)
             or (thread_alive and heartbeat_age <= 30 and not last_error)
@@ -3780,7 +3835,7 @@ def register_kalshi_api(
         connection_loader=load_connection,
         header_factory=_signed_headers,
         safe_print=safe_print,
-        enabled=start_background,
+        enabled=False,
     )
     robot_state = KalshiRobotState(
         robot_state_path,
@@ -4249,6 +4304,8 @@ def register_kalshi_api(
         "paper_accounts": paper_accounts,
         "paper_robot": paper_robot,
         "runtime": paper_robot.runtime_snapshot,
+        "start": paper_robot.start,
+        "stop": paper_robot.stop,
         "reference_stream": reference_stream,
     }
     app.extensions["alphalab_kalshi_api"] = controls

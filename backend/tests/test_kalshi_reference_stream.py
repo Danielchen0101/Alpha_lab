@@ -80,3 +80,20 @@ def test_rotated_credentials_stop_the_previous_stream(monkeypatch):
 
     assert old_stop.is_set()
     assert stream._entries["user-1"]["thread"].started is True
+
+
+def test_stream_lifecycle_disables_active_connections_and_can_reenable():
+    stream = KalshiReferenceStream(
+        connection_loader=lambda _user_id: {},
+        header_factory=lambda *args: {},
+        enabled=True,
+    )
+    stop = threading.Event()
+    stream._entries["user-1"] = {"stop": stop}
+
+    stream.set_enabled(False)
+    assert stream.enabled is False
+    assert stop.is_set()
+
+    stream.set_enabled(True)
+    assert stream.enabled is True

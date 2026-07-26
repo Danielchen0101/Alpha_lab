@@ -124,6 +124,17 @@ class KalshiReferenceStream:
         private_key = str(config.get("production_private_key") or "").strip()
         return key_id, private_key
 
+    def set_enabled(self, enabled: bool) -> None:
+        """Enable lazy connections or stop every active authenticated stream."""
+        target = bool(enabled)
+        with self._lock:
+            self.enabled = target
+            entries = list(self._entries.values()) if not target else []
+        for entry in entries:
+            stop = entry.get("stop")
+            if stop:
+                stop.set()
+
     def ensure(self, user_id: str) -> None:
         uid = str(user_id or "").strip()
         if not self.enabled or not uid:
@@ -269,12 +280,7 @@ class KalshiReferenceStream:
                     self._store_sample(uid, sample)
 
     def close(self) -> None:
-        with self._lock:
-            entries = list(self._entries.values())
-        for entry in entries:
-            stop = entry.get("stop")
-            if stop:
-                stop.set()
+        self.set_enabled(False)
 
 
 __all__ = ["KalshiReferenceStream", "KALSHI_WS_URL", "KALSHI_WS_SIGN_PATH"]
