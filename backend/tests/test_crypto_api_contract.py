@@ -1,7 +1,9 @@
 from copy import deepcopy
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import threading
+import time
 
 from flask import Flask
 import pytest
@@ -530,6 +532,58 @@ def test_paper_learning_settings_are_bounded_and_never_carry_into_live():
     assert error.value.code == "invalid_config"
 
 
+def test_sol_experimental_sleeve_is_explicit_paper_only_and_subset_scoped():
+    default = crypto_api._default_config()
+    assert default["symbols"] == ["BTC/USD", "ETH/USD"]
+    assert default["experimentalPaperSleeves"] == []
+    assert default["strategy"]["enable_sol_drawdown_sleeve"] is False
+
+    paper = crypto_api._validate_config({
+        "mode": "paper",
+        "tradeHorizon": "short",
+        "symbols": ["BTC/USD", "ETH/USD", "SOL/USD"],
+        "experimentalPaperSleeves": ["SOL/USD"],
+        "maxAssetExposurePct": 20.0,
+    })
+    assert paper["experimentalPaperSleeves"] == ["SOL/USD"]
+    assert paper["strategy"]["enable_sol_drawdown_sleeve"] is True
+    assert paper["strategy"]["symbols"] == ["BTC/USD", "ETH/USD", "SOL/USD"]
+    # The engine applies a hard 12% cap even if the outer account mandate is
+    # wider; this assertion keeps the public config visibly separate.
+    assert paper["maxAssetExposurePct"] == 20.0
+
+    with pytest.raises(crypto_api.CryptoApiError) as missing:
+        crypto_api._validate_config({
+            "mode": "paper",
+            "symbols": ["BTC/USD", "SOL/USD"],
+        })
+    assert missing.value.code == "experimental_sleeve_required"
+
+    with pytest.raises(crypto_api.CryptoApiError) as not_subset:
+        crypto_api._validate_config({
+            "mode": "paper",
+            "symbols": ["BTC/USD", "ETH/USD"],
+            "experimentalPaperSleeves": ["SOL/USD"],
+        })
+    assert not_subset.value.code == "invalid_config"
+
+    with pytest.raises(crypto_api.CryptoApiError) as unsupported:
+        crypto_api._validate_config({
+            "mode": "paper",
+            "symbols": ["BTC/USD", "ETH/USD"],
+            "experimentalPaperSleeves": ["LINK/USD"],
+        })
+    assert unsupported.value.code == "unsupported_experimental_sleeve"
+
+    with pytest.raises(crypto_api.CryptoApiError) as live:
+        crypto_api._validate_config({
+            "mode": "live",
+            "symbols": ["BTC/USD", "ETH/USD", "SOL/USD"],
+            "experimentalPaperSleeves": ["SOL/USD"],
+        })
+    assert live.value.code == "paper_sleeve_live_forbidden"
+
+
 def test_strategy_calibration_route_is_paper_only(monkeypatch):
     store = FakeStore()
     config = crypto_api._default_config()
@@ -587,7 +641,10 @@ def test_paper_calibration_uses_three_cost_aware_windows_and_tracks_history(monk
         )
 
         def fake_backtest(_rows, candidate, **_kwargs):
-            preferred = candidate["ema_fast"] == 12
+            preferred = (
+                candidate["momentum_fast_days"] == 21
+                and candidate["momentum_slow_days"] == 63
+            )
             return {"metrics": {
                 "total_return": 0.03 if preferred else 0.01,
                 "sharpe": 1.5 if preferred else 0.5,
@@ -932,6 +989,154 @@ def test_each_scheduler_order_rechecks_stop_and_stops_running_cycle(monkeypatch)
         controls["stop"]()
 
 
+def test_cross_service_stop_waits_for_inflight_broker_submit(monkeypatch, tmp_path):
+    monkeypatch.setenv("CRYPTO_ROUTING_LOCK_DIR", str(tmp_path))
+    store = FakeStore()
+    config = crypto_api._default_config()
+    config["enabled"] = True
+    store.put_artifact(
+        "user-a",
+        crypto_api.CONFIG_TYPE,
+        crypto_api.PRIMARY_KEY,
+        payload=config,
+        idempotency_key="seed-enabled",
+    )
+    _, _, _, _, controls_a = make_api(monkeypatch, store=store)
+    _, client_b, _, _, controls_b = make_api(monkeypatch, store=store)
+    service_a = controls_a["service"]
+    entered_submit = threading.Event()
+    release_submit = threading.Event()
+    submit_finished = threading.Event()
+    stop_finished = threading.Event()
+    failures = []
+    stop_response = {}
+
+    def blocking_submit(_uid, _mode, _payload):
+        entered_submit.set()
+        assert release_submit.wait(timeout=3.0)
+        submit_finished.set()
+        return {"id": "order-a", "status": "accepted"}
+
+    def route_order():
+        try:
+            _, version = service_a.get_config_snapshot("user-a")
+            service_a._submit_order_guarded(
+                "user-a",
+                "paper",
+                {"symbol": "BTC/USD", "client_order_id": "cross-worker-order"},
+                expected_config_version=version,
+                source="scheduler",
+            )
+        except Exception as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    def stop_automation():
+        try:
+            stop_response["value"] = client_b.post("/api/crypto/automation/stop", json={})
+        finally:
+            stop_finished.set()
+
+    monkeypatch.setattr(service_a, "open_orders", lambda *_args: [])
+    monkeypatch.setattr(service_a, "_submit_order", blocking_submit)
+    route_thread = threading.Thread(target=route_order)
+    stop_thread = threading.Thread(target=stop_automation)
+    try:
+        route_thread.start()
+        assert entered_submit.wait(timeout=2.0)
+        stop_thread.start()
+        assert not stop_finished.wait(timeout=0.10)
+        release_submit.set()
+        route_thread.join(timeout=3.0)
+        stop_thread.join(timeout=3.0)
+
+        assert failures == []
+        assert submit_finished.is_set()
+        assert stop_finished.is_set()
+        assert stop_response["value"].status_code == 200
+        assert store.get_artifact(
+            "user-a", crypto_api.CONFIG_TYPE, crypto_api.PRIMARY_KEY,
+        )["payload"]["enabled"] is False
+    finally:
+        release_submit.set()
+        route_thread.join(timeout=1.0)
+        stop_thread.join(timeout=1.0)
+        controls_a["stop"]()
+        controls_b["stop"]()
+
+
+def test_cross_service_kill_times_out_without_partial_mutation(monkeypatch, tmp_path):
+    monkeypatch.setenv("CRYPTO_ROUTING_LOCK_DIR", str(tmp_path))
+    store = FakeStore()
+    config = crypto_api._default_config()
+    config["enabled"] = True
+    store.put_artifact(
+        "user-a",
+        crypto_api.CONFIG_TYPE,
+        crypto_api.PRIMARY_KEY,
+        payload=config,
+        idempotency_key="seed-enabled",
+    )
+    _, _, _, _, controls_a = make_api(monkeypatch, store=store)
+    _, client_b, _, _, controls_b = make_api(monkeypatch, store=store)
+    service_a = controls_a["service"]
+    service_b = controls_b["service"]
+    lease_held = threading.Event()
+    release_lease = threading.Event()
+
+    def hold_route():
+        with service_a._routing_guard("user-a"):
+            lease_held.set()
+            assert release_lease.wait(timeout=3.0)
+
+    original_guard = service_b._routing_guard
+
+    @contextmanager
+    def short_guard(uid, **_kwargs):
+        with original_guard(uid, timeout_seconds=0.05):
+            yield
+
+    holder = threading.Thread(target=hold_route)
+    monkeypatch.setattr(service_b, "_routing_guard", short_guard)
+    try:
+        holder.start()
+        assert lease_held.wait(timeout=2.0)
+        response = client_b.post(
+            "/api/crypto/kill-switch",
+            json={"enabled": True, "reason": "test timeout"},
+        )
+
+        assert response.status_code == 423
+        assert response.get_json()["reason"] == "routing_lease_timeout"
+        stored = store.get_artifact(
+            "user-a", crypto_api.CONFIG_TYPE, crypto_api.PRIMARY_KEY,
+        )["payload"]
+        assert stored["enabled"] is True
+        assert stored["killSwitch"] is False
+    finally:
+        release_lease.set()
+        holder.join(timeout=3.0)
+        controls_a["stop"]()
+        controls_b["stop"]()
+
+
+def test_routing_guard_is_reentrant_for_same_thread(monkeypatch, tmp_path):
+    monkeypatch.setenv("CRYPTO_ROUTING_LOCK_DIR", str(tmp_path))
+    _, _, _, store, controls = make_api(monkeypatch)
+    service = controls["service"]
+    try:
+        with service._routing_guard("user-a"):
+            config = service.get_config("user-a")
+            config["minimumConfidence"] = 61
+            service.save_config("user-a", config, "nested-config-save")
+            with service._routing_guard("user-a"):
+                assert service.get_config("user-a")["minimumConfidence"] == 61
+        assert store.get_artifact(
+            "user-a", crypto_api.CONFIG_TYPE, crypto_api.PRIMARY_KEY,
+        )["payload"]["minimumConfidence"] == 61
+    finally:
+        controls["stop"]()
+
+
 def test_stop_limit_contract_uses_asset_precision_and_valid_price_relationship(monkeypatch):
     _, _, _, _, controls = make_api(monkeypatch)
     service = controls["service"]
@@ -1227,13 +1432,15 @@ def test_short_term_strategy_allows_fifteen_minute_scheduler(monkeypatch):
         assert config["tradeHorizon"] == "short"
         assert config["intervalMinutes"] == 15
         assert config["strategy"]["bars_per_day"] == 96
-        assert config["strategy"]["ema_fast"] == 8
-        assert config["strategy"]["ema_slow"] == 21
-        assert config["strategy"]["momentum_fast_days"] == 1
-        assert config["strategy"]["momentum_slow_days"] == 3
+        assert config["strategy"]["ema_fast"] == 12
+        assert config["strategy"]["ema_slow"] == 48
+        assert config["strategy"]["momentum_fast_days"] == 2
+        assert config["strategy"]["entry_confirmation_bars"] == 2
+        assert config["strategy"]["entry_cost_multiplier"] == 2.0
+        assert config["strategy"]["momentum_slow_days"] == 7
         assert config["strategy"]["entry_score"] == 52
-        assert config["strategy"]["add_score"] == 64
-        assert config["strategy"]["reduce_score"] == 47
+        assert config["strategy"]["add_score"] == 68
+        assert config["strategy"]["reduce_score"] == 44
         assert config["strategy"]["data_stale_minutes"] == 25
 
         denied = client.put("/api/crypto/config", json={"tradeHorizon": "long", "intervalMinutes": 15})
@@ -1819,10 +2026,11 @@ def test_async_partial_and_final_fills_reconcile_cumulatively_once(monkeypatch):
         second = service.run_cycle("user-a")
         second_pending = second["runtime"]["pendingReconciliations"][client_id]
         assert second_pending["appliedFilledQty"] == pytest.approx(0.004)
-        assert second["runtime"]["positionState"]["BTC/USD"] == {
-            "last_add_price": 50_000.0,
-            "protective_stop": 48_000.0,
-        }
+        state = second["runtime"]["positionState"]["BTC/USD"]
+        assert state["last_add_price"] == 50_000.0
+        assert state["protective_stop"] == 48_000.0
+        assert state["opened_at"] and state["last_action_at"]
+        assert state["last_exit_at"] is None
 
         phase["value"] = 2
         third = service.run_cycle("user-a")
@@ -1864,8 +2072,9 @@ def test_live_bar_repair_does_not_hide_large_consecutive_missing_intervals():
         {"t": "2026-07-25T18:00:00Z", "o": 100, "h": 101, "l": 99, "c": 100, "v": 2},
         {"t": "2026-07-25T19:00:00Z", "o": 102, "h": 103, "l": 101, "c": 102, "v": 3},
     ]
-    repaired = crypto_api._repair_isolated_live_bar_gaps(rows, timeframe="15Min")
-    assert len(repaired) == 2
+    with pytest.raises(crypto_api.CryptoApiError) as error:
+        crypto_api._repair_isolated_live_bar_gaps(rows, timeframe="15Min")
+    assert error.value.code == "incomplete_live_history"
 
 
 def test_crypto_performance_ledger_starts_at_zero_and_records_realized_sale_pnl():
@@ -2229,5 +2438,147 @@ def test_runtime_endpoint_reports_scheduler_health_contract(monkeypatch):
         assert isinstance(body["runtime"]["progress"], int)
         for field in ("currentStage", "runId", "message", "heartbeat"):
             assert field in body["runtime"]
+    finally:
+        controls["stop"]()
+
+
+def test_cross_process_scheduler_lease_has_one_owner_and_standby_takes_over(monkeypatch, tmp_path):
+    first = make_api(monkeypatch)[4]
+    second = make_api(monkeypatch)[4]
+    services = [first["service"], second["service"]]
+    counts = [0, 0]
+
+    def scanner(index):
+        def run(**_kwargs):
+            counts[index] += 1
+        return run
+
+    monkeypatch.setenv("CRYPTO_SCHEDULER_LOCK_PATH", str(tmp_path / "scheduler.lock"))
+    monkeypatch.delenv("ALPHALAB_DISABLE_CRYPTO_SCHEDULER", raising=False)
+    monkeypatch.setattr(crypto_api, "SCHEDULER_SCAN_INTERVAL_SECONDS", 0.02)
+    monkeypatch.setattr(crypto_api, "SCHEDULER_LOCK_RETRY_SECONDS", 0.02)
+    for index, service in enumerate(services):
+        monkeypatch.setattr(service, "_scheduler_scan", scanner(index))
+        service.start()
+    try:
+        deadline = time.time() + 2
+        while sum(counts) == 0 and time.time() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.08)
+        assert (counts[0] > 0) != (counts[1] > 0)
+        owner = 0 if counts[0] else 1
+        standby = 1 - owner
+        (first if owner == 0 else second)["stop"]()
+        deadline = time.time() + 2
+        while counts[standby] == 0 and time.time() < deadline:
+            time.sleep(0.01)
+        assert counts[standby] > 0
+        assert services[standby].runtime_snapshot()["lockBackend"] in {"msvcrt", "fcntl"}
+    finally:
+        first["stop"]()
+        second["stop"]()
+
+
+def test_scheduler_can_restart_with_a_new_executor_and_reports_stale_heartbeat(monkeypatch, tmp_path):
+    controls = make_api(monkeypatch)[4]
+    service = controls["service"]
+    scans = {"count": 0}
+    monkeypatch.setenv("CRYPTO_SCHEDULER_LOCK_PATH", str(tmp_path / "restart.lock"))
+    monkeypatch.delenv("ALPHALAB_DISABLE_CRYPTO_SCHEDULER", raising=False)
+    monkeypatch.setattr(crypto_api, "SCHEDULER_SCAN_INTERVAL_SECONDS", 0.02)
+    monkeypatch.setattr(service, "_scheduler_scan", lambda **_kwargs: scans.update(count=scans["count"] + 1))
+    try:
+        service.start()
+        deadline = time.time() + 2
+        while scans["count"] < 1 and time.time() < deadline:
+            time.sleep(0.01)
+        service.stop()
+        before = scans["count"]
+        service.start()
+        deadline = time.time() + 2
+        while scans["count"] <= before and time.time() < deadline:
+            time.sleep(0.01)
+        assert scans["count"] > before
+        service._scheduler_last_heartbeat_monotonic = (
+            time.monotonic() - crypto_api.SCHEDULER_HEARTBEAT_STALE_SECONDS - 1
+        )
+        snapshot = service.runtime_snapshot()
+        assert snapshot["schedulerHealthy"] is False
+        assert snapshot["status"] == "stale"
+        assert snapshot["recoveryState"] == "stale"
+    finally:
+        controls["stop"]()
+
+
+def test_live_gap_budget_scales_for_many_isolated_quiet_venue_intervals():
+    start = datetime(2026, 7, 20, tzinfo=timezone.utc)
+    omitted = {20 + index * 30 for index in range(12)}
+    rows = []
+    for index in range(412):
+        if index in omitted:
+            continue
+        stamp = start + timedelta(minutes=15 * index)
+        rows.append({"t": stamp.isoformat(), "o": 100, "h": 100, "l": 100, "c": 100, "v": 1})
+    repaired = crypto_api._repair_isolated_live_bar_gaps(rows, timeframe="15Min")
+    quality = crypto_api._live_bar_data_quality(repaired, timeframe="15Min")
+    assert quality["syntheticBars"] == 12
+    assert quality["syntheticRatio"] < crypto_api.LIVE_GAP_MAX_SYNTHETIC_RATIO
+    assert quality["quality"] == "repaired"
+    assert all(row["v"] == 0 for row in repaired if row.get("synthetic"))
+
+
+def test_entry_gate_uses_fresh_depth_when_venue_daily_volume_is_low_but_live_fails_unverifiable():
+    now = datetime(2026, 7, 25, 20, 0, tzinfo=timezone.utc)
+    depth_backed = crypto_api._entry_market_gate({
+        "bid": 99.99, "ask": 100.01, "askSize": 20,
+        "quoteAsOf": now.isoformat(), "dailyDollarVolume": 10_000,
+    }, notional=500, minimum_notional=10, now=now, mode="live")
+    assert depth_backed["eligible"] is True
+    assert depth_backed["liquidityEvidence"] == "top_of_book"
+    assert "daily_liquidity_below_fallback" in depth_backed["warnings"]
+
+    unverifiable = crypto_api._entry_market_gate({
+        "bid": 99.99, "ask": 100.01, "quoteAsOf": now.isoformat(),
+    }, notional=500, minimum_notional=10, now=now, mode="live")
+    assert unverifiable["eligible"] is False
+    assert "liquidity_unverifiable" in unverifiable["reasons"]
+
+
+def test_runtime_artifact_conflict_retries_and_ledger_normalizes_cash_and_position_deltas(monkeypatch):
+    class OperationsVersionConflict(RuntimeError):
+        pass
+
+    class ConflictStore(FakeStore):
+        def __init__(self):
+            super().__init__()
+            self.fail_once = True
+
+        def put_artifact(self, *args, **kwargs):
+            if args[1] == crypto_api.RUNTIME_TYPE and self.fail_once:
+                self.fail_once = False
+                raise OperationsVersionConflict("Artifact changed concurrently")
+            return super().put_artifact(*args, **kwargs)
+
+    store = ConflictStore()
+    controls = make_api(monkeypatch, store=store)[4]
+    service = controls["service"]
+    try:
+        service.save_runtime("user-a", {"status": "armed", "enabled": True}, "retry")
+        assert service.get_runtime("user-a")["status"] == "armed"
+        store.append_audit(
+            "user-a", event_type="crypto_trade_recorded", idempotency_key="trade",
+            actor="system", source="crypto_api", resource_type="crypto", resource_id="BTC/USD",
+            payload={
+                "symbol": "BTC/USD", "source": "scheduler", "action": "EXIT", "side": "sell",
+                "filledQty": 0.01, "filledAveragePrice": 52_000,
+                "tradePerformance": {"qty": 0.01, "fillPrice": 52_000, "fee": 1.3, "tradePnl": 18.7},
+            },
+        )
+        record = service.ledger("user-a", 1)[0]
+        assert record["source"] == "scheduler"
+        assert record["fee"] == pytest.approx(1.3)
+        assert record["realizedPnl"] == pytest.approx(18.7)
+        assert record["netNotional"] == pytest.approx(518.7)
+        assert record["positionDelta"] == pytest.approx(-0.01)
     finally:
         controls["stop"]()

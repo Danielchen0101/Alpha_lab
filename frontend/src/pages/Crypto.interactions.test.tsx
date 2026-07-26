@@ -47,14 +47,17 @@ jest.mock('react-router-dom', () => ({
   Navigate: () => null,
 }));
 jest.mock('recharts', () => {
-  const Passthrough: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
+  const Container: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
     <div>{children}</div>
+  );
+  const Chart: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
+    <svg>{children}</svg>
   );
   const Empty: React.FC = () => null;
   return {
-    ResponsiveContainer: Passthrough,
-    AreaChart: Passthrough,
-    BarChart: Passthrough,
+    ResponsiveContainer: Container,
+    AreaChart: Chart,
+    BarChart: Chart,
     Area: Empty,
     Bar: Empty,
     Cell: Empty,
@@ -139,6 +142,7 @@ const overviewPayload = {
       enabled: false,
       mode: 'paper',
       symbols: ['BTC/USD', 'ETH/USD'],
+      experimentalPaperSleeves: [],
       tradeHorizon: 'short',
       intervalMinutes: 15,
       liveAuthorized: false,
@@ -286,42 +290,201 @@ afterEach(async () => {
   container.remove();
 });
 
-describe('Crypto workspace (Helios v2)', () => {
-  it('renders the professional trading desk without ML controls', async () => {
+describe('Crypto operations workspace', () => {
+  it('renders net performance, risk and explainable short-term decisions', async () => {
     await renderAt('/crypto');
     expect(container.textContent).toContain('Crypto Trading Desk');
     expect(container.textContent).toContain('BTC/USD');
     expect(container.textContent).toContain('Uptrend');
     expect(container.textContent).toContain('BUY');
-    expect(container.textContent).toContain('Crypto cumulative P/L');
+    expect(container.textContent).toContain('Cumulative realized P/L after fills');
+    expect(container.textContent).toContain('Crypto net P/L');
     expect(container.textContent).toContain('+$200.00');
-    expect(container.textContent).not.toContain('Equity trajectory');
-    expect(container.textContent).toContain('Deterministic / no AI');
+    expect(container.textContent).toContain('Order rejected');
+    expect(container.textContent).toContain('REJECTION');
+    expect(container.textContent).toContain('15-minute decision cadence does not imply a trade on every bar');
+    expect(container.textContent).toContain('reproducible / no generative AI');
     expect(container.textContent).not.toContain('P(up)');
     expect(api.overview).toHaveBeenCalledWith('paper');
     expect(api.simOverview).not.toHaveBeenCalled();
   });
 
-  it('renders server-side 24/7 automation controls', async () => {
+  it('renders server-side 24/7 health, heartbeat and automation controls', async () => {
+    api.overview.mockResolvedValue({
+      data: {
+        ...overviewPayload.data,
+        automation: {
+          enabled: true,
+          status: 'idle',
+          intervalMinutes: 15,
+          lastRun: '2026-07-25T12:00:00Z',
+          nextRun: '2026-07-25T12:15:00Z',
+          killSwitch: false,
+          locked: false,
+        },
+        runtime: {
+          ...overviewPayload.data.runtime,
+          currentStage: 'completed',
+          progress: 100,
+          heartbeatAgeSeconds: 12,
+          staleAfterSeconds: 300,
+          lastHeartbeat: '2026-07-25T12:00:05Z',
+          cycleCount: 19,
+          recoveryState: 'normal',
+        },
+      },
+    });
     await renderAt('/crypto/automation');
-    expect(container.textContent).toContain('24/7 AUTOPILOT');
-    expect(container.textContent).toContain('Automation is standing by');
+    expect(container.textContent).toContain('24/7 SERVER AUTOPILOT');
+    expect(container.textContent).toContain('24/7 scheduler healthy');
+    expect(container.textContent).toContain('Backend heartbeat');
+    expect(container.textContent).toContain('12s ago');
+    expect(container.textContent).toContain('Continuous trading is enabled');
     expect(container.textContent).toContain('Run one cycle now');
   });
 
-  it('renders the simplified strategy mandate and keeps backtest offline', async () => {
+  it('renders short-term and swing mandates while keeping backtests offline', async () => {
     await renderAt('/crypto/strategy');
     expect(container.textContent).toContain('Strategy & risk mandate');
-    expect(container.textContent).toContain('How the robot trades');
+    expect(container.textContent).toContain('Short-term');
+    expect(container.textContent).toContain('Swing');
+    expect(container.textContent).toContain('Entry, reduction and exit rules');
     expect(container.textContent).toContain('Backtesting remains an offline research tool');
     expect(container.textContent).not.toContain('Walk-forward ML');
   });
 
-  it('renders one durable Portfolio ledger', async () => {
+  it('renders configured SOL as an isolated Paper forward-validation sleeve', async () => {
+    api.overview.mockResolvedValue({
+      data: {
+        ...overviewPayload.data,
+        algorithm: { name: 'Helios Regime Ensemble', version: '2.4.0' },
+        assets: [
+          ...overviewPayload.data.assets,
+          {
+            symbol: 'SOL/USD',
+            name: 'Solana',
+            price: 184.25,
+            change24h: 1.8,
+            spreadBps: 7.5,
+            executionReady: true,
+            signal: 'WAIT',
+            confidence: 58,
+            regime: 'range',
+          },
+        ],
+        config: {
+          ...overviewPayload.data.config,
+          symbols: ['BTC/USD', 'ETH/USD', 'SOL/USD'],
+          experimentalPaperSleeves: ['SOL/USD'],
+          assetAllocationsPct: { 'BTC/USD': 18, 'ETH/USD': 12, 'SOL/USD': 4 },
+          algorithm: { name: 'Helios Regime Ensemble', version: '2.4.0' },
+        },
+      },
+    });
+
+    await renderAt('/crypto');
+    expect(container.textContent).toContain('BTC / ETH / SOL');
+    expect(container.textContent).toContain('SOL/USD');
+    expect(container.textContent).toContain('PAPER EXPERIMENT · FORWARD VALIDATION');
+    expect(container.textContent).toContain('Isolated small-cap validation');
+    expect(container.textContent).toContain('v2.4.0');
+
+    await renderAt('/crypto/strategy');
+    expect(container.textContent).toContain('SOL/USD allocation cap');
+    expect(container.textContent).toContain('FORWARD VALIDATION');
+    expect((container.querySelector('input[aria-label="SOL/USD allocation cap"]') as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it('keeps an experimental SOL sleeve visible but explicitly unavailable in Live mode', async () => {
+    mockedUseTradeMode.mockReturnValue({ tradeMode: 'real', tradeModeReady: true });
+    api.overview.mockResolvedValue({
+      data: {
+        ...overviewPayload.data,
+        mode: 'live',
+        assets: [],
+        config: {
+          ...overviewPayload.data.config,
+          mode: 'live',
+          symbols: ['SOL/USD'],
+          experimentalPaperSleeves: ['SOL/USD'],
+          assetAllocationsPct: { 'SOL/USD': 4 },
+        },
+      },
+    });
+
+    await renderAt('/crypto');
+    expect(container.textContent).toContain('SOL/USD');
+    expect(container.textContent).toContain('FORWARD VALIDATION · LIVE UNAVAILABLE');
+    expect(container.textContent).toContain('Live routing is explicitly disabled');
+
+    await renderAt('/crypto/strategy');
+    expect(container.textContent).toContain('LIVE UNAVAILABLE');
+    expect((container.querySelector('input[aria-label="SOL/USD allocation cap"]') as HTMLInputElement).disabled).toBe(true);
+    expect(api.overview).toHaveBeenCalledWith('live');
+  });
+
+  it('normalizes trades, decisions and system events into a professional ledger', async () => {
+    api.ledger.mockResolvedValue({
+      data: {
+        success: true,
+        scannedRows: 3,
+        records: [
+          {
+            id: 'trade-1',
+            eventType: 'crypto_trade_recorded',
+            symbol: 'BTC/USD',
+            source: 'scheduler',
+            createdAt: '2026-07-25T12:00:00Z',
+            payload: {
+              action: 'REDUCE',
+              status: 'filled',
+              qty: 0.01,
+              price: 65000,
+              grossNotional: 650,
+              netNotional: 647,
+              fee: 3,
+              realizedPnl: 20,
+              positionBefore: { qty: 0.2 },
+              positionAfter: { qty: 0.19 },
+              source: 'scheduler',
+            },
+          },
+          {
+            id: 'decision-1',
+            eventType: 'crypto_decision',
+            symbol: 'ETH/USD',
+            createdAt: '2026-07-25T11:45:00Z',
+            payload: { action: 'HOLD', reason: 'Spread gate blocked entry.', source: 'scheduler' },
+          },
+          {
+            id: 'system-1',
+            eventType: 'crypto_automation_started',
+            createdAt: '2026-07-25T11:30:00Z',
+            payload: { source: 'manual', message: 'Automation enabled.' },
+          },
+        ],
+      },
+    });
     await renderAt('/crypto/ledger');
-    expect(container.textContent).toContain('Trade & decision records');
-    expect(container.textContent).toContain('Routed trades');
+    expect(container.textContent).toContain('Professional trading ledger');
+    expect(container.textContent).toContain('Trades 1');
+    expect(container.textContent).toContain('Decisions 1');
+    expect(container.textContent).toContain('System 1');
+    expect(container.textContent).toContain('Realized P/L');
+    expect(container.textContent).toContain('Net result');
+    expect(container.textContent).toContain('+$17.00');
+    expect(container.textContent).toContain('0.200000 → 0.190000');
+    expect(container.textContent).toContain('Spread gate blocked entry.');
     expect(api.ledger).toHaveBeenCalledWith(100);
     expect(api.simTrades).not.toHaveBeenCalled();
+  });
+
+  it('renders the essential workspace labels in Chinese', async () => {
+    mockedUseLanguage.mockReturnValue({ language: 'zh-CN' });
+    await renderAt('/crypto');
+    expect(container.textContent).toContain('数字资产交易台');
+    expect(container.textContent).toContain('短线执行');
+    expect(container.textContent).toContain('风险敞口');
+    expect(container.textContent).toContain('拒绝下单');
   });
 });

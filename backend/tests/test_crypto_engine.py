@@ -112,6 +112,36 @@ def _intraday_bars(count=1200, seed=41):
     return bars
 
 
+def _sol_drawdown_bars(count=1500):
+    """15-minute uptrend ending in a causal four-bar, 1.3% drawdown."""
+
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    bars, price = [], 100.0
+    for index in range(count):
+        change = -0.0033 if index >= count - 4 else 0.0002
+        close = price * (1.0 + change)
+        bars.append({
+            "t": (start + timedelta(minutes=15 * index)).isoformat(),
+            "o": price,
+            "h": max(price, close) * 1.0005,
+            "l": min(price, close) * 0.9995,
+            "c": close,
+            "v": 2_000.0,
+        })
+        price = close
+    return bars
+
+
+def _sol_config():
+    return validate_config({
+        **DEFAULT_CONFIG,
+        "symbols": ["SOL/USD"],
+        "enable_sol_drawdown_sleeve": True,
+        "bars_per_day": 96,
+        "max_asset_weight": 0.20,
+    })
+
+
 def _intraday_config():
     return validate_config({
         **DEFAULT_CONFIG,
@@ -149,11 +179,22 @@ def _intraday_config():
 # --------------------------------------------------------------------- config
 
 
-def test_config_is_strict_and_supports_only_first_release_spot_universe():
+def test_config_is_strict_and_sol_requires_explicit_experimental_sleeve():
     resolved = validate_config({"symbols": ["btc/usd", "ETH/USD"]})
 
     assert resolved["symbols"] == ["BTC/USD", "ETH/USD"]
-    assert required_history_bars(resolved) == 65 * 24 + 1
+    assert resolved["enable_sol_drawdown_sleeve"] is False
+    assert required_history_bars(resolved) == 14 * 24 + 1
+    with pytest.raises(CryptoEngineError, match="requires enable_sol_drawdown_sleeve"):
+        validate_config({"symbols": ["SOL/USD"]})
+    with pytest.raises(CryptoEngineError, match="requires SOL/USD"):
+        validate_config({"enable_sol_drawdown_sleeve": True})
+    with pytest.raises(CryptoEngineError, match="15-minute"):
+        validate_config({
+            "symbols": ["SOL/USD"],
+            "enable_sol_drawdown_sleeve": True,
+            "bars_per_day": 24,
+        })
     with pytest.raises(CryptoEngineError, match="unsupported spot symbol"):
         validate_config({"symbols": ["DOGE/USD"]})
     with pytest.raises(CryptoEngineError, match="unknown config"):
@@ -246,7 +287,10 @@ def test_breakout_level_excludes_current_bar_and_indicators_have_no_future_leaka
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     extended = bars + [_bar(start, len(bars), bars[-1]["c"], bars[-1]["c"] * 1.3)]
     rows_extended = compute_indicators(extended)
-    for key in ("ema_10", "ema_40", "rsi", "adx", "zscore", "momentum_20d", "high_20d"):
+    for key in (
+        "ema_10", "ema_40", "rsi", "adx", "zscore", "momentum_20d", "high_20d",
+        "return_24h", "return_72h", "efficiency_ratio", "bollinger_mean", "fast_channel_pos",
+    ):
         assert rows_extended[index][key] == rows[index][key]
 
 
@@ -254,13 +298,15 @@ def test_breakout_level_excludes_current_bar_and_indicators_have_no_future_leaka
 
 
 def test_trend_entry_signal_is_explainable_and_long_flat_only():
-    signal = generate_signal(_hourly_bars())
+    # End on a causal post-breakout retest, not the deliberately overextended
+    # final breakout bar.
+    signal = generate_signal(_noisy_trend_bars(seed=3, drift=0.0006)[:-1])
 
     assert signal["algorithm"] == ALGORITHM_NAME
     assert signal["version"] == ALGORITHM_VERSION
     assert signal["action"] == "BUY"
     assert signal["regime"] == "trend_up"
-    assert signal["evidence"]["entry_mode"] == "trend"
+    assert signal["evidence"]["entry_mode"] in {"trend", "breakout_retest"}
     assert 0 < signal["target_weight"] <= DEFAULT_CONFIG["max_asset_weight"]
     assert signal["score"] >= DEFAULT_CONFIG["entry_score"]
     assert set(signal["ensemble"]["votes"]) == {"trend", "breakout", "momentum", "meanrev"}
@@ -274,18 +320,19 @@ def test_trend_entry_signal_is_explainable_and_long_flat_only():
     assert signal["reasons"]
 
 
-def test_range_regime_dip_entry_skips_multi_bar_confirmation():
+def test_range_regime_dip_that_cannot_pay_costs_is_rejected():
     bars = _range_with_dip_bars()
     signal = generate_signal(bars)
 
     assert signal["regime"] == "range"
-    # Dip entries execute on the signal bar (no multi-bar confirmation wait)
-    # and are sized down by meanrev_size_fraction.
-    assert signal["action"] == "BUY"
-    assert signal["evidence"]["entry_mode"] == "dip"
+    # The technical setup exists, but the lagged-mean distance is smaller
+    # than the complete fee/slippage + risk hurdle.
+    assert signal["action"] == "HOLD"
+    assert signal["evidence"]["setup_mode"] == "dip"
+    assert signal["evidence"]["entry_mode"] is None
+    assert signal["evidence"]["cost_qualified"] is False
+    assert signal["evidence"]["edge_proxy_pct"] < signal["evidence"]["cost_hurdle_pct"]
     assert signal["ensemble"]["votes"]["meanrev"] >= 0.6
-    maximum = DEFAULT_CONFIG["max_asset_weight"] * DEFAULT_CONFIG["meanrev_size_fraction"]
-    assert 0 < signal["target_weight"] <= maximum + 1e-9
 
 
 def test_panic_regime_forces_exit_of_open_position_without_confirmation():
@@ -363,16 +410,23 @@ def test_add_is_blocked_when_position_is_below_cost_reference():
 
 
 def test_confirmed_fill_state_never_widens_stop_and_clears_only_when_flat():
+    opened_at = "2026-01-01T00:00:00+00:00"
     state = apply_fill_to_position_state(
-        None, action="BUY", fill_price=100.0, stop_distance_pct=0.05, remaining_position=True
+        None, action="BUY", fill_price=100.0, stop_distance_pct=0.05,
+        remaining_position=True, filled_at=opened_at,
     )
-    assert state == {"last_add_price": 100.0, "protective_stop": 95.0}
+    assert state == {
+        "last_add_price": 100.0, "protective_stop": 95.0,
+        "opened_at": opened_at, "last_exit_at": None, "last_action_at": opened_at,
+    }
 
     added = apply_fill_to_position_state(
-        state, action="ADD", fill_price=110.0, stop_distance_pct=0.05, remaining_position=True
+        state, action="ADD", fill_price=110.0, stop_distance_pct=0.05,
+        remaining_position=True, filled_at="2026-01-01T02:00:00+00:00",
     )
     assert added["last_add_price"] == 110.0
     assert added["protective_stop"] == pytest.approx(104.5)
+    assert added["opened_at"] == opened_at
 
     # A later add at a lower price cannot widen the stop.
     lower = apply_fill_to_position_state(
@@ -386,9 +440,12 @@ def test_confirmed_fill_state_never_widens_stop_and_clears_only_when_flat():
     assert partial["protective_stop"] == pytest.approx(104.5)
 
     flat = apply_fill_to_position_state(
-        partial, action="EXIT", fill_price=120.0, remaining_position=False
+        partial, action="EXIT", fill_price=120.0, remaining_position=False,
+        filled_at="2026-01-01T04:00:00+00:00",
     )
-    assert flat == {"last_add_price": None, "protective_stop": None}
+    assert flat["last_add_price"] is None and flat["protective_stop"] is None
+    assert flat["opened_at"] is None
+    assert flat["last_exit_at"] == "2026-01-01T04:00:00+00:00"
 
     with pytest.raises(CryptoEngineError, match="remaining_position"):
         apply_fill_to_position_state(None, action="EXIT", fill_price=1.0, remaining_position="no")
@@ -437,6 +494,192 @@ def test_daily_loss_blocks_entries_but_does_not_force_liquidation():
     assert "EXIT" in held["allowed_actions"]
 
 
+def test_cost_gate_rejects_weak_edge_that_zero_cost_model_can_admit():
+    # This slice ends on a range dip whose observed edge is large enough in a
+    # zero-friction model but smaller than the configured cost/risk hurdle.
+    bars = _noisy_trend_bars(seed=8, drift=0.0003)[:-64]
+    free = generate_signal(bars, {**DEFAULT_CONFIG, "fee_bps": 0.0, "slippage_bps": 0.0})
+    costly = generate_signal(bars)
+
+    assert free["action"] == "BUY"
+    assert costly["action"] == "HOLD"
+    assert costly["evidence"]["setup_mode"] == "dip"
+    assert costly["evidence"]["edge_proxy_pct"] < costly["evidence"]["cost_hurdle_pct"]
+
+
+def test_minimum_hold_and_reentry_cooldown_preserve_immediate_protection():
+    bearish = _panic_bars()
+    config = {**DEFAULT_CONFIG, "panic_vol_ratio": 10.0}
+    timestamp = datetime.fromisoformat(bearish[-1]["t"])
+    close = bearish[-1]["c"]
+    recent_position = {
+        "weight": 0.1,
+        "average_entry_price": close * 1.2,
+        "position_state": {
+            "last_add_price": close * 1.2,
+            "protective_stop": close * 0.5,
+            "opened_at": (timestamp - timedelta(hours=1)).isoformat(),
+        },
+    }
+    held = generate_signal(bearish, config, position=recent_position)
+    assert held["action"] == "HOLD"
+    assert held["evidence"]["minimum_hold_active"] is True
+
+    recent_position["position_state"]["protective_stop"] = close * 1.01
+    protected = generate_signal(bearish, config, position=recent_position)
+    assert protected["action"] == "EXIT"
+    assert protected["evidence"]["stop_triggered"] is True
+
+    bullish = _noisy_trend_bars(seed=3, drift=0.0006)[:-1]
+    latest = datetime.fromisoformat(bullish[-1]["t"])
+    cooling = generate_signal(
+        bullish,
+        position={
+            "weight": 0.0,
+            "position_state": {"last_exit_at": (latest - timedelta(hours=1)).isoformat()},
+        },
+    )
+    ready = generate_signal(
+        bullish,
+        position={
+            "weight": 0.0,
+            "position_state": {"last_exit_at": (latest - timedelta(hours=10)).isoformat()},
+        },
+    )
+    assert cooling["action"] == "HOLD"
+    assert cooling["evidence"]["reentry_cooldown_active"] is True
+    assert ready["action"] == "BUY"
+
+
+def test_sol_experimental_sleeve_entry_exit_and_cooldown_use_persisted_timestamps():
+    bars = _sol_drawdown_bars()
+    config = _sol_config()
+    latest = datetime.fromisoformat(bars[-1]["t"])
+    close = bars[-1]["c"]
+
+    entry = generate_signal(bars, config, symbol="SOL/USD")
+    assert entry["action"] == "BUY"
+    assert entry["target_weight"] == pytest.approx(0.12)
+    assert entry["evidence"]["experimental"] is True
+    assert entry["evidence"]["sleeve"] == "sol_drawdown_v1"
+    assert "Experimental Paper sleeve" in entry["reasons"][0]
+
+    cooling = generate_signal(
+        bars,
+        config,
+        symbol="SOL/USD",
+        position={
+            "weight": 0.0,
+            "position_state": {
+                "last_exit_at": (latest - timedelta(minutes=30)).isoformat(),
+            },
+        },
+    )
+    assert cooling["action"] == "HOLD"
+    assert cooling["evidence"]["reentry_cooldown_active"] is True
+
+    cooled = generate_signal(
+        bars,
+        config,
+        symbol="SOL/USD",
+        position={
+            "weight": 0.0,
+            "position_state": {
+                "last_exit_at": (latest - timedelta(minutes=75)).isoformat(),
+            },
+        },
+    )
+    assert cooled["action"] == "BUY"
+
+    profitable = generate_signal(
+        bars,
+        config,
+        symbol="SOL/USD",
+        position={
+            "weight": 0.12,
+            "average_entry_price": close / 1.013,
+            "position_state": {
+                "opened_at": (latest - timedelta(hours=1)).isoformat(),
+            },
+        },
+    )
+    assert profitable["action"] == "EXIT"
+    assert profitable["evidence"]["take_profit"] is True
+
+    timed = generate_signal(
+        bars,
+        config,
+        symbol="SOL/USD",
+        position={
+            "weight": 0.12,
+            "average_entry_price": close,
+            "position_state": {
+                "opened_at": (latest - timedelta(hours=8, minutes=15)).isoformat(),
+            },
+        },
+    )
+    assert timed["action"] == "EXIT"
+    assert timed["evidence"]["time_stop"] is True
+
+    protected = generate_signal(
+        bars,
+        config,
+        symbol="SOL/USD",
+        position={
+            "weight": 0.12,
+            "average_entry_price": close,
+            "position_state": {
+                "opened_at": (latest - timedelta(minutes=15)).isoformat(),
+            },
+        },
+        risk_state={"drawdown": -0.09},
+    )
+    assert protected["action"] == "EXIT"
+    assert protected["evidence"]["capital_exit"] is True
+
+
+def test_sol_backtest_executes_next_open_and_keeps_full_cost_model():
+    bars = _sol_drawdown_bars()
+    latest = datetime.fromisoformat(bars[-1]["t"])
+    first_open = bars[-1]["c"] * 1.001
+    first_close = first_open * 1.015
+    second_open = first_close * 1.001
+    bars.extend([
+        {
+            "t": (latest + timedelta(minutes=15)).isoformat(),
+            "o": first_open,
+            "h": first_close * 1.0005,
+            "l": first_open * 0.9995,
+            "c": first_close,
+            "v": 2_000.0,
+        },
+        {
+            "t": (latest + timedelta(minutes=30)).isoformat(),
+            "o": second_open,
+            "h": second_open * 1.0005,
+            "l": second_open * 0.9995,
+            "c": second_open,
+            "v": 2_000.0,
+        },
+    ])
+
+    result = backtest(bars, _sol_config(), symbol="SOL/USD")
+    assert result["version"] == "2.4.0"
+    assert result["fills"][0]["action"] == "BUY"
+    assert result["fills"][0]["timestamp"] == bars[-2]["t"]
+    assert result["fills"][0]["execution_price"] == pytest.approx(first_open * 1.0005)
+    assert result["fills"][0]["fee"] > 0
+    assert result["fills"][0]["slippage_cost"] > 0
+    assert result["fills"][1]["side"] == "sell"
+    assert result["fills"][1]["timestamp"] == bars[-1]["t"]
+    assert result["cost_model"] == {
+        "fee_bps": 25.0,
+        "slippage_bps": 5.0,
+        "execution": "next_bar_open",
+        "terminal_mark": "forced_liquidation_at_final_close",
+    }
+
+
 def test_intraday_mandate_uses_fast_features_and_generates_repeatable_turnover():
     config = _intraday_config()
     bars = _intraday_bars()
@@ -451,6 +694,9 @@ def test_intraday_mandate_uses_fast_features_and_generates_repeatable_turnover()
     # away from one order on every completed bar.
     assert 10 <= tested["metrics"]["trades"] <= 150
     assert tested["cost_model"]["fee_bps"] == config["fee_bps"]
+    assert tested["metrics"]["trades_per_week"] > 1
+    assert tested["metrics"]["average_holding_hours"] >= 1
+    assert tested["trade_stats"]["frequency_unit"] == "completed_round_trips_per_week"
 
 
 # ------------------------------------------------------------------ backtests
@@ -495,7 +741,9 @@ def test_backtest_terminal_liquidation_flattens_the_book_into_cash():
     if terminal["liquidated"]:
         assert result["fills"][-1]["terminal"] is True
         assert result["equity_curve"][-1] == pytest.approx(terminal["ending_cash"])
-    assert result["ending_position_state"] == {"last_add_price": None, "protective_stop": None}
+    assert result["ending_position_state"]["last_add_price"] is None
+    assert result["ending_position_state"]["protective_stop"] is None
+    assert result["ending_position_state"]["opened_at"] is None
 
 
 def test_backtest_does_not_rewrite_past_decisions_when_future_bar_is_appended():

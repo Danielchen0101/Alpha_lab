@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
@@ -17,9 +18,10 @@ import hashlib
 import json
 import math
 import os
+import tempfile
 import threading
 import time
-from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Sequence, Tuple
 
 import requests
 from flask import Blueprint, jsonify, request
@@ -74,19 +76,134 @@ MAX_SCHEDULER_USERS = 200
 MAX_ENTRY_QUOTE_AGE_SECONDS = 60.0
 MAX_ENTRY_SPREAD_BPS = 50.0
 MIN_ENTRY_DAILY_DOLLAR_VOLUME = 1_000_000.0
-MAX_ENTRY_DAILY_VOLUME_PARTICIPATION = 0.001
+MAX_ENTRY_DAILY_VOLUME_PARTICIPATION = 0.005
 MIN_ENTRY_TOP_OF_BOOK_FRACTION = 1.0
 LEDGER_PAGE_SIZE = 100
 LEDGER_MAX_PAGES = 20
 LEDGER_MAX_SCANNED_ROWS = LEDGER_PAGE_SIZE * LEDGER_MAX_PAGES
 MAX_PENDING_RECONCILIATIONS = 100
 PENDING_RECONCILIATION_MAX_AGE = timedelta(days=30)
+SCHEDULER_SCAN_INTERVAL_SECONDS = 30.0
+SCHEDULER_LOCK_RETRY_SECONDS = 5.0
+SCHEDULER_HEARTBEAT_STALE_SECONDS = 75.0
+ROUTING_LEASE_TIMEOUT_SECONDS = 5.0
+ROUTING_LEASE_RETRY_SECONDS = 0.02
+CYCLE_HEARTBEAT_STALE_SECONDS = 15 * 60.0
+LIVE_GAP_MAX_CONSECUTIVE_BARS = 2
+LIVE_GAP_MAX_SYNTHETIC_RATIO = 0.05
+LIVE_GAP_MIN_SYNTHETIC_BUDGET = 4
+LIVE_GAP_MAX_SYNTHETIC_BUDGET = 64
 TERMINAL_ORDER_STATUSES = frozenset({
     "filled", "canceled", "cancelled", "expired", "rejected",
 })
 FILL_CONFIRMING_ORDER_STATUSES = frozenset({
     "filled", "partially_filled", "canceled", "cancelled", "expired",
 })
+
+
+def _scheduler_lock_path() -> str:
+    configured = str(os.getenv("CRYPTO_SCHEDULER_LOCK_PATH") or "").strip()
+    if configured:
+        return os.path.abspath(configured)
+    return os.path.join(tempfile.gettempdir(), "alphalab_crypto_scheduler.lock")
+
+
+def _cycle_lock_path(uid: str) -> str:
+    digest = hashlib.sha256(str(uid).encode("utf-8")).hexdigest()[:24]
+    return os.path.join(tempfile.gettempdir(), f"alphalab_crypto_cycle_{digest}.lock")
+
+
+def _routing_lock_path(uid: str) -> str:
+    digest = hashlib.sha256(str(uid).encode("utf-8")).hexdigest()[:24]
+    configured_directory = str(os.getenv("CRYPTO_ROUTING_LOCK_DIR") or "").strip()
+    directory = os.path.abspath(configured_directory) if configured_directory else tempfile.gettempdir()
+    return os.path.join(directory, f"alphalab_crypto_routing_{digest}.lock")
+
+
+def _lock_scheduler_file(handle, *, platform_name: Optional[str] = None) -> str:
+    """Acquire one byte/file non-blockingly and return the lock backend.
+
+    ``fcntl`` is unavailable on Windows.  Treating that ImportError as lock
+    contention used to make every Windows scheduler sleep forever without a
+    single scan, so the Windows path deliberately uses ``msvcrt.locking``.
+    """
+
+    platform = platform_name or os.name
+    if platform == "nt":
+        import msvcrt  # type: ignore[import-not-found]
+
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        return "msvcrt"
+
+    import fcntl  # type: ignore[import-not-found]
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return "fcntl"
+
+
+def _unlock_scheduler_file(handle, backend: str) -> None:
+    if backend == "msvcrt":
+        import msvcrt  # type: ignore[import-not-found]
+
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl  # type: ignore[import-not-found]
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _scheduler_process_lease(path: Optional[str] = None) -> Iterator[Optional[str]]:
+    """Yield the acquired cross-process lock backend, or ``None`` if busy."""
+
+    lock_path = os.path.abspath(path or _scheduler_lock_path())
+    directory = os.path.dirname(lock_path) or "."
+    os.makedirs(directory, exist_ok=True)
+    handle = open(lock_path, "a+b")
+    backend: Optional[str] = None
+    try:
+        try:
+            backend = _lock_scheduler_file(handle)
+        except (BlockingIOError, ImportError, OSError):
+            yield None
+            return
+        yield backend
+    finally:
+        if backend:
+            try:
+                _unlock_scheduler_file(handle, backend)
+            except (ImportError, OSError):
+                pass
+        handle.close()
+
+
+@contextmanager
+def _routing_process_lease(
+    uid: str,
+    *,
+    timeout_seconds: float = ROUTING_LEASE_TIMEOUT_SECONDS,
+) -> Iterator[Optional[str]]:
+    """Wait briefly for the per-user cross-process order-routing lease."""
+
+    timeout = max(0.0, float(timeout_seconds))
+    deadline = time.monotonic() + timeout
+    while True:
+        with _scheduler_process_lease(_routing_lock_path(uid)) as backend:
+            if backend is not None:
+                yield backend
+                return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            yield None
+            return
+        time.sleep(min(ROUTING_LEASE_RETRY_SECONDS, remaining))
+
 
 # Curated, reproducible research challengers.  The scheduler never downloads
 # executable strategy code from the internet: published ideas are translated
@@ -419,16 +536,18 @@ def _repair_isolated_live_bar_gaps(
     rows: Sequence[Mapping[str, Any]],
     *,
     timeframe: str,
-    maximum_synthetic_bars: int = 8,
+    maximum_synthetic_bars: Optional[int] = None,
 ) -> Sequence[Dict[str, Any]]:
     """Carry forward only isolated missing aggregates from Alpaca.
 
     Crypto can legitimately have a 15-minute interval with no trades at a
     venue. Alpaca may omit that aggregate entirely. A single zero-volume
     carry-forward bar preserves elapsed-time indicator semantics without
-    inventing a price move. Consecutive gaps, off-grid timestamps, or more
-    than two consecutive bars or eight repairs in the requested window still
-    fail closed in the engine.
+    inventing a price move. Consecutive gaps longer than two bars, off-grid
+    timestamps, or a repaired share above the bounded window budget fail
+    closed. The percentage budget scales with requested strategy history,
+    unlike the former fixed eight-bar limit that rejected healthy seven-day
+    15-minute windows from quiet venues.
     """
     interval_seconds = {"15Min": 900, "1Hour": 3600, "1Day": 86400}[timeframe]
     ordered = sorted(
@@ -437,35 +556,103 @@ def _repair_isolated_live_bar_gaps(
     )
     if len(ordered) < 2:
         return tuple(ordered)
+    repair_budget = (
+        max(0, int(maximum_synthetic_bars))
+        if maximum_synthetic_bars is not None
+        else min(
+            LIVE_GAP_MAX_SYNTHETIC_BUDGET,
+            max(
+                LIVE_GAP_MIN_SYNTHETIC_BUDGET,
+                int(math.ceil(len(ordered) * LIVE_GAP_MAX_SYNTHETIC_RATIO)),
+            ),
+        )
+    )
     repaired: list[Dict[str, Any]] = [ordered[0]]
-    synthetic_count = 0
+    synthetic_count = sum(1 for row in ordered if row.get("synthetic") is True)
+    if synthetic_count > repair_budget:
+        raise CryptoApiError(
+            "Crypto history exceeds the safe synthetic-bar quality budget",
+            status=503,
+            code="incomplete_live_history",
+        )
     for current in ordered[1:]:
         previous = repaired[-1]
         previous_time = _parse_utc_datetime(previous.get("t") or previous.get("timestamp") or previous.get("time"))
         current_time = _parse_utc_datetime(current.get("t") or current.get("timestamp") or current.get("time"))
         if previous_time is None or current_time is None:
-            repaired.append(current)
-            continue
+            raise CryptoApiError(
+                "Crypto history contains an invalid timestamp",
+                status=503,
+                code="invalid_live_history",
+            )
         elapsed = int((current_time - previous_time).total_seconds())
-        missing = elapsed // interval_seconds - 1 if elapsed > 0 and elapsed % interval_seconds == 0 else 0
-        if 1 <= missing <= 2 and synthetic_count + missing <= maximum_synthetic_bars:
+        if elapsed <= 0 or elapsed % interval_seconds != 0:
+            raise CryptoApiError(
+                "Crypto history is not ordered on timeframe boundaries",
+                status=503,
+                code="invalid_live_history",
+            )
+        missing = elapsed // interval_seconds - 1
+        if missing > LIVE_GAP_MAX_CONSECUTIVE_BARS:
+            raise CryptoApiError(
+                "Crypto history contains a consecutive market-data outage that is too large to repair safely",
+                status=503,
+                code="incomplete_live_history",
+            )
+        if missing and synthetic_count + missing > repair_budget:
+            raise CryptoApiError(
+                "Crypto history exceeds the safe synthetic-bar quality budget",
+                status=503,
+                code="incomplete_live_history",
+            )
+        if missing:
             close = _number(previous.get("c", previous.get("close")), float("nan"))
-            if math.isfinite(close) and close > 0:
-                for offset in range(1, missing + 1):
-                    timestamp = previous_time + timedelta(seconds=interval_seconds * offset)
-                    repaired.append({
-                        "t": _iso(timestamp),
-                        "o": close,
-                        "h": close,
-                        "l": close,
-                        "c": close,
-                        "v": 0.0,
-                        "synthetic": True,
-                        "syntheticReason": "bounded_missing_alpaca_aggregate",
-                    })
-                    synthetic_count += 1
+            if not math.isfinite(close) or close <= 0:
+                raise CryptoApiError(
+                    "Crypto history cannot repair a gap without a valid prior close",
+                    status=503,
+                    code="invalid_live_history",
+                )
+            for offset in range(1, missing + 1):
+                timestamp = previous_time + timedelta(seconds=interval_seconds * offset)
+                repaired.append({
+                    "t": _iso(timestamp),
+                    "o": close,
+                    "h": close,
+                    "l": close,
+                    "c": close,
+                    "v": 0.0,
+                    "synthetic": True,
+                    "syntheticReason": "bounded_missing_alpaca_aggregate",
+                })
+                synthetic_count += 1
         repaired.append(current)
     return tuple(repaired)
+
+
+def _live_bar_data_quality(rows: Sequence[Mapping[str, Any]], *, timeframe: str) -> Dict[str, Any]:
+    total = len(rows)
+    synthetic = sum(
+        1 for row in rows if isinstance(row, Mapping) and row.get("synthetic") is True
+    )
+    source = max(0, total - synthetic)
+    budget = min(
+        LIVE_GAP_MAX_SYNTHETIC_BUDGET,
+        max(
+            LIVE_GAP_MIN_SYNTHETIC_BUDGET,
+            int(math.ceil(max(1, source) * LIVE_GAP_MAX_SYNTHETIC_RATIO)),
+        ),
+    )
+    return {
+        "timeframe": timeframe,
+        "sourceBars": source,
+        "syntheticBars": synthetic,
+        "syntheticRatio": round(synthetic / total, 6) if total else 0.0,
+        "repairBudgetBars": budget,
+        "maxConsecutiveSyntheticBars": LIVE_GAP_MAX_CONSECUTIVE_BARS,
+        "quality": "repaired" if synthetic else "complete",
+        "repairPolicy": "max_2_consecutive_max_5pct_window_capped_64",
+    }
 
 
 def _repair_isolated_hourly_backtest_gaps(
@@ -547,6 +734,17 @@ def _jsonable(value: Any):
     if isinstance(value, float) and not math.isfinite(value):
         return None
     return value
+
+
+def _is_artifact_conflict(exc: Exception) -> bool:
+    name = type(exc).__name__.lower()
+    message = str(exc).lower()
+    return (
+        "versionconflict" in name
+        or "version_conflict" in name
+        or "artifact changed concurrently" in message
+        or "optimistic" in message and "conflict" in message
+    )
 
 
 def _number(value: Any, default: float = 0.0) -> float:
@@ -647,7 +845,8 @@ def _strategy_timeframe(strategy: Mapping[str, Any]) -> str:
 def _default_config() -> Dict[str, Any]:
     return {
         "mode": "paper",
-        "symbols": list(SUPPORTED_SYMBOLS),
+        "symbols": ["BTC/USD", "ETH/USD"],
+        "experimentalPaperSleeves": [],
         "enabled": False,
         "tradeHorizon": "short",
         "intervalMinutes": 15,
@@ -683,6 +882,7 @@ def _validate_config(payload: Mapping[str, Any], *, base: Optional[Mapping[str, 
         raise CryptoApiError("config must be an object", code="invalid_config")
     allowed = {
         "mode", "symbols", "enabled", "tradeHorizon", "intervalMinutes", "liveAuthorized",
+        "experimentalPaperSleeves",
         "killSwitch", "maxTotalExposure", "maxOrderNotional", "minOrderNotional",
         "allowAdds", "aiReviewEnabled", "paperLearningEnabled", "calibrationEveryCycles", "order", "strategy", "algorithm", "updatedAt",
         "riskProfile", "minimumConfidence", "maxAssetExposurePct", "maxAssetAllocation",
@@ -763,6 +963,44 @@ def _validate_config(payload: Mapping[str, Any], *, base: Optional[Mapping[str, 
             normalized_symbols.append(symbol)
     resolved["symbols"] = normalized_symbols
 
+    raw_experimental_sleeves = resolved.get("experimentalPaperSleeves") or []
+    if not isinstance(raw_experimental_sleeves, (list, tuple)):
+        raise CryptoApiError(
+            "experimentalPaperSleeves must be a list",
+            code="invalid_config",
+        )
+    experimental_sleeves = []
+    for raw in raw_experimental_sleeves:
+        sleeve_symbol = _normalize_symbol(raw)
+        if sleeve_symbol != "SOL/USD":
+            raise CryptoApiError(
+                "experimentalPaperSleeves supports only SOL/USD",
+                code="unsupported_experimental_sleeve",
+            )
+        if sleeve_symbol not in experimental_sleeves:
+            experimental_sleeves.append(sleeve_symbol)
+    if any(symbol not in normalized_symbols for symbol in experimental_sleeves):
+        raise CryptoApiError(
+            "experimentalPaperSleeves must be a subset of symbols",
+            code="invalid_config",
+        )
+    if mode != "paper" and experimental_sleeves:
+        raise CryptoApiError(
+            "experimental Paper sleeves are forbidden in live mode",
+            code="paper_sleeve_live_forbidden",
+        )
+    if "SOL/USD" in normalized_symbols and "SOL/USD" not in experimental_sleeves:
+        raise CryptoApiError(
+            "SOL/USD requires the explicit Paper-only experimental sleeve",
+            code="experimental_sleeve_required",
+        )
+    if experimental_sleeves and (trade_horizon != "short" or interval != 15):
+        raise CryptoApiError(
+            "the SOL experimental Paper sleeve requires the 15-minute short horizon",
+            code="invalid_config",
+        )
+    resolved["experimentalPaperSleeves"] = experimental_sleeves
+
     risk_profile = str(resolved.get("riskProfile") or "balanced").strip().lower()
     if risk_profile not in {"conservative", "balanced", "aggressive"}:
         raise CryptoApiError("riskProfile must be conservative, balanced, or aggressive", code="invalid_config")
@@ -835,40 +1073,51 @@ def _validate_config(payload: Mapping[str, Any], *, base: Optional[Mapping[str, 
 
     strategy = deepcopy(dict(resolved.get("strategy") or {}))
     strategy["symbols"] = normalized_symbols
+    strategy["enable_sol_drawdown_sleeve"] = "SOL/USD" in experimental_sleeves
     if trade_horizon == "short":
+        # Fifteen-minute execution does not mean a five-minute holding thesis.
+        # Use multi-hour structure and multi-day momentum, then require two
+        # completed bars.  This preset is the cost-aware short/swing mandate
+        # validated for v2.4; the former 8/21, one-bar preset repeatedly chased
+        # local breakouts and churned through tier-1 crypto fees.
         strategy.update({
             "bars_per_day": 96,
-            "ema_fast": 8,
-            "ema_slow": 21,
-            "anchor_ema": 96,
-            "momentum_fast_days": 1,
-            "momentum_slow_days": 3,
-            "atr_hours": 12,
-            "volatility_days": 2,
-            "vol_fast_days": 1,
-            "breakout_days": 1,
+            "ema_fast": 12,
+            "ema_slow": 48,
+            "anchor_ema": 120,
+            "momentum_fast_days": 2,
+            "momentum_slow_days": 7,
+            "atr_hours": 24,
+            "volatility_days": 14,
+            "vol_fast_days": 3,
+            "breakout_days": 2,
             "breakdown_days": 1,
-            "rsi_period": 9,
+            "rsi_period": 14,
             "rsi_fast_period": 3,
             "bollinger_period": 20,
-            "adx_period": 10,
-            "adx_trend_threshold": 18.0,
-            "meanrev_entry_z": -0.8,
-            "meanrev_rsi_buy": 38.0,
-            "meanrev_size_fraction": 0.65,
-            "panic_vol_ratio": 1.8,
-            "entry_confirmation_bars": 1,
-            "exit_confirmation_bars": 1,
+            "adx_period": 14,
+            "adx_trend_threshold": 22.0,
+            "meanrev_entry_z": -1.0,
+            "meanrev_rsi_buy": 35.0,
+            "meanrev_size_fraction": 0.60,
+            "panic_vol_ratio": 1.75,
+            "entry_confirmation_bars": 2,
+            "exit_confirmation_bars": 2,
             "entry_score": minimum_confidence,
-            "add_score": max(64.0, minimum_confidence + 10.0),
-            "reduce_score": min(47.0, minimum_confidence - 5.0),
-            "rebalance_band": 0.005,
-            "add_min_price_gain_pct": 0.0035,
-            "stop_atr_multiple": 1.6,
-            "trail_atr_multiple": 1.8,
-            "min_stop_distance_pct": 0.0045,
-            "max_stop_distance_pct": 0.025,
+            "add_score": max(68.0, minimum_confidence + 12.0),
+            "reduce_score": min(44.0, minimum_confidence - 8.0),
+            "rebalance_band": 0.01,
+            "add_min_price_gain_pct": 0.01,
+            "stop_atr_multiple": 2.2,
+            "trail_atr_multiple": 2.6,
+            "min_stop_distance_pct": 0.008,
+            "max_stop_distance_pct": 0.08,
             "reduced_weight_fraction": 0.50,
+            "entry_cost_multiplier": 2.0,
+            "reward_to_risk": 1.0,
+            "minimum_hold_bars": 4,
+            "reentry_cooldown_bars": 4,
+            "time_stop_bars": 96,
             "data_stale_minutes": 25,
         })
     else:
@@ -923,6 +1172,10 @@ def _runtime_default() -> Dict[str, Any]:
         "lastDecisions": [],
         "lastHeartbeat": None,
         "heartbeat": None,
+        "heartbeatAgeSeconds": None,
+        "staleAfterSeconds": CYCLE_HEARTBEAT_STALE_SECONDS,
+        "cycleStale": False,
+        "recoveryState": "idle",
         "cycleStartedAt": None,
         "currentStage": "idle",
         "progress": 0,
@@ -1139,6 +1392,7 @@ def _entry_market_gate(
     notional: float,
     minimum_notional: float,
     now: Optional[datetime] = None,
+    mode: str = "paper",
 ) -> Dict[str, Any]:
     """Fail closed for new exposure while leaving reduce/exit paths untouched."""
 
@@ -1165,9 +1419,10 @@ def _entry_market_gate(
     ask_notional = max(0.0, _number(row.get("askNotional"), ask_size * ask))
     requested = max(0.0, _number(notional))
     minimum = max(0.0, _number(minimum_notional))
-    required_daily_volume = max(
-        MIN_ENTRY_DAILY_DOLLAR_VOLUME,
-        requested / MAX_ENTRY_DAILY_VOLUME_PARTICIPATION,
+    required_daily_volume = (
+        requested / MAX_ENTRY_DAILY_VOLUME_PARTICIPATION
+        if requested > 0
+        else 0.0
     )
     required_top_of_book = max(minimum, requested * MIN_ENTRY_TOP_OF_BOOK_FRACTION)
     reasons = []
@@ -1180,14 +1435,36 @@ def _entry_market_gate(
         reasons.append("spread_unavailable")
     elif spread_bps > MAX_ENTRY_SPREAD_BPS:
         reasons.append("spread_too_wide")
-    if daily_dollar_volume <= 0:
-        warnings.append("daily_liquidity_unreported")
-    elif daily_dollar_volume < required_daily_volume:
-        reasons.append("insufficient_daily_liquidity")
-    if ask_notional <= 0:
-        warnings.append("quote_depth_unreported")
-    elif ask_notional < required_top_of_book:
+    depth_reported = ask_notional > 0
+    depth_sufficient = depth_reported and ask_notional >= required_top_of_book
+    daily_reported = daily_dollar_volume > 0
+    daily_sufficient = daily_reported and daily_dollar_volume >= required_daily_volume
+    if depth_reported and not depth_sufficient:
         reasons.append("insufficient_quote_depth")
+    elif not depth_reported:
+        warnings.append("quote_depth_unreported")
+
+    # A fresh, narrow quote with enough executable ask depth is stronger
+    # evidence for this order than Alpaca's venue-only daily aggregate. Quiet
+    # venue volume is therefore disclosed, not used as an unconditional veto.
+    # When depth is unavailable, bounded daily participation becomes the
+    # fallback; Live fails closed if neither source is measurable.
+    if depth_sufficient:
+        if not daily_reported:
+            warnings.append("daily_liquidity_unreported")
+        elif not daily_sufficient:
+            warnings.append("daily_liquidity_below_fallback")
+        liquidity_evidence = "top_of_book"
+    elif daily_sufficient:
+        liquidity_evidence = "daily_volume"
+    else:
+        liquidity_evidence = "unverified"
+        if not daily_reported:
+            warnings.append("daily_liquidity_unreported")
+            if str(mode).strip().lower() == "live":
+                reasons.append("liquidity_unverifiable")
+        else:
+            reasons.append("insufficient_daily_liquidity")
     return _jsonable({
         "eligible": not reasons,
         "reasons": reasons,
@@ -1196,8 +1473,14 @@ def _entry_market_gate(
         "spreadBps": round(spread_bps, 3) if math.isfinite(spread_bps) else None,
         "dailyDollarVolume": round(daily_dollar_volume, 2),
         "requiredDailyDollarVolume": round(required_daily_volume, 2),
+        "dailyVolumeParticipation": (
+            round(requested / daily_dollar_volume, 8)
+            if daily_dollar_volume > 0
+            else None
+        ),
         "askNotional": round(ask_notional, 2),
         "requiredAskNotional": round(required_top_of_book, 2),
+        "liquidityEvidence": liquidity_evidence,
     })
 
 
@@ -1224,6 +1507,9 @@ class _CryptoService:
         self.ai_reviewer = ai_reviewer
         self.ai_status_resolver = ai_status_resolver
         self.notifier = notifier
+        self._lifecycle_lock = threading.RLock()
+        self._scheduler_state_guard = threading.RLock()
+        self._routing_lease_state = threading.local()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._user_locks: Dict[str, threading.Lock] = {}
@@ -1231,6 +1517,18 @@ class _CryptoService:
         self._locks_guard = threading.RLock()
         self._scheduler_last_scan: Optional[str] = None
         self._scheduler_last_error = ""
+        self._scheduler_last_error_at: Optional[str] = None
+        self._scheduler_last_heartbeat: Optional[str] = None
+        self._scheduler_last_heartbeat_monotonic: Optional[float] = None
+        self._scheduler_started_at: Optional[str] = None
+        self._scheduler_consecutive_errors = 0
+        self._scheduler_recovery_count = 0
+        self._scheduler_last_lease_backend: Optional[str] = None
+        self._scheduler_last_lease_at: Optional[str] = None
+        self._scheduler_lease_contention_count = 0
+        self._scheduler_last_cycle_error = ""
+        self._scheduler_last_cycle_error_at: Optional[str] = None
+        self._scheduler_failed_cycle_count = 0
         self._scheduler_cursor = 0
         self._scheduler_scan_count = 0
         self._scheduler_last_page_size = 0
@@ -1239,12 +1537,21 @@ class _CryptoService:
         except (TypeError, ValueError):
             configured_workers = 2
         self._scheduler_workers = max(1, min(configured_workers, 2))
-        self._scheduler_executor = ThreadPoolExecutor(
+        self._scheduler_executor = self._new_scheduler_executor()
+        self._scheduler_executor_stopped = False
+        self._scheduler_futures: Dict[str, Future] = {}
+        self._scheduler_futures_guard = threading.RLock()
+
+    def _new_scheduler_executor(self) -> ThreadPoolExecutor:
+        return ThreadPoolExecutor(
             max_workers=self._scheduler_workers,
             thread_name_prefix="alphalab-crypto-cycle",
         )
-        self._scheduler_futures: Dict[str, Future] = {}
-        self._scheduler_futures_guard = threading.RLock()
+
+    def _scheduler_heartbeat(self) -> None:
+        with self._scheduler_state_guard:
+            self._scheduler_last_heartbeat = _iso()
+            self._scheduler_last_heartbeat_monotonic = time.monotonic()
 
     def _auth_user(self) -> Dict[str, Any]:
         user = self.require_auth()
@@ -1271,10 +1578,13 @@ class _CryptoService:
         return self.get_config_snapshot(uid)[0]
 
     def save_config(self, uid: str, config: Mapping[str, Any], idempotency_key: str):
-        return self.store.put_artifact(
-            uid, CONFIG_TYPE, PRIMARY_KEY, payload=_jsonable(dict(config)),
-            idempotency_key=idempotency_key,
-        )
+        # Every durable policy mutation shares the cross-process critical
+        # section used by the final broker authorization check and POST.
+        with self._routing_guard(uid):
+            return self.store.put_artifact(
+                uid, CONFIG_TYPE, PRIMARY_KEY, payload=_jsonable(dict(config)),
+                idempotency_key=idempotency_key,
+            )
 
     def get_runtime(self, uid: str) -> Dict[str, Any]:
         row = self.store.get_artifact(uid, RUNTIME_TYPE, PRIMARY_KEY)
@@ -1316,13 +1626,82 @@ class _CryptoService:
             result["message"] = "Crypto automation is %s." % result["currentStage"]
         else:
             result["message"] = str(result.get("message"))
+        heartbeat_at = _parse_utc_datetime(result.get("heartbeat"))
+        heartbeat_age = None
+        if heartbeat_at is not None:
+            heartbeat_age = max(0.0, (_utc_now() - heartbeat_at).total_seconds())
+        cycle_stale = bool(
+            result.get("status") == "running"
+            and (heartbeat_age is None or heartbeat_age > CYCLE_HEARTBEAT_STALE_SECONDS)
+        )
+        if result.get("reconciliationRequired"):
+            recovery_state = "reconciliation_required"
+        elif result.get("locked"):
+            recovery_state = "locked"
+        elif cycle_stale:
+            recovery_state = "stale"
+        elif result.get("status") == "running":
+            recovery_state = "active"
+        elif result.get("status") in {"error", "interrupted"}:
+            recovery_state = "attention"
+        elif result.get("enabled"):
+            recovery_state = "ready"
+        else:
+            recovery_state = "idle"
+        result.update({
+            "heartbeatAgeSeconds": round(heartbeat_age, 3) if heartbeat_age is not None else None,
+            "staleAfterSeconds": CYCLE_HEARTBEAT_STALE_SECONDS,
+            "cycleStale": cycle_stale,
+            "recoveryState": recovery_state,
+        })
         return result
 
     def save_runtime(self, uid: str, runtime: Mapping[str, Any], idempotency_key: str):
-        return self.store.put_artifact(
-            uid, RUNTIME_TYPE, PRIMARY_KEY, payload=_jsonable(dict(runtime)),
-            idempotency_key=idempotency_key,
-        )
+        candidate = _jsonable(dict(runtime))
+        for attempt in range(3):
+            try:
+                return self.store.put_artifact(
+                    uid, RUNTIME_TYPE, PRIMARY_KEY, payload=candidate,
+                    idempotency_key=idempotency_key,
+                )
+            except Exception as exc:
+                if not _is_artifact_conflict(exc) or attempt >= 2:
+                    raise
+                latest = self.get_runtime(uid)
+                merged = dict(latest)
+                merged.update(candidate)
+
+                # Lifecycle writes from stop/kill/reconciliation are safety
+                # fences. A stale cycle-progress CAS retry may carry useful
+                # fills/performance, but it may not re-arm or unlock them.
+                latest_status = str(latest.get("status") or "")
+                candidate_status = str(candidate.get("status") or "")
+                latest_heartbeat = _parse_utc_datetime(latest.get("heartbeat"))
+                candidate_heartbeat = _parse_utc_datetime(candidate.get("heartbeat"))
+                lifecycle_is_newer = bool(
+                    latest_heartbeat is not None
+                    and candidate_heartbeat is not None
+                    and latest_heartbeat > candidate_heartbeat
+                )
+                safety_dominates = bool(
+                    latest.get("killSwitch")
+                    or latest.get("reconciliationRequired")
+                    or (
+                        latest_status in {"stopped", "killed"}
+                        and candidate_status not in {"stopped", "killed"}
+                    )
+                    or (latest_status == "armed" and lifecycle_is_newer)
+                )
+                if safety_dominates:
+                    for field in (
+                        "status", "enabled", "locked", "killSwitch", "nextRun",
+                        "lastHeartbeat", "heartbeat", "cycleStartedAt", "currentStage",
+                        "progress", "progressDetail", "runId", "message", "killReason",
+                        "reconciliationRequired", "reconciliationMessage",
+                        "manualReviewRequired", "cooldownUntil",
+                    ):
+                        merged[field] = deepcopy(latest.get(field))
+                candidate = _jsonable(merged)
 
     def _audit(self, uid: str, event_type: str, payload: Mapping[str, Any], key: str, *, actor="system"):
         try:
@@ -1928,13 +2307,63 @@ class _CryptoService:
                     continue
                 if row.get("resource_type") != "crypto" and not str(row.get("event_type") or "").startswith("crypto_"):
                     continue
+                payload = dict(row.get("payload") or {})
+                performance = dict(payload.get("tradePerformance") or {}) if isinstance(
+                    payload.get("tradePerformance"), Mapping
+                ) else {}
+                action = str(payload.get("action") or "").strip().upper()
+                side = str(payload.get("side") or "").strip().lower()
+                if not side:
+                    side = "buy" if action in {"BUY", "ADD"} else "sell" if action in {"REDUCE", "EXIT"} else ""
+                quantity = max(0.0, _number(
+                    performance.get("qty"),
+                    _number(payload.get("filledQty"), _number(payload.get("cumulativeFilledQty"))),
+                ))
+                price = max(0.0, _number(
+                    performance.get("fillPrice"),
+                    _number(payload.get("filledAveragePrice")),
+                ))
+                notional = max(0.0, _number(
+                    payload.get("filledNotional"),
+                    quantity * price,
+                ))
+                fee = max(0.0, _number(performance.get("fee"), _number(payload.get("fee"))))
+                realized_pnl = (
+                    _number(performance.get("tradePnl"))
+                    if action in {"REDUCE", "EXIT"}
+                    else None
+                )
+                position_delta = (
+                    quantity if side == "buy" else -quantity if side == "sell" else 0.0
+                )
+                net_notional = (
+                    -(notional + fee)
+                    if side == "buy" and notional > 0
+                    else notional - fee
+                    if side == "sell" and notional > 0
+                    else None
+                )
                 result.append(_jsonable({
                     "id": row.get("id"),
                     "eventType": row.get("event_type"),
                     "actor": row.get("actor"),
-                    "source": row.get("source"),
-                    "symbol": row.get("resource_id"),
-                    "payload": dict(row.get("payload") or {}),
+                    "source": payload.get("source") or row.get("source"),
+                    "auditSource": row.get("source"),
+                    "symbol": payload.get("symbol") or row.get("resource_id"),
+                    "mode": payload.get("mode"),
+                    "action": action or None,
+                    "side": side or None,
+                    "status": payload.get("status"),
+                    "quantity": round(quantity, 12) if quantity > 0 else None,
+                    "price": round(price, 8) if price > 0 else None,
+                    "fee": round(fee, 8),
+                    "realizedPnl": round(realized_pnl, 8) if realized_pnl is not None else None,
+                    "grossNotional": round(notional, 8) if notional > 0 else None,
+                    "netNotional": round(net_notional, 8) if net_notional is not None else None,
+                    "positionDelta": round(position_delta, 12) if quantity > 0 else None,
+                    "orderId": payload.get("orderId") or performance.get("orderId"),
+                    "clientOrderId": payload.get("clientOrderId") or performance.get("clientOrderId"),
+                    "payload": payload,
                     "createdAt": row.get("created_at"),
                 }))
                 if len(result) >= safe_limit:
@@ -1961,9 +2390,9 @@ class _CryptoService:
     def _user_lock(self, uid: str) -> threading.Lock:
         """Return the stable process-local cycle lock for one user.
 
-        This is not represented as a distributed/global lock. Cross-instance
-        safety relies on durable config version checks, open-order
-        reconciliation, and deterministic broker client-order IDs.
+        ``run_cycle`` additionally holds the per-user file lease for
+        cross-process exclusion; this lock only prevents overlapping threads
+        inside the elected worker.
         """
         with self._locks_guard:
             if uid not in self._user_locks:
@@ -1983,6 +2412,59 @@ class _CryptoService:
             if uid not in self._routing_locks:
                 self._routing_locks[uid] = threading.RLock()
             return self._routing_locks[uid]
+
+    @contextmanager
+    def _routing_guard(
+        self,
+        uid: str,
+        *,
+        timeout_seconds: float = ROUTING_LEASE_TIMEOUT_SECONDS,
+    ) -> Iterator[None]:
+        """Serialize policy writes and final broker submission across workers.
+
+        Thread-local depth keeps nested calls reentrant. Lifecycle endpoints
+        can therefore hold the guard while ``save_config`` enforces the same
+        invariant for direct/internal callers, without locking the file twice.
+        """
+
+        timeout = max(0.0, float(timeout_seconds))
+        deadline = time.monotonic() + timeout
+        local_lock = self._routing_lock(uid)
+        if not local_lock.acquire(timeout=timeout):
+            raise CryptoApiError(
+                "Crypto order routing is busy; retry the safety action",
+                status=423,
+                code="routing_lease_timeout",
+            )
+        depths = getattr(self._routing_lease_state, "depths", None)
+        if not isinstance(depths, dict):
+            depths = {}
+            self._routing_lease_state.depths = depths
+        key = str(uid)
+        try:
+            if int(depths.get(key) or 0) > 0:
+                depths[key] = int(depths[key]) + 1
+                try:
+                    yield
+                finally:
+                    depths[key] -= 1
+                return
+
+            remaining = max(0.0, deadline - time.monotonic())
+            with _routing_process_lease(uid, timeout_seconds=remaining) as backend:
+                if backend is None:
+                    raise CryptoApiError(
+                        "Crypto order routing is busy; retry the safety action",
+                        status=423,
+                        code="routing_lease_timeout",
+                    )
+                depths[key] = 1
+                try:
+                    yield
+                finally:
+                    depths.pop(key, None)
+        finally:
+            local_lock.release()
 
     def _assert_order_routing_allowed(
         self,
@@ -2265,7 +2747,7 @@ class _CryptoService:
         source: str,
     ):
         """Perform the final policy and open-order checks immediately before submit."""
-        with self._routing_lock(uid):
+        with self._routing_guard(uid):
             self._assert_order_routing_allowed(
                 uid,
                 mode=mode,
@@ -2345,31 +2827,64 @@ class _CryptoService:
 
     def _record_failure(self, uid: str, config: Mapping[str, Any], runtime: Mapping[str, Any], exc: Exception):
         result = dict(runtime)
-        errors = int(result.get("consecutiveErrors") or 0) + 1
-        locked = errors >= 3
-        failed_at = _iso()
-        progress_detail = dict(result.get("progressDetail") or {})
-        progress_detail.update({"stage": "error", "currentSymbol": progress_detail.get("currentSymbol")})
+        locked = False
         message = str(exc)[:500]
-        result.update({
-            "status": "locked" if locked else "error",
-            "locked": locked,
-            "consecutiveErrors": errors,
-            "lastError": message,
-            "lastRun": failed_at,
-            "lastHeartbeat": failed_at,
-            "heartbeat": failed_at,
-            "lastCycleStartedAt": result.get("cycleStartedAt"),
-            "cycleStartedAt": None,
-            "currentStage": "error",
-            "progressDetail": progress_detail,
-            "message": message,
-            "nextRun": None if locked else (_utc_now() + timedelta(minutes=int(config["intervalMinutes"]))).isoformat(),
-        })
         try:
-            self.save_runtime(uid, result, f"crypto-runtime-error:{uid}:{time.time_ns()}")
-        except Exception:
-            pass
+            # Re-read lifecycle state under the same fence used for stop/kill
+            # and order submission. A late broker exception must never
+            # resurrect an automation session that the operator just stopped.
+            with self._routing_guard(uid):
+                current_config = self.get_config(uid)
+                result = self.get_runtime(uid)
+                errors = int(result.get("consecutiveErrors") or 0) + 1
+                failed_at = _iso()
+                stopped_concurrently = bool(
+                    current_config.get("killSwitch")
+                    or (
+                        not current_config.get("enabled")
+                        and result.get("status") in {"stopped", "killed"}
+                    )
+                )
+                locked = errors >= 3 and not stopped_concurrently
+                stage = (
+                    "killed" if current_config.get("killSwitch")
+                    else "stopped" if stopped_concurrently
+                    else "locked" if locked
+                    else "error"
+                )
+                progress_detail = dict(result.get("progressDetail") or {})
+                progress_detail.update({"stage": stage, "currentSymbol": None})
+                interval = max(1, int(_number(current_config.get("intervalMinutes"), 15)))
+                result.update({
+                    "status": stage,
+                    "enabled": bool(current_config.get("enabled")) and not stopped_concurrently,
+                    "killSwitch": bool(current_config.get("killSwitch")),
+                    "locked": locked if not stopped_concurrently else bool(result.get("locked")),
+                    "consecutiveErrors": errors,
+                    "lastError": message,
+                    "lastRun": failed_at,
+                    "lastHeartbeat": failed_at,
+                    "heartbeat": failed_at,
+                    "lastCycleStartedAt": result.get("cycleStartedAt"),
+                    "cycleStartedAt": None,
+                    "currentStage": stage,
+                    "progressDetail": progress_detail,
+                    "message": message,
+                    "nextRun": (
+                        None
+                        if locked or stopped_concurrently
+                        else (_utc_now() + timedelta(minutes=interval)).isoformat()
+                    ),
+                })
+                self.save_runtime(uid, result, f"crypto-runtime-error:{uid}:{time.time_ns()}")
+        except Exception as persist_exc:
+            try:
+                self.safe_print(
+                    "[Crypto] runtime failure state could not be persisted: %s"
+                    % type(persist_exc).__name__
+                )
+            except Exception:
+                pass
         self._audit(uid, "crypto_cycle_error", {"error": str(exc)[:500], "locked": locked}, f"crypto-error:{uid}:{time.time_ns()}")
         if locked:
             self._notify(uid, "risk_alert", {
@@ -2395,7 +2910,7 @@ class _CryptoService:
     ) -> None:
         """Persist a heartbeat without overwriting a concurrent stop/kill."""
 
-        with self._routing_lock(uid):
+        with self._routing_guard(uid):
             current_config = self._assert_order_routing_allowed(
                 uid,
                 mode=mode,
@@ -2458,13 +2973,21 @@ class _CryptoService:
             runtime.update(latest)
 
     @staticmethod
-    def _clean_position_state(value: Any) -> Dict[str, Optional[float]]:
+    def _clean_position_state(value: Any) -> Dict[str, Any]:
         raw = dict(value or {}) if isinstance(value, Mapping) else {}
         last_add = _number(raw.get("last_add_price"), 0.0)
         protective_stop = _number(raw.get("protective_stop", raw.get("stop_price")), 0.0)
+
+        def clean_timestamp(field: str) -> Optional[str]:
+            parsed = _parse_utc_datetime(raw.get(field))
+            return parsed.isoformat() if parsed is not None else None
+
         return {
             "last_add_price": last_add if last_add > 0 else None,
             "protective_stop": protective_stop if protective_stop > 0 else None,
+            "opened_at": clean_timestamp("opened_at"),
+            "last_exit_at": clean_timestamp("last_exit_at"),
+            "last_action_at": clean_timestamp("last_action_at"),
         }
 
     @staticmethod
@@ -2547,7 +3070,7 @@ class _CryptoService:
         clear_reconciliation_lock: bool,
         key: str,
     ) -> None:
-        with self._routing_lock(uid):
+        with self._routing_guard(uid):
             latest = self.get_runtime(uid)
             latest["positionState"] = {
                 _normalize_symbol(symbol): self._clean_position_state(state)
@@ -2599,7 +3122,7 @@ class _CryptoService:
     ) -> None:
         safe_message = str(message or "Broker fill reconciliation is required")[:500]
         now = _iso()
-        with self._routing_lock(uid):
+        with self._routing_guard(uid):
             latest = self.get_runtime(uid)
             progress_detail = dict(latest.get("progressDetail") or {})
             progress_detail.update({"stage": "reconciliation_required", "currentSymbol": None})
@@ -2643,7 +3166,7 @@ class _CryptoService:
         positions_by_symbol: Mapping[str, Mapping[str, Any]],
         open_orders: Sequence[Mapping[str, Any]],
         asset_by_symbol: Mapping[str, Mapping[str, Any]],
-    ) -> Tuple[Dict[str, Dict[str, Optional[float]]], Dict[str, Dict[str, Any]]]:
+    ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
         raw_pending = runtime.get("pendingReconciliations") or {}
         if not isinstance(raw_pending, Mapping):
             self._raise_reconciliation_required(uid, runtime, "Pending crypto reconciliation state is malformed")
@@ -2873,6 +3396,7 @@ class _CryptoService:
                         fill_price=incremental_price,
                         stop_distance_pct=stop_distance if action in {"BUY", "ADD"} else None,
                         remaining_position=remaining_position,
+                        filled_at=str(order.get("filledAt") or order.get("filled_at") or now.isoformat()),
                     ))
                 except Exception as exc:
                     self._raise_reconciliation_required(
@@ -3033,7 +3557,7 @@ class _CryptoService:
             and winner["robustScore"] >= baseline["robustScore"] + 0.15
         )
         if promoted:
-            with self._routing_lock(uid):
+            with self._routing_guard(uid):
                 latest, latest_version = self.get_config_snapshot(uid)
                 if latest_version != version or latest.get("mode") != "paper":
                     promoted = False
@@ -3083,6 +3607,31 @@ class _CryptoService:
         }
 
     def run_cycle(
+        self,
+        uid: str,
+        *,
+        source: str = "manual",
+        dry_run: bool = False,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        # The in-memory lock below protects threads in this process. The file
+        # lease prevents a manual request handled by another Windows/Linux web
+        # worker from overlapping the elected scheduler's cycle for this user.
+        with _scheduler_process_lease(_cycle_lock_path(uid)) as lock_backend:
+            if lock_backend is None:
+                raise CryptoApiError(
+                    "A crypto cycle is already running",
+                    status=409,
+                    code="cycle_in_progress",
+                )
+            return self._run_cycle_process_local(
+                uid,
+                source=source,
+                dry_run=dry_run,
+                idempotency_key=idempotency_key,
+            )
+
+    def _run_cycle_process_local(
         self,
         uid: str,
         *,
@@ -3226,7 +3775,7 @@ class _CryptoService:
             signals = []
             risk_state = self._equity_risk({**runtime, "equityCurve": risk_curve})
             persisted_position_states = reconciled_position_states
-            next_position_states: Dict[str, Dict[str, Optional[float]]] = {
+            next_position_states: Dict[str, Dict[str, Any]] = {
                 _normalize_symbol(symbol): self._clean_position_state(state)
                 for symbol, state in persisted_position_states.items()
                 if _normalize_symbol(symbol)
@@ -3245,11 +3794,28 @@ class _CryptoService:
                         total_symbols=len(cycle_symbols),
                         current_symbol=symbol,
                     )
-                strategy_timeframe = _strategy_timeframe(config["strategy"])
+                exit_only = symbol in exit_only_symbols
+                signal_strategy = config["strategy"]
+                if exit_only:
+                    # Continue managing a legacy position after the user
+                    # narrows the configured universe. SOL must remain on its
+                    # dedicated sleeve even here; it may never fall through to
+                    # the core ensemble.
+                    signal_strategy = {
+                        **config["strategy"],
+                        "symbols": [symbol],
+                        "enable_sol_drawdown_sleeve": symbol == "SOL/USD",
+                        "bars_per_day": (
+                            96
+                            if symbol == "SOL/USD"
+                            else config["strategy"]["bars_per_day"]
+                        ),
+                    }
+                strategy_timeframe = _strategy_timeframe(signal_strategy)
                 rows = self.bars(
                     uid, mode, symbol,
                     timeframe=strategy_timeframe,
-                    limit=required_history_bars(config["strategy"]) + 4,
+                    limit=required_history_bars(signal_strategy) + 4,
                 )
                 # Re-apply the bounded repair at the strategy boundary. This
                 # also covers rows served by a pre-existing adapter cache and
@@ -3257,11 +3823,8 @@ class _CryptoService:
                 rows = _repair_isolated_live_bar_gaps(
                     rows,
                     timeframe=strategy_timeframe,
-                    maximum_synthetic_bars=12,
                 )
-                synthetic_bar_count = sum(
-                    1 for row in rows if isinstance(row, Mapping) and row.get("synthetic") is True
-                )
+                data_quality = _live_bar_data_quality(rows, timeframe=strategy_timeframe)
                 current = positions_by_symbol.get(symbol) or {}
                 current_value = _number(current.get("marketValue"))
                 current_qty = max(0.0, _number(current.get("qty")))
@@ -3271,16 +3834,21 @@ class _CryptoService:
                     "average_entry_price": current.get("averageEntryPrice"),
                     "last_add_price": stored_position_state.get("last_add_price"),
                     "protective_stop": stored_position_state.get("protective_stop"),
+                    "opened_at": stored_position_state.get("opened_at"),
+                    "last_exit_at": stored_position_state.get("last_exit_at"),
+                    "last_action_at": stored_position_state.get("last_action_at"),
+                    "position_state": stored_position_state,
                 }
-                signal = generate_signal(rows, config["strategy"], position=position, risk_state=risk_state, now=_utc_now())
+                signal = generate_signal(
+                    rows,
+                    signal_strategy,
+                    symbol=symbol,
+                    position=position,
+                    risk_state=risk_state,
+                    now=_utc_now(),
+                )
                 signal = _jsonable(signal)
-                signal["dataQuality"] = {
-                    "timeframe": strategy_timeframe,
-                    "sourceBars": len(rows) - synthetic_bar_count,
-                    "syntheticBars": synthetic_bar_count,
-                    "repairPolicy": "max_2_consecutive_max_12_window",
-                }
-                exit_only = symbol in exit_only_symbols
+                signal["dataQuality"] = data_quality
                 if exit_only:
                     # A supported broker position that predates the current
                     # configured universe remains managed, but may never grow.
@@ -3625,6 +4193,7 @@ class _CryptoService:
                                     notional=notional,
                                     minimum_notional=_number(config["minOrderNotional"]),
                                     now=_utc_now(),
+                                    mode=mode,
                                 )
                             except Exception as snapshot_exc:
                                 entry_gate = {
@@ -3838,6 +4407,10 @@ class _CryptoService:
                             fill_price=fill_price,
                             stop_distance_pct=submitted_stop_distance if action in {"BUY", "ADD"} else None,
                             remaining_position=remaining_position,
+                            filled_at=str(
+                                order_result.get("filled_at", order_result.get("filledAt"))
+                                or _iso()
+                            ),
                         ))
                         next_position_states[symbol] = position_state
                         pending_record["appliedFilledQty"] = filled_qty
@@ -3883,7 +4456,7 @@ class _CryptoService:
                     })
                 decisions.append(_jsonable(decision))
 
-            with self._routing_lock(uid):
+            with self._routing_guard(uid):
                 self._assert_order_routing_allowed(
                     uid,
                     mode=mode,
@@ -4003,6 +4576,30 @@ class _CryptoService:
         with self._scheduler_futures_guard:
             in_flight = sum(1 for future in self._scheduler_futures.values() if not future.done())
         scheduler_alive = bool(self._thread and self._thread.is_alive())
+        with self._scheduler_state_guard:
+            heartbeat = self._scheduler_last_heartbeat
+            heartbeat_mono = self._scheduler_last_heartbeat_monotonic
+            last_scan = self._scheduler_last_scan
+            last_error = self._scheduler_last_error
+            last_error_at = self._scheduler_last_error_at
+            started_at = self._scheduler_started_at
+            consecutive_errors = self._scheduler_consecutive_errors
+            recovery_count = self._scheduler_recovery_count
+            last_lease_backend = self._scheduler_last_lease_backend
+            last_lease_at = self._scheduler_last_lease_at
+            lease_contention_count = self._scheduler_lease_contention_count
+            last_cycle_error = self._scheduler_last_cycle_error
+            last_cycle_error_at = self._scheduler_last_cycle_error_at
+            failed_cycle_count = self._scheduler_failed_cycle_count
+        heartbeat_age = (
+            max(0.0, time.monotonic() - heartbeat_mono)
+            if heartbeat_mono is not None
+            else None
+        )
+        heartbeat_fresh = bool(
+            heartbeat_age is not None
+            and heartbeat_age <= SCHEDULER_HEARTBEAT_STALE_SECONDS
+        )
         scheduler_disabled = os.getenv(
             "ALPHALAB_DISABLE_CRYPTO_SCHEDULER", ""
         ).strip().lower() in {"1", "true", "yes"}
@@ -4010,25 +4607,54 @@ class _CryptoService:
             scheduler_status = "disabled"
             scheduler_healthy = False
             scheduler_message = "Crypto scheduler is disabled by deployment configuration."
-        elif scheduler_alive and self._scheduler_last_error:
-            scheduler_status = "degraded"
-            scheduler_healthy = False
-            scheduler_message = "Crypto scheduler is running with a recent scan error."
-        elif scheduler_alive:
-            scheduler_status = "healthy"
-            scheduler_healthy = True
-            scheduler_message = "Crypto scheduler is running."
-        else:
+            recovery_state = "disabled"
+        elif not scheduler_alive:
             scheduler_status = "stopped"
             scheduler_healthy = False
             scheduler_message = "Crypto scheduler is not running."
+            recovery_state = "stopped"
+        elif not heartbeat_fresh:
+            scheduler_status = "stale"
+            scheduler_healthy = False
+            scheduler_message = "Crypto scheduler thread has a stale progress heartbeat."
+            recovery_state = "stale"
+        elif last_error:
+            scheduler_status = "degraded"
+            scheduler_healthy = False
+            scheduler_message = "Crypto scheduler is running with a recent scan error."
+            recovery_state = "recovering"
+        elif lease_contention_count and last_lease_at is None:
+            scheduler_status = "standby"
+            scheduler_healthy = False
+            scheduler_message = "Another backend process currently owns the crypto scheduler lease."
+            recovery_state = "standby"
+        else:
+            scheduler_status = "healthy"
+            scheduler_healthy = True
+            scheduler_message = "Crypto scheduler is running."
+            recovery_state = "steady"
         return {
             "schedulerHealthy": scheduler_healthy,
             "status": scheduler_status,
             "message": scheduler_message,
             "schedulerAlive": scheduler_alive,
-            "lastScan": self._scheduler_last_scan,
-            "lastError": self._scheduler_last_error,
+            "startedAt": started_at,
+            "lastHeartbeat": heartbeat,
+            "heartbeat": heartbeat,
+            "heartbeatAgeSeconds": round(heartbeat_age, 3) if heartbeat_age is not None else None,
+            "staleAfterSeconds": SCHEDULER_HEARTBEAT_STALE_SECONDS,
+            "recoveryState": recovery_state,
+            "lastScan": last_scan,
+            "lastError": last_error,
+            "lastErrorAt": last_error_at,
+            "consecutiveScanErrors": consecutive_errors,
+            "recoveryCount": recovery_count,
+            "lockBackend": last_lease_backend,
+            "lastLeaseAt": last_lease_at,
+            "leaseContentionCount": lease_contention_count,
+            "lastCycleError": last_cycle_error,
+            "lastCycleErrorAt": last_cycle_error_at,
+            "failedCycleCount": failed_cycle_count,
             "workers": self._scheduler_workers,
             "inFlight": in_flight,
             "scanCount": self._scheduler_scan_count,
@@ -4093,10 +4719,25 @@ class _CryptoService:
             ):
                 self.calibrate_paper_strategy(uid, apply=True, source="scheduler")
         except Exception as exc:
-            self.safe_print("[CryptoScheduler] user cycle failed: %s" % type(exc).__name__)
+            if not (
+                isinstance(exc, CryptoApiError)
+                and exc.code in {
+                    "automation_disabled", "automation_stopped", "automation_locked",
+                    "cycle_in_progress", "kill_switch_active", "reconciliation_required",
+                }
+            ):
+                with self._scheduler_state_guard:
+                    self._scheduler_last_cycle_error = type(exc).__name__
+                    self._scheduler_last_cycle_error_at = _iso()
+                    self._scheduler_failed_cycle_count += 1
+            try:
+                self.safe_print("[CryptoScheduler] user cycle failed: %s" % type(exc).__name__)
+            except Exception:
+                pass
 
-    def _scheduler_scan(self):
+    def _scheduler_scan(self, *, executor=None, stop_event: Optional[threading.Event] = None):
         """Submit a bounded, rotating page without starving later users."""
+        active_executor = executor or self._scheduler_executor
         with self._scheduler_futures_guard:
             for uid, future in list(self._scheduler_futures.items()):
                 if future.done():
@@ -4113,12 +4754,14 @@ class _CryptoService:
             self._scheduler_last_page_size = len(candidates)
             inspected = 0
             for uid in candidates:
+                if stop_event is not None and stop_event.is_set():
+                    break
                 if available <= 0:
                     break
                 inspected += 1
                 if uid in self._scheduler_futures:
                     continue
-                self._scheduler_futures[uid] = self._scheduler_executor.submit(
+                self._scheduler_futures[uid] = active_executor.submit(
                     self._scheduler_run_user, uid,
                 )
                 available -= 1
@@ -4128,52 +4771,120 @@ class _CryptoService:
                 self._scheduler_cursor = 0
             self._scheduler_scan_count += 1
 
-    def _scheduler_loop(self):
-        lock_handle = None
-        while not self._stop.wait(0.1):
+    def _scheduler_loop(
+        self,
+        stop_event: Optional[threading.Event] = None,
+        executor=None,
+    ):
+        active_stop = stop_event or self._stop
+        active_executor = executor or self._scheduler_executor
+        self._scheduler_heartbeat()
+        while not active_stop.is_set():
+            self._scheduler_heartbeat()
             try:
-                try:
-                    import fcntl
-                    lock_handle = open(os.getenv("CRYPTO_SCHEDULER_LOCK_PATH", "/tmp/alphalab_crypto_scheduler.lock"), "a+")
-                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except (ImportError, BlockingIOError, OSError):
-                    if lock_handle:
-                        lock_handle.close()
-                    lock_handle = None
-                    if self._stop.wait(30):
-                        return
-                    continue
-                self._scheduler_scan()
-                self._scheduler_last_scan = _iso()
-                self._scheduler_last_error = ""
+                with _scheduler_process_lease() as lock_backend:
+                    if lock_backend is None:
+                        with self._scheduler_state_guard:
+                            self._scheduler_lease_contention_count += 1
+                        if active_stop.wait(SCHEDULER_LOCK_RETRY_SECONDS):
+                            return
+                        continue
+
+                    # The elected process owns the file lock for the complete
+                    # scheduler-thread lifetime, including all in-flight cycle
+                    # submissions. Releasing after submit allowed a second
+                    # worker to schedule the same users immediately.
+                    with self._scheduler_state_guard:
+                        self._scheduler_last_lease_backend = lock_backend
+                        self._scheduler_last_lease_at = _iso()
+                    while not active_stop.is_set():
+                        self._scheduler_heartbeat()
+                        try:
+                            self._scheduler_scan(
+                                executor=active_executor,
+                                stop_event=active_stop,
+                            )
+                            completed_at = _iso()
+                            with self._scheduler_state_guard:
+                                had_error = bool(self._scheduler_last_error)
+                                self._scheduler_last_scan = completed_at
+                                self._scheduler_last_error = ""
+                                self._scheduler_last_error_at = None
+                                self._scheduler_consecutive_errors = 0
+                                if had_error:
+                                    self._scheduler_recovery_count += 1
+                        except Exception as exc:
+                            with self._scheduler_state_guard:
+                                self._scheduler_last_error = type(exc).__name__
+                                self._scheduler_last_error_at = _iso()
+                                self._scheduler_consecutive_errors += 1
+                            try:
+                                self.safe_print(
+                                    "[CryptoScheduler] scan failed: %s" % type(exc).__name__
+                                )
+                            except Exception:
+                                pass
+                        self._scheduler_heartbeat()
+                        if active_stop.wait(SCHEDULER_SCAN_INTERVAL_SECONDS):
+                            return
             except Exception as exc:
-                self._scheduler_last_error = type(exc).__name__
-                self.safe_print("[CryptoScheduler] scan failed: %s" % type(exc).__name__)
-            finally:
-                if lock_handle:
-                    try:
-                        import fcntl
-                        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-                    except Exception:
-                        pass
-                    lock_handle.close()
-                    lock_handle = None
-            if self._stop.wait(30):
+                with self._scheduler_state_guard:
+                    self._scheduler_last_error = type(exc).__name__
+                    self._scheduler_last_error_at = _iso()
+                    self._scheduler_consecutive_errors += 1
+                try:
+                    self.safe_print("[CryptoScheduler] scan failed: %s" % type(exc).__name__)
+                except Exception:
+                    pass
+            self._scheduler_heartbeat()
+            if active_stop.wait(SCHEDULER_LOCK_RETRY_SECONDS):
                 return
 
     def start(self):
         if os.getenv("ALPHALAB_DISABLE_CRYPTO_SCHEDULER", "").strip().lower() in {"1", "true", "yes"}:
             return
-        if self._thread and self._thread.is_alive():
-            return
-        self._thread = threading.Thread(target=self._scheduler_loop, name="alphalab-crypto-24x7", daemon=True)
-        self._thread.start()
+        with self._lifecycle_lock:
+            if self._thread and self._thread.is_alive():
+                return
+            if self._scheduler_executor_stopped:
+                self._scheduler_executor = self._new_scheduler_executor()
+                self._scheduler_executor_stopped = False
+                with self._scheduler_futures_guard:
+                    self._scheduler_futures.clear()
+            self._stop = threading.Event()
+            stop_event = self._stop
+            executor = self._scheduler_executor
+            started_at = _iso()
+            with self._scheduler_state_guard:
+                self._scheduler_started_at = started_at
+                self._scheduler_last_heartbeat = started_at
+                self._scheduler_last_heartbeat_monotonic = time.monotonic()
+            self._thread = threading.Thread(
+                target=self._scheduler_loop,
+                args=(stop_event, executor),
+                name="alphalab-crypto-24x7",
+                daemon=True,
+            )
+            self._thread.start()
 
     def stop(self):
-        self._stop.set()
-        if self._thread and self._thread.is_alive() and self._thread is not threading.current_thread():
-            self._thread.join(timeout=1.0)
-        self._scheduler_executor.shutdown(wait=True, cancel_futures=True)
+        with self._lifecycle_lock:
+            stop_event = self._stop
+            thread = self._thread
+            executor = self._scheduler_executor
+            should_shutdown = not self._scheduler_executor_stopped
+            stop_event.set()
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=5.0)
+        if should_shutdown:
+            executor.shutdown(wait=False, cancel_futures=True)
+        with self._lifecycle_lock:
+            if executor is self._scheduler_executor:
+                self._scheduler_executor_stopped = True
+            if thread is self._thread and (thread is None or not thread.is_alive()):
+                self._thread = None
+        with self._scheduler_futures_guard:
+            self._scheduler_futures.clear()
 
 
 def register_crypto_api(
@@ -4281,7 +4992,7 @@ def register_crypto_api(
             # Serialize the durable version fence with the final broker-order
             # check/submit section. This prevents a configuration update from
             # slipping between the per-order recheck and the broker request.
-            with service._routing_lock(uid):
+            with service._routing_guard(uid):
                 _, latest_version = service.get_config_snapshot(uid)
                 if latest_version != current_version:
                     raise CryptoApiError(
@@ -4801,7 +5512,7 @@ def register_crypto_api(
             acknowledge_risk = data.get("acknowledgeRisk", False)
             if not isinstance(acknowledge_risk, bool):
                 raise CryptoApiError("acknowledgeRisk must be true or false", code="invalid_request")
-            with service._routing_lock(uid):
+            with service._routing_guard(uid):
                 config = service.get_config(uid)
                 runtime = service.get_runtime(uid)
                 if runtime.get("reconciliationRequired"):
@@ -4881,7 +5592,7 @@ def register_crypto_api(
             user = service._auth_user()
             uid = user["id"]
             json_object()
-            with service._routing_lock(uid):
+            with service._routing_guard(uid):
                 config = service.get_config(uid)
                 config["enabled"] = False
                 config["updatedAt"] = _iso()
@@ -4920,7 +5631,7 @@ def register_crypto_api(
             reason = str(raw_reason or "").strip()[:500] or (
                 "user_requested_emergency_stop" if enabled else "user_confirmed_kill_switch_reset"
             )
-            with service._routing_lock(uid):
+            with service._routing_guard(uid):
                 config = service.get_config(uid)
                 # Resetting the switch is an explicit user action, but never restores
                 # automation or live authority implicitly.

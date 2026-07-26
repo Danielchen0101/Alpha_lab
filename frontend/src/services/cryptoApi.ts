@@ -81,6 +81,128 @@ export interface CryptoAssetSnapshot {
   signalDetail?: CryptoSignalDetail;
 }
 
+export interface CryptoPosition {
+  symbol?: string;
+  qty?: number | null;
+  marketValue?: number | null;
+  currentPrice?: number | null;
+  averageEntryPrice?: number | null;
+  unrealizedPnl?: number | null;
+  unrealizedPnlPct?: number | null;
+  side?: string;
+  [key: string]: unknown;
+}
+
+export interface CryptoDecision {
+  action?: CryptoAction | string;
+  symbol?: string;
+  confidence?: number | null;
+  score?: number | null;
+  reason?: string;
+  reasons?: string[];
+  currentWeight?: number | null;
+  targetWeight?: number | null;
+  regime?: CryptoRegime;
+  price?: number | null;
+  timestamp?: string | null;
+  recordedAt?: string | null;
+  source?: string;
+  executed?: boolean;
+  dryRun?: boolean;
+  order?: Record<string, unknown> | null;
+  entryGate?: {
+    eligible?: boolean;
+    reasons?: string[];
+    [key: string]: unknown;
+  } | null;
+  persistentRiskGate?: {
+    eligible?: boolean;
+    reasons?: string[];
+    [key: string]: unknown;
+  } | null;
+  [key: string]: unknown;
+}
+
+export interface CryptoPerformancePoint {
+  time?: string | number;
+  value?: number | null;
+  tradePnl?: number | null;
+  grossPnl?: number | null;
+  fee?: number | null;
+  symbol?: string;
+  action?: string;
+  [key: string]: unknown;
+}
+
+export interface CryptoRuntime {
+  status?: string;
+  enabled?: boolean;
+  locked?: boolean;
+  killSwitch?: boolean;
+  heartbeat?: string | null;
+  lastHeartbeat?: string | null;
+  heartbeatAgeSeconds?: number | null;
+  staleAfterSeconds?: number | null;
+  recoveryState?: string | null;
+  lastRun?: string | null;
+  nextRun?: string | null;
+  lastDurationMs?: number | null;
+  cycleCount?: number | null;
+  consecutiveErrors?: number | null;
+  lastError?: string | null;
+  currentStage?: string | null;
+  progress?: number | null;
+  message?: string | null;
+  cooldownUntil?: string | null;
+  reconciliationRequired?: boolean;
+  reconciliationMessage?: string | null;
+  manualReviewRequired?: boolean;
+  cryptoPerformance?: {
+    realizedPnl?: number | null;
+    estimatedFees?: number | null;
+    tradeCount?: number | null;
+    closedTradeCount?: number | null;
+    wins?: number | null;
+    losses?: number | null;
+    curve?: CryptoPerformancePoint[];
+    tradesPerWeek?: number | null;
+    averageHoldingHours?: number | null;
+    medianHoldingHours?: number | null;
+    costToGrossProfit?: number | null;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+export interface CryptoRiskSnapshot {
+  daily_return?: number | null;
+  seven_day_return?: number | null;
+  drawdown?: number | null;
+  [key: string]: unknown;
+}
+
+export interface CryptoLedgerRecord {
+  id?: string;
+  eventType?: string;
+  actor?: string;
+  source?: string;
+  symbol?: string;
+  createdAt?: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface CryptoLedgerResponse {
+  success?: boolean;
+  records?: CryptoLedgerRecord[];
+  limit?: number;
+  returnedCount?: number;
+  scannedRows?: number;
+  scannedPages?: number;
+  maxScannedRows?: number;
+  maxPages?: number;
+  scanTruncated?: boolean;
+}
+
 export interface CryptoOverviewResponse {
   success: boolean;
   mode: CryptoMode;
@@ -102,7 +224,7 @@ export interface CryptoOverviewResponse {
     cash?: number | null;
     exposurePct?: number | null;
     dayPnl?: number | null;
-    positions?: Array<Record<string, unknown>>;
+    positions?: CryptoPosition[];
   };
   automation?: {
     enabled?: boolean;
@@ -114,13 +236,13 @@ export interface CryptoOverviewResponse {
     locked?: boolean;
     coverage?: string;
   };
-  runtime?: Record<string, unknown>;
-  risk?: Record<string, unknown>;
-  decision?: Record<string, unknown> | null;
-  decisions?: Array<Record<string, unknown>>;
+  runtime?: CryptoRuntime;
+  risk?: CryptoRiskSnapshot;
+  decision?: CryptoDecision | null;
+  decisions?: CryptoDecision[];
   equityCurve?: Array<[string, number] | { time: string | number; value: number }>;
-  config?: Record<string, unknown>;
-  ledger?: { records?: Array<Record<string, unknown>> };
+  config?: Partial<CryptoConfig>;
+  ledger?: CryptoLedgerResponse;
   algorithm?: { name?: string; version?: string };
   liveAdmission?: Record<string, unknown>;
   ai?: Record<string, unknown>;
@@ -132,6 +254,7 @@ export interface CryptoConfig {
   enabled: boolean;
   mode: CryptoMode;
   symbols: string[];
+  experimentalPaperSleeves: string[];
   tradeHorizon: 'short' | 'long';
   intervalMinutes: number;
   liveAuthorized: boolean;
@@ -367,7 +490,7 @@ export const cryptoAPI = {
     api.put<{ success: boolean; config: CryptoConfig }>('/crypto/config', sanitizeCryptoConfigUpdate(config)),
   runtime: () => api.get('/crypto/runtime'),
   ledger: (limit = CRYPTO_LEDGER_LIMIT) =>
-    api.get('/crypto/ledger', {
+    api.get<CryptoLedgerResponse>('/crypto/ledger', {
       params: { limit: Math.min(CRYPTO_LEDGER_LIMIT, Math.max(1, limit)) },
     }),
   runCycle: (mode: CryptoMode, dryRun = false) =>

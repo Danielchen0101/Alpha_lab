@@ -117,4 +117,8 @@ def test_latest_probability_serves_the_newest_completed_bar(bars):
 
 def test_training_requires_a_meaningful_sample_size():
     with pytest.raises((CryptoMlError, Exception)):
-        train_direction_model(_ar_bars(count=1600))
+        # The intraday engine now needs only a 14-day indicator warm-up, so
+        # 1,600 hourly bars legitimately contain far more than the required
+        # 120 labeled observations.  Keep this guard focused on its contract:
+        # a post-warm-up sample that is genuinely too small must be rejected.
+        train_direction_model(_ar_bars(count=400))

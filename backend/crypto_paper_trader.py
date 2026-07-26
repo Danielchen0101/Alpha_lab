@@ -12,10 +12,10 @@ around the clock without needing any broker API keys:
 
 Downtime honesty: if the host backend was offline, the daemon replays every
 missed completed bar in order and fills at the *next* bar's open — the same
-anti-look-ahead contract as the engine backtester.  Only the newest completed
-bar is filled at its close, because at that moment the close *is* the current
-market price.  The simulated track record therefore stays continuous and
-reproducible across restarts.
+anti-look-ahead contract as the engine backtester.  A signal on the newest
+completed bar is persisted as pending and cannot fill until a later completed
+bar exposes its opening price.  The simulated track record therefore stays
+causal, continuous, and reproducible across restarts.
 """
 
 from __future__ import annotations
@@ -26,8 +26,9 @@ import os
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 import requests
 from flask import Blueprint, jsonify, request
@@ -54,7 +55,7 @@ except ImportError:  # direct module import by the monolithic backend
     import crypto_ml  # type: ignore
 
 
-SIM_VERSION = "1.0.0"
+SIM_VERSION = "1.1.0"
 DATA_BASE_URL = "https://data.alpaca.markets"
 SIM_SYMBOLS = ("BTC/USD", "ETH/USD")
 STATE_FILENAME = "crypto_paper_state.json"
@@ -66,6 +67,79 @@ MAX_ERRORS = 40
 MIN_ORDER_NOTIONAL = 10.0
 FETCH_TIMEOUT_SECONDS = 20
 MAX_GAP_FILL_BARS = 6
+PROCESS_LEASE_WAIT_SECONDS = 30.0
+
+
+def _lock_process_file(handle) -> str:
+    """Lock one byte/file on Windows or the whole file on POSIX."""
+
+    if os.name == "nt":
+        import msvcrt  # type: ignore[import-not-found]
+
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        return "msvcrt"
+
+    import fcntl  # type: ignore[import-not-found]
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return "fcntl"
+
+
+def _unlock_process_file(handle, backend: str) -> None:
+    if backend == "msvcrt":
+        import msvcrt  # type: ignore[import-not-found]
+
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+
+    import fcntl  # type: ignore[import-not-found]
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _process_file_lease(
+    path: str,
+    *,
+    wait_seconds: float = 0.0,
+) -> Iterator[Optional[str]]:
+    """Yield a cross-process lease backend, or ``None`` after the timeout."""
+
+    lock_path = os.path.abspath(path)
+    os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+    deadline = time.monotonic() + max(0.0, float(wait_seconds))
+    while True:
+        handle = open(lock_path, "a+b")
+        backend: Optional[str] = None
+        try:
+            try:
+                backend = _lock_process_file(handle)
+            except (BlockingIOError, ImportError, OSError):
+                handle.close()
+                if time.monotonic() >= deadline:
+                    yield None
+                    return
+                time.sleep(0.05)
+                continue
+            try:
+                yield backend
+            finally:
+                try:
+                    _unlock_process_file(handle, backend)
+                except (ImportError, OSError):
+                    pass
+                handle.close()
+            return
+        except BaseException:
+            if not handle.closed:
+                handle.close()
+            raise
 
 DEFAULT_SIM_CONFIG: Dict[str, Any] = {
     "enabled": False,
@@ -192,9 +266,13 @@ class PaperTradingDaemon:
         base_dir = state_dir or os.environ.get("ALPHALAB_CRYPTO_SIM_DIR") or os.path.dirname(os.path.abspath(__file__))
         self.state_path = os.path.join(base_dir, STATE_FILENAME)
         self.ml_path = os.path.join(base_dir, ML_FILENAME)
+        self.process_lock_path = os.path.join(base_dir, ".crypto_paper_state.lock")
         self.safe_print = safe_print
         self.session = session or requests.Session()
         self._lock = threading.RLock()
+        self._persist_lock = threading.RLock()
+        self._lifecycle_lock = threading.RLock()
+        self._cycle_lock = threading.Lock()
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -219,6 +297,7 @@ class PaperTradingDaemon:
             },
             "benchmark": {"initialPrices": {}, "capital": DEFAULT_SIM_CONFIG["initialCapital"]},
             "lastBarTime": {},
+            "pendingExecutions": {},
             "equityCurve": [],
             "benchmarkCurve": [],
             "trades": [],
@@ -232,6 +311,11 @@ class PaperTradingDaemon:
                 "lastError": None,
                 "nextRunAt": None,
                 "startedAt": None,
+                "threadHeartbeatAt": None,
+                "cycleStartedAt": None,
+                "currentStage": "idle",
+                "consecutiveErrors": 0,
+                "lastThreadError": None,
             },
             "ml": {},
         }
@@ -243,9 +327,21 @@ class PaperTradingDaemon:
             if not isinstance(raw, Mapping):
                 raise ValueError("state must be an object")
             state = self._default_state()
-            for key in state:
+            for key in ("version", "createdAt", "updatedAt"):
                 if key in raw:
                     state[key] = raw[key]
+            for key in ("account", "benchmark", "status"):
+                saved = raw.get(key)
+                if isinstance(saved, Mapping):
+                    state[key].update(dict(saved))
+            for key in ("lastBarTime", "pendingExecutions", "ml"):
+                saved = raw.get(key)
+                if isinstance(saved, Mapping):
+                    state[key] = dict(saved)
+            for key in ("equityCurve", "benchmarkCurve", "trades", "decisions", "errors"):
+                saved = raw.get(key)
+                if isinstance(saved, list):
+                    state[key] = saved
             merged_config = json.loads(json.dumps(DEFAULT_SIM_CONFIG))
             saved_config = raw.get("config")
             if isinstance(saved_config, Mapping):
@@ -264,22 +360,75 @@ class PaperTradingDaemon:
                 pass
             return self._default_state()
 
+    @contextmanager
+    def _shared_state_lease(
+        self,
+        *,
+        wait_seconds: float = PROCESS_LEASE_WAIT_SECONDS,
+    ) -> Iterator[str]:
+        """Serialize shared simulator state across backend processes."""
+
+        with _process_file_lease(
+            self.process_lock_path,
+            wait_seconds=wait_seconds,
+        ) as backend:
+            if backend is None:
+                raise CryptoSimError(
+                    "Another paper-trading process is updating the shared account",
+                    status=409,
+                    code="cycle_in_progress",
+                )
+            yield backend
+
+    def _reload_shared_state(self, *, wait_seconds: float = 0.0) -> bool:
+        """Refresh this worker from the latest atomic snapshot when available."""
+
+        with _process_file_lease(
+            self.process_lock_path,
+            wait_seconds=wait_seconds,
+        ) as backend:
+            if backend is None:
+                return False
+            loaded = self._load_state()
+            with self._lock:
+                # Heartbeat is process-local between durable cycle commits. A
+                # read refresh must not make this worker's live daemon appear
+                # stale merely because the shared snapshot predates its tick.
+                if self._thread is not None and self._thread.is_alive():
+                    current_status = dict(self.state.get("status") or {})
+                    loaded_status = loaded.setdefault("status", {})
+                    current_heartbeat = _parse_iso(current_status.get("threadHeartbeatAt"))
+                    loaded_heartbeat = _parse_iso(loaded_status.get("threadHeartbeatAt"))
+                    if current_heartbeat and (
+                        loaded_heartbeat is None or current_heartbeat > loaded_heartbeat
+                    ):
+                        loaded_status["threadHeartbeatAt"] = current_status["threadHeartbeatAt"]
+                self.state = loaded
+            return True
+
     def _persist(self) -> None:
-        with self._lock:
-            self.state["updatedAt"] = _iso()
-            payload = json.dumps(self.state, separators=(",", ":"))
-        directory = os.path.dirname(self.state_path) or "."
-        fd, tmp_path = tempfile.mkstemp(prefix=".crypto_sim_", dir=directory)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(payload)
-            os.replace(tmp_path, self.state_path)
-        except Exception:
+        # Serialize the snapshot and replace as one ordered transaction. Two
+        # concurrent writers previously could replace a newer state file with
+        # an older snapshot even though each individual replace was atomic.
+        with self._persist_lock:
+            with self._lock:
+                self.state["updatedAt"] = _iso()
+                payload = json.dumps(self.state, separators=(",", ":"))
+            directory = os.path.dirname(self.state_path) or "."
+            os.makedirs(directory, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(prefix=".crypto_sim_", dir=directory)
             try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp_path, self.state_path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
 
     def _load_ml(self) -> None:
         try:
@@ -297,24 +446,28 @@ class PaperTradingDaemon:
             self.safe_print(f"[CryptoSim] ML store unreadable ({exc}); models will retrain")
 
     def _persist_ml(self) -> None:
-        with self._lock:
-            payload = {
-                "models": {symbol: model.to_dict() for symbol, model in self._ml_models.items()},
-                "meta": self._ml_meta,
-                "updatedAt": _iso(),
-            }
-        directory = os.path.dirname(self.ml_path) or "."
-        fd, tmp_path = tempfile.mkstemp(prefix=".crypto_sim_ml_", dir=directory)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle)
-            os.replace(tmp_path, self.ml_path)
-        except Exception:
+        with self._persist_lock:
+            with self._lock:
+                payload = {
+                    "models": {symbol: model.to_dict() for symbol, model in self._ml_models.items()},
+                    "meta": self._ml_meta,
+                    "updatedAt": _iso(),
+                }
+            directory = os.path.dirname(self.ml_path) or "."
+            os.makedirs(directory, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(prefix=".crypto_sim_ml_", dir=directory)
             try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp_path, self.ml_path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
 
     # ------------------------------------------------------------- market data
     def _fetch_bars(self, symbol: str, minimum_bars: int) -> List[Dict[str, Any]]:
@@ -705,9 +858,60 @@ class PaperTradingDaemon:
                     last_trade["equityAfter"] = round(equity, 2)
 
     def run_cycle(self, *, source: str = "scheduler") -> Dict[str, Any]:
+        if not self._cycle_lock.acquire(blocking=False):
+            raise CryptoSimError(
+                "A paper-trading cycle is already running",
+                status=409,
+                code="cycle_in_progress",
+            )
+        try:
+            with self._shared_state_lease(wait_seconds=0.0):
+                # Every web worker owns a separate Python object. Reload after
+                # acquiring the cross-process lease so a standby worker cannot
+                # replay a bar already committed by the elected worker.
+                with self._lock:
+                    self.state = self._load_state()
+                    enabled = bool(self.state["config"].get("enabled"))
+                if source == "scheduler" and not enabled:
+                    return {
+                        "processedBars": 0,
+                        "trades": 0,
+                        "symbols": {},
+                        "skipped": "automation_stopped",
+                    }
+                try:
+                    return self._run_cycle_once(source=source)
+                except Exception as exc:
+                    failed_at = _iso()
+                    with self._lock:
+                        status = self.state["status"]
+                        status.update({
+                            "cycleStartedAt": None,
+                            "currentStage": "error",
+                            "threadHeartbeatAt": failed_at,
+                            "lastThreadError": str(exc)[:400],
+                            "consecutiveErrors": int(status.get("consecutiveErrors") or 0) + 1,
+                        })
+                    self._record_error(f"cycle crashed safely: {exc}")
+                    try:
+                        self._persist()
+                    except Exception:
+                        pass
+                    raise
+        finally:
+            self._cycle_lock.release()
+
+    def _run_cycle_once(self, *, source: str = "scheduler") -> Dict[str, Any]:
         """Process every newly completed hourly bar for every symbol."""
 
-        started = time.time()
+        started = time.monotonic()
+        cycle_started_at = _iso()
+        with self._lock:
+            self.state["status"].update({
+                "cycleStartedAt": cycle_started_at,
+                "currentStage": "market-data",
+                "threadHeartbeatAt": cycle_started_at,
+            })
         cfg = self._strategy_config()
         needed = required_history_bars(cfg) + 4
         results: Dict[str, Any] = {"processedBars": 0, "trades": 0, "symbols": {}}
@@ -715,6 +919,11 @@ class PaperTradingDaemon:
         latest_time: Optional[datetime] = None
 
         for symbol in cfg["symbols"]:
+            with self._lock:
+                self.state["status"].update({
+                    "currentStage": f"market-data:{symbol}",
+                    "threadHeartbeatAt": _iso(),
+                })
             try:
                 bars = self._fetch_bars(symbol, needed)
             except Exception as exc:
@@ -733,14 +942,52 @@ class PaperTradingDaemon:
             if last_processed is None:
                 new_indices = new_indices[-1:]
 
-            symbol_result = {"newBars": len(new_indices), "actions": []}
+            symbol_result = {"newBars": len(new_indices), "actions": [], "queuedActions": []}
             for position_in_list in new_indices:
+                with self._lock:
+                    self.state["status"].update({
+                        "currentStage": f"signal:{symbol}",
+                        "threadHeartbeatAt": _iso(),
+                    })
                 bar = bars[position_in_list]
                 is_latest = position_in_list == len(bars) - 1
                 window = bars[: position_in_list + 1]
                 if len(window) < needed - 4:
                     continue
                 try:
+                    # A completed bar may execute only the signal persisted by
+                    # an earlier bar. This mirrors the engine backtest's
+                    # next-bar-open contract and removes same-close hindsight.
+                    with self._lock:
+                        pending = dict(
+                            (self.state.get("pendingExecutions") or {}).get(symbol) or {}
+                        )
+                    pending_at = _parse_iso(pending.get("signalAt"))
+                    if pending and (pending_at is None or bar["timestamp"] > pending_at):
+                        execution_equity = self._mark_equity(
+                            {symbol: float(bar["open"]), **latest_prices}
+                        )
+                        pending_action = str(pending.get("action") or "HOLD").upper()
+                        pending_execution = self._execute(
+                            symbol,
+                            pending_action,
+                            _number(pending.get("targetWeight")),
+                            pending.get("stopDistancePct"),
+                            float(bar["open"]),
+                            bar["timestamp"],
+                            execution_equity,
+                            source=f"{pending.get('source') or 'scheduler'}:next-bar-open",
+                        )
+                        with self._lock:
+                            self.state.setdefault("pendingExecutions", {}).pop(symbol, None)
+                        if pending_execution:
+                            results["trades"] += 1
+                            symbol_result["actions"].append({
+                                "action": pending_action,
+                                "at": _iso(bar["timestamp"]),
+                                "signalAt": pending.get("signalAt"),
+                            })
+
                     ml_signal = self._ml_signal_for(symbol, window, cfg) if is_latest else None
                     equity_before = self._mark_equity({symbol: bar["close"], **latest_prices})
                     with self._lock:
@@ -759,33 +1006,28 @@ class PaperTradingDaemon:
                         ml_signal=ml_signal,
                     )
                     action = signal.get("action") or "HOLD"
-                    executed = None
                     if action in {"BUY", "ADD", "REDUCE", "EXIT"}:
-                        if is_latest:
-                            fill_price = float(bar["close"])
-                        else:
-                            next_bar = bars[position_in_list + 1]
-                            fill_price = float(next_bar["open"])
-                        executed = self._execute(
-                            symbol,
-                            action,
-                            _number(signal.get("target_weight")),
-                            signal.get("stop_distance_pct"),
-                            fill_price,
-                            bar["timestamp"],
-                            equity_before,
-                            source="replay" if not is_latest else source,
-                        )
-                        if executed:
-                            results["trades"] += 1
-                            symbol_result["actions"].append({"action": action, "at": _iso(bar["timestamp"])})
+                        decision_source = "replay" if not is_latest else source
+                        pending_record = {
+                            "action": action,
+                            "targetWeight": _number(signal.get("target_weight")),
+                            "stopDistancePct": signal.get("stop_distance_pct"),
+                            "signalAt": _iso(bar["timestamp"]),
+                            "source": decision_source,
+                        }
+                        with self._lock:
+                            self.state.setdefault("pendingExecutions", {})[symbol] = pending_record
+                        symbol_result["queuedActions"].append({
+                            "action": action,
+                            "signalAt": pending_record["signalAt"],
+                        })
                     else:
                         self._persist_trailing_stop(symbol, signal)
                     self._touch_price(symbol, float(bar["close"]))
                     self._record_decision(
                         symbol, signal,
                         source="replay" if not is_latest else source,
-                        executed=executed,
+                        executed=None,
                     )
                     latest_prices[symbol] = float(bar["close"])
                     latest_time = bar["timestamp"] if latest_time is None or bar["timestamp"] > latest_time else latest_time
@@ -812,14 +1054,28 @@ class PaperTradingDaemon:
                         self._record_error(f"ML training failed for {symbol}: {exc}")
                     break
 
-        duration_ms = int((time.time() - started) * 1000)
+        duration_ms = int((time.monotonic() - started) * 1000)
         with self._lock:
             status = self.state["status"]
-            status["lastCycleAt"] = _iso()
+            completed_at = _iso()
+            status["lastCycleAt"] = completed_at
             status["lastCycleDurationMs"] = duration_ms
             status["cycleCount"] = int(status.get("cycleCount") or 0) + 1
             interval = max(1, int(_number(self.state["config"].get("intervalMinutes"), 5)))
             status["nextRunAt"] = _iso(_utc_now() + timedelta(minutes=interval))
+            status["cycleStartedAt"] = None
+            status["threadHeartbeatAt"] = completed_at
+            had_feed_failure = any(
+                isinstance(value, Mapping) and value.get("error")
+                for value in results["symbols"].values()
+            )
+            if had_feed_failure and results["processedBars"] == 0:
+                status["currentStage"] = "degraded"
+                status["consecutiveErrors"] = int(status.get("consecutiveErrors") or 0) + 1
+            else:
+                status["currentStage"] = "complete"
+                status["consecutiveErrors"] = 0
+                status["lastThreadError"] = None
             if results["processedBars"] > 0 or results["trades"] > 0:
                 status["lastError"] = None
         self._persist()
@@ -827,71 +1083,130 @@ class PaperTradingDaemon:
         return results
 
     # ------------------------------------------------------------------ thread
-    def _loop(self) -> None:
-        self.safe_print("[CryptoSim] 24/7 paper-trading daemon thread started")
-        while not self._stop.is_set():
-            enabled = bool(self.state["config"].get("enabled"))
-            interval = max(1, int(_number(self.state["config"].get("intervalMinutes"), 5)))
+    def _loop(
+        self,
+        stop_event: Optional[threading.Event] = None,
+        wake_event: Optional[threading.Event] = None,
+    ) -> None:
+        active_stop = stop_event or self._stop
+        active_wake = wake_event or self._wake
+        try:
+            self.safe_print("[CryptoSim] 24/7 paper-trading daemon thread started")
+        except Exception:
+            pass
+        while not active_stop.is_set():
+            active_wake.clear()
+            # Requests may be served by a different web worker. Pull its latest
+            # atomic start/stop/config mutation before deciding whether to run.
+            self._reload_shared_state(wait_seconds=0.0)
+            heartbeat = _iso()
+            with self._lock:
+                self.state["status"]["threadHeartbeatAt"] = heartbeat
+                enabled = bool(self.state["config"].get("enabled"))
+                interval = max(1, int(_number(self.state["config"].get("intervalMinutes"), 5)))
             if enabled:
                 try:
                     self.run_cycle()
+                except CryptoSimError as exc:
+                    if exc.code not in {"cycle_in_progress", "automation_stopped"}:
+                        try:
+                            self.safe_print(f"[CryptoSim] cycle failed safely: {exc}")
+                        except Exception:
+                            pass
                 except Exception as exc:
-                    self._record_error(f"cycle crashed safely: {exc}")
                     try:
-                        self._persist()
+                        self.safe_print(f"[CryptoSim] cycle failed safely: {exc}")
                     except Exception:
                         pass
-            self._wake.wait(timeout=interval * 60)
-            self._wake.clear()
+            deadline = time.monotonic() + interval * 60
+            while not active_stop.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                if active_wake.wait(timeout=min(30.0, remaining)):
+                    active_wake.clear()
+                    break
+                with self._lock:
+                    self.state["status"]["threadHeartbeatAt"] = _iso()
 
     def ensure_thread(self) -> None:
-        with self._lock:
+        with self._lifecycle_lock:
             if self._thread is None or not self._thread.is_alive():
-                self._stop.clear()
+                self._stop = threading.Event()
+                self._wake = threading.Event()
+                stop_event = self._stop
+                wake_event = self._wake
                 self._thread = threading.Thread(
-                    target=self._loop, name="alphalab-crypto-sim", daemon=True
+                    target=self._loop,
+                    args=(stop_event, wake_event),
+                    name="alphalab-crypto-sim",
+                    daemon=True,
                 )
                 self._thread.start()
 
     def stop_thread(self) -> None:
-        self._stop.set()
-        self._wake.set()
+        with self._lifecycle_lock:
+            stop_event = self._stop
+            wake_event = self._wake
+            thread = self._thread
+            stop_event.set()
+            wake_event.set()
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=5.0)
+        with self._lifecycle_lock:
+            if thread is self._thread and (thread is None or not thread.is_alive()):
+                self._thread = None
 
     # ------------------------------------------------------------------ control
     def start(self) -> Dict[str, Any]:
-        with self._lock:
-            self.state["config"]["enabled"] = True
-            self.state["status"]["running"] = True
-            if not self.state["status"].get("startedAt"):
-                self.state["status"]["startedAt"] = _iso()
-        self._persist()
+        with self._shared_state_lease():
+            with self._lock:
+                self.state = self._load_state()
+                self.state["config"]["enabled"] = True
+                self.state["status"]["running"] = True
+                self.state["status"]["currentStage"] = "armed"
+                self.state["status"]["nextRunAt"] = _iso()
+                if not self.state["status"].get("startedAt"):
+                    self.state["status"]["startedAt"] = _iso()
+            self._persist()
         self.ensure_thread()
         self._wake.set()
         return self.status_snapshot()
 
     def stop(self) -> Dict[str, Any]:
-        with self._lock:
-            self.state["config"]["enabled"] = False
-            self.state["status"]["running"] = False
-        self._persist()
+        with self._shared_state_lease():
+            with self._lock:
+                self.state = self._load_state()
+                self.state["config"]["enabled"] = False
+                self.state["status"]["running"] = False
+                self.state["status"]["currentStage"] = "stopped"
+                self.state["status"]["nextRunAt"] = None
+                # A signal is an instruction for the immediately following bar;
+                # it must not survive an operator stop and execute days later.
+                self.state["pendingExecutions"] = {}
+            self._persist()
+        self._wake.set()
         return self.status_snapshot()
 
     def reset(self, initial_capital: Optional[float] = None) -> Dict[str, Any]:
-        with self._lock:
-            config = json.loads(json.dumps(self.state["config"]))
-            if initial_capital is not None:
-                capital = _number(initial_capital, DEFAULT_SIM_CONFIG["initialCapital"])
-                if not 1_000.0 <= capital <= 10_000_000.0:
-                    raise CryptoSimError("initialCapital must be between 1,000 and 10,000,000")
-                config["initialCapital"] = capital
-            fresh = self._default_state()
-            fresh["config"] = config
-            fresh["config"]["enabled"] = False
-            fresh["account"]["cash"] = config["initialCapital"]
-            fresh["account"]["initialCapital"] = config["initialCapital"]
-            fresh["benchmark"]["capital"] = config["initialCapital"]
-            self.state = fresh
-        self._persist()
+        with self._shared_state_lease():
+            with self._lock:
+                self.state = self._load_state()
+                config = json.loads(json.dumps(self.state["config"]))
+                if initial_capital is not None:
+                    capital = _number(initial_capital, DEFAULT_SIM_CONFIG["initialCapital"])
+                    if not 1_000.0 <= capital <= 10_000_000.0:
+                        raise CryptoSimError("initialCapital must be between 1,000 and 10,000,000")
+                    config["initialCapital"] = capital
+                fresh = self._default_state()
+                fresh["config"] = config
+                fresh["config"]["enabled"] = False
+                fresh["account"]["cash"] = config["initialCapital"]
+                fresh["account"]["initialCapital"] = config["initialCapital"]
+                fresh["benchmark"]["capital"] = config["initialCapital"]
+                self.state = fresh
+            self._persist()
+        self._wake.set()
         return self.status_snapshot()
 
     def update_config(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
@@ -901,47 +1216,66 @@ class PaperTradingDaemon:
         unknown = sorted(set(payload) - allowed)
         if unknown:
             raise CryptoSimError(f"unsupported sim config fields: {', '.join(unknown)}")
-        with self._lock:
-            config = self.state["config"]
-            if "intervalMinutes" in payload:
-                interval = int(_number(payload.get("intervalMinutes"), 5))
-                if interval not in {1, 5, 15, 30, 60}:
-                    raise CryptoSimError("intervalMinutes must be 1, 5, 15, 30, or 60")
-                config["intervalMinutes"] = interval
-            # Deep-learning execution has been retired. Keep the legacy field
-            # false so existing local state files migrate without breaking.
-            config["mlEnabled"] = False
-            if "mlRetrainHours" in payload:
-                hours = int(_number(payload.get("mlRetrainHours"), 24))
-                if not 1 <= hours <= 24 * 7:
-                    raise CryptoSimError("mlRetrainHours must be between 1 and 168")
-                config["mlRetrainHours"] = hours
-            if "mlHistoryDays" in payload:
-                days = int(_number(payload.get("mlHistoryDays"), 150))
-                if not 90 <= days <= 365:
-                    raise CryptoSimError("mlHistoryDays must be between 90 and 365")
-                config["mlHistoryDays"] = days
-            if "symbols" in payload:
-                symbols = [str(s).strip().upper() for s in (payload.get("symbols") or [])]
-                if not symbols or any(s not in SIM_SYMBOLS for s in symbols):
-                    raise CryptoSimError("symbols may only include BTC/USD and ETH/USD")
-                config["symbols"] = symbols
-            if "strategy" in payload:
-                overrides = payload.get("strategy")
-                if not isinstance(overrides, Mapping):
-                    raise CryptoSimError("strategy overrides must be an object")
-                candidate = dict(overrides)
-                candidate["symbols"] = config["symbols"]
-                try:
-                    validate_engine_config(candidate)
-                except CryptoEngineError as exc:
-                    raise CryptoSimError(f"invalid strategy override: {exc}")
-                config["strategy"] = dict(overrides)
-        self._persist()
+        with self._shared_state_lease():
+            with self._lock:
+                self.state = self._load_state()
+                config = self.state["config"]
+                if "intervalMinutes" in payload:
+                    interval = int(_number(payload.get("intervalMinutes"), 5))
+                    if interval not in {1, 5, 15, 30, 60}:
+                        raise CryptoSimError("intervalMinutes must be 1, 5, 15, 30, or 60")
+                    config["intervalMinutes"] = interval
+                # Deep-learning execution has been retired. Keep the legacy field
+                # false so existing local state files migrate without breaking.
+                config["mlEnabled"] = False
+                if "mlRetrainHours" in payload:
+                    hours = int(_number(payload.get("mlRetrainHours"), 24))
+                    if not 1 <= hours <= 24 * 7:
+                        raise CryptoSimError("mlRetrainHours must be between 1 and 168")
+                    config["mlRetrainHours"] = hours
+                if "mlHistoryDays" in payload:
+                    days = int(_number(payload.get("mlHistoryDays"), 150))
+                    if not 90 <= days <= 365:
+                        raise CryptoSimError("mlHistoryDays must be between 90 and 365")
+                    config["mlHistoryDays"] = days
+                if "symbols" in payload:
+                    symbols = [str(s).strip().upper() for s in (payload.get("symbols") or [])]
+                    if not symbols or any(s not in SIM_SYMBOLS for s in symbols):
+                        raise CryptoSimError("symbols may only include BTC/USD and ETH/USD")
+                    removed = set(config.get("symbols") or []) - set(symbols)
+                    open_removed = [
+                        symbol for symbol in removed
+                        if _number(
+                            ((self.state["account"].get("positions") or {}).get(symbol) or {}).get("qty")
+                        ) > 0
+                    ]
+                    if open_removed:
+                        raise CryptoSimError(
+                            "cannot remove symbols with open positions: %s"
+                            % ", ".join(sorted(open_removed))
+                        )
+                    pending = self.state.setdefault("pendingExecutions", {})
+                    for symbol in removed:
+                        pending.pop(symbol, None)
+                    config["symbols"] = symbols
+                if "strategy" in payload:
+                    overrides = payload.get("strategy")
+                    if not isinstance(overrides, Mapping):
+                        raise CryptoSimError("strategy overrides must be an object")
+                    candidate = dict(overrides)
+                    candidate["symbols"] = config["symbols"]
+                    try:
+                        validate_engine_config(candidate)
+                    except CryptoEngineError as exc:
+                        raise CryptoSimError(f"invalid strategy override: {exc}")
+                    config["strategy"] = dict(overrides)
+            self._persist()
+        self._wake.set()
         return self.status_snapshot()
 
     # ------------------------------------------------------------------- views
     def status_snapshot(self) -> Dict[str, Any]:
+        self._reload_shared_state(wait_seconds=0.0)
         with self._lock:
             config = json.loads(json.dumps(self.state["config"]))
             status = dict(self.state["status"])
@@ -980,10 +1314,54 @@ class PaperTradingDaemon:
             )
         win_trades = [t for t in trades if t.get("side") == "sell" and _number(t.get("realizedPnl")) > 0]
         sell_trades = [t for t in trades if t.get("side") == "sell"]
+        thread_alive = bool(self._thread and self._thread.is_alive())
+        heartbeat_at = _parse_iso(status.get("threadHeartbeatAt"))
+        heartbeat_age = (
+            max(0.0, (_utc_now() - heartbeat_at).total_seconds())
+            if heartbeat_at is not None
+            else None
+        )
+        cycle_at = _parse_iso(status.get("lastCycleAt"))
+        cycle_age = (
+            max(0.0, (_utc_now() - cycle_at).total_seconds())
+            if cycle_at is not None
+            else None
+        )
+        stale_after = 90.0
+        interval_seconds = max(60.0, _number(config.get("intervalMinutes"), 5.0) * 60.0)
+        cycle_stale_after = max(
+            stale_after,
+            interval_seconds * 2.0 + FETCH_TIMEOUT_SECONDS,
+        )
+        cycle_healthy = bool(
+            not config.get("enabled")
+            or (
+                cycle_age is not None
+                and cycle_age <= cycle_stale_after
+                and int(status.get("consecutiveErrors") or 0) == 0
+            )
+        )
+        daemon_healthy = bool(
+            thread_alive and heartbeat_age is not None and heartbeat_age <= stale_after
+            and cycle_healthy
+        )
+        status.update({
+            "heartbeatAgeSeconds": round(heartbeat_age, 3) if heartbeat_age is not None else None,
+            "staleAfterSeconds": stale_after,
+            "cycleHeartbeatAgeSeconds": round(cycle_age, 3) if cycle_age is not None else None,
+            "cycleStaleAfterSeconds": cycle_stale_after,
+            "daemonHealthy": daemon_healthy,
+            "recoveryState": (
+                "steady" if daemon_healthy
+                else "stale" if thread_alive
+                else "stopped"
+            ),
+        })
         return {
             "version": SIM_VERSION,
             "running": bool(config.get("enabled")),
-            "threadAlive": self._thread.is_alive() if self._thread else False,
+            "threadAlive": thread_alive,
+            "daemonHealthy": daemon_healthy,
             "config": config,
             "status": status,
             "account": {
@@ -1007,6 +1385,7 @@ class PaperTradingDaemon:
         }
 
     def trades_view(self, limit: int = 100) -> Dict[str, Any]:
+        self._reload_shared_state(wait_seconds=0.0)
         with self._lock:
             trades = list(self.state["trades"])
             decisions = list(self.state["decisions"])
@@ -1018,6 +1397,7 @@ class PaperTradingDaemon:
         }
 
     def equity_view(self, points: int = 1000) -> Dict[str, Any]:
+        self._reload_shared_state(wait_seconds=0.0)
         with self._lock:
             curve = list(self.state["equityCurve"])
             bench = list(self.state["benchmarkCurve"])

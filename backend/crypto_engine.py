@@ -45,8 +45,8 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
 ALGORITHM_NAME = "Helios Intraday Regime"
-ALGORITHM_VERSION = "2.1.0"
-SUPPORTED_SYMBOLS: Tuple[str, ...] = ("BTC/USD", "ETH/USD")
+ALGORITHM_VERSION = "2.4.0"
+SUPPORTED_SYMBOLS: Tuple[str, ...] = ("BTC/USD", "ETH/USD", "SOL/USD")
 BAR_INTERVAL_SECONDS = 60 * 60
 SUPPORTED_BARS_PER_DAY = frozenset({24, 96})
 SEVEN_DAY_COOLDOWN_HOURS = 72
@@ -67,29 +67,33 @@ PANIC_SCORE_PENALTY = 0.25  # composite-space penalty applied in panic regime
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "symbols": list(SUPPORTED_SYMBOLS),
+    # SOL is supported only through the explicit Paper-only experimental
+    # sleeve enforced by crypto_api.  It is deliberately absent from the
+    # default core universe.
+    "symbols": ["BTC/USD", "ETH/USD"],
+    "enable_sol_drawdown_sleeve": False,
     "bars_per_day": 24,
     # ---- Trend sleeve (legacy field names kept for config compatibility) ----
-    "ema_fast": 10,
-    "ema_slow": 40,
-    "anchor_ema": 200,              # long structural anchor, in bars
+    "ema_fast": 12,
+    "ema_slow": 48,
+    "anchor_ema": 120,              # five-day structure on hourly bars
     # ---- Momentum sleeve ----
-    "momentum_fast_days": 20,
-    "momentum_slow_days": 65,
+    "momentum_fast_days": 2,
+    "momentum_slow_days": 7,
     # ---- Breakout sleeve ----
-    "breakout_days": 20,
-    "breakdown_days": 10,
+    "breakout_days": 2,
+    "breakdown_days": 1,
     # ---- Mean-reversion sleeve ----
     "rsi_period": 14,
     "rsi_fast_period": 3,
     "bollinger_period": 20,         # bars
-    "meanrev_entry_z": -1.25,
-    "meanrev_rsi_buy": 30.0,
+    "meanrev_entry_z": -1.0,
+    "meanrev_rsi_buy": 35.0,
     "meanrev_size_fraction": 0.6,
     # ---- Regime detection ----
     "adx_period": 14,
     "adx_trend_threshold": 22.0,
-    "vol_fast_days": 7,
+    "vol_fast_days": 3,
     "panic_vol_ratio": 1.75,
     # ---- Ensemble base weights ----
     "weight_trend": 0.30,
@@ -98,23 +102,32 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "weight_meanrev": 0.20,
     # ---- Volatility / risk ----
     "atr_hours": 24,
-    "volatility_days": 30,
+    "volatility_days": 14,
     "annual_volatility_target": 0.15,
     "high_volatility_threshold": 1.00,
-    "stop_atr_multiple": 2.5,
-    "trail_atr_multiple": 3.0,
-    "min_stop_distance_pct": 0.02,
-    "max_stop_distance_pct": 0.12,
+    "stop_atr_multiple": 2.2,
+    "trail_atr_multiple": 2.6,
+    "min_stop_distance_pct": 0.008,
+    "max_stop_distance_pct": 0.08,
     # ---- Entry / exit discipline ----
     "entry_confirmation_bars": 2,
     "exit_confirmation_bars": 2,
-    "entry_score": 58.0,
-    "add_score": 78.0,
-    "reduce_score": 40.0,
+    "entry_score": 54.0,
+    "add_score": 68.0,
+    "reduce_score": 44.0,
     "max_asset_weight": 0.20,
-    "rebalance_band": 0.02,
-    "add_min_price_gain_pct": 0.03,
-    "reduced_weight_fraction": 0.25,
+    "rebalance_band": 0.01,
+    "add_min_price_gain_pct": 0.01,
+    "reduced_weight_fraction": 0.50,
+    # ---- Cost-aware turnover / lifecycle hysteresis -----------------------
+    # The entry proxy must clear the estimated round-trip friction by this
+    # multiple.  This controls economically pointless churn independently of
+    # the directional score.
+    "entry_cost_multiplier": 2.0,
+    "reward_to_risk": 1.0,
+    "minimum_hold_bars": 4,          # 1h on 15m; 4h on hourly
+    "reentry_cooldown_bars": 4,
+    "time_stop_bars": 96,            # 1d on 15m; 4d on hourly
     # ---- Retired ML fields (kept only so older saved configs still validate) ----
     "ml_gate_enabled": False,
     "ml_max_adjust": 12.0,
@@ -133,7 +146,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "macd_signal": 9,
 }
 
-_BOOLEAN_FIELDS = ("ml_gate_enabled",)
+_BOOLEAN_FIELDS = ("ml_gate_enabled", "enable_sol_drawdown_sleeve")
 
 _INTEGER_FIELDS = (
     "bars_per_day",
@@ -156,6 +169,9 @@ _INTEGER_FIELDS = (
     "macd_signal",
     "entry_confirmation_bars",
     "exit_confirmation_bars",
+    "minimum_hold_bars",
+    "reentry_cooldown_bars",
+    "time_stop_bars",
     "data_stale_minutes",
 )
 
@@ -187,6 +203,8 @@ _NUMBER_FIELDS = (
     "meanrev_entry_z",
     "meanrev_rsi_buy",
     "meanrev_size_fraction",
+    "entry_cost_multiplier",
+    "reward_to_risk",
     "ml_max_adjust",
     "ml_veto_threshold",
 )
@@ -259,6 +277,19 @@ def validate_config(config: Optional[Mapping[str, Any]] = None) -> Dict[str, Any
 
     if resolved["bars_per_day"] not in SUPPORTED_BARS_PER_DAY:
         raise CryptoEngineError("bars_per_day must be 24 or 96 for contiguous crypto bars")
+    sol_enabled = bool(resolved["enable_sol_drawdown_sleeve"])
+    if "SOL/USD" in resolved["symbols"] and not sol_enabled:
+        raise CryptoEngineError(
+            "SOL/USD requires enable_sol_drawdown_sleeve=true; the core ensemble is not validated for SOL"
+        )
+    if sol_enabled and "SOL/USD" not in resolved["symbols"]:
+        raise CryptoEngineError(
+            "enable_sol_drawdown_sleeve requires SOL/USD in symbols"
+        )
+    if sol_enabled and resolved["bars_per_day"] != 96:
+        raise CryptoEngineError(
+            "the SOL drawdown sleeve requires 15-minute bars (bars_per_day=96)"
+        )
 
     for field in _NUMBER_FIELDS:
         resolved[field] = _finite_number(resolved[field], field)
@@ -303,6 +334,12 @@ def validate_config(config: Optional[Mapping[str, Any]] = None) -> Dict[str, Any
         raise CryptoEngineError("max_stop_distance_pct must be below one")
     if not 0 <= resolved["fee_bps"] < 10_000 or not 0 <= resolved["slippage_bps"] < 10_000:
         raise CryptoEngineError("fee_bps and slippage_bps must be in [0, 10000)")
+    if not 1.0 <= resolved["entry_cost_multiplier"] <= 10.0:
+        raise CryptoEngineError("entry_cost_multiplier must be between 1 and 10")
+    if not 0.25 <= resolved["reward_to_risk"] <= 5.0:
+        raise CryptoEngineError("reward_to_risk must be between 0.25 and 5")
+    if resolved["minimum_hold_bars"] >= resolved["time_stop_bars"]:
+        raise CryptoEngineError("minimum_hold_bars must be below time_stop_bars")
 
     if not 0 <= resolved["adx_trend_threshold"] <= 100:
         raise CryptoEngineError("adx_trend_threshold must be between 0 and 100")
@@ -348,6 +385,7 @@ def required_history_bars(config: Optional[Mapping[str, Any]] = None) -> int:
         cfg["bollinger_period"] + 1,
         cfg["adx_period"] * 3 + 1,
         cfg["macd_slow"] + cfg["macd_signal"] + 1,
+        193,                                          # fixed SOL EMA-192
         3 * per_day + 1,                          # momentum_3d
         7 * per_day + 1,                          # volume z-score window
     )
@@ -568,8 +606,11 @@ def compute_indicators(
     return_1h_window = bars_per_hour
     return_3h_window = 3 * bars_per_hour
     return_12h_window = 12 * bars_per_hour
-    fast_breakout_window = 12 if per_day >= 96 else 6
-    fast_breakdown_window = 8 if per_day >= 96 else 4
+    return_24h_window = 24 * bars_per_hour
+    return_72h_window = 72 * bars_per_hour
+    efficiency_window = 12 * bars_per_hour if per_day >= 96 else 24
+    fast_breakout_window = 16 if per_day >= 96 else 24
+    fast_breakdown_window = 12 if per_day >= 96 else 12
     momentum_short_window = 3 * per_day
     momentum_fast_window = cfg["momentum_fast_days"] * per_day
     momentum_slow_window = cfg["momentum_slow_days"] * per_day
@@ -585,6 +626,8 @@ def compute_indicators(
     alpha_fast = 2.0 / (cfg["ema_fast"] + 1.0)
     alpha_slow = 2.0 / (cfg["ema_slow"] + 1.0)
     alpha_anchor = 2.0 / (cfg["anchor_ema"] + 1.0)
+    sol_alpha_24 = 2.0 / 25.0
+    sol_alpha_192 = 2.0 / 193.0
     alpha_macd_fast = 2.0 / (cfg["macd_fast"] + 1.0)
     alpha_macd_slow = 2.0 / (cfg["macd_slow"] + 1.0)
     alpha_macd_signal = 2.0 / (cfg["macd_signal"] + 1.0)
@@ -592,6 +635,8 @@ def compute_indicators(
     ema_fast: Optional[float] = None
     ema_slow: Optional[float] = None
     ema_anchor: Optional[float] = None
+    sol_ema_24: Optional[float] = None
+    sol_ema_192: Optional[float] = None
     macd_fast_ema: Optional[float] = None
     macd_slow_ema: Optional[float] = None
     macd_signal_ema: Optional[float] = None
@@ -599,6 +644,7 @@ def compute_indicators(
     anchor_history: List[float] = []
     rsi = _WilderRsi(cfg["rsi_period"])
     rsi_fast = _WilderRsi(cfg["rsi_fast_period"])
+    sol_rsi_3 = _WilderRsi(3)
     adx = _WilderAdx(cfg["adx_period"])
 
     closes: List[float] = []
@@ -614,6 +660,14 @@ def compute_indicators(
         ema_fast = close if ema_fast is None else alpha_fast * close + (1 - alpha_fast) * ema_fast
         ema_slow = close if ema_slow is None else alpha_slow * close + (1 - alpha_slow) * ema_slow
         ema_anchor = close if ema_anchor is None else alpha_anchor * close + (1 - alpha_anchor) * ema_anchor
+        sol_ema_24 = (
+            close if sol_ema_24 is None
+            else sol_alpha_24 * close + (1 - sol_alpha_24) * sol_ema_24
+        )
+        sol_ema_192 = (
+            close if sol_ema_192 is None
+            else sol_alpha_192 * close + (1 - sol_alpha_192) * sol_ema_192
+        )
         macd_fast_ema = close if macd_fast_ema is None else alpha_macd_fast * close + (1 - alpha_macd_fast) * macd_fast_ema
         macd_slow_ema = close if macd_slow_ema is None else alpha_macd_slow * close + (1 - alpha_macd_slow) * macd_slow_ema
         macd_line = macd_fast_ema - macd_slow_ema
@@ -636,6 +690,7 @@ def compute_indicators(
 
         rsi_value = rsi.update(close)
         rsi_fast_value = rsi_fast.update(close)
+        sol_rsi_3_value = sol_rsi_3.update(close)
         adx_value = adx.update(bar["high"], bar["low"], close)
 
         high_break = max(highs[index - breakout_window : index]) if index >= breakout_window else None
@@ -646,9 +701,20 @@ def compute_indicators(
         return_1h = close / closes[index - return_1h_window] - 1 if index >= return_1h_window else None
         return_3h = close / closes[index - return_3h_window] - 1 if index >= return_3h_window else None
         return_12h = close / closes[index - return_12h_window] - 1 if index >= return_12h_window else None
+        return_24h = close / closes[index - return_24h_window] - 1 if index >= return_24h_window else None
+        return_72h = close / closes[index - return_72h_window] - 1 if index >= return_72h_window else None
         fast_high = max(highs[index - fast_breakout_window:index]) if index >= fast_breakout_window else None
         fast_low = min(lows[index - fast_breakdown_window:index]) if index >= fast_breakdown_window else None
         atr_value = _mean(true_ranges[-atr_window:]) if len(true_ranges) >= atr_window else None
+
+        efficiency_ratio: Optional[float] = None
+        if index >= efficiency_window:
+            efficiency_prices = closes[index - efficiency_window:index] + [close]
+            path = sum(abs(right - left) for left, right in zip(efficiency_prices, efficiency_prices[1:]))
+            if path > 1e-12:
+                efficiency_ratio = abs(close - efficiency_prices[0]) / path
+            else:
+                efficiency_ratio = 0.0
 
         vol_slow_value: Optional[float] = None
         vol_fast_value: Optional[float] = None
@@ -666,6 +732,8 @@ def compute_indicators(
             vol_ratio = 1.0
 
         zscore: Optional[float] = None
+        boll_mean: Optional[float] = None
+        boll_std: Optional[float] = None
         if index >= boll_window:
             window_closes = closes[index - boll_window : index]
             boll_mean = _mean(window_closes)
@@ -693,6 +761,10 @@ def compute_indicators(
         if high_break is not None and low_break is not None and high_break > low_break:
             donchian_pos = _clamp((close - low_break) / (high_break - low_break), 0.0, 1.0)
 
+        fast_channel_pos: Optional[float] = None
+        if fast_high is not None and fast_low is not None and fast_high > fast_low:
+            fast_channel_pos = _clamp((close - fast_low) / (fast_high - fast_low), 0.0, 1.0)
+
         macd_hist_pct: Optional[float] = None
         if macd_signal_ema is not None and macd_signal_samples >= cfg["macd_signal"] and close > 0:
             macd_hist_pct = (macd_line - macd_signal_ema) / close * 100.0
@@ -718,14 +790,24 @@ def compute_indicators(
                 "return_1h": return_1h,
                 "return_3h": return_3h,
                 "return_12h": return_12h,
+                "return_24h": return_24h,
+                "return_72h": return_72h,
+                "efficiency_ratio": efficiency_ratio,
                 "fast_high": fast_high,
                 "fast_low": fast_low,
+                "fast_channel_pos": fast_channel_pos,
                 "fast_breakout": fast_high is not None and close > fast_high,
                 "fast_breakdown": fast_low is not None and close < fast_low,
                 "rsi": rsi_value,
                 "rsi_fast": rsi_fast_value,
+                # Fixed, non-tunable experimental SOL sleeve inputs.
+                "sol_ema_24": sol_ema_24 if index + 1 >= 24 else None,
+                "sol_ema_192": sol_ema_192 if index + 1 >= 192 else None,
+                "sol_rsi_3": sol_rsi_3_value,
                 "adx": adx_value,
                 "zscore": zscore,
+                "bollinger_mean": boll_mean,
+                "bollinger_std": boll_std,
                 "macd_hist_pct": macd_hist_pct,
                 "vol_fast_annualized": vol_fast_value,
                 "vol_ratio": vol_ratio,
@@ -819,7 +901,15 @@ def evaluate_risk_circuit(
 
 def _position_values(
     position: Optional[Mapping[str, Any]],
-) -> Tuple[float, Optional[float], Optional[float], Optional[float]]:
+) -> Tuple[
+    float,
+    Optional[float],
+    Optional[float],
+    Optional[float],
+    Optional[datetime],
+    Optional[datetime],
+    Optional[datetime],
+]:
     if position is not None and not isinstance(position, Mapping):
         raise CryptoEngineError("position must be an object")
     values = dict(position or {})
@@ -834,6 +924,9 @@ def _position_values(
     average_entry = values.get("average_entry_price")
     last_add = values.get("last_add_price", values.get("last_entry_price"))
     protective_stop = values.get("protective_stop", values.get("stop_price"))
+    opened_at = values.get("opened_at")
+    last_exit_at = values.get("last_exit_at")
+    last_action_at = values.get("last_action_at")
     average_entry_value = _finite_number(average_entry, "average_entry_price", positive=True) if average_entry is not None else None
     last_add_value = _finite_number(last_add, "last_add_price", positive=True) if last_add is not None else None
     protective_stop_value = (
@@ -841,9 +934,35 @@ def _position_values(
         if protective_stop is not None
         else None
     )
+    opened_at_value = _parse_timestamp(opened_at) if opened_at is not None else None
+    last_exit_at_value = _parse_timestamp(last_exit_at) if last_exit_at is not None else None
+    last_action_at_value = _parse_timestamp(last_action_at) if last_action_at is not None else None
     if weight <= 1e-9:
-        return weight, None, None, None
-    return weight, average_entry_value, last_add_value, protective_stop_value
+        return weight, None, None, None, None, last_exit_at_value, last_action_at_value
+    return (
+        weight,
+        average_entry_value,
+        last_add_value,
+        protective_stop_value,
+        opened_at_value,
+        last_exit_at_value,
+        last_action_at_value,
+    )
+
+
+def _state_timestamp(value: Optional[datetime]) -> Optional[str]:
+    return value.isoformat() if value is not None else None
+
+
+def _elapsed_strategy_bars(
+    earlier: Optional[datetime],
+    later: datetime,
+    cfg: Mapping[str, Any],
+) -> Optional[int]:
+    if earlier is None:
+        return None
+    seconds_per_bar = 24 * 60 * 60 / int(cfg["bars_per_day"])
+    return max(0, int((later - earlier).total_seconds() // seconds_per_bar))
 
 
 def apply_fill_to_position_state(
@@ -853,7 +972,8 @@ def apply_fill_to_position_state(
     fill_price: Optional[Any] = None,
     stop_distance_pct: Optional[Any] = None,
     remaining_position: bool,
-) -> Dict[str, Optional[float]]:
+    filled_at: Optional[Any] = None,
+) -> Dict[str, Any]:
     """Apply one *confirmed* fill to the persistent strategy position state.
 
     Order acceptance is not a fill.  Callers must leave state unchanged for
@@ -873,6 +993,9 @@ def apply_fill_to_position_state(
     values = dict(state or {})
     last_add_raw = values.get("last_add_price", values.get("last_entry_price"))
     stop_raw = values.get("protective_stop", values.get("stop_price"))
+    opened_at_raw = values.get("opened_at")
+    last_exit_at_raw = values.get("last_exit_at")
+    last_action_at_raw = values.get("last_action_at")
     last_add = (
         _finite_number(last_add_raw, "last_add_price", positive=True)
         if last_add_raw is not None
@@ -883,9 +1006,19 @@ def apply_fill_to_position_state(
         if stop_raw is not None
         else None
     )
+    opened_at = _parse_timestamp(opened_at_raw) if opened_at_raw is not None else None
+    last_exit_at = _parse_timestamp(last_exit_at_raw) if last_exit_at_raw is not None else None
+    last_action_at = _parse_timestamp(last_action_at_raw) if last_action_at_raw is not None else None
+    fill_time = _parse_timestamp(filled_at) if filled_at is not None else None
 
     if not remaining_position:
-        return {"last_add_price": None, "protective_stop": None}
+        return {
+            "last_add_price": None,
+            "protective_stop": None,
+            "opened_at": None,
+            "last_exit_at": _state_timestamp(fill_time or last_exit_at),
+            "last_action_at": _state_timestamp(fill_time or last_action_at),
+        }
 
     if normalized_action in {"BUY", "ADD"}:
         price = _finite_number(fill_price, "fill_price", positive=True)
@@ -896,10 +1029,18 @@ def apply_fill_to_position_state(
         last_add = price
         # Adds can tighten the stop, but no state transition may widen it.
         protective_stop = max(protective_stop or 0.0, candidate_stop)
+        if normalized_action == "BUY" and opened_at is None:
+            opened_at = fill_time
+
+    if fill_time is not None:
+        last_action_at = fill_time
 
     return {
         "last_add_price": last_add,
         "protective_stop": protective_stop,
+        "opened_at": _state_timestamp(opened_at),
+        "last_exit_at": _state_timestamp(last_exit_at),
+        "last_action_at": _state_timestamp(last_action_at),
     }
 
 
@@ -932,18 +1073,32 @@ def _detect_regime(row: Mapping[str, Any], cfg: Mapping[str, Any]) -> str:
     ema_anchor = float(row["ema_anchor"])
     adx_value = float(row["adx"])
     vol_ratio = row.get("vol_ratio")
-    momentum_3d = row.get("return_3h") if intraday else row.get("momentum_3d")
+    momentum_fast = row.get("return_3h") if intraday else row.get("return_12h")
+    momentum_context = row.get("return_12h") if intraday else row.get("return_72h")
+    efficiency = float(row.get("efficiency_ratio") or 0.0)
     if (
         vol_ratio is not None
         and float(vol_ratio) >= cfg["panic_vol_ratio"]
-        and momentum_3d is not None
-        and float(momentum_3d) < 0
+        and momentum_fast is not None
+        and float(momentum_fast) < 0
     ):
         return "panic"
-    if adx_value >= cfg["adx_trend_threshold"]:
-        if ema_fast > ema_slow and (intraday or close > ema_anchor) and float(momentum_3d or 0.0) >= 0:
+    if adx_value >= cfg["adx_trend_threshold"] and efficiency >= 0.12:
+        anchor_up = close >= ema_anchor * (0.995 if intraday else 1.0)
+        anchor_down = close <= ema_anchor * (1.005 if intraday else 1.0)
+        if (
+            ema_fast > ema_slow
+            and anchor_up
+            and float(momentum_fast or 0.0) >= 0
+            and float(momentum_context or 0.0) >= -0.002
+        ):
             return "trend_up"
-        if ema_fast < ema_slow and (intraday or close < ema_anchor) and float(momentum_3d or 0.0) <= 0:
+        if (
+            ema_fast < ema_slow
+            and anchor_down
+            and float(momentum_fast or 0.0) <= 0
+            and float(momentum_context or 0.0) <= 0.002
+        ):
             return "trend_down"
     return "range"
 
@@ -958,6 +1113,8 @@ def _sleeve_votes(row: Mapping[str, Any], cfg: Mapping[str, Any]) -> Dict[str, f
     rsi_fast_value = float(row["rsi_fast"])
     volume_z = float(row["volume_z"]) if row.get("volume_z") is not None else 0.0
     donchian_pos = float(row["donchian_pos"]) if row.get("donchian_pos") is not None else 0.5
+    fast_channel_pos = float(row["fast_channel_pos"]) if row.get("fast_channel_pos") is not None else 0.5
+    efficiency = float(row.get("efficiency_ratio") or 0.0)
     intraday = int(cfg["bars_per_day"]) >= 96
     momentum_3d = float(row["momentum_3d"])
     momentum_fast = float(row["return_1h"]) if intraday else float(row["momentum_20d"])
@@ -973,12 +1130,13 @@ def _sleeve_votes(row: Mapping[str, Any], cfg: Mapping[str, Any]) -> Dict[str, f
             + 0.30 * _clamp(return_3h / 0.006)
             + 0.15 * _clamp(return_12h / 0.015)
         )
+        trend_vote *= min(1.15, 0.65 + efficiency)
         if bool(row.get("fast_breakdown")):
             breakout_vote = -1.0
         elif bool(row.get("fast_breakout")):
             breakout_vote = 1.0 if volume_z >= 0.0 else 0.7
         else:
-            breakout_vote = _clamp((donchian_pos - 0.5) * 0.8)
+            breakout_vote = _clamp((fast_channel_pos - 0.5) * 1.2)
         momentum_vote = (
             0.40 * _clamp(return_1h / 0.0025)
             + 0.35 * _clamp(return_3h / 0.006)
@@ -986,7 +1144,7 @@ def _sleeve_votes(row: Mapping[str, Any], cfg: Mapping[str, Any]) -> Dict[str, f
         )
         rsi_sell = 100.0 - cfg["meanrev_rsi_buy"]
         if zscore <= cfg["meanrev_entry_z"] and rsi_fast_value <= cfg["meanrev_rsi_buy"]:
-            meanrev_vote = 1.0 if return_3h > -0.02 else 0.35
+            meanrev_vote = 1.0 if return_3h > -0.02 and efficiency <= 0.40 else 0.30
         elif zscore >= 1.0 or rsi_fast_value >= rsi_sell:
             meanrev_vote = -1.0
         else:
@@ -998,35 +1156,38 @@ def _sleeve_votes(row: Mapping[str, Any], cfg: Mapping[str, Any]) -> Dict[str, f
             "meanrev": round(_clamp(meanrev_vote), 4),
         }
 
-    # --- Trend sleeve: EMA gap, anchor side, anchor slope -------------------
+    return_24h = float(row.get("return_24h") or 0.0)
+    return_72h = float(row.get("return_72h") or 0.0)
+
+    # --- Swing trend sleeve: 12h / 24h / 72h structure ---------------------
     ema_gap_pct = (ema_fast - ema_slow) / ema_slow * 100.0 if ema_slow > 0 else 0.0
     trend_vote = (
-        0.45 * _clamp(ema_gap_pct / 2.0)
-        + 0.30 * (1.0 if close > ema_anchor else -1.0)
-        + 0.25 * _clamp(anchor_slope / 0.30)
+        0.35 * _clamp(ema_gap_pct / 0.8)
+        + 0.20 * (1.0 if close > ema_anchor else -1.0)
+        + 0.25 * _clamp(return_24h / 0.02)
+        + 0.20 * _clamp(return_72h / 0.05)
     )
+    trend_vote *= min(1.15, 0.65 + efficiency)
 
-    # --- Breakout sleeve: Donchian breaks with volume confirmation ----------
-    if bool(row["breakdown_10d"]):
+    # --- Swing breakout sleeve: prior 12h/24h channel, causally lagged ------
+    if bool(row.get("fast_breakdown")):
         breakout_vote = -1.0
-    elif bool(row["breakout_20d"]):
+    elif bool(row.get("fast_breakout")):
         breakout_vote = 1.0 if volume_z >= 0.5 else 0.6
-    elif row.get("high_20d") is not None and close >= float(row["high_20d"]) * 0.98:
-        breakout_vote = 0.35
     else:
-        breakout_vote = (donchian_pos - 0.5) * 0.6
+        breakout_vote = (fast_channel_pos - 0.5) * 0.9
 
-    # --- Momentum sleeve: three-horizon time-series momentum ----------------
+    # --- Swing momentum sleeve: 12h / 24h / 72h ----------------------------
     momentum_vote = (
-        0.25 * _clamp(momentum_3d / 0.05)
-        + 0.40 * _clamp(momentum_fast / 0.10)
-        + 0.35 * _clamp(momentum_slow / 0.25)
+        0.30 * _clamp(return_12h / 0.015)
+        + 0.35 * _clamp(return_24h / 0.025)
+        + 0.35 * _clamp(return_72h / 0.06)
     )
 
     # --- Mean-reversion sleeve: dip buying / overbought fading ---------------
     rsi_sell = 100.0 - cfg["meanrev_rsi_buy"]
     if zscore <= cfg["meanrev_entry_z"] and rsi_fast_value <= cfg["meanrev_rsi_buy"]:
-        meanrev_vote = 1.0 if close > ema_anchor * 0.9 else 0.4
+        meanrev_vote = 1.0 if close > ema_anchor * 0.97 and efficiency <= 0.35 else 0.3
     elif zscore >= 1.5 or rsi_fast_value >= rsi_sell:
         meanrev_vote = -1.0
     else:
@@ -1073,6 +1234,9 @@ _REQUIRED_INDICATORS = (
     "return_1h",
     "return_3h",
     "return_12h",
+    "return_24h",
+    "return_72h",
+    "efficiency_ratio",
     "atr_24h",
     "annualized_volatility_30d",
     "vol_fast_annualized",
@@ -1083,8 +1247,254 @@ _REQUIRED_INDICATORS = (
     "rsi_fast",
     "adx",
     "zscore",
+    "bollinger_mean",
+    "bollinger_std",
     "volume_z",
 )
+
+
+def _round_trip_cost_pct(cfg: Mapping[str, Any]) -> float:
+    """Conservative market-order friction for one complete buy/sell cycle."""
+
+    return 2.0 * (float(cfg["fee_bps"]) + float(cfg["slippage_bps"])) / 10_000.0
+
+
+def _entry_move_proxies(row: Mapping[str, Any], cfg: Mapping[str, Any]) -> Dict[str, float]:
+    """Return causal gross-move proxies used only as a cost-admission gate.
+
+    These values are not return forecasts.  They measure the magnitude of the
+    already observed trend/channel or the distance back to the lagged
+    Bollinger mean.  A directional score may open risk only when its relevant
+    opportunity proxy is wider than configured round-trip friction.
+    """
+
+    close = float(row["close"])
+    ema_slow = float(row["ema_40"])
+    ema_gap = max(0.0, (float(row["ema_10"]) - ema_slow) / ema_slow) if ema_slow > 0 else 0.0
+    return_3h = max(0.0, float(row.get("return_3h") or 0.0))
+    return_12h = max(0.0, float(row.get("return_12h") or 0.0))
+    return_24h = max(0.0, float(row.get("return_24h") or 0.0))
+    return_72h = max(0.0, float(row.get("return_72h") or 0.0))
+    if int(cfg["bars_per_day"]) >= 96:
+        trend = max(return_12h, 2.0 * return_3h, 2.5 * ema_gap)
+    else:
+        trend = max(1.5 * return_12h, return_24h, 0.5 * return_72h, 2.0 * ema_gap)
+    fast_high = float(row.get("fast_high") or close)
+    fast_low = float(row.get("fast_low") or close)
+    channel_width = max(0.0, (fast_high - fast_low) / close) if close > 0 else 0.0
+    mean = float(row.get("bollinger_mean") or close)
+    dip = max(0.0, mean / close - 1.0) if close > 0 else 0.0
+    return {
+        "trend": trend,
+        # A breakout is admitted only after a causal retest (see the entry
+        # rules below).  The already-observed channel width remains a useful
+        # opportunity-size proxy, but the engine no longer buys the breakout
+        # close itself.
+        "breakout_retest": max(trend, channel_width),
+        "dip": dip,
+    }
+
+
+def _sol_drawdown_signal_from_indicator(
+    row: Mapping[str, Any],
+    cfg: Mapping[str, Any],
+    *,
+    position: Optional[Mapping[str, Any]] = None,
+    risk: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return the fixed, causal SOL Paper-sleeve decision.
+
+    This sleeve is intentionally not parameterized through the public config.
+    Its small out-of-sample research set does not justify exposing knobs or
+    allowing the general regime ensemble to trade SOL.  The API separately
+    enforces Paper-only authority; the engine enforces explicit opt-in and the
+    dedicated symbol route.
+    """
+
+    if not cfg.get("enable_sol_drawdown_sleeve"):
+        raise CryptoEngineError("SOL/USD drawdown sleeve is not enabled")
+    if int(cfg["bars_per_day"]) != 96:
+        raise CryptoEngineError("SOL/USD drawdown sleeve requires 15-minute bars")
+
+    (
+        current_weight,
+        average_entry,
+        last_add,
+        persisted_stop,
+        opened_at,
+        last_exit_at,
+        last_action_at,
+    ) = _position_values(position)
+    current_time = row["timestamp"]
+    close = float(row["close"])
+    risk_result = dict(risk or {})
+    bars_since_open = _elapsed_strategy_bars(opened_at, current_time, cfg)
+    bars_since_exit = _elapsed_strategy_bars(last_exit_at, current_time, cfg)
+    cooldown_active = (
+        current_weight <= 1e-9
+        and bars_since_exit is not None
+        and bars_since_exit < 4
+    )
+
+    return_1h = row.get("return_1h")
+    ema_24 = row.get("sol_ema_24")
+    ema_192 = row.get("sol_ema_192")
+    rsi_3 = row.get("sol_rsi_3")
+    indicators_ready = all(
+        value is not None for value in (return_1h, ema_24, ema_192, rsi_3)
+    )
+    setup = bool(
+        indicators_ready
+        and float(return_1h) <= -0.012
+        and float(rsi_3) <= 10.0
+        and close < float(ema_24)
+        and close > 0.99 * float(ema_192)
+    )
+
+    target_cap = min(0.12, float(cfg["max_asset_weight"]))
+    unrealized_return = (
+        close / average_entry - 1.0
+        if current_weight > 1e-9
+        and average_entry is not None
+        and average_entry > 0
+        else None
+    )
+    stop_price = (
+        persisted_stop
+        if persisted_stop is not None
+        else (
+            average_entry * 0.98
+            if current_weight > 1e-9 and average_entry is not None
+            else None
+        )
+    )
+    capital_exit = bool(risk_result.get("exit_required"))
+    stop_triggered = bool(
+        current_weight > 1e-9
+        and stop_price is not None
+        and close <= stop_price
+    )
+    take_profit = bool(
+        current_weight > 1e-9
+        and unrealized_return is not None
+        and unrealized_return >= 0.012
+    )
+    time_stop = bool(
+        current_weight > 1e-9
+        and bars_since_open is not None
+        and bars_since_open >= 32
+    )
+
+    reasons = [
+        "Experimental Paper sleeve: fixed causal SOL/USD four-bar drawdown setup."
+    ]
+    if current_weight > 1e-9:
+        # Capital protection and the fixed stop are intentionally evaluated
+        # before the experimental strategy's take-profit or time stop.
+        if capital_exit:
+            action, target_weight = "EXIT", 0.0
+            reasons.append("Capital-protection risk circuit requires an immediate SOL exit.")
+        elif stop_triggered:
+            action, target_weight = "EXIT", 0.0
+            reasons.append("SOL sleeve stop: completed bar closed 2% below entry.")
+        elif take_profit:
+            action, target_weight = "EXIT", 0.0
+            reasons.append("SOL sleeve take-profit: gross return reached 1.2%.")
+        elif time_stop:
+            action, target_weight = "EXIT", 0.0
+            reasons.append("SOL sleeve time stop: 32 completed 15-minute bars elapsed.")
+        else:
+            action, target_weight = "HOLD", current_weight
+            reasons.append("SOL sleeve remains inside its fixed stop/target/time window.")
+        allowed_actions = ["HOLD", "EXIT"]
+    elif risk_result.get("blocked"):
+        action, target_weight = "HOLD", 0.0
+        allowed_actions = ["HOLD"]
+        reasons.append("Risk circuit blocks new experimental SOL exposure.")
+    elif cooldown_active:
+        action, target_weight = "HOLD", 0.0
+        allowed_actions = ["HOLD"]
+        reasons.append("SOL entry withheld during the fixed four-bar post-exit cooldown.")
+    elif setup:
+        action, target_weight = "BUY", target_cap
+        allowed_actions = ["BUY", "HOLD"]
+        reasons.append(
+            "SOL setup qualified: 1h return <= -1.2%, RSI(3) <= 10, "
+            "close below EMA24 and above 99% of EMA192."
+        )
+    else:
+        action, target_weight = "HOLD", 0.0
+        allowed_actions = ["HOLD"]
+        reasons.append("Fixed experimental SOL drawdown setup is not qualified.")
+
+    return {
+        "algorithm": ALGORITHM_NAME,
+        "version": ALGORITHM_VERSION,
+        "timestamp": current_time.isoformat(),
+        "price": close,
+        "action": action,
+        "regime": "experimental_sol_drawdown",
+        "score": 80.0 if setup else 50.0,
+        "target_weight": round(target_weight, 6),
+        "stop_distance_pct": 0.02,
+        "reasons": reasons,
+        "allowed_actions": allowed_actions,
+        "position_state": {
+            "last_add_price": last_add or average_entry,
+            "protective_stop": (
+                round(float(stop_price), 8) if stop_price is not None else None
+            ),
+            "opened_at": _state_timestamp(opened_at),
+            "last_exit_at": _state_timestamp(last_exit_at),
+            "last_action_at": _state_timestamp(last_action_at),
+        },
+        "ensemble": {
+            "regime": "experimental_sol_drawdown",
+            "experimental": True,
+            "sleeve": "sol_drawdown_v1",
+            "ml": None,
+        },
+        "evidence": {
+            "experimental": True,
+            "paper_only": True,
+            "sleeve": "sol_drawdown_v1",
+            "entry_qualified": setup and not cooldown_active and not risk_result.get("blocked"),
+            "entry_mode": "sol_drawdown" if setup else None,
+            "setup_mode": "sol_drawdown" if setup else None,
+            "return_1h_pct": (
+                round(float(return_1h), 6) if return_1h is not None else None
+            ),
+            "rsi_3": round(float(rsi_3), 4) if rsi_3 is not None else None,
+            "ema_24": round(float(ema_24), 8) if ema_24 is not None else None,
+            "ema_192": round(float(ema_192), 8) if ema_192 is not None else None,
+            "target_cap_pct": target_cap,
+            "take_profit_pct": 0.012,
+            "stop_distance_pct": 0.02,
+            "time_stop_bars": 32,
+            "reentry_cooldown_bars": 4,
+            "bars_since_open": bars_since_open,
+            "bars_since_exit": bars_since_exit,
+            "reentry_cooldown_active": cooldown_active,
+            "unrealized_return_pct": (
+                round(unrealized_return, 6)
+                if unrealized_return is not None
+                else None
+            ),
+            "capital_exit": capital_exit,
+            "stop_triggered": stop_triggered,
+            "take_profit": take_profit,
+            "time_stop": time_stop,
+        },
+        "indicators": {
+            "return_1h": (
+                round(float(return_1h), 6) if return_1h is not None else None
+            ),
+            "rsi_fast": round(float(rsi_3), 2) if rsi_3 is not None else None,
+            "ema_10": float(ema_24) if ema_24 is not None else None,
+            "ema_40": float(ema_192) if ema_192 is not None else None,
+            "experimental": True,
+        },
+    }
 
 
 def _signal_from_indicator(
@@ -1095,7 +1505,15 @@ def _signal_from_indicator(
     risk: Optional[Mapping[str, Any]] = None,
     ml_signal: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    current_weight, average_entry, last_add, persisted_stop = _position_values(position)
+    (
+        current_weight,
+        average_entry,
+        last_add,
+        persisted_stop,
+        opened_at,
+        last_exit_at,
+        last_action_at,
+    ) = _position_values(position)
     persisted_last_add = (last_add or average_entry) if current_weight > 1e-9 else None
     if any(row.get(field) is None for field in _REQUIRED_INDICATORS):
         return {
@@ -1113,6 +1531,9 @@ def _signal_from_indicator(
             "position_state": {
                 "last_add_price": persisted_last_add,
                 "protective_stop": persisted_stop,
+                "opened_at": _state_timestamp(opened_at),
+                "last_exit_at": _state_timestamp(last_exit_at),
+                "last_action_at": _state_timestamp(last_action_at),
             },
             "ensemble": None,
             "evidence": {
@@ -1123,6 +1544,8 @@ def _signal_from_indicator(
                 "stop_triggered": False,
                 "capital_exit": False,
                 "panic_exit": False,
+                "minimum_hold_active": False,
+                "reentry_cooldown_active": False,
                 "ml_veto": False,
             },
         }
@@ -1169,22 +1592,45 @@ def _signal_from_indicator(
         )
     score = round(max(0.0, min(100.0, score)), 1)
 
-    momentum_fast = float(row["return_1h"]) if intraday else float(row["momentum_20d"])
-    momentum_slow = float(row["return_3h"]) if intraday else float(row["momentum_65d"])
+    momentum_fast = float(row["return_1h"]) if intraday else float(row["return_12h"])
+    momentum_slow = float(row["return_3h"]) if intraday else float(row["return_24h"])
+    momentum_context = float(row["return_12h"]) if intraday else float(row["return_72h"])
     ema_fast = float(row["ema_10"])
     ema_slow = float(row["ema_40"])
     negative = (
         ema_fast < ema_slow
         and momentum_fast < (-0.001 if intraday else 0.0)
         and momentum_slow < 0
+        and momentum_context < (0.002 if intraday else 0.005)
     )
-    breakdown = bool(row.get("fast_breakdown")) if intraday else bool(row["breakdown_10d"])
+    breakdown = bool(row.get("fast_breakdown"))
+    current_time = row["timestamp"]
+    bars_since_open = _elapsed_strategy_bars(opened_at, current_time, cfg)
+    bars_since_exit = _elapsed_strategy_bars(last_exit_at, current_time, cfg)
+    minimum_hold_active = (
+        current_weight > 0
+        and bars_since_open is not None
+        and bars_since_open < cfg["minimum_hold_bars"]
+    )
+    reentry_cooldown_active = (
+        current_weight <= 1e-9
+        and bars_since_exit is not None
+        and bars_since_exit < cfg["reentry_cooldown_bars"]
+    )
 
     # --- Stops -------------------------------------------------------------
     stop_distance = max(
         cfg["min_stop_distance_pct"],
         min(cfg["max_stop_distance_pct"], atr_pct * cfg["stop_atr_multiple"]),
     )
+    round_trip_cost = _round_trip_cost_pct(cfg)
+    cost_hurdle = round_trip_cost * cfg["entry_cost_multiplier"]
+    # The profit target is expressed gross of costs.  Its net gain equals the
+    # configured reward multiple of the complete stop-plus-friction loss.
+    profit_target = round_trip_cost + cfg["reward_to_risk"] * (
+        stop_distance + round_trip_cost
+    )
+    move_proxies = _entry_move_proxies(row, cfg)
     risk_result = dict(risk or {})
     if persisted_stop is not None:
         stop_price = persisted_stop
@@ -1194,46 +1640,98 @@ def _signal_from_indicator(
         stop_price = None
     stop_triggered = current_weight > 0 and stop_price is not None and close <= stop_price
 
-    # Chandelier-style trailing ratchet: while the position is in profit the
-    # stop may rise with price, and it can never widen.  The updated value is
-    # emitted through position_state so the durable controller persists it on
-    # HOLD as well as on fills.
+    unrealized_return = (
+        close / average_entry - 1.0
+        if current_weight > 0 and average_entry is not None and average_entry > 0
+        else None
+    )
+
+    # Chandelier-style trailing ratchet starts only after price has first
+    # travelled far enough to cover the complete round trip plus one stop
+    # distance.  The old implementation tightened after any positive tick,
+    # systematically converting small gross winners into net losers.
     trailed_stop = stop_price
     reference_cost = last_add or average_entry
+    trail_activation = round_trip_cost + stop_distance
     if (
         current_weight > 0
         and not stop_triggered
         and reference_cost is not None
-        and close > reference_cost
+        and unrealized_return is not None
+        and unrealized_return >= trail_activation
     ):
         candidate = close * (1.0 - max(
             cfg["min_stop_distance_pct"],
             min(cfg["max_stop_distance_pct"], atr_pct * cfg["trail_atr_multiple"]),
         ))
+        if average_entry is not None:
+            candidate = max(candidate, average_entry * (1.0 + round_trip_cost))
         if trailed_stop is None or candidate > trailed_stop:
             trailed_stop = candidate
 
     # --- Entry qualification ------------------------------------------------
-    trend_entry = (
+    fast_breakout = bool(row.get("fast_breakout"))
+    fast_channel_position = float(row.get("fast_channel_pos") or 0.5)
+    # Buying a fresh 15-minute channel break proved to be a costly momentum
+    # chase under tier-1 crypto fees.  Trend entries now wait for price to
+    # remain inside the prior channel with a non-overbought oscillator.  This
+    # is a causal breakout/retest contract: every channel bound excludes the
+    # current bar, and no future bar is consulted.
+    not_overextended = (
+        not fast_breakout
+        and zscore <= (0.90 if intraday else 1.10)
+        and rsi_fast_value <= (68.0 if intraday else 72.0)
+        and fast_channel_position < 0.985
+    )
+    trend_setup = (
         regime == "trend_up"
         and score >= cfg["entry_score"]
-        and (not intraday or (momentum_fast > -0.0005 and rsi_fast_value < 78.0))
+        and not_overextended
+        and momentum_fast > (-0.0005 if intraday else 0.0)
+        and momentum_context > 0
+        and close >= ema_fast
     )
-    breakout_entry = (
-        intraday
-        and bool(row.get("fast_breakout"))
+    breakout_retest_setup = (
+        regime == "trend_up"
+        and not_overextended
         and score >= cfg["entry_score"] + 2.0
-        and float(row.get("volume_z") or 0.0) >= -0.5
+        and float(row.get("volume_z") or 0.0) >= (-0.25 if intraday else -0.5)
+        and momentum_slow > 0
+        and momentum_context > 0
+        and float(row.get("efficiency_ratio") or 0.0) >= 0.18
+        and fast_channel_position >= (0.60 if intraday else 0.55)
+        and zscore >= (-0.75 if intraday else -1.0)
     )
-    dip_entry = (
+    dip_setup = (
         regime == "range"
         and votes["meanrev"] >= (0.45 if intraday else 0.6)
-        and close > float(row["ema_anchor"]) * (0.97 if intraday else 1.0)
-        and (not intraday or (zscore <= -0.65 and rsi_fast_value <= 45.0 and momentum_slow > -0.02))
+        and close > float(row["ema_anchor"]) * (0.97 if intraday else 0.98)
+        and zscore <= (-0.65 if intraday else cfg["meanrev_entry_z"])
+        and rsi_fast_value <= (45.0 if intraday else 40.0)
+        and momentum_slow > (-0.02 if intraday else -0.04)
+        and float(row.get("efficiency_ratio") or 0.0) <= 0.40
         and score >= cfg["entry_score"]
     )
-    entry_mode = "breakout" if breakout_entry else ("trend" if trend_entry else ("dip" if dip_entry else None))
-    entry_qualified = entry_mode is not None
+    setup_mode = (
+        "breakout_retest"
+        if breakout_retest_setup
+        else ("trend" if trend_setup else ("dip" if dip_setup else None))
+    )
+    edge_proxy = move_proxies.get(setup_mode or "", 0.0)
+    required_edge = max(cost_hurdle, profit_target if setup_mode == "dip" else 0.0)
+    cost_qualified = setup_mode is not None and edge_proxy >= required_edge
+    entry_mode = setup_mode if cost_qualified else None
+    entry_qualified = entry_mode is not None and not reentry_cooldown_active
+    if setup_mode is not None and not cost_qualified:
+        reasons.append(
+            "Entry withheld: %.2f%% causal move proxy does not clear the %.2f%% cost/risk hurdle."
+            % (edge_proxy * 100.0, required_edge * 100.0)
+        )
+    if cost_qualified and reentry_cooldown_active:
+        reasons.append(
+            "Entry withheld during the %d-bar post-exit cooldown."
+            % cfg["reentry_cooldown_bars"]
+        )
     ml_veto = False
     if (
         entry_qualified
@@ -1260,7 +1758,24 @@ def _signal_from_indicator(
 
     capital_exit = bool(risk_result.get("exit_required"))
     panic_exit = regime == "panic" and current_weight > 0
-    hard_exit = capital_exit or breakdown or stop_triggered or panic_exit
+    hard_exit = capital_exit or stop_triggered or panic_exit
+    structural_breakdown = (
+        breakdown
+        and negative
+        and score <= max(cfg["reduce_score"], cfg["entry_score"] - 5.0)
+    )
+    bearish_reversal = negative and score <= cfg["reduce_score"]
+    time_stop = (
+        current_weight > 0
+        and bars_since_open is not None
+        and bars_since_open >= cfg["time_stop_bars"]
+        and (
+            unrealized_return is None
+            or unrealized_return < cost_hurdle
+            or score < cfg["entry_score"]
+        )
+    )
+    strategy_exit = structural_breakdown or bearish_reversal or time_stop
     if capital_exit:
         reasons.append("A capital-protection circuit requires an exit.")
     elif stop_triggered:
@@ -1271,58 +1786,98 @@ def _signal_from_indicator(
         reasons.append("The risk circuit blocks new exposure.")
 
     add_reference = max(value for value in (average_entry, last_add, 0.0) if value is not None)
+    effective_add_gain = max(cfg["add_min_price_gain_pct"], profit_target)
     add_price_confirmed = (
         add_reference > 0
-        and close >= add_reference * (1.0 + cfg["add_min_price_gain_pct"])
+        and close >= add_reference * (1.0 + effective_add_gain)
     )
     add_allowed = (
         current_weight > 0
         and not risk_result.get("blocked")
         and entry_qualified
         and regime == "trend_up"
-        and bool(row.get("fast_breakout") if intraday else row["breakout_20d"])
+        and bool(row.get("fast_breakout"))
         and score >= cfg["add_score"]
         and add_price_confirmed
         and strategic_target >= current_weight + cfg["rebalance_band"]
     )
 
-    # Range-regime overbought take-profit: in chop, strength is sold rather
-    # than chased (QuantPedia range-regime evidence).
+    # Profit taking is evaluated net of the configured round trip.  A mere
+    # overbought print can no longer crystallise a gross win that is a net
+    # loss after fees.
     rsi_sell = 100.0 - cfg["meanrev_rsi_buy"]
     range_take_profit = (
         current_weight > 0
         and regime == "range"
-        and zscore >= (0.75 if intraday else 1.0)
-        and rsi_fast_value >= rsi_sell
+        and unrealized_return is not None
+        and unrealized_return >= profit_target
+        and (zscore >= 0.0 or rsi_fast_value >= 50.0)
+    )
+    trend_take_profit = (
+        current_weight > 0
+        and regime == "trend_up"
+        and unrealized_return is not None
+        and unrealized_return >= profit_target
+        and (zscore >= 1.25 or rsi_fast_value >= rsi_sell or momentum_fast < 0)
     )
 
     if current_weight <= 1e-9:
         target_weight = strategic_target if entry_qualified and not risk_result.get("blocked") else 0.0
         action = "BUY" if target_weight > 1e-6 else "HOLD"
         allowed_actions = ["BUY", "HOLD"] if action == "BUY" else ["HOLD"]
-    elif hard_exit or negative:
+    elif hard_exit:
         target_weight = 0.0
         action = "EXIT"
+        allowed_actions = ["HOLD", "REDUCE", "EXIT"]
+    elif (strategy_exit or range_take_profit) and not minimum_hold_active:
+        target_weight = 0.0
+        action = "EXIT"
+        allowed_actions = ["HOLD", "REDUCE", "EXIT"]
+        if range_take_profit:
+            reasons.append(
+                "Cost-aware range take-profit: gross return cleared the %.2f%% target."
+                % (profit_target * 100.0)
+            )
+        elif time_stop:
+            reasons.append(
+                "Time stop: the position did not retain enough edge after %d bars."
+                % cfg["time_stop_bars"]
+            )
+        else:
+            reasons.append("Confirmed bearish structure invalidated the long thesis.")
+    elif (strategy_exit or range_take_profit) and minimum_hold_active:
+        target_weight = current_weight
+        action = "HOLD"
+        allowed_actions = ["HOLD", "REDUCE", "EXIT"]
+        reasons.append(
+            "Normal exit is held until the %d-bar minimum; protection exits remain immediate."
+            % cfg["minimum_hold_bars"]
+        )
+    elif risk_result.get("blocked"):
+        target_weight = current_weight
+        action = "HOLD"
+        allowed_actions = ["HOLD", "REDUCE", "EXIT"]
+    elif trend_take_profit:
+        reduced_target = current_weight * cfg["reduced_weight_fraction"]
+        if current_weight - reduced_target >= cfg["rebalance_band"]:
+            target_weight = reduced_target
+            action = "REDUCE"
+            reasons.append("Trend profit target reached; de-risking while the trailing stop protects the remainder.")
+        else:
+            target_weight = current_weight
+            action = "HOLD"
         allowed_actions = ["HOLD", "REDUCE", "EXIT"]
     elif (
         score < cfg["reduce_score"]
         or volatility >= cfg["high_volatility_threshold"]
-        or range_take_profit
-        or (intraday and momentum_fast < 0 and score < cfg["entry_score"])
     ):
         reduced_target = min(current_weight, cfg["max_asset_weight"] * cfg["reduced_weight_fraction"])
         if current_weight - reduced_target >= cfg["rebalance_band"]:
             target_weight = reduced_target
             action = "REDUCE"
-            if range_take_profit:
-                reasons.append("Range-regime overbought take-profit: selling strength into chop.")
         else:
             target_weight = current_weight
             action = "HOLD"
-        allowed_actions = ["HOLD", "REDUCE", "EXIT"]
-    elif risk_result.get("blocked"):
-        target_weight = current_weight
-        action = "HOLD"
         allowed_actions = ["HOLD", "REDUCE", "EXIT"]
     elif add_allowed:
         target_weight = strategic_target
@@ -1358,6 +1913,9 @@ def _signal_from_indicator(
         "position_state": {
             "last_add_price": persisted_last_add,
             "protective_stop": round(emitted_stop, 8) if emitted_stop is not None else None,
+            "opened_at": _state_timestamp(opened_at),
+            "last_exit_at": _state_timestamp(last_exit_at),
+            "last_action_at": _state_timestamp(last_action_at),
         },
         "ensemble": {
             "regime": regime,
@@ -1378,11 +1936,30 @@ def _signal_from_indicator(
         "evidence": {
             "entry_qualified": entry_qualified,
             "entry_mode": entry_mode,
+            "setup_mode": setup_mode,
+            "cost_qualified": cost_qualified,
+            "edge_proxy_pct": round(edge_proxy, 6),
+            "cost_hurdle_pct": round(required_edge, 6),
+            "round_trip_cost_pct": round(round_trip_cost, 6),
+            "profit_target_pct": round(profit_target, 6),
             "negative_trend": negative,
             "breakdown": breakdown,
+            "structural_breakdown": structural_breakdown,
+            "bearish_reversal": bearish_reversal,
+            "strategy_exit": strategy_exit,
+            "time_stop": time_stop,
+            "range_take_profit": range_take_profit,
+            "trend_take_profit": trend_take_profit,
             "stop_triggered": stop_triggered,
             "capital_exit": capital_exit,
             "panic_exit": panic_exit,
+            "minimum_hold_active": minimum_hold_active,
+            "reentry_cooldown_active": reentry_cooldown_active,
+            "bars_since_open": bars_since_open,
+            "bars_since_exit": bars_since_exit,
+            "unrealized_return_pct": (
+                round(unrealized_return, 6) if unrealized_return is not None else None
+            ),
             "ml_veto": ml_veto,
             "protective_stop": round(stop_price, 8) if stop_price is not None else None,
             "trailing_stop": round(emitted_stop, 8) if emitted_stop is not None else None,
@@ -1399,8 +1976,16 @@ def _signal_from_indicator(
             "return_1h": round(float(row["return_1h"]), 6),
             "return_3h": round(float(row["return_3h"]), 6),
             "return_12h": round(float(row["return_12h"]), 6),
+            "return_24h": round(float(row["return_24h"]), 6),
+            "return_72h": round(float(row["return_72h"]), 6),
+            "efficiency_ratio": round(float(row["efficiency_ratio"]), 4),
             "fast_breakout": bool(row.get("fast_breakout")),
             "fast_breakdown": bool(row.get("fast_breakdown")),
+            "fast_channel_pos": (
+                round(float(row["fast_channel_pos"]), 4)
+                if row.get("fast_channel_pos") is not None
+                else None
+            ),
             "atr_24h": float(row["atr_24h"]),
             "atr_pct": round(atr_pct, 6),
             "annualized_volatility_30d": volatility,
@@ -1412,6 +1997,8 @@ def _signal_from_indicator(
             "rsi_fast": round(rsi_fast_value, 2),
             "adx": round(float(row["adx"]), 2),
             "zscore": round(zscore, 4),
+            "bollinger_mean": round(float(row["bollinger_mean"]), 8),
+            "bollinger_std": round(float(row["bollinger_std"]), 8),
             "macd_hist_pct": (
                 round(float(row["macd_hist_pct"]), 5)
                 if row.get("macd_hist_pct") is not None
@@ -1432,14 +2019,23 @@ def _confirmed_signal(
     index: int,
     cfg: Mapping[str, Any],
     *,
+    symbol: str,
     position: Optional[Mapping[str, Any]],
     risk: Mapping[str, Any],
     ml_signal: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Apply causal entry/exit confirmation to one already-completed bar."""
 
+    if symbol == "SOL/USD":
+        return _sol_drawdown_signal_from_indicator(
+            rows[index],
+            cfg,
+            position=position,
+            risk=risk,
+        )
+
     result = _signal_from_indicator(rows[index], cfg, position=position, risk=risk, ml_signal=ml_signal)
-    current_weight, _, _, _ = _position_values(position)
+    current_weight, _, _, _, _, _, _ = _position_values(position)
 
     # Dip entries in a range regime are transient by nature; they execute on
     # the signal bar with a tight stop instead of waiting for multi-bar
@@ -1468,20 +2064,21 @@ def _confirmed_signal(
                 f"Trend entry is waiting for {count} consecutive completed-bar confirmations."
             )
 
-    # Breakdowns, protective stops, panic and capital circuits are immediate.
-    # A slower trend reversal needs confirmation so a single noisy close
-    # cannot liquidate the position.
+    # Protective stops, panic and capital circuits are immediate.  A local
+    # channel break is not: it must agree with the bearish EMA/momentum state
+    # and persist, preventing the old 15m one-bar enter/exit loop.
     evidence = result.get("evidence", {})
-    slow_exit = (
+    directional_exit = (
         result["action"] == "EXIT"
-        and evidence.get("negative_trend", False)
+        and (evidence.get("structural_breakdown", False) or evidence.get("bearish_reversal", False))
+        and not evidence.get("time_stop", False)
         and not any(
             evidence.get(flag, False)
-            for flag in ("breakdown", "stop_triggered", "capital_exit", "panic_exit")
+            for flag in ("stop_triggered", "capital_exit", "panic_exit")
         )
     )
-    if slow_exit:
-        count = cfg["exit_confirmation_bars"]
+    if directional_exit:
+        count = max(cfg["exit_confirmation_bars"], 2 if cfg["bars_per_day"] >= 96 else 1)
         start = index - count + 1
         confirmed = start >= 0
         if confirmed:
@@ -1492,7 +2089,11 @@ def _confirmed_signal(
                     position=None,
                     risk={"blocked": False},
                 )
-                if not candidate.get("evidence", {}).get("negative_trend", False):
+                candidate_evidence = candidate.get("evidence", {})
+                if not (
+                    candidate_evidence.get("structural_breakdown", False)
+                    or candidate_evidence.get("bearish_reversal", False)
+                ):
                     confirmed = False
                     break
         if not confirmed:
@@ -1500,7 +2101,7 @@ def _confirmed_signal(
             result["target_weight"] = current_weight
             result["allowed_actions"] = ["HOLD", "REDUCE", "EXIT"]
             result["reasons"].append(
-                f"Trend exit is waiting for {count} consecutive completed-bar confirmations."
+                f"Strategy exit is waiting for {count} consecutive completed-bar confirmations."
             )
     return result
 
@@ -1509,6 +2110,7 @@ def generate_signal(
     bars: Iterable[Mapping[str, Any]],
     config: Optional[Mapping[str, Any]] = None,
     *,
+    symbol: Optional[str] = None,
     position: Optional[Mapping[str, Any]] = None,
     risk_state: Optional[Mapping[str, Any]] = None,
     now: Optional[Any] = None,
@@ -1522,6 +2124,13 @@ def generate_signal(
     """
 
     cfg = validate_config(config)
+    if symbol is None and "SOL/USD" in cfg["symbols"] and len(cfg["symbols"]) > 1:
+        raise CryptoEngineError(
+            "symbol is required when an enabled config mixes core assets with SOL/USD"
+        )
+    resolved_symbol = str(symbol or cfg["symbols"][0]).strip().upper()
+    if resolved_symbol not in cfg["symbols"]:
+        raise CryptoEngineError(f"symbol is not enabled by config: {resolved_symbol}")
     rows = compute_indicators(bars, cfg)
     state = dict(risk_state or {})
     state.setdefault("last_bar_time", rows[-1]["timestamp"])
@@ -1530,6 +2139,7 @@ def generate_signal(
         rows,
         len(rows) - 1,
         cfg,
+        symbol=resolved_symbol,
         position=position,
         risk=risk,
         ml_signal=ml_signal,
@@ -1695,12 +2305,15 @@ def _round_trip_stats(fills: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     round_trips: List[Dict[str, Any]] = []
     open_cost = 0.0
     open_units = 0.0
+    open_modeled_cost = 0.0
     entry_time: Optional[str] = None
     realized = 0.0
+    realized_modeled_cost = 0.0
     for fill in fills:
         side = fill.get("side")
         gross = float(fill.get("gross_notional") or 0.0)
         fee = float(fill.get("fee") or 0.0)
+        slippage_cost = float(fill.get("slippage_cost") or 0.0)
         price = float(fill.get("execution_price") or 0.0)
         if price <= 0:
             continue
@@ -1709,30 +2322,65 @@ def _round_trip_stats(fills: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
             if open_units <= 1e-12:
                 entry_time = fill.get("timestamp")
                 realized = 0.0
+                realized_modeled_cost = 0.0
             open_cost += gross + fee
             open_units += units
+            open_modeled_cost += fee + slippage_cost
         elif side == "sell" and open_units > 1e-12:
             fraction = min(1.0, units / open_units)
             cost_released = open_cost * fraction
+            modeled_cost_released = open_modeled_cost * fraction
             realized += (gross - fee) - cost_released
+            realized_modeled_cost += modeled_cost_released + fee + slippage_cost
             open_cost -= cost_released
+            open_modeled_cost -= modeled_cost_released
             open_units -= units
             if open_units <= 1e-9:
+                exit_time = fill.get("timestamp")
+                holding_hours: Optional[float] = None
+                if entry_time and exit_time:
+                    holding_hours = max(
+                        0.0,
+                        (_parse_timestamp(exit_time) - _parse_timestamp(entry_time)).total_seconds() / 3600.0,
+                    )
                 round_trips.append(
                     {
                         "entry_time": entry_time,
-                        "exit_time": fill.get("timestamp"),
+                        "exit_time": exit_time,
                         "pnl": round(realized, 8),
+                        "gross_pnl_before_costs": round(realized + realized_modeled_cost, 8),
+                        "modeled_costs": round(realized_modeled_cost, 8),
+                        "holding_hours": round(holding_hours, 4) if holding_hours is not None else None,
                     }
                 )
                 open_cost = 0.0
                 open_units = 0.0
+                open_modeled_cost = 0.0
                 entry_time = None
                 realized = 0.0
+                realized_modeled_cost = 0.0
     wins = [trip for trip in round_trips if trip["pnl"] > 0]
     losses = [trip for trip in round_trips if trip["pnl"] <= 0]
     gross_win = sum(trip["pnl"] for trip in wins)
     gross_loss = abs(sum(trip["pnl"] for trip in losses))
+    holding_hours = sorted(
+        float(trip["holding_hours"])
+        for trip in round_trips
+        if trip.get("holding_hours") is not None
+    )
+    if holding_hours:
+        midpoint = len(holding_hours) // 2
+        median_holding = (
+            holding_hours[midpoint]
+            if len(holding_hours) % 2
+            else (holding_hours[midpoint - 1] + holding_hours[midpoint]) / 2.0
+        )
+    else:
+        median_holding = None
+    modeled_costs = sum(float(trip["modeled_costs"]) for trip in round_trips)
+    gross_profit_before_costs = sum(
+        max(0.0, float(trip["gross_pnl_before_costs"])) for trip in round_trips
+    )
     return {
         "round_trips": len(round_trips),
         "wins": len(wins),
@@ -1741,6 +2389,19 @@ def _round_trip_stats(fills: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
         "average_win": round(gross_win / len(wins), 8) if wins else None,
         "average_loss": round(-gross_loss / len(losses), 8) if losses else None,
         "profit_factor": round(gross_win / gross_loss, 6) if gross_loss > 1e-12 else None,
+        "average_holding_hours": (
+            round(_mean(holding_hours), 4) if holding_hours else None
+        ),
+        "median_holding_hours": (
+            round(median_holding, 4) if median_holding is not None else None
+        ),
+        "modeled_costs": round(modeled_costs, 8),
+        "gross_profit_before_costs": round(gross_profit_before_costs, 8),
+        "cost_to_gross_profit": (
+            round(modeled_costs / gross_profit_before_costs, 6)
+            if gross_profit_before_costs > 1e-12
+            else None
+        ),
         "trips": round_trips[-50:],
     }
 
@@ -1807,9 +2468,12 @@ def backtest(
     cash = initial_capital
     units = 0.0
     average_entry: Optional[float] = None
-    position_state: Dict[str, Optional[float]] = {
+    position_state: Dict[str, Any] = {
         "last_add_price": None,
         "protective_stop": None,
+        "opened_at": None,
+        "last_exit_at": None,
+        "last_action_at": None,
     }
     pending_target = 0.0
     pending_stop_distance: Optional[float] = None
@@ -1858,6 +2522,7 @@ def backtest(
                         fill_price=execution_price,
                         stop_distance_pct=pending_stop_distance,
                         remaining_position=True,
+                        filled_at=row["timestamp"],
                     )
                     fees += fee
                     turnover += gross / max(equity_at_open, 1e-9)
@@ -1870,6 +2535,7 @@ def backtest(
                             "execution_price": round(execution_price, 8),
                             "gross_notional": round(gross, 8),
                             "fee": round(fee, 8),
+                            "slippage_cost": round(gross * slip_rate / (1.0 + slip_rate), 8),
                             "terminal": False,
                             "position_state": copy.deepcopy(position_state),
                         }
@@ -1887,6 +2553,7 @@ def backtest(
                     action=pending_action,
                     fill_price=execution_price,
                     remaining_position=remaining_position,
+                    filled_at=row["timestamp"],
                 )
                 if not remaining_position:
                     units = 0.0
@@ -1902,6 +2569,7 @@ def backtest(
                         "execution_price": round(execution_price, 8),
                         "gross_notional": round(gross, 8),
                         "fee": round(fee, 8),
+                        "slippage_cost": round(gross * slip_rate / max(1e-12, 1.0 - slip_rate), 8),
                         "terminal": False,
                         "position_state": copy.deepcopy(position_state),
                     }
@@ -1924,7 +2592,8 @@ def backtest(
         if risk.get("cooldown_required") and (
             cooldown_until_index is None or index >= cooldown_until_index
         ):
-            cooldown_until_index = index + SEVEN_DAY_COOLDOWN_HOURS
+            bars_per_hour = max(1, cfg["bars_per_day"] // 24)
+            cooldown_until_index = index + SEVEN_DAY_COOLDOWN_HOURS * bars_per_hour
         cooldown_active = (
             cooldown_until_index is not None and index < cooldown_until_index
         )
@@ -1956,6 +2625,7 @@ def backtest(
             rows,
             index,
             cfg,
+            symbol=symbol,
             position={
                 "weight": current_weight,
                 "average_entry_price": average_entry,
@@ -1990,6 +2660,8 @@ def backtest(
                 "target_weight": signal["target_weight"],
                 "equity": round(equity, 8),
                 "ensemble": signal.get("ensemble"),
+                "evidence": copy.deepcopy(signal.get("evidence") or {}),
+                "reasons": list(signal.get("reasons") or []),
                 "risk": copy.deepcopy(risk),
             }
         )
@@ -2011,6 +2683,7 @@ def backtest(
             action="EXIT",
             fill_price=execution_price,
             remaining_position=False,
+            filled_at=terminal_row["timestamp"],
         )
         fills.append(
             {
@@ -2020,6 +2693,7 @@ def backtest(
                 "execution_price": round(execution_price, 8),
                 "gross_notional": round(gross, 8),
                 "fee": round(fee, 8),
+                "slippage_cost": round(gross * slip_rate / max(1e-12, 1.0 - slip_rate), 8),
                 "terminal": True,
                 "position_state": copy.deepcopy(position_state),
             }
@@ -2063,6 +2737,20 @@ def backtest(
     trade_stats = _round_trip_stats(fills)
     metrics["win_rate"] = trade_stats["win_rate"]
     metrics["profit_factor"] = trade_stats["profit_factor"]
+    elapsed_weeks = 0.0
+    if len(timestamps) >= 2:
+        elapsed_weeks = (
+            _parse_timestamp(timestamps[-1]) - _parse_timestamp(timestamps[0])
+        ).total_seconds() / (7 * 24 * 60 * 60)
+    trades_per_week = (
+        trade_stats["round_trips"] / elapsed_weeks if elapsed_weeks > 1e-12 else 0.0
+    )
+    trade_stats["trades_per_week"] = round(trades_per_week, 4)
+    trade_stats["frequency_unit"] = "completed_round_trips_per_week"
+    metrics["trades_per_week"] = round(trades_per_week, 4)
+    metrics["average_holding_hours"] = trade_stats["average_holding_hours"]
+    metrics["median_holding_hours"] = trade_stats["median_holding_hours"]
+    metrics["cost_to_gross_profit"] = trade_stats["cost_to_gross_profit"]
     return {
         "algorithm": ALGORITHM_NAME,
         "version": ALGORITHM_VERSION,
