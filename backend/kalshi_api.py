@@ -14,9 +14,11 @@ import time
 import uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Tuple
+from urllib.parse import urlsplit
 
 import requests
 from cryptography.hazmat.primitives import hashes, serialization
@@ -52,6 +54,20 @@ except ImportError:  # pragma: no cover - package-style test imports
 
 
 KALSHI_PUBLIC_BASE = "https://external-api.kalshi.com/trade-api/v2"
+KALSHI_PUBLIC_FALLBACK_BASE = "https://api.elections.kalshi.com/trade-api/v2"
+KALSHI_PUBLIC_BASES = (KALSHI_PUBLIC_BASE, KALSHI_PUBLIC_FALLBACK_BASE)
+KALSHI_NO_ACTIVE_HOURLY_MARKET = "kalshi_no_active_hourly_market"
+KALSHI_EXECUTION_BLOCKING_WARNINGS = frozenset({
+    "kalshi_market_stale",
+    "hourly_markets_stale",
+    "kalshi_orderbook_stale",
+    "kalshi_orderbook_unavailable",
+    "hourly_orderbooks_stale",
+    "hourly_orderbooks_unavailable",
+    "brti_proxy_stale",
+    "btc_reference_unavailable",
+    "btc_history_stale",
+})
 COINBASE_EXCHANGE_BASE = "https://api.exchange.coinbase.com"
 BITSTAMP_BASE = "https://www.bitstamp.net/api/v2"
 GEMINI_BASE = "https://api.gemini.com/v1"
@@ -1660,10 +1676,175 @@ class _PublicDataClient:
         self._cache: Dict[str, Tuple[float, Any]] = {}
         self._cache_meta: Dict[str, Dict[str, Any]] = {}
         self._cache_lock = threading.RLock()
+        self._inflight: Dict[str, threading.Event] = {}
+        self._key_retry_until: Dict[str, float] = {}
+        self._key_errors: Dict[str, KalshiApiError] = {}
+        self._host_backoff: Dict[str, Dict[str, Any]] = {}
+        self._host_request_locks = {
+            self._host_name(base): threading.Lock()
+            for base in KALSHI_PUBLIC_BASES
+        }
+        self._max_cache_entries = 512
+        self._kalshi_last_attempt_at: Optional[str] = None
+        self._kalshi_last_success_at: Optional[str] = None
+        self._kalshi_last_success_host: Optional[str] = None
+        self._kalshi_last_error: Optional[str] = None
         self._headers = {
             "Accept": "application/json",
             "User-Agent": "AlphaLab-Kalshi-Research/1.0",
         }
+
+    @staticmethod
+    def _host_name(url: str) -> str:
+        return str(urlsplit(str(url or "")).hostname or "unknown").lower()
+
+    @staticmethod
+    def _request_status(response: Any, error: Exception) -> Optional[int]:
+        status = getattr(response, "status_code", None)
+        if status is None:
+            status = getattr(getattr(error, "response", None), "status_code", None)
+        try:
+            return int(status) if status is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _retry_after_seconds(response: Any) -> Optional[float]:
+        headers = getattr(response, "headers", None) or {}
+        raw = None
+        try:
+            raw = headers.get("Retry-After") or headers.get("retry-after")
+        except AttributeError:
+            return None
+        if raw in (None, ""):
+            return None
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            try:
+                retry_at = parsedate_to_datetime(str(raw))
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                return max(
+                    0.0,
+                    (retry_at.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds(),
+                )
+            except (TypeError, ValueError, OverflowError):
+                return None
+
+    @staticmethod
+    def _kalshi_url_candidates(url: str) -> list:
+        raw = str(url or "")
+        for base in KALSHI_PUBLIC_BASES:
+            if raw == base or raw.startswith(base + "/"):
+                suffix = raw[len(base):]
+                return [raw] + [
+                    candidate + suffix
+                    for candidate in KALSHI_PUBLIC_BASES
+                    if candidate != base
+                ]
+        return [raw]
+
+    def _mark_host_failure(
+        self,
+        url: str,
+        *,
+        status: Optional[int],
+        response: Any,
+    ) -> float:
+        """Apply process-wide-per-client cooldown for one public Kalshi host."""
+        host = self._host_name(url)
+        now = time.monotonic()
+        with self._cache_lock:
+            previous = dict(self._host_backoff.get(host) or {})
+            failures = int(previous.get("failures") or 0) + 1
+            if status == 429:
+                exponential = min(120.0, float(2 ** min(failures, 6)))
+                supplied = self._retry_after_seconds(response)
+                delay = min(300.0, max(exponential, supplied or 0.0))
+                reason = "http_429"
+            else:
+                delay = min(30.0, float(2 ** min(max(0, failures - 1), 5)))
+                reason = f"http_{status}" if status is not None else "transport_error"
+            until = max(float(previous.get("until") or 0.0), now + delay)
+            self._host_backoff[host] = {
+                "until": until,
+                "failures": failures,
+                "reason": reason,
+            }
+            self._kalshi_last_error = reason
+        self.safe_print(
+            f"[Kalshi] public host backoff host={host} "
+            f"reason={reason} retryInSeconds={round(max(0.0, until - now), 1)}"
+        )
+        return until
+
+    def _mark_host_success(self, url: str) -> None:
+        host = self._host_name(url)
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        with self._cache_lock:
+            self._host_backoff.pop(host, None)
+            self._kalshi_last_success_at = now_iso
+            self._kalshi_last_success_host = host
+            self._kalshi_last_error = None
+
+    def _stale_locked(
+        self,
+        key: str,
+        *,
+        max_stale: float,
+        now: float,
+    ) -> Optional[Tuple[float, Any]]:
+        cached = self._cache.get(key)
+        if not cached:
+            return None
+        age = max(0.0, now - cached[0])
+        return cached if age <= max(0.0, float(max_stale)) else None
+
+    def _serve_stale_locked(
+        self,
+        key: str,
+        cached: Tuple[float, Any],
+        *,
+        now: float,
+        error_code: str,
+    ) -> Any:
+        age = max(0.0, now - cached[0])
+        meta = self._cache_meta.setdefault(key, {})
+        meta.update({
+            "servedStale": True,
+            "servedStaleAtMonotonic": now,
+            "ageSeconds": round(age, 3),
+            "lastError": error_code,
+        })
+        return cached[1]
+
+    def _prune_cache_locked(self, *, now: Optional[float] = None) -> None:
+        """Bound rotating market keys and discard expired retry diagnostics."""
+        now = time.monotonic() if now is None else float(now)
+        for key, retry_until in list(self._key_retry_until.items()):
+            if float(retry_until or 0.0) <= now:
+                self._key_retry_until.pop(key, None)
+                self._key_errors.pop(key, None)
+        for host, item in list(self._host_backoff.items()):
+            if float((item or {}).get("until") or 0.0) <= now:
+                self._host_backoff.pop(host, None)
+        overflow = max(0, len(self._cache) - self._max_cache_entries)
+        if overflow <= 0:
+            return
+        oldest = sorted(
+            (
+                (float(fetched_at), key)
+                for key, (fetched_at, _payload) in self._cache.items()
+                if key not in self._inflight
+            ),
+            key=lambda item: item[0],
+        )
+        for _fetched_at, key in oldest[:overflow]:
+            self._cache.pop(key, None)
+            self._cache_meta.pop(key, None)
+            self._key_retry_until.pop(key, None)
+            self._key_errors.pop(key, None)
 
     def _cached_json(
         self,
@@ -1673,62 +1854,225 @@ class _PublicDataClient:
         params: Optional[Mapping[str, Any]] = None,
         ttl: float,
         timeout: float = 8.0,
+        max_stale: float = 0.0,
     ) -> Any:
-        now = time.monotonic()
-        with self._cache_lock:
-            cached = self._cache.get(key)
-            if cached and now - cached[0] <= ttl:
-                meta = self._cache_meta.setdefault(key, {})
-                meta.update({
-                    "servedStale": False,
-                    "ageSeconds": round(max(0.0, now - cached[0]), 3),
-                })
-                return cached[1]
-
-        response = None
-        error: Optional[Exception] = None
-        for attempt in range(2):
-            try:
-                response = self.http_get(
-                    url,
-                    params=dict(params or {}),
-                    headers=self._headers,
-                    timeout=timeout,
-                )
-                if hasattr(response, "raise_for_status"):
-                    response.raise_for_status()
-                payload = response.json() if hasattr(response, "json") else response
-                error = None
-                break
-            except Exception as exc:
-                error = exc
-                status = getattr(getattr(exc, "response", None), "status_code", None)
-                if attempt == 0 and (status == 429 or (status is not None and status >= 500)):
-                    time.sleep(0.08)
-                    continue
-                break
-        if error is not None:
+        wait_timeout = max(1.0, float(timeout) * 2.0 + 1.0)
+        while True:
+            now = time.monotonic()
             with self._cache_lock:
-                stale = self._cache.get(key)
-            if stale:
-                age = max(0.0, time.monotonic() - stale[0])
-                with self._cache_lock:
+                cached = self._cache.get(key)
+                if cached and now - cached[0] <= ttl:
                     meta = self._cache_meta.setdefault(key, {})
-                    meta.update({"servedStale": True, "ageSeconds": round(age, 3)})
-                self.safe_print(f"[Kalshi] public request failed key={key} error={type(error).__name__}; serving stale cache")
-                return stale[1]
-            self.safe_print(f"[Kalshi] public request failed key={key} error={type(error).__name__}")
-            raise KalshiApiError(f"Public data request failed for {key}") from error
-        fetched_monotonic = time.monotonic()
-        fetched_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        with self._cache_lock:
-            self._cache[key] = (fetched_monotonic, payload)
-            self._cache_meta[key] = {
-                "fetchedAt": fetched_at,
-                "servedStale": False,
-                "ageSeconds": 0.0,
-            }
-        return payload
+                    meta.update({
+                        "servedStale": False,
+                        "ageSeconds": round(max(0.0, now - cached[0]), 3),
+                    })
+                    return cached[1]
+
+                retry_until = float(self._key_retry_until.get(key) or 0.0)
+                if retry_until > now:
+                    stale = self._stale_locked(key, max_stale=max_stale, now=now)
+                    if stale:
+                        return self._serve_stale_locked(
+                            key,
+                            stale,
+                            now=now,
+                            error_code=(self._key_errors.get(key) or KalshiApiError("retry deferred")).code,
+                        )
+                    previous_error = self._key_errors.get(key)
+                    if previous_error is not None:
+                        raise KalshiApiError(
+                            str(previous_error),
+                            status=previous_error.status,
+                            code=previous_error.code,
+                        )
+
+                flight = self._inflight.get(key)
+                if flight is None:
+                    flight = threading.Event()
+                    self._inflight[key] = flight
+                    break
+
+            if not flight.wait(wait_timeout):
+                now = time.monotonic()
+                with self._cache_lock:
+                    stale = self._stale_locked(key, max_stale=max_stale, now=now)
+                    if stale:
+                        return self._serve_stale_locked(
+                            key,
+                            stale,
+                            now=now,
+                            error_code="kalshi_public_request_coalescing_timeout",
+                        )
+                raise KalshiApiError(
+                    "Timed out waiting for the shared public-data refresh",
+                    status=503,
+                    code="kalshi_public_request_timeout",
+                )
+
+        try:
+            candidates = self._kalshi_url_candidates(url)
+            is_kalshi = any(
+                str(url or "") == base or str(url or "").startswith(base + "/")
+                for base in KALSHI_PUBLIC_BASES
+            )
+            if is_kalshi:
+                with self._cache_lock:
+                    self._kalshi_last_attempt_at = (
+                        datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                    )
+
+            errors = []
+            skipped_until = []
+            payload = None
+            selected_url = None
+            for candidate_url in candidates[:2]:
+                host = self._host_name(candidate_url)
+                with self._cache_lock:
+                    backoff_until = float(
+                        (self._host_backoff.get(host) or {}).get("until") or 0.0
+                    )
+                now = time.monotonic()
+                if is_kalshi and backoff_until > now:
+                    skipped_until.append(backoff_until)
+                    continue
+
+                response = None
+                request_gate = (
+                    self._host_request_locks.setdefault(host, threading.Lock())
+                    if is_kalshi
+                    else nullcontext()
+                )
+                with request_gate:
+                    if is_kalshi:
+                        with self._cache_lock:
+                            backoff_until = float(
+                                (self._host_backoff.get(host) or {}).get("until")
+                                or 0.0
+                            )
+                        now = time.monotonic()
+                        if backoff_until > now:
+                            skipped_until.append(backoff_until)
+                            continue
+                    try:
+                        response = self.http_get(
+                            candidate_url,
+                            params=dict(params or {}),
+                            headers=self._headers,
+                            timeout=timeout,
+                        )
+                        if hasattr(response, "raise_for_status"):
+                            response.raise_for_status()
+                        payload = response.json() if hasattr(response, "json") else response
+                        selected_url = candidate_url
+                        if is_kalshi:
+                            self._mark_host_success(candidate_url)
+                        break
+                    except Exception as exc:
+                        status = self._request_status(response, exc)
+                        errors.append((exc, status))
+                        if is_kalshi:
+                            retryable_host_failure = bool(
+                                status == 429
+                                or status is None
+                                or status >= 500
+                                or 200 <= status < 300
+                            )
+                            if retryable_host_failure:
+                                skipped_until.append(
+                                    self._mark_host_failure(
+                                        candidate_url,
+                                        status=status,
+                                        response=(
+                                            response
+                                            if response is not None
+                                            else getattr(exc, "response", None)
+                                        ),
+                                    )
+                                )
+                            else:
+                                with self._cache_lock:
+                                    self._kalshi_last_error = f"http_{status}"
+                            # Try the other supported official host, but only
+                            # retryable failures open a shared host cooldown.
+                            continue
+                        break
+
+            if selected_url is not None:
+                fetched_monotonic = time.monotonic()
+                fetched_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                with self._cache_lock:
+                    self._cache[key] = (fetched_monotonic, payload)
+                    self._cache_meta[key] = {
+                        "fetchedAt": fetched_at,
+                        "servedStale": False,
+                        "ageSeconds": 0.0,
+                        "sourceHost": self._host_name(selected_url),
+                    }
+                    self._key_retry_until.pop(key, None)
+                    self._key_errors.pop(key, None)
+                    self._prune_cache_locked(now=fetched_monotonic)
+                return payload
+
+            rate_limited = bool(
+                skipped_until
+                and (
+                    not errors
+                    or any(status == 429 for _error, status in errors)
+                )
+            )
+            public_error = KalshiApiError(
+                (
+                    "Kalshi public market data is temporarily rate limited"
+                    if rate_limited
+                    else "Kalshi public market data is temporarily unavailable"
+                ),
+                status=503,
+                code=(
+                    "kalshi_public_rate_limited"
+                    if rate_limited
+                    else "kalshi_public_data_unavailable"
+                ),
+            )
+            if is_kalshi:
+                # Any complete public-data failure must make readiness fail
+                # closed, including non-retryable 4xx responses and malformed
+                # JSON returned with HTTP 200. A later successful response from
+                # either official host clears this state in _mark_host_success.
+                with self._cache_lock:
+                    self._kalshi_last_error = public_error.code
+            now = time.monotonic()
+            retry_at = (
+                min(value for value in skipped_until if value > now)
+                if any(value > now for value in skipped_until)
+                else now + 1.0
+            )
+            with self._cache_lock:
+                self._key_retry_until[key] = retry_at
+                self._key_errors[key] = public_error
+                stale = self._stale_locked(key, max_stale=max_stale, now=now)
+                if stale:
+                    result = self._serve_stale_locked(
+                        key,
+                        stale,
+                        now=now,
+                        error_code=public_error.code,
+                    )
+                else:
+                    result = None
+            key_type = str(key or "unknown").split(":", 1)[0][:48]
+            self.safe_print(
+                f"[Kalshi] public fetch degraded keyType={key_type} "
+                f"reason={public_error.code} servedStale={bool(stale)}"
+            )
+            if stale:
+                return result
+            raise public_error from (errors[-1][0] if errors else None)
+        finally:
+            with self._cache_lock:
+                completed = self._inflight.pop(key, None)
+                if completed is not None:
+                    completed.set()
 
     def _cache_status(self, key: str) -> Dict[str, Any]:
         with self._cache_lock:
@@ -1737,6 +2081,56 @@ class _PublicDataClient:
         if cached:
             meta["ageSeconds"] = round(max(0.0, time.monotonic() - cached[0]), 3)
         return meta
+
+    def runtime_snapshot(self) -> Dict[str, Any]:
+        now = time.monotonic()
+        with self._cache_lock:
+            self._prune_cache_locked(now=now)
+            backoffs = [
+                {
+                    "host": host,
+                    "reason": str(item.get("reason") or "unknown"),
+                    "retryInSeconds": round(
+                        max(0.0, float(item.get("until") or 0.0) - now),
+                        3,
+                    ),
+                }
+                for host, item in self._host_backoff.items()
+                if float(item.get("until") or 0.0) > now
+            ]
+            attempted = self._kalshi_last_attempt_at is not None
+            last_error = self._kalshi_last_error
+            last_success_at = self._kalshi_last_success_at
+            last_success_host = self._kalshi_last_success_host
+            stale_entries = sum(
+                bool(
+                    meta.get("servedStale")
+                    and now - float(meta.get("servedStaleAtMonotonic") or 0.0)
+                    <= 60.0
+                )
+                for meta in self._cache_meta.values()
+            )
+            cache_entries = len(self._cache)
+        healthy = bool(not attempted or not last_error)
+        using_fallback = bool(
+            healthy
+            and last_success_host == self._host_name(KALSHI_PUBLIC_FALLBACK_BASE)
+        )
+        return {
+            "healthy": healthy,
+            "status": (
+                "idle" if not attempted else
+                "degraded" if not healthy else
+                "fallback" if using_fallback else
+                "healthy"
+            ),
+            "lastSuccessAt": last_success_at,
+            "lastSuccessHost": last_success_host,
+            "lastError": last_error,
+            "activeBackoffs": backoffs,
+            "cacheEntries": cache_entries,
+            "staleCacheEntries": stale_entries,
+        }
 
     @staticmethod
     def _top_book_from_market(market: Mapping[str, Any]) -> Dict[str, Any]:
@@ -1757,22 +2151,26 @@ class _PublicDataClient:
 
     def _market_candidates(self, now: datetime, base_url: str):
         environment_key = "production"
+        live_key = f"kalshi-btc15-open:{environment_key}"
         live_payload = self._cached_json(
-            f"kalshi-btc15-open:{environment_key}",
+            live_key,
             f"{base_url}/markets",
             params={"series_ticker": BTC_15M_SERIES, "status": "open", "limit": 100},
-            ttl=2.0,
+            ttl=4.0,
+            max_stale=20.0,
         )
         live_markets = list((live_payload or {}).get("markets") or [])
         market, selection = select_btc15_market(live_markets, now, min_active_seconds_to_close=45.0)
         if market and selection == "active":
             return market, selection
 
+        schedule_key = f"kalshi-btc15-schedule:{environment_key}"
         schedule_payload = self._cached_json(
-            f"kalshi-btc15-schedule:{environment_key}",
+            schedule_key,
             f"{base_url}/markets",
-            params={"series_ticker": BTC_15M_SERIES, "limit": 1000},
-            ttl=30.0,
+            params={"series_ticker": BTC_15M_SERIES, "limit": 100},
+            ttl=60.0,
+            max_stale=300.0,
         )
         combined = live_markets + list((schedule_payload or {}).get("markets") or [])
         return select_btc15_market(combined, now, min_active_seconds_to_close=45.0)
@@ -1781,7 +2179,8 @@ class _PublicDataClient:
         payload = self._cached_json(
             f"kalshi-market:{ticker}",
             f"{KALSHI_PUBLIC_BASE}/markets/{str(ticker)}",
-            ttl=1.0,
+            ttl=2.0,
+            max_stale=15.0,
         )
         return dict((payload or {}).get("market") or payload or {})
 
@@ -1798,6 +2197,11 @@ class _PublicDataClient:
         market, selection = self._market_candidates(now, base_url)
         if not market:
             raise KalshiApiError("No KXBTC15M contract was returned by Kalshi")
+        market_keys = ["kalshi-btc15-open:production"]
+        if selection != "active":
+            market_keys.append("kalshi-btc15-schedule:production")
+        if any(self._cache_status(key).get("servedStale") for key in market_keys):
+            warnings.append("kalshi_market_stale")
 
         orderbook = {"yes": [], "no": []}
         orderbook_as_of = None
@@ -1809,7 +2213,8 @@ class _PublicDataClient:
                     book_key,
                     f"{base_url}/markets/{ticker}/orderbook",
                     params={"depth": 10},
-                    ttl=0.75,
+                    ttl=1.25,
+                    max_stale=8.0,
                 )
                 fixed = (book_payload or {}).get("orderbook_fp") or {}
                 orderbook = {
@@ -1852,7 +2257,14 @@ class _PublicDataClient:
         if not official_reference:
             with ThreadPoolExecutor(max_workers=len(venue_requests)) as executor:
                 futures = {
-                    venue: executor.submit(self._cached_json, cache_key, url, ttl=1.0, timeout=4.0)
+                    venue: executor.submit(
+                        self._cached_json,
+                        cache_key,
+                        url,
+                        ttl=1.0,
+                        timeout=4.0,
+                        max_stale=10.0,
+                    )
                     for venue, (cache_key, url) in venue_requests.items()
                 }
                 for venue, future in futures.items():
@@ -1889,7 +2301,10 @@ class _PublicDataClient:
                 # inside the 100-320s decision window while staying far under
                 # Coinbase's public rate limits at a 5-second robot cadence.
                 ttl=15.0,
+                max_stale=120.0,
             ) or []
+            if self._cache_status("coinbase-btc-candles-1m").get("servedStale"):
+                warnings.append("btc_history_stale")
         except KalshiApiError:
             warnings.append("btc_history_unavailable")
 
@@ -1991,13 +2406,31 @@ class _PublicDataClient:
             base_url=base_url,
             reference_override=reference_override,
         )
+        # KXBTCD currently exposes hundreds of strikes across only a handful
+        # of events. Querying nested events prevents a 100-market page from
+        # hiding the next event, while min_close_ts excludes already expired
+        # ladders at the API boundary.
+        hourly_events_key = f"kalshi-btchourly-events:{base_url}"
         payload = self._cached_json(
-            f"kalshi-btchourly-open:{base_url}",
-            f"{base_url}/markets",
-            params={"series_ticker": BTC_HOURLY_SERIES, "status": "open", "limit": 1000},
-            ttl=2.0,
+            hourly_events_key,
+            f"{base_url}/events",
+            params={
+                "series_ticker": BTC_HOURLY_SERIES,
+                "status": "open",
+                "with_nested_markets": True,
+                "min_close_ts": int(now.timestamp() + 45),
+                "limit": 200,
+            },
+            ttl=10.0,
+            max_stale=30.0,
         )
-        markets = [dict(row) for row in ((payload or {}).get("markets") or []) if isinstance(row, Mapping)]
+        markets = [
+            dict(market)
+            for event in ((payload or {}).get("events") or [])
+            if isinstance(event, Mapping)
+            for market in (event.get("markets") or [])
+            if isinstance(market, Mapping)
+        ]
         eligible = []
         for market in markets:
             close_at = _parse_utc(market.get("close_time") or market.get("close_ts"))
@@ -2005,7 +2438,11 @@ class _PublicDataClient:
             if 45 <= seconds <= 3700 and str(market.get("status") or "").lower() in {"active", "open"}:
                 eligible.append((seconds, str(market.get("event_ticker") or ""), market))
         if not eligible:
-            raise KalshiApiError("No active KXBTCD hourly strike event was returned by Kalshi")
+            raise KalshiApiError(
+                "No KXBTCD hourly event is inside the trading window",
+                status=409,
+                code=KALSHI_NO_ACTIVE_HOURLY_MARKET,
+            )
         nearest_seconds, event_ticker, _ = min(eligible, key=lambda item: item[0])
         event_markets = [market for seconds, event, market in eligible if event == event_ticker]
         spot = _finite_number((reference_snapshot.get("reference") or {}).get("price"), 0.0)
@@ -2033,6 +2470,8 @@ class _PublicDataClient:
 
         books: Dict[str, Dict[str, Any]] = {}
         warnings = list(reference_snapshot.get("warnings") or [])
+        if self._cache_status(hourly_events_key).get("servedStale"):
+            warnings.append("hourly_markets_stale")
         tickers = [str(market.get("ticker") or "") for market in selected_markets]
         batch_key = f"kalshi-orderbooks:{base_url}:{event_ticker}:{','.join(tickers)}"
         try:
@@ -2040,8 +2479,9 @@ class _PublicDataClient:
                 batch_key,
                 f"{base_url}/markets/orderbooks",
                 params={"tickers": tickers},
-                ttl=0.75,
+                ttl=1.25,
                 timeout=6.0,
+                max_stale=8.0,
             )
             for row in (batch or {}).get("orderbooks") or []:
                 ticker = str((row or {}).get("ticker") or "")
@@ -2127,6 +2567,7 @@ class _PaperRobotController:
         self._last_hourly_tick: Dict[str, float] = {}
         self._loop_error_counts: Dict[str, int] = {}
         self._loop_alerted: set[str] = set()
+        self._market_standby: Dict[str, Dict[str, str]] = {}
         self._portfolio_display_lock = threading.RLock()
         self._local_portfolio_display: Dict[str, Dict[str, Any]] = {}
         self._lifecycle_lock = threading.RLock()
@@ -2138,6 +2579,7 @@ class _PaperRobotController:
         self._loop_last_error = ""
         self._scheduler_lease_owned: Optional[bool] = None
         self._scheduler_lease_checked_at = ""
+        self._enabled_user_count: Optional[int] = None
         self._routing_owner_prefix = "%s:%s" % (
             os.environ.get("RENDER_INSTANCE_ID")
             or os.environ.get("HOSTNAME")
@@ -2179,6 +2621,7 @@ class _PaperRobotController:
                 self._loop_last_error = ""
                 self._scheduler_lease_owned = None
                 self._scheduler_lease_checked_at = ""
+                self._enabled_user_count = None
             self._thread = threading.Thread(
                 target=self._loop,
                 args=(stop_event,),
@@ -3237,6 +3680,40 @@ class _PaperRobotController:
             else:
                 decision["executionIntent"] = f"HOLD_{held_side}_TO_SETTLEMENT"
                 decision["exitAnalysis"]["trigger"] = "hold_to_settlement"
+        execution_warnings = sorted(
+            set((decision.get("dataQuality") or {}).get("warnings") or [])
+            & KALSHI_EXECUTION_BLOCKING_WARNINGS
+        )
+        if can_route and execution_warnings:
+            intended_action = str(decision.get("action") or "")
+            can_route = False
+            decision["action"] = "WAIT"
+            decision["executionIntent"] = (
+                f"HOLD_{held_side}_DATA_QUALITY"
+                if held_side
+                else "WAIT_DATA_QUALITY"
+            )
+            decision["blockingReasons"] = list(dict.fromkeys(
+                list(decision.get("blockingReasons") or [])
+                + ["market_data_not_fresh"]
+            ))
+            decision["dataQuality"] = {
+                **dict(decision.get("dataQuality") or {}),
+                "executionBlocked": True,
+                "executionBlockingWarnings": execution_warnings,
+                "intendedAction": intended_action,
+            }
+            decision["gates"] = list(decision.get("gates") or []) + [{
+                "category": "data",
+                "name": "Fresh execution data",
+                "status": "block",
+                "value": ", ".join(execution_warnings),
+                "threshold": "no stale or unavailable execution inputs",
+                "detail": (
+                    "Order routing is paused until Kalshi market, orderbook, "
+                    "reference, and history inputs are fresh."
+                ),
+            }]
         if (
             submit_order
             and bool(robot_state.get("enabled"))
@@ -3444,13 +3921,18 @@ class _PaperRobotController:
         self._notify(user_id, "settlement", payload)
 
     def _record_loop_success(self, user_id: str, family: str, mode: str) -> None:
+        key = f"{user_id}:{family}"
+        market_standby = getattr(self, "_market_standby", None)
         runtime_lock = getattr(self, "_runtime_lock", None)
         if runtime_lock is None:
             self._loop_last_error = ""
+            if isinstance(market_standby, dict):
+                market_standby.pop(key, None)
         else:
             with runtime_lock:
                 self._loop_last_error = ""
-        key = f"{user_id}:{family}"
+                if isinstance(market_standby, dict):
+                    market_standby.pop(key, None)
         previous = self._loop_error_counts.pop(key, 0)
         if key not in self._loop_alerted:
             return
@@ -3471,14 +3953,54 @@ class _PaperRobotController:
             },
         )
 
+    def _record_loop_standby(
+        self,
+        user_id: str,
+        family: str,
+        exc: KalshiApiError,
+    ) -> None:
+        """Record an expected market-window gap without raising an incident."""
+        key = f"{user_id}:{family}"
+        self._loop_error_counts.pop(key, None)
+        self._loop_alerted.discard(key)
+        standby = {
+            "family": family,
+            "reason": exc.code,
+            "since": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        runtime_lock = getattr(self, "_runtime_lock", None)
+        if runtime_lock is None:
+            self._market_standby[key] = standby
+            if not self._loop_error_counts:
+                self._loop_last_error = ""
+        else:
+            with runtime_lock:
+                self._market_standby[key] = standby
+                if not self._loop_error_counts:
+                    self._loop_last_error = ""
+        self.safe_print(
+            f"[KalshiRobot] {family} standby reason={exc.code}"
+        )
+
     def _record_loop_failure(self, user_id: str, family: str, mode: str, exc: Exception) -> None:
+        if (
+            isinstance(exc, KalshiApiError)
+            and exc.code == KALSHI_NO_ACTIVE_HOURLY_MARKET
+        ):
+            self._record_loop_standby(user_id, family, exc)
+            return
+        key = f"{user_id}:{family}"
+        market_standby = getattr(self, "_market_standby", None)
         runtime_lock = getattr(self, "_runtime_lock", None)
         if runtime_lock is None:
             self._loop_last_error = type(exc).__name__
+            if isinstance(market_standby, dict):
+                market_standby.pop(key, None)
         else:
             with runtime_lock:
                 self._loop_last_error = type(exc).__name__
-        key = f"{user_id}:{family}"
+                if isinstance(market_standby, dict):
+                    market_standby.pop(key, None)
         count = int(self._loop_error_counts.get(key, 0)) + 1
         self._loop_error_counts[key] = count
         error_type = type(exc).__name__
@@ -3559,6 +4081,7 @@ class _PaperRobotController:
             try:
                 enabled_users = self.state.enabled_users()
                 with self._runtime_lock:
+                    self._enabled_user_count = len(enabled_users)
                     if not self._loop_error_counts:
                         self._loop_last_error = ""
             except Exception as exc:
@@ -3597,11 +4120,31 @@ class _PaperRobotController:
             last_error = self._loop_last_error
             lease_owned = self._scheduler_lease_owned
             lease_checked_at = self._scheduler_lease_checked_at
+            enabled_user_count = self._enabled_user_count
+            market_standby = list(self._market_standby.values())
+        public_data = (
+            self.client.runtime_snapshot()
+            if callable(getattr(self.client, "runtime_snapshot", None))
+            else {"healthy": True, "status": "unknown"}
+        )
         heartbeat_age = max(0.0, time.monotonic() - heartbeat_mono)
         required = bool(background_requested and not self._scheduler_disabled)
+        public_data_required = bool(
+            required
+            and lease_owned is not False
+            and enabled_user_count != 0
+        )
         healthy = bool(
             (not required)
-            or (thread_alive and heartbeat_age <= 30 and not last_error)
+            or (
+                thread_alive
+                and heartbeat_age <= 30
+                and not last_error
+                and (
+                    not public_data_required
+                    or public_data.get("healthy") is not False
+                )
+            )
         )
         return {
             "required": required,
@@ -3616,9 +4159,27 @@ class _PaperRobotController:
             "startedAt": self._loop_started_at,
             "lastHeartbeatAt": heartbeat_at,
             "heartbeatAgeSeconds": round(heartbeat_age, 3),
-            "lastError": last_error,
+            "lastError": last_error or public_data.get("lastError"),
             "schedulerLeaseOwned": lease_owned,
             "schedulerLeaseCheckedAt": lease_checked_at,
+            "enabledUserCount": enabled_user_count,
+            "publicDataRequired": public_data_required,
+            "publicData": public_data,
+            "marketStandby": {
+                "active": bool(market_standby),
+                "families": dict(Counter(
+                    row.get("family") or "unknown"
+                    for row in market_standby
+                )),
+                "reasons": sorted({
+                    row.get("reason") or "unknown"
+                    for row in market_standby
+                }),
+                "latestAt": max(
+                    (row.get("since") or "" for row in market_standby),
+                    default=None,
+                ),
+            },
             "routingFencingSupported": bool(
                 callable(getattr(self.worker_lease_store, "claim_worker_lease_fenced", None))
                 and callable(getattr(self.worker_lease_store, "renew_worker_lease", None))
@@ -4245,6 +4806,7 @@ def register_kalshi_api(
                 "liveTradingConfigured": active_summary["configured"],
                 "connectionStatus": active_summary["testStatus"],
                 "referenceFeed": reference_stream.status(user["id"]),
+                "publicDataStatus": client.runtime_snapshot(),
             })
         except Exception as exc:
             return fail(exc)
@@ -4316,6 +4878,7 @@ __all__ = [
     "COINBASE_EXCHANGE_BASE",
     "KALSHI_ENVIRONMENTS",
     "KALSHI_PUBLIC_BASE",
+    "KALSHI_PUBLIC_FALLBACK_BASE",
     "KalshiApiError",
     "_paper_order_payload",
     "_signed_headers",

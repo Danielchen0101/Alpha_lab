@@ -389,7 +389,7 @@ const SignIn: React.FC = () => {
                       onError={() => setCaptchaToken('')}
                       onExpire={() => setCaptchaToken('')}
                       theme={resolvedTheme}
-                      language={language === 'zh-CN' ? 'zh-CN' : 'en'}
+                      language={language === 'zh-CN' ? 'zh-cn' : 'en'}
                     />
                   ) : isDev ? (
                     <div className="auth-captcha-placeholder" role="status">
