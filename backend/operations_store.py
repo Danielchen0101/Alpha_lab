@@ -750,6 +750,40 @@ class OperationsStore:
             data = data[0] if data else False
         return bool(data)
 
+    def release_worker_lease(
+        self,
+        lease_name: object,
+        owner_id: object,
+    ) -> bool:
+        """Release one worker lease only when the caller still owns it."""
+        name = str(lease_name or "").strip()
+        owner = str(owner_id or "").strip()
+        if not name or not owner:
+            raise ValueError("lease_name and owner_id are required")
+        if self._client is None:
+            if not self._allow_local_fallback:
+                raise OperationsStoreUnavailable("Durable operations store is not configured")
+            with self._lock:
+                current = self._local["worker_leases"].get(name) or {}
+                if str(current.get("owner_id") or "") != owner:
+                    return False
+                self._local["worker_leases"].pop(name, None)
+                return True
+        response = self._execute(
+            lambda: self._client.rpc(
+                "release_app_worker_lease",
+                {
+                    "p_lease_name": name,
+                    "p_owner_id": owner,
+                },
+            ).execute(),
+            "worker lease release",
+        )
+        data = getattr(response, "data", response)
+        if isinstance(data, list):
+            data = data[0] if data else False
+        return bool(data)
+
     def delete_artifact(
         self,
         user_id: object,

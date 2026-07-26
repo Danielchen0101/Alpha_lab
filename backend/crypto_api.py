@@ -21,6 +21,7 @@ import os
 import tempfile
 import threading
 import time
+import uuid
 from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Sequence, Tuple
 
 import requests
@@ -86,8 +87,11 @@ PENDING_RECONCILIATION_MAX_AGE = timedelta(days=30)
 SCHEDULER_SCAN_INTERVAL_SECONDS = 30.0
 SCHEDULER_LOCK_RETRY_SECONDS = 5.0
 SCHEDULER_HEARTBEAT_STALE_SECONDS = 75.0
+SCHEDULER_DURABLE_LEASE_NAME = "crypto-automation-scheduler-v1"
+SCHEDULER_DURABLE_LEASE_TTL_SECONDS = 90
 ROUTING_LEASE_TIMEOUT_SECONDS = 5.0
 ROUTING_LEASE_RETRY_SECONDS = 0.02
+ROUTING_DURABLE_LEASE_TTL_SECONDS = 60
 CYCLE_HEARTBEAT_STALE_SECONDS = 15 * 60.0
 LIVE_GAP_MAX_CONSECUTIVE_BARS = 2
 LIVE_GAP_MAX_SYNTHETIC_RATIO = 0.05
@@ -1509,6 +1513,7 @@ class _CryptoService:
         self.notifier = notifier
         self._lifecycle_lock = threading.RLock()
         self._scheduler_state_guard = threading.RLock()
+        self._scheduler_execution_state = threading.local()
         self._routing_lease_state = threading.local()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -1526,6 +1531,20 @@ class _CryptoService:
         self._scheduler_last_lease_backend: Optional[str] = None
         self._scheduler_last_lease_at: Optional[str] = None
         self._scheduler_lease_contention_count = 0
+        self._scheduler_durable_lease_supported = callable(
+            getattr(self.store, "claim_worker_lease", None)
+        )
+        self._scheduler_durable_lease_owner: Optional[bool] = None
+        self._scheduler_durable_lease_at: Optional[str] = None
+        self._scheduler_durable_lease_contention_count = 0
+        deployment_id = str(
+            os.getenv("RENDER_INSTANCE_ID")
+            or os.getenv("HOSTNAME")
+            or "local"
+        ).strip()[:80]
+        self._scheduler_durable_owner_id = (
+            f"{deployment_id}:{os.getpid()}:{uuid.uuid4().hex}"
+        )
         self._scheduler_last_cycle_error = ""
         self._scheduler_last_cycle_error_at: Optional[str] = None
         self._scheduler_failed_cycle_count = 0
@@ -1552,6 +1571,56 @@ class _CryptoService:
         with self._scheduler_state_guard:
             self._scheduler_last_heartbeat = _iso()
             self._scheduler_last_heartbeat_monotonic = time.monotonic()
+
+    def _claim_durable_scheduler_lease(self) -> bool:
+        """Claim or renew the single scheduler lease shared by all hosts."""
+        claim = getattr(self.store, "claim_worker_lease", None)
+        if not callable(claim):
+            # Lightweight/local stores are already protected by the process
+            # file lock. Keeping this fallback preserves offline development
+            # without weakening production's cross-host election.
+            with self._scheduler_state_guard:
+                self._scheduler_durable_lease_supported = False
+                self._scheduler_durable_lease_owner = True
+                self._scheduler_durable_lease_at = _iso()
+            return True
+        try:
+            claimed = bool(claim(
+                SCHEDULER_DURABLE_LEASE_NAME,
+                self._scheduler_durable_owner_id,
+                ttl_seconds=SCHEDULER_DURABLE_LEASE_TTL_SECONDS,
+                metadata={
+                    "component": "crypto_automation",
+                    "algorithmVersion": ALGORITHM_VERSION,
+                },
+            ))
+        except Exception as exc:
+            with self._scheduler_state_guard:
+                self._scheduler_durable_lease_supported = True
+                self._scheduler_durable_lease_owner = False
+                self._scheduler_last_error = type(exc).__name__
+                self._scheduler_last_error_at = _iso()
+            raise
+        with self._scheduler_state_guard:
+            self._scheduler_durable_lease_supported = True
+            self._scheduler_durable_lease_owner = claimed
+            if claimed:
+                self._scheduler_durable_lease_at = _iso()
+            else:
+                self._scheduler_durable_lease_contention_count += 1
+        return claimed
+
+    def _require_durable_scheduler_lease(self) -> None:
+        if self._claim_durable_scheduler_lease():
+            return
+        raise CryptoApiError(
+            "This backend no longer owns the durable crypto scheduler lease",
+            status=409,
+            code="scheduler_lease_lost",
+        )
+
+    def _scheduler_execution_active(self) -> bool:
+        return bool(getattr(self._scheduler_execution_state, "active", False))
 
     def _auth_user(self) -> Dict[str, Any]:
         user = self.require_auth()
@@ -1581,6 +1650,8 @@ class _CryptoService:
         # Every durable policy mutation shares the cross-process critical
         # section used by the final broker authorization check and POST.
         with self._routing_guard(uid):
+            if self._scheduler_execution_active():
+                self._require_durable_scheduler_lease()
             return self.store.put_artifact(
                 uid, CONFIG_TYPE, PRIMARY_KEY, payload=_jsonable(dict(config)),
                 idempotency_key=idempotency_key,
@@ -1660,6 +1731,8 @@ class _CryptoService:
         candidate = _jsonable(dict(runtime))
         for attempt in range(3):
             try:
+                if self._scheduler_execution_active():
+                    self._require_durable_scheduler_lease()
                 return self.store.put_artifact(
                     uid, RUNTIME_TYPE, PRIMARY_KEY, payload=candidate,
                     idempotency_key=idempotency_key,
@@ -2413,6 +2486,42 @@ class _CryptoService:
                 self._routing_locks[uid] = threading.RLock()
             return self._routing_locks[uid]
 
+    def _renew_durable_routing_lease(self, uid: str) -> None:
+        leases = getattr(self._routing_lease_state, "distributed", None)
+        lease = leases.get(str(uid)) if isinstance(leases, dict) else None
+        if not isinstance(lease, tuple) or len(lease) != 2:
+            return
+        lease_name, owner_id = lease
+        claim = getattr(self.store, "claim_worker_lease", None)
+        if not callable(claim):
+            raise CryptoApiError(
+                "Durable crypto order-routing coordination is unavailable",
+                status=503,
+                code="routing_lease_unavailable",
+            )
+        try:
+            renewed = bool(claim(
+                lease_name,
+                owner_id,
+                ttl_seconds=ROUTING_DURABLE_LEASE_TTL_SECONDS,
+                metadata={
+                    "component": "crypto_order_routing",
+                    "userScope": str(lease_name).rsplit(":", 1)[-1],
+                },
+            ))
+        except Exception as exc:
+            raise CryptoApiError(
+                "Durable crypto order-routing coordination is unavailable",
+                status=503,
+                code="routing_lease_unavailable",
+            ) from exc
+        if not renewed:
+            raise CryptoApiError(
+                "This backend no longer owns the durable crypto routing lease",
+                status=423,
+                code="routing_lease_lost",
+            )
+
     @contextmanager
     def _routing_guard(
         self,
@@ -2440,6 +2549,12 @@ class _CryptoService:
         if not isinstance(depths, dict):
             depths = {}
             self._routing_lease_state.depths = depths
+        distributed_leases = getattr(
+            self._routing_lease_state, "distributed", None,
+        )
+        if not isinstance(distributed_leases, dict):
+            distributed_leases = {}
+            self._routing_lease_state.distributed = distributed_leases
         key = str(uid)
         try:
             if int(depths.get(key) or 0) > 0:
@@ -2458,11 +2573,67 @@ class _CryptoService:
                         status=423,
                         code="routing_lease_timeout",
                     )
+                claim = getattr(self.store, "claim_worker_lease", None)
+                release = getattr(self.store, "release_worker_lease", None)
+                distributed_lease_name = ""
+                distributed_owner_id = ""
+                if callable(claim) and callable(release):
+                    uid_digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+                    distributed_lease_name = f"crypto-routing:{uid_digest}"
+                    distributed_owner_id = (
+                        f"{self._scheduler_durable_owner_id}:routing:{uuid.uuid4().hex}"
+                    )
+                    while True:
+                        try:
+                            acquired = bool(claim(
+                                distributed_lease_name,
+                                distributed_owner_id,
+                                ttl_seconds=ROUTING_DURABLE_LEASE_TTL_SECONDS,
+                                metadata={
+                                    "component": "crypto_order_routing",
+                                    "userScope": uid_digest,
+                                },
+                            ))
+                        except Exception as exc:
+                            raise CryptoApiError(
+                                "Durable crypto order-routing coordination is unavailable",
+                                status=503,
+                                code="routing_lease_unavailable",
+                            ) from exc
+                        if acquired:
+                            break
+                        remaining = max(0.0, deadline - time.monotonic())
+                        if remaining <= 0:
+                            raise CryptoApiError(
+                                "Crypto order routing is busy; retry the safety action",
+                                status=423,
+                                code="routing_lease_timeout",
+                            )
+                        time.sleep(min(ROUTING_LEASE_RETRY_SECONDS, remaining))
                 depths[key] = 1
+                if distributed_lease_name and distributed_owner_id:
+                    distributed_leases[key] = (
+                        distributed_lease_name,
+                        distributed_owner_id,
+                    )
                 try:
                     yield
                 finally:
                     depths.pop(key, None)
+                    distributed_leases.pop(key, None)
+                    if distributed_lease_name and distributed_owner_id:
+                        try:
+                            release(distributed_lease_name, distributed_owner_id)
+                        except Exception as exc:
+                            # The finite TTL remains the fail-safe release if
+                            # the explicit RPC is temporarily unavailable.
+                            try:
+                                self.safe_print(
+                                    "[Crypto] routing lease release failed: %s"
+                                    % type(exc).__name__
+                                )
+                            except Exception:
+                                pass
         finally:
             local_lock.release()
 
@@ -2507,9 +2678,13 @@ class _CryptoService:
             )
         if mode == "live":
             _require_live_release_admitted()
+        if source == "scheduler":
+            self._require_durable_scheduler_lease()
         return current
 
     def _save_decision(self, uid: str, decision: Mapping[str, Any], bucket: int):
+        if self._scheduler_execution_active():
+            self._require_durable_scheduler_lease()
         symbol_key = _safe_symbol_key(str(decision.get("symbol") or "unknown"))
         key = f"latest:{symbol_key}"
         self.store.put_artifact(
@@ -2534,6 +2709,8 @@ class _CryptoService:
         are narrower and stable enough for Portfolio analytics and later
         parameter research without replaying an unbounded audit stream.
         """
+        if self._scheduler_execution_active():
+            self._require_durable_scheduler_lease()
         symbol = _normalize_symbol(decision.get("symbol"))
         symbol_key = _safe_symbol_key(symbol or "unknown")
         client_order_id = str(
@@ -2767,14 +2944,52 @@ class _CryptoService:
                     status=409,
                     code="open_order_reservation",
                 )
-            return self._submit_order(uid, mode, payload)
+            # Open-order lookup can take long enough for configuration or
+            # scheduler ownership to change. Re-run the complete fence while
+            # the distributed per-user routing mutex is still held.
+            self._renew_durable_routing_lease(uid)
+            self._assert_order_routing_allowed(
+                uid,
+                mode=mode,
+                expected_config_version=expected_config_version,
+                source=source,
+            )
+            self._renew_durable_routing_lease(uid)
+            return self._submit_order(
+                uid,
+                mode,
+                payload,
+                expected_config_version=expected_config_version,
+                source=source,
+            )
 
-    def _submit_order(self, uid: str, mode: str, payload: Mapping[str, Any]):
+    def _submit_order(
+        self,
+        uid: str,
+        mode: str,
+        payload: Mapping[str, Any],
+        *,
+        expected_config_version: Optional[int] = None,
+        source: str = "manual",
+    ):
         broker = self._broker_config(uid, mode)
         client_order_id = str(payload.get("client_order_id") or "")
         existing = self._existing_order(broker, client_order_id)
         if isinstance(existing, Mapping) and existing.get("id"):
             return {**dict(existing), "idempotent": True}
+        # The idempotency lookup is a network call. Renew once more so the
+        # routing lease covers the complete bounded broker POST timeout. A
+        # lease that expired and was released can be reacquired here, so the
+        # durable lifecycle/configuration fence must also be re-read.
+        self._renew_durable_routing_lease(uid)
+        if expected_config_version is not None:
+            self._assert_order_routing_allowed(
+                uid,
+                mode=mode,
+                expected_config_version=expected_config_version,
+                source=source,
+            )
+        self._renew_durable_routing_lease(uid)
         try:
             result = _request_json(
                 "POST", f"{broker['base_url']}/v2/orders", headers=self._headers(broker),
@@ -4588,6 +4803,12 @@ class _CryptoService:
             last_lease_backend = self._scheduler_last_lease_backend
             last_lease_at = self._scheduler_last_lease_at
             lease_contention_count = self._scheduler_lease_contention_count
+            durable_lease_supported = self._scheduler_durable_lease_supported
+            durable_lease_owner = self._scheduler_durable_lease_owner
+            durable_lease_at = self._scheduler_durable_lease_at
+            durable_lease_contention_count = (
+                self._scheduler_durable_lease_contention_count
+            )
             last_cycle_error = self._scheduler_last_cycle_error
             last_cycle_error_at = self._scheduler_last_cycle_error_at
             failed_cycle_count = self._scheduler_failed_cycle_count
@@ -4606,35 +4827,54 @@ class _CryptoService:
         if scheduler_disabled:
             scheduler_status = "disabled"
             scheduler_healthy = False
+            scheduler_commands_available = False
             scheduler_message = "Crypto scheduler is disabled by deployment configuration."
             recovery_state = "disabled"
         elif not scheduler_alive:
             scheduler_status = "stopped"
             scheduler_healthy = False
+            scheduler_commands_available = False
             scheduler_message = "Crypto scheduler is not running."
             recovery_state = "stopped"
         elif not heartbeat_fresh:
             scheduler_status = "stale"
             scheduler_healthy = False
+            scheduler_commands_available = False
             scheduler_message = "Crypto scheduler thread has a stale progress heartbeat."
             recovery_state = "stale"
         elif last_error:
             scheduler_status = "degraded"
             scheduler_healthy = False
+            scheduler_commands_available = False
             scheduler_message = "Crypto scheduler is running with a recent scan error."
             recovery_state = "recovering"
         elif lease_contention_count and last_lease_at is None:
             scheduler_status = "standby"
             scheduler_healthy = False
+            scheduler_commands_available = True
             scheduler_message = "Another backend process currently owns the crypto scheduler lease."
+            recovery_state = "standby"
+        elif durable_lease_supported and durable_lease_owner is None:
+            scheduler_status = "starting"
+            scheduler_healthy = False
+            scheduler_commands_available = False
+            scheduler_message = "Crypto scheduler is acquiring its durable lease."
+            recovery_state = "starting"
+        elif durable_lease_supported and durable_lease_owner is False:
+            scheduler_status = "standby"
+            scheduler_healthy = False
+            scheduler_commands_available = True
+            scheduler_message = "Another backend host currently owns the durable crypto scheduler lease."
             recovery_state = "standby"
         else:
             scheduler_status = "healthy"
             scheduler_healthy = True
+            scheduler_commands_available = True
             scheduler_message = "Crypto scheduler is running."
             recovery_state = "steady"
         return {
             "schedulerHealthy": scheduler_healthy,
+            "schedulerCommandsAvailable": scheduler_commands_available,
             "status": scheduler_status,
             "message": scheduler_message,
             "schedulerAlive": scheduler_alive,
@@ -4652,6 +4892,10 @@ class _CryptoService:
             "lockBackend": last_lease_backend,
             "lastLeaseAt": last_lease_at,
             "leaseContentionCount": lease_contention_count,
+            "durableLeaseSupported": durable_lease_supported,
+            "durableLeaseOwner": durable_lease_owner,
+            "durableLeaseAt": durable_lease_at,
+            "durableLeaseContentionCount": durable_lease_contention_count,
             "lastCycleError": last_cycle_error,
             "lastCycleErrorAt": last_cycle_error_at,
             "failedCycleCount": failed_cycle_count,
@@ -4660,7 +4904,7 @@ class _CryptoService:
             "scanCount": self._scheduler_scan_count,
             "cursor": self._scheduler_cursor,
             "lastPageSize": self._scheduler_last_page_size,
-            "coordinationScope": "process-local with durable broker idempotency",
+            "coordinationScope": "durable distributed lease with broker idempotency",
             "coverage": "24/7",
             "marketClockRequired": False,
         }
@@ -4689,6 +4933,8 @@ class _CryptoService:
         return result[:MAX_SCHEDULER_USERS]
 
     def _scheduler_run_user(self, uid: str):
+        previous_execution_state = self._scheduler_execution_active()
+        self._scheduler_execution_state.active = True
         try:
             config = self.get_config(uid)
             runtime = self.get_runtime(uid)
@@ -4724,6 +4970,7 @@ class _CryptoService:
                 and exc.code in {
                     "automation_disabled", "automation_stopped", "automation_locked",
                     "cycle_in_progress", "kill_switch_active", "reconciliation_required",
+                    "scheduler_lease_lost",
                 }
             ):
                 with self._scheduler_state_guard:
@@ -4734,6 +4981,8 @@ class _CryptoService:
                 self.safe_print("[CryptoScheduler] user cycle failed: %s" % type(exc).__name__)
             except Exception:
                 pass
+        finally:
+            self._scheduler_execution_state.active = previous_execution_state
 
     def _scheduler_scan(self, *, executor=None, stop_event: Optional[threading.Event] = None):
         """Submit a bounded, rotating page without starving later users."""
@@ -4800,6 +5049,18 @@ class _CryptoService:
                     while not active_stop.is_set():
                         self._scheduler_heartbeat()
                         try:
+                            if not self._claim_durable_scheduler_lease():
+                                with self._scheduler_state_guard:
+                                    had_error = bool(self._scheduler_last_error)
+                                    self._scheduler_last_error = ""
+                                    self._scheduler_last_error_at = None
+                                    self._scheduler_consecutive_errors = 0
+                                    if had_error:
+                                        self._scheduler_recovery_count += 1
+                                self._scheduler_heartbeat()
+                                if active_stop.wait(SCHEDULER_SCAN_INTERVAL_SECONDS):
+                                    return
+                                continue
                             self._scheduler_scan(
                                 executor=active_executor,
                                 stop_event=active_stop,
@@ -5541,7 +5802,11 @@ def register_crypto_api(
                 if config["mode"] == "live":
                     _require_live_release_admitted()
                 scheduler = service.runtime_snapshot()
-                if scheduler.get("schedulerHealthy") is not True:
+                scheduler_commands_available = scheduler.get(
+                    "schedulerCommandsAvailable",
+                    scheduler.get("schedulerHealthy"),
+                )
+                if scheduler_commands_available is not True:
                     raise CryptoApiError(
                         str(scheduler.get("message") or "Crypto scheduler health could not be verified"),
                         status=503,

@@ -636,3 +636,20 @@ def test_kalshi_observation_upsert_and_worker_lease_use_local_fallback(tmp_path)
         "user-a", since="2026-07-25T12:00:01Z"
     ) == []
     assert store.claim_worker_lease("kalshi-btc15-robot", "worker-a") is True
+    assert store.release_worker_lease("kalshi-btc15-robot", "worker-b") is False
+    assert store.release_worker_lease("kalshi-btc15-robot", "worker-a") is True
+    assert "kalshi-btc15-robot" not in store._local["worker_leases"]
+
+
+def test_worker_lease_release_migration_is_owner_checked_and_service_role_only():
+    sql = (
+        Path(__file__).parents[1]
+        / "migrations"
+        / "20260725_worker_lease_release.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "owner_id = p_owner_id" in sql
+    assert "security definer" in sql
+    assert "set search_path = public, pg_temp" in sql
+    assert "from public, anon, authenticated" in sql
+    assert "to service_role" in sql

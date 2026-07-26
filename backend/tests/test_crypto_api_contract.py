@@ -330,6 +330,34 @@ def test_automation_start_fails_closed_when_scheduler_is_not_healthy(monkeypatch
         controls["stop"]()
 
 
+def test_automation_stop_then_start_accepts_healthy_distributed_standby(monkeypatch):
+    _, client, _, _, controls = make_api(monkeypatch)
+    service = controls["service"]
+    monkeypatch.setattr(service, "runtime_snapshot", lambda: {
+        "schedulerHealthy": False,
+        "schedulerCommandsAvailable": True,
+        "status": "standby",
+        "message": "Another backend host owns the durable scheduler lease.",
+    })
+    monkeypatch.setattr(service, "account", lambda *_args: ({}, {
+        "eligible": True, "cryptoStatus": "ACTIVE", "reasons": [],
+    }))
+    try:
+        stopped = client.post("/api/crypto/automation/stop", json={})
+        assert stopped.status_code == 200
+        assert stopped.get_json()["config"]["enabled"] is False
+
+        started = client.post("/api/crypto/automation/start", json={})
+        assert started.status_code == 200
+        body = started.get_json()
+        assert body["config"]["enabled"] is True
+        assert body["runtime"]["enabled"] is True
+        assert body["runtime"]["status"] == "armed"
+        assert service.get_config("user-a")["enabled"] is True
+    finally:
+        controls["stop"]()
+
+
 def test_scheduler_enumeration_is_capped_and_only_selects_enabled_crypto_configs(monkeypatch):
     rows = [
         {"user_id": f"user-{index}", "payload": {"enabled": index % 2 == 0, "killSwitch": False}}
@@ -865,7 +893,7 @@ def test_out_of_universe_position_routes_only_a_sell_when_exit_is_required(monke
 
         monkeypatch.setattr(crypto_api, "generate_signal", exit_signal)
 
-        def fake_submit(_uid, _mode, payload):
+        def fake_submit(_uid, _mode, payload, **_kwargs):
             submitted.append(deepcopy(payload))
             return {
                 "id": "exit-order-1",
@@ -944,7 +972,7 @@ def test_each_order_rechecks_kill_switch_and_stops_running_cycle(monkeypatch):
     try:
         _prepare_cycle(service, monkeypatch)
 
-        def submit(_uid, _mode, payload):
+        def submit(_uid, _mode, payload, **_kwargs):
             submitted.append(dict(payload))
             config = service.get_config("user-a")
             config.update({"killSwitch": True, "enabled": False, "liveAuthorized": False})
@@ -970,7 +998,7 @@ def test_each_scheduler_order_rechecks_stop_and_stops_running_cycle(monkeypatch)
     try:
         _prepare_cycle(service, monkeypatch, enabled=True)
 
-        def submit(_uid, _mode, payload):
+        def submit(_uid, _mode, payload, **_kwargs):
             submitted.append(dict(payload))
             config = service.get_config("user-a")
             config["enabled"] = False
@@ -989,9 +1017,190 @@ def test_each_scheduler_order_rechecks_stop_and_stops_running_cycle(monkeypatch)
         controls["stop"]()
 
 
-def test_cross_service_stop_waits_for_inflight_broker_submit(monkeypatch, tmp_path):
-    monkeypatch.setenv("CRYPTO_ROUTING_LOCK_DIR", str(tmp_path))
+def test_stale_scheduler_owner_cannot_route_or_persist_after_lease_loss(monkeypatch):
+    class LeaseStore(FakeStore):
+        def __init__(self):
+            super().__init__()
+            self.claimed = True
+            self.claim_calls = 0
+
+        def claim_worker_lease(self, *_args, **_kwargs):
+            self.claim_calls += 1
+            return self.claimed
+
+    store = LeaseStore()
+    config = crypto_api._default_config()
+    config["enabled"] = True
+    store.put_artifact(
+        "user-a",
+        crypto_api.CONFIG_TYPE,
+        crypto_api.PRIMARY_KEY,
+        payload=config,
+        idempotency_key="seed-enabled",
+    )
+    _, _, _, _, controls = make_api(monkeypatch, store=store)
+    service = controls["service"]
+    submitted = []
+    monkeypatch.setattr(service, "open_orders", lambda *_args: [])
+    monkeypatch.setattr(
+        service,
+        "_submit_order",
+        lambda *_args: submitted.append(True) or {"id": "unsafe"},
+    )
+    try:
+        _, version = service.get_config_snapshot("user-a")
+        store.claimed = False
+        service._scheduler_execution_state.active = True
+
+        with pytest.raises(crypto_api.CryptoApiError) as routed:
+            service._submit_order_guarded(
+                "user-a",
+                "paper",
+                {"symbol": "BTC/USD", "client_order_id": "stale-owner-order"},
+                expected_config_version=version,
+                source="scheduler",
+            )
+        assert routed.value.code == "scheduler_lease_lost"
+        assert submitted == []
+
+        with pytest.raises(crypto_api.CryptoApiError) as persisted:
+            service.save_runtime(
+                "user-a",
+                {**crypto_api._runtime_default(), "status": "armed"},
+                "stale-owner-runtime",
+            )
+        assert persisted.value.code == "scheduler_lease_lost"
+        assert store.get_artifact(
+            "user-a", crypto_api.RUNTIME_TYPE, crypto_api.PRIMARY_KEY,
+        ) is None
+        assert store.claim_calls >= 2
+    finally:
+        service._scheduler_execution_state.active = False
+        controls["stop"]()
+
+
+def test_lost_distributed_routing_lease_blocks_broker_post(monkeypatch):
+    class ExpiringRoutingStore(FakeStore):
+        def __init__(self):
+            super().__init__()
+            self.route_claims = 0
+
+        def claim_worker_lease(self, lease_name, *_args, **_kwargs):
+            if str(lease_name).startswith("crypto-routing:"):
+                self.route_claims += 1
+                return self.route_claims == 1
+            return True
+
+        def release_worker_lease(self, *_args, **_kwargs):
+            return True
+
+    store = ExpiringRoutingStore()
+    config = crypto_api._default_config()
+    config["enabled"] = True
+    store.put_artifact(
+        "user-a",
+        crypto_api.CONFIG_TYPE,
+        crypto_api.PRIMARY_KEY,
+        payload=config,
+        idempotency_key="seed-enabled",
+    )
+    _, _, _, _, controls = make_api(monkeypatch, store=store)
+    service = controls["service"]
+    submitted = []
+    monkeypatch.setattr(service, "open_orders", lambda *_args: [])
+    monkeypatch.setattr(
+        service,
+        "_submit_order",
+        lambda *_args: submitted.append(True) or {"id": "unsafe"},
+    )
+    try:
+        _, version = service.get_config_snapshot("user-a")
+        with pytest.raises(crypto_api.CryptoApiError) as lost:
+            service._submit_order_guarded(
+                "user-a",
+                "paper",
+                {"symbol": "BTC/USD", "client_order_id": "lost-route-order"},
+                expected_config_version=version,
+                source="scheduler",
+            )
+        assert lost.value.code == "routing_lease_lost"
+        assert submitted == []
+        assert store.route_claims == 2
+    finally:
+        controls["stop"]()
+
+
+def test_broker_idempotency_lookup_is_followed_by_a_final_lifecycle_fence(monkeypatch):
     store = FakeStore()
+    config = crypto_api._default_config()
+    config["enabled"] = True
+    store.put_artifact(
+        "user-a",
+        crypto_api.CONFIG_TYPE,
+        crypto_api.PRIMARY_KEY,
+        payload=config,
+        idempotency_key="seed-enabled",
+    )
+    _, _, _, _, controls = make_api(monkeypatch, store=store)
+    service = controls["service"]
+    posts = []
+
+    def stop_during_lookup(*_args, **_kwargs):
+        stopped = service.get_config("user-a")
+        stopped["enabled"] = False
+        service.save_config("user-a", stopped, "stop-after-idempotency-lookup")
+        return None
+
+    monkeypatch.setattr(service, "open_orders", lambda *_args: [])
+    monkeypatch.setattr(service, "_existing_order", stop_during_lookup)
+    monkeypatch.setattr(
+        crypto_api,
+        "_request_json",
+        lambda *_args, **_kwargs: posts.append(True) or {"id": "unsafe"},
+    )
+    try:
+        _, version = service.get_config_snapshot("user-a")
+        with pytest.raises(crypto_api.CryptoApiError) as stopped:
+            service._submit_order_guarded(
+                "user-a",
+                "paper",
+                {"symbol": "BTC/USD", "client_order_id": "late-stop-order"},
+                expected_config_version=version,
+                source="scheduler",
+            )
+        assert stopped.value.code == "automation_stopped"
+        assert posts == []
+    finally:
+        controls["stop"]()
+
+
+def test_cross_host_stop_waits_for_inflight_broker_submit(monkeypatch):
+    class RoutingLeaseStore(FakeStore):
+        def __init__(self):
+            super().__init__()
+            self.worker_leases = {}
+
+        def claim_worker_lease(self, lease_name, owner_id, **_kwargs):
+            with self.lock:
+                current = self.worker_leases.get(lease_name)
+                if current not in {None, owner_id}:
+                    return False
+                self.worker_leases[lease_name] = owner_id
+                return True
+
+        def release_worker_lease(self, lease_name, owner_id):
+            with self.lock:
+                if self.worker_leases.get(lease_name) != owner_id:
+                    return False
+                self.worker_leases.pop(lease_name, None)
+                return True
+
+    @contextmanager
+    def independent_host_lock(*_args, **_kwargs):
+        yield "host-local-test"
+
+    monkeypatch.setattr(crypto_api, "_routing_process_lease", independent_host_lock)
+    store = RoutingLeaseStore()
     config = crypto_api._default_config()
     config["enabled"] = True
     store.put_artifact(
@@ -1011,7 +1220,7 @@ def test_cross_service_stop_waits_for_inflight_broker_submit(monkeypatch, tmp_pa
     failures = []
     stop_response = {}
 
-    def blocking_submit(_uid, _mode, _payload):
+    def blocking_submit(_uid, _mode, _payload, **_kwargs):
         entered_submit.set()
         assert release_submit.wait(timeout=3.0)
         submit_finished.set()
@@ -1056,6 +1265,10 @@ def test_cross_service_stop_waits_for_inflight_broker_submit(monkeypatch, tmp_pa
         assert store.get_artifact(
             "user-a", crypto_api.CONFIG_TYPE, crypto_api.PRIMARY_KEY,
         )["payload"]["enabled"] is False
+        assert not any(
+            name.startswith("crypto-routing:")
+            for name in store.worker_leases
+        )
     finally:
         release_submit.set()
         route_thread.join(timeout=1.0)
@@ -2474,6 +2687,84 @@ def test_cross_process_scheduler_lease_has_one_owner_and_standby_takes_over(monk
             time.sleep(0.01)
         assert counts[standby] > 0
         assert services[standby].runtime_snapshot()["lockBackend"] in {"msvcrt", "fcntl"}
+    finally:
+        first["stop"]()
+        second["stop"]()
+
+
+def test_durable_scheduler_lease_elects_one_owner_across_backend_hosts(monkeypatch):
+    class DurableLeaseStore(FakeStore):
+        def __init__(self):
+            super().__init__()
+            self.owner = None
+
+        def claim_worker_lease(
+            self, _lease_name, owner_id, *, ttl_seconds=20, metadata=None,
+        ):
+            assert ttl_seconds == crypto_api.SCHEDULER_DURABLE_LEASE_TTL_SECONDS
+            assert metadata["component"] == "crypto_automation"
+            with self.lock:
+                if self.owner in {None, owner_id}:
+                    self.owner = owner_id
+                    return True
+                return False
+
+        def expire(self, owner_id):
+            with self.lock:
+                if self.owner == owner_id:
+                    self.owner = None
+
+    @contextmanager
+    def independent_host_lock():
+        yield "host-local-test"
+
+    store = DurableLeaseStore()
+    first = make_api(monkeypatch, store=store)[4]
+    second = make_api(monkeypatch, store=store)[4]
+    services = [first["service"], second["service"]]
+    counts = [0, 0]
+    monkeypatch.delenv("ALPHALAB_DISABLE_CRYPTO_SCHEDULER", raising=False)
+    monkeypatch.setattr(crypto_api, "_scheduler_process_lease", independent_host_lock)
+    monkeypatch.setattr(crypto_api, "SCHEDULER_SCAN_INTERVAL_SECONDS", 0.02)
+    for index, service in enumerate(services):
+        monkeypatch.setattr(
+            service,
+            "_scheduler_scan",
+            lambda _index=index, **_kwargs: counts.__setitem__(
+                _index, counts[_index] + 1,
+            ),
+        )
+        service.start()
+    try:
+        deadline = time.time() + 2
+        while sum(counts) == 0 and time.time() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.08)
+        assert (counts[0] > 0) != (counts[1] > 0)
+        owner = 0 if counts[0] else 1
+        standby = 1 - owner
+
+        owner_snapshot = services[owner].runtime_snapshot()
+        standby_snapshot = services[standby].runtime_snapshot()
+        assert owner_snapshot["schedulerHealthy"] is True
+        assert owner_snapshot["schedulerCommandsAvailable"] is True
+        assert owner_snapshot["durableLeaseOwner"] is True
+        assert standby_snapshot["status"] == "standby"
+        assert standby_snapshot["schedulerHealthy"] is False
+        assert standby_snapshot["schedulerCommandsAvailable"] is True
+        assert standby_snapshot["durableLeaseOwner"] is False
+        assert standby_snapshot["coordinationScope"] == (
+            "durable distributed lease with broker idempotency"
+        )
+
+        owner_id = services[owner]._scheduler_durable_owner_id
+        (first if owner == 0 else second)["stop"]()
+        store.expire(owner_id)
+        deadline = time.time() + 2
+        while counts[standby] == 0 and time.time() < deadline:
+            time.sleep(0.01)
+        assert counts[standby] > 0
+        assert services[standby].runtime_snapshot()["durableLeaseOwner"] is True
     finally:
         first["stop"]()
         second["stop"]()

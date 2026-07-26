@@ -268,6 +268,16 @@ const renderAt = async (pathname: string) => {
   });
 };
 
+const clickButton = async (label: string) => {
+  const button = Array.from(container.querySelectorAll('button'))
+    .find((candidate) => candidate.textContent?.includes(label));
+  expect(button).toBeDefined();
+  await act(async () => {
+    button?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+};
+
 beforeEach(() => {
   jest.clearAllMocks();
   container = document.createElement('div');
@@ -341,6 +351,240 @@ describe('Crypto operations workspace', () => {
     expect(container.textContent).toContain('12s ago');
     expect(container.textContent).toContain('Continuous trading is enabled');
     expect(container.textContent).toContain('Run one cycle now');
+  });
+
+  it('uses lifecycle mutation responses immediately across stop and restart', async () => {
+    const enabledOverview = {
+      ...overviewPayload.data,
+      account: { configured: true, eligible: true },
+      automation: {
+        enabled: true,
+        status: 'idle',
+        intervalMinutes: 15,
+        killSwitch: false,
+        locked: false,
+      },
+      runtime: {
+        ...overviewPayload.data.runtime,
+        enabled: true,
+        status: 'idle',
+        currentStage: 'completed',
+        progress: 100,
+      },
+      config: { ...overviewPayload.data.config, enabled: true },
+    };
+    const stoppedOverview = {
+      ...enabledOverview,
+      automation: { ...enabledOverview.automation, enabled: false, status: 'stopped', nextRun: null },
+      runtime: {
+        ...enabledOverview.runtime,
+        enabled: false,
+        status: 'stopped',
+        currentStage: 'stopped',
+        progress: 0,
+        nextRun: null,
+      },
+      config: { ...enabledOverview.config, enabled: false },
+    };
+    const restartedOverview = {
+      ...enabledOverview,
+      automation: { ...enabledOverview.automation, enabled: true, status: 'armed' },
+      runtime: {
+        ...enabledOverview.runtime,
+        enabled: true,
+        status: 'armed',
+        currentStage: 'armed',
+        progress: 0,
+        nextRun: '2026-07-25T12:15:00Z',
+      },
+    };
+
+    api.overview
+      .mockResolvedValueOnce({ data: enabledOverview })
+      .mockResolvedValueOnce({ data: stoppedOverview })
+      .mockResolvedValueOnce({ data: restartedOverview });
+    api.stopAutomation.mockResolvedValue({
+      data: {
+        success: true,
+        config: stoppedOverview.config,
+        runtime: stoppedOverview.runtime,
+      },
+    });
+    api.startAutomation.mockResolvedValue({
+      data: {
+        success: true,
+        config: restartedOverview.config,
+        runtime: restartedOverview.runtime,
+      },
+    });
+
+    await renderAt('/crypto/automation');
+    await clickButton('Stop automation');
+
+    expect(api.stopAutomation).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('Automation is standing by');
+    expect(container.textContent).toContain('Start 24/7 automation');
+
+    await clickButton('Start 24/7 automation');
+
+    expect(api.startAutomation).toHaveBeenCalledWith('paper', false);
+    expect(container.textContent).toContain('Continuous trading is enabled');
+    expect(container.textContent).toContain('Stop automation');
+    expect(container.textContent).toContain('24/7 automation started.');
+  });
+
+  it('does not let an older overview request overwrite a lifecycle response', async () => {
+    const enabledOverview = {
+      ...overviewPayload.data,
+      account: { configured: true, eligible: true },
+      automation: {
+        enabled: true,
+        status: 'idle',
+        intervalMinutes: 15,
+        killSwitch: false,
+        locked: false,
+      },
+      runtime: {
+        ...overviewPayload.data.runtime,
+        enabled: true,
+        status: 'idle',
+        currentStage: 'completed',
+        progress: 100,
+      },
+      config: { ...overviewPayload.data.config, enabled: true },
+    };
+    const stoppedOverview = {
+      ...enabledOverview,
+      automation: { ...enabledOverview.automation, enabled: false, status: 'stopped' },
+      runtime: {
+        ...enabledOverview.runtime,
+        enabled: false,
+        status: 'stopped',
+        currentStage: 'stopped',
+        progress: 0,
+      },
+      config: { ...enabledOverview.config, enabled: false },
+    };
+    let resolveStale: ((value: unknown) => void) | undefined;
+    const staleOverview = new Promise((resolve) => {
+      resolveStale = resolve;
+    });
+    api.overview
+      .mockResolvedValueOnce({ data: enabledOverview })
+      .mockReturnValueOnce(staleOverview)
+      .mockResolvedValueOnce({ data: stoppedOverview });
+    api.stopAutomation.mockResolvedValue({
+      data: {
+        success: true,
+        config: stoppedOverview.config,
+        runtime: stoppedOverview.runtime,
+      },
+    });
+
+    await renderAt('/crypto/automation');
+    const refresh = container.querySelector(
+      'button[aria-label="Refresh crypto data"]',
+    );
+    expect(refresh).not.toBeNull();
+    await act(async () => {
+      refresh?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await clickButton('Stop automation');
+    expect(container.textContent).toContain('Automation is standing by');
+
+    await act(async () => {
+      resolveStale?.({ data: enabledOverview });
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('Automation is standing by');
+    expect(container.textContent).toContain('Start 24/7 automation');
+  });
+
+  it('localizes a start 503 and silently rechecks the stopped state', async () => {
+    mockedUseLanguage.mockReturnValue({ language: 'zh-CN' });
+    const stoppedOverview = {
+      ...overviewPayload.data,
+      account: { configured: true, eligible: true },
+      automation: {
+        enabled: false,
+        status: 'stopped',
+        intervalMinutes: 15,
+        killSwitch: false,
+        locked: false,
+      },
+      runtime: {
+        ...overviewPayload.data.runtime,
+        enabled: false,
+        status: 'stopped',
+        currentStage: 'stopped',
+        progress: 0,
+      },
+      config: { ...overviewPayload.data.config, enabled: false },
+    };
+    api.overview
+      .mockResolvedValueOnce({ data: stoppedOverview })
+      .mockResolvedValueOnce({ data: stoppedOverview });
+    api.startAutomation.mockRejectedValue({
+      response: {
+        status: 503,
+        data: {
+          success: false,
+          status: 'service_unavailable',
+          message: 'The service is temporarily unavailable. Please try again shortly.',
+        },
+      },
+    });
+
+    await renderAt('/crypto/automation');
+    await clickButton('启动 24/7 自动交易');
+
+    expect(api.startAutomation).toHaveBeenCalledWith('paper', false);
+    expect(api.overview).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('24/7 自动交易暂时无法启动');
+    expect(container.textContent).toContain('自动交易等待启动');
+    expect(container.textContent).toContain('已停止');
+    expect(container.textContent).toContain('Crypto 自动交易已停止');
+    expect(container.textContent).not.toContain('The service is temporarily unavailable');
+  });
+
+  it('does not report stop success when the reconciliation response omits enabled state', async () => {
+    const enabledOverview = {
+      ...overviewPayload.data,
+      account: { configured: true, eligible: true },
+      automation: {
+        enabled: true,
+        status: 'idle',
+        intervalMinutes: 15,
+        killSwitch: false,
+        locked: false,
+      },
+      runtime: {
+        ...overviewPayload.data.runtime,
+        enabled: true,
+        status: 'idle',
+        currentStage: 'completed',
+        progress: 100,
+      },
+      config: { ...overviewPayload.data.config, enabled: true },
+    };
+    api.overview
+      .mockResolvedValueOnce({ data: enabledOverview })
+      .mockResolvedValueOnce({
+        data: {
+          ...enabledOverview,
+          automation: undefined,
+          config: undefined,
+          runtime: { cryptoPerformance: overviewPayload.data.runtime.cryptoPerformance },
+        },
+      });
+    api.stopAutomation.mockRejectedValue(new Error('stop failed'));
+
+    await renderAt('/crypto/automation');
+    await clickButton('Stop automation');
+
+    expect(container.textContent).toContain('stop failed');
+    expect(container.textContent).not.toContain('Automation stopped.');
   });
 
   it('renders short-term and swing mandates while keeping backtests offline', async () => {

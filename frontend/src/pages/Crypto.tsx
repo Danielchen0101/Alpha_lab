@@ -106,6 +106,46 @@ const firstText = (...values: unknown[]): string => {
   return '';
 };
 
+const unwrapApiBody = (value: unknown): Dictionary => {
+  const envelope = objectOf(value);
+  const data = objectOf(envelope.data);
+  return Object.keys(data).length ? data : envelope;
+};
+
+const lifecycleErrorMessage = (
+  requestError: unknown,
+  action: 'start' | 'stop',
+  zh: boolean,
+) => {
+  const details = objectOf(requestError);
+  const response = objectOf(details.response);
+  const data = objectOf(response.data);
+  const statusCode = numberOf(response.status);
+  const status = firstText(
+    data.reason,
+    data.status,
+    data.code,
+    data.errorCode,
+  ).toLowerCase();
+  const schedulerUnavailable = statusCode === 503
+    || status === 'service_unavailable'
+    || status === 'scheduler_unavailable';
+
+  if (action === 'start' && schedulerUnavailable) {
+    return zh
+      ? '24/7 自动交易暂时无法启动：服务端调度器正在切换或暂不可用。已重新核对当前状态，请稍后重试。'
+      : '24/7 automation could not be started because the server scheduler is switching or temporarily unavailable. The current state was rechecked; please try again shortly.';
+  }
+
+  return firstText(
+    data.message,
+    details.message,
+    action === 'start'
+      ? (zh ? '24/7 自动交易启动失败。' : 'Failed to start 24/7 automation.')
+      : (zh ? '自动交易停止失败。' : 'Failed to stop automation.'),
+  );
+};
+
 const stringList = (value: unknown): string[] => (
   Array.isArray(value)
     ? value.map((item) => firstText(item)).filter(Boolean)
@@ -241,6 +281,9 @@ const actionClass = (action: unknown) => `cx-action ${firstText(action, 'WAIT').
 const stageLabel = (stage: unknown, zh: boolean) => {
   const labels: Record<string, [string, string]> = {
     idle: ['Idle', '空闲'],
+    stopped: ['Stopped', '已停止'],
+    standby: ['Standby', '待机'],
+    armed: ['Armed', '已就绪'],
     starting: ['Starting', '启动中'],
     loading_account: ['Loading account', '读取账户'],
     loading_market_data: ['Loading market data', '读取行情'],
@@ -248,12 +291,51 @@ const stageLabel = (stage: unknown, zh: boolean) => {
     routing_orders: ['Routing orders', '路由订单'],
     reconciling: ['Reconciling fills', '成交对账'],
     reconciliation_required: ['Reconciliation required', '需要成交对账'],
+    complete: ['Cycle complete', '周期完成'],
     completed: ['Cycle complete', '周期完成'],
+    interrupted: ['Cycle interrupted', '周期已中断'],
+    killed: ['Emergency stop', '紧急停止'],
     error: ['Cycle error', '周期错误'],
   };
   const key = firstText(stage, 'idle').toLowerCase();
   const pair = labels[key] || [humanize(key), humanize(key)];
   return zh ? pair[1] : pair[0];
+};
+
+const recoveryLabel = (state: unknown, zh: boolean) => {
+  const labels: Record<string, [string, string]> = {
+    normal: ['Normal', '正常'],
+    steady: ['Steady', '稳定'],
+    idle: ['Idle', '空闲'],
+    standby: ['Standby', '待机'],
+    disabled: ['Disabled', '已禁用'],
+    stopped: ['Stopped', '已停止'],
+    stale: ['Stale', '心跳过期'],
+    recovering: ['Recovering', '恢复中'],
+    degraded: ['Degraded', '性能下降'],
+  };
+  const key = firstText(state, 'normal').toLowerCase();
+  const pair = labels[key] || [humanize(key), humanize(key)];
+  return zh ? pair[1] : pair[0];
+};
+
+const runtimeMessage = (
+  runtime: CryptoRuntime,
+  fallback: string,
+  zh: boolean,
+) => {
+  if (!zh) return firstText(runtime.message, fallback);
+  const stage = firstText(runtime.currentStage, runtime.status).toLowerCase();
+  const localized: Record<string, string> = {
+    idle: '当前空闲，等待下一个交易周期。',
+    stopped: 'Crypto 自动交易已停止。',
+    standby: '调度器处于待机状态，主节点仍可接受控制命令。',
+    armed: 'Crypto 自动交易已启动，正在等待下一个交易周期。',
+    starting: '正在启动交易周期。',
+    complete: '最近一个交易周期已完成。',
+    completed: '最近一个交易周期已完成。',
+  };
+  return localized[stage] || firstText(runtime.message, fallback);
 };
 
 const sourceLabel = (source: unknown, zh: boolean) => {
@@ -755,6 +837,7 @@ const Crypto: React.FC = () => {
   const zh = language === 'zh-CN';
   const mode: CryptoMode = tradeMode === 'real' ? 'live' : 'paper';
   const mounted = useRef(true);
+  const overviewRequestSequence = useRef(0);
 
   const [overview, setOverview] = useState<CryptoOverviewResponse | null>(null);
   const [config, setConfig] = useState<Partial<CryptoConfig> | null>(null);
@@ -767,24 +850,43 @@ const Crypto: React.FC = () => {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
-  const load = useCallback(async (quiet = false) => {
-    if (!isAuthenticated || !tradeModeReady) return;
+  const load = useCallback(async (
+    quiet = false,
+    preserveError = false,
+  ): Promise<CryptoOverviewResponse | null> => {
+    if (!isAuthenticated || !tradeModeReady) return null;
+    const requestSequence = ++overviewRequestSequence.current;
     if (!quiet) setLoading(true);
     try {
       const apiResponse = await cryptoAPI.overview(mode);
       const response = ((apiResponse as { data?: CryptoOverviewResponse }).data
         ?? apiResponse) as unknown as CryptoOverviewResponse;
-      if (!mounted.current) return;
+      if (
+        !mounted.current
+        || requestSequence !== overviewRequestSequence.current
+      ) return null;
       setOverview(response);
       setConfig(response.config || null);
-      setError(response.error || '');
+      if (!preserveError) setError(response.error || '');
+      return response;
     } catch (requestError: unknown) {
       const details = objectOf(requestError);
       const response = objectOf(details.response);
       const data = objectOf(response.data);
-      if (mounted.current) setError(firstText(data.message, details.message, zh ? 'Crypto 服务不可用' : 'Crypto service unavailable'));
+      if (
+        mounted.current
+        && requestSequence === overviewRequestSequence.current
+        && !preserveError
+      ) {
+        setError(firstText(data.message, details.message, zh ? 'Crypto 服务不可用' : 'Crypto service unavailable'));
+      }
+      return null;
     } finally {
-      if (mounted.current && !quiet) setLoading(false);
+      if (
+        mounted.current
+        && requestSequence === overviewRequestSequence.current
+        && !quiet
+      ) setLoading(false);
     }
   }, [isAuthenticated, mode, tradeModeReady, zh]);
 
@@ -814,6 +916,7 @@ const Crypto: React.FC = () => {
     const timer = window.setInterval(() => void load(true), REFRESH_MS);
     return () => {
       mounted.current = false;
+      overviewRequestSequence.current += 1;
       window.clearInterval(timer);
     };
   }, [load]);
@@ -837,6 +940,78 @@ const Crypto: React.FC = () => {
       const response = objectOf(details.response);
       const data = objectOf(response.data);
       setError(firstText(data.message, details.message, zh ? '请求失败' : 'Request failed'));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const applyLifecycleResponse = (apiResponse: unknown) => {
+    // A mutation response is newer than any GET already in flight.
+    overviewRequestSequence.current += 1;
+    const body = unwrapApiBody(apiResponse);
+    const configPatch = objectOf(body.config) as Partial<CryptoConfig>;
+    const runtimePatch = objectOf(body.runtime) as CryptoRuntime;
+    const hasConfigPatch = Object.keys(configPatch).length > 0;
+    const hasRuntimePatch = Object.keys(runtimePatch).length > 0;
+    if (!hasConfigPatch && !hasRuntimePatch) return;
+
+    if (hasConfigPatch) {
+      setConfig((current) => ({ ...(current || {}), ...configPatch }));
+    }
+    setOverview((current) => {
+      if (!current) return current;
+      const enabled = typeof configPatch.enabled === 'boolean'
+        ? configPatch.enabled
+        : typeof runtimePatch.enabled === 'boolean'
+          ? runtimePatch.enabled
+          : undefined;
+      const automationPatch: NonNullable<CryptoOverviewResponse['automation']> = {};
+      if (enabled !== undefined) automationPatch.enabled = enabled;
+      if (typeof runtimePatch.status === 'string') automationPatch.status = runtimePatch.status;
+      if (runtimePatch.nextRun !== undefined) automationPatch.nextRun = runtimePatch.nextRun;
+      if (runtimePatch.lastRun !== undefined) automationPatch.lastRun = runtimePatch.lastRun;
+      if (typeof runtimePatch.locked === 'boolean') automationPatch.locked = runtimePatch.locked;
+      if (typeof runtimePatch.killSwitch === 'boolean') automationPatch.killSwitch = runtimePatch.killSwitch;
+      if (typeof configPatch.killSwitch === 'boolean') automationPatch.killSwitch = configPatch.killSwitch;
+      if (typeof configPatch.intervalMinutes === 'number') {
+        automationPatch.intervalMinutes = configPatch.intervalMinutes;
+      }
+
+      return {
+        ...current,
+        config: hasConfigPatch ? { ...(current.config || {}), ...configPatch } : current.config,
+        runtime: hasRuntimePatch ? { ...(current.runtime || {}), ...runtimePatch } : current.runtime,
+        automation: { ...(current.automation || {}), ...automationPatch },
+      };
+    });
+  };
+
+  const actLifecycle = async (
+    action: 'start' | 'stop',
+    operation: () => Promise<unknown>,
+    success: string,
+  ) => {
+    if (busy) return;
+    setBusy(action);
+    setError('');
+    setNotice('');
+    try {
+      const response = await operation();
+      applyLifecycleResponse(response);
+      setNotice(success);
+      await load(true, true);
+    } catch (requestError: unknown) {
+      setError(lifecycleErrorMessage(requestError, action, zh));
+      const reconciled = await load(true, true);
+      const reconciledEnabled = reconciled?.automation?.enabled
+        ?? reconciled?.config?.enabled
+        ?? reconciled?.runtime?.enabled;
+      const reachedRequestedState = typeof reconciledEnabled === 'boolean'
+        && reconciledEnabled === (action === 'start');
+      if (reachedRequestedState) {
+        setError('');
+        setNotice(success);
+      }
     } finally {
       setBusy('');
     }
@@ -1121,24 +1296,24 @@ const Crypto: React.FC = () => {
         <p>{zh ? `服务端按完整 K 线运行，页面或浏览器关闭后仍会继续。每个周期先同步账户与订单，再评估 ${universeLabel} 并持久化决策。` : `The server runs on completed bars and continues after the browser closes. Each cycle syncs account and order state before evaluating ${universeLabel} and persisting decisions.`}</p>
         <div className="cx-automation-actions">
           {active
-            ? <button className="cx-danger" type="button" onClick={() => void act('stop', () => cryptoAPI.stopAutomation(), zh ? '自动交易已停止。' : 'Automation stopped.')} disabled={Boolean(busy)}>{busy === 'stop' ? <LoadingOutlined /> : <PauseCircleOutlined />} {zh ? '停止自动交易' : 'Stop automation'}</button>
-            : <button className="cx-primary" type="button" onClick={() => void act('start', () => cryptoAPI.startAutomation(mode, mode === 'live'), zh ? '24/7 自动交易已启动。' : '24/7 automation started.')} disabled={Boolean(busy) || Boolean(automationDisabledReason)}>{busy === 'start' ? <LoadingOutlined /> : <PlayCircleOutlined />} {zh ? '启动 24/7 自动交易' : 'Start 24/7 automation'}</button>}
+            ? <button className="cx-danger" type="button" onClick={() => void actLifecycle('stop', () => cryptoAPI.stopAutomation(), zh ? '自动交易已停止。' : 'Automation stopped.')} disabled={Boolean(busy)}>{busy === 'stop' ? <LoadingOutlined /> : <PauseCircleOutlined />} {zh ? '停止自动交易' : 'Stop automation'}</button>
+            : <button className="cx-primary" type="button" onClick={() => void actLifecycle('start', () => cryptoAPI.startAutomation(mode, mode === 'live'), zh ? '24/7 自动交易已启动。' : '24/7 automation started.')} disabled={Boolean(busy) || Boolean(automationDisabledReason)}>{busy === 'start' ? <LoadingOutlined /> : <PlayCircleOutlined />} {zh ? '启动 24/7 自动交易' : 'Start 24/7 automation'}</button>}
           <button className="cx-secondary" type="button" onClick={() => void act('cycle', () => cryptoAPI.runCycle(mode, false), zh ? '交易周期已完成。' : 'Trading cycle completed.')} disabled={Boolean(busy) || Boolean(automationDisabledReason)}>{busy === 'cycle' ? <LoadingOutlined /> : <ThunderboltOutlined />} {zh ? '立即运行一次' : 'Run one cycle now'}</button>
         </div>
         {automationDisabledReason && <div className="cx-inline-warning"><AlertOutlined /> {automationDisabledReason}</div>}
       </article>
       <article className="cx-panel">
-        <div className="cx-panel-head"><div><span className="cx-kicker">SCHEDULER TELEMETRY</span><h2>{zh ? '运行时与恢复状态' : 'Runtime and recovery state'}</h2></div><span>{firstText(runtime.recoveryState, zh ? '正常' : 'normal')}</span></div>
+        <div className="cx-panel-head"><div><span className="cx-kicker">SCHEDULER TELEMETRY</span><h2>{zh ? '运行时与恢复状态' : 'Runtime and recovery state'}</h2></div><span>{recoveryLabel(runtime.recoveryState, zh)}</span></div>
         <div className="cx-cycle-progress">
           <div><span>{stageLabel(runtime.currentStage, zh)}</span><strong>{progress}%</strong></div>
           <div className="cx-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><i style={{ width: `${progress}%` }} /></div>
-          <p>{firstText(runtime.message, health.detail)}</p>
+          <p>{runtimeMessage(runtime, health.detail, zh)}</p>
         </div>
         <div className="cx-runtime-grid">
           <div><ClockCircleOutlined /><span>{zh ? '最后心跳' : 'Last heartbeat'}</span><strong>{formatTime(health.heartbeatAt, zh, true)}</strong><small>{durationLabel(health.heartbeatAge, zh)}</small></div>
           <div><HistoryOutlined /><span>{zh ? '上次 / 下次周期' : 'Last / next cycle'}</span><strong>{formatTime(overview?.automation?.lastRun || runtime.lastRun, zh)}</strong><small>→ {formatTime(overview?.automation?.nextRun || runtime.nextRun, zh)}</small></div>
           <div><ThunderboltOutlined /><span>{zh ? '累计周期 / 上次耗时' : 'Cycles / last duration'}</span><strong>{money(runtime.cycleCount, 0)}</strong><small>{money(runtime.lastDurationMs, 0)} ms</small></div>
-          <div className={(numberOf(runtime.consecutiveErrors) ?? 0) > 0 ? 'warn' : ''}><SafetyCertificateOutlined /><span>{zh ? '连续错误 / 恢复' : 'Errors / recovery'}</span><strong>{money(runtime.consecutiveErrors, 0)}</strong><small>{humanize(runtime.recoveryState || 'normal')}</small></div>
+          <div className={(numberOf(runtime.consecutiveErrors) ?? 0) > 0 ? 'warn' : ''}><SafetyCertificateOutlined /><span>{zh ? '连续错误 / 恢复' : 'Errors / recovery'}</span><strong>{money(runtime.consecutiveErrors, 0)}</strong><small>{recoveryLabel(runtime.recoveryState, zh)}</small></div>
         </div>
         {runtime.reconciliationRequired
           ? <div className="cx-operational-note danger"><AlertOutlined /><div><strong>{zh ? '需要订单对账' : 'Order reconciliation required'}</strong><p>{firstText(runtime.reconciliationMessage, runtime.lastError, health.detail)}</p></div></div>
