@@ -21,6 +21,14 @@ MALLOC_ARENA_MAX=2 gunicorn start_quant_backend:app \
 
 Four request threads fit the Render Pro 2-CPU profile while leaving room for two admitted heavy scans. Do not add web workers unless the scheduler is first moved to a dedicated service with distributed ownership.
 
+Because the Render root directory is `backend`, Gunicorn automatically loads
+`backend/gunicorn.conf.py`. Its `post_worker_init` hook starts the equity,
+crypto, and Kalshi schedulers only after the serving worker has initialized.
+The request lifecycle also performs a throttled, idempotent recovery check, so
+an accidental application preload or an unexpectedly exited scheduler thread
+cannot leave the API worker holding a dead inherited thread object. Do not
+replace this hook with module-import startup.
+
 ## Supabase and required migrations
 
 Create a project and apply the repository SQL files in this order:

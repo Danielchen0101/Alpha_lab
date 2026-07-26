@@ -79,8 +79,14 @@ class FakeResponse:
         return deepcopy(self.payload)
 
 
-def make_api(monkeypatch, *, auth=None, store=None, resolver=None):
-    monkeypatch.setenv("ALPHALAB_DISABLE_CRYPTO_SCHEDULER", "1")
+def make_api(
+    monkeypatch, *, auth=None, store=None, resolver=None,
+    start_background=True, disable_scheduler=True,
+):
+    if disable_scheduler:
+        monkeypatch.setenv("ALPHALAB_DISABLE_CRYPTO_SCHEDULER", "1")
+    else:
+        monkeypatch.delenv("ALPHALAB_DISABLE_CRYPTO_SCHEDULER", raising=False)
     app = Flask(__name__)
     app.config.update(TESTING=True)
     auth_state = auth if auth is not None else {"user": {"id": "user-a"}}
@@ -101,6 +107,7 @@ def make_api(monkeypatch, *, auth=None, store=None, resolver=None):
         resolve_alpaca_config_for_user=resolver or default_resolver,
         operations_store=fake_store,
         safe_print=lambda *_args, **_kwargs: None,
+        start_background=start_background,
     )
     return app, app.test_client(), auth_state, fake_store, controls
 
@@ -2720,6 +2727,147 @@ def test_runtime_endpoint_reports_scheduler_health_contract(monkeypatch):
         for field in ("currentStage", "runId", "message", "heartbeat"):
             assert field in body["runtime"]
     finally:
+        controls["stop"]()
+
+
+def test_registration_can_leave_crypto_scheduler_stopped(monkeypatch):
+    controls = make_api(
+        monkeypatch,
+        start_background=False,
+        disable_scheduler=False,
+    )[4]
+    try:
+        snapshot = controls["runtime"]()
+        assert controls["service"]._thread is None
+        assert snapshot["schedulerAlive"] is False
+        assert snapshot["status"] == "stopped"
+    finally:
+        controls["stop"]()
+
+
+def test_on_environment_value_disables_crypto_scheduler(monkeypatch):
+    controls = make_api(
+        monkeypatch,
+        start_background=False,
+        disable_scheduler=False,
+    )[4]
+    monkeypatch.setenv("ALPHALAB_DISABLE_CRYPTO_SCHEDULER", "on")
+    try:
+        controls["start"]()
+        snapshot = controls["runtime"]()
+        assert controls["service"]._thread is None
+        assert snapshot["status"] == "disabled"
+        assert snapshot["schedulerCommandsAvailable"] is False
+    finally:
+        controls["stop"]()
+
+
+def test_start_control_is_idempotent_and_can_restart_scheduler(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setenv(
+        "CRYPTO_SCHEDULER_LOCK_PATH",
+        str(tmp_path / "controlled-start.lock"),
+    )
+    monkeypatch.setattr(
+        crypto_api, "SCHEDULER_SCAN_INTERVAL_SECONDS", 0.02,
+    )
+    controls = make_api(
+        monkeypatch,
+        start_background=False,
+        disable_scheduler=False,
+    )[4]
+    service = controls["service"]
+    scans = {"count": 0}
+    monkeypatch.setattr(
+        service,
+        "_scheduler_scan",
+        lambda **_kwargs: scans.update(count=scans["count"] + 1),
+    )
+    try:
+        controls["start"]()
+        deadline = time.time() + 2
+        while scans["count"] < 1 and time.time() < deadline:
+            time.sleep(0.01)
+        first_thread = service._thread
+        assert first_thread is not None
+        assert first_thread.is_alive()
+
+        controls["start"]()
+        assert service._thread is first_thread
+
+        controls["stop"]()
+        before_restart = scans["count"]
+        assert service._thread is None
+
+        controls["start"]()
+        deadline = time.time() + 2
+        while scans["count"] <= before_restart and time.time() < deadline:
+            time.sleep(0.01)
+        assert scans["count"] > before_restart
+        assert service._thread is not first_thread
+        assert service._thread is not None
+        assert service._thread.is_alive()
+    finally:
+        controls["stop"]()
+
+
+def test_concurrent_stop_serializes_a_later_scheduler_start(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setenv(
+        "CRYPTO_SCHEDULER_LOCK_PATH",
+        str(tmp_path / "serialized-lifecycle.lock"),
+    )
+    monkeypatch.setattr(
+        crypto_api, "SCHEDULER_SCAN_INTERVAL_SECONDS", 0.02,
+    )
+    controls = make_api(
+        monkeypatch,
+        start_background=False,
+        disable_scheduler=False,
+    )[4]
+    service = controls["service"]
+    monkeypatch.setattr(service, "_scheduler_scan", lambda **_kwargs: None)
+    controls["start"]()
+
+    old_executor = service._scheduler_executor
+    original_shutdown = old_executor.shutdown
+    shutdown_entered = threading.Event()
+    allow_shutdown = threading.Event()
+    start_returned = threading.Event()
+
+    def blocking_shutdown(*args, **kwargs):
+        shutdown_entered.set()
+        assert allow_shutdown.wait(2)
+        return original_shutdown(*args, **kwargs)
+
+    monkeypatch.setattr(old_executor, "shutdown", blocking_shutdown)
+    stop_thread = threading.Thread(target=controls["stop"])
+    start_thread = threading.Thread(
+        target=lambda: (controls["start"](), start_returned.set()),
+    )
+    try:
+        stop_thread.start()
+        assert shutdown_entered.wait(2)
+        start_thread.start()
+        assert start_returned.wait(0.05) is False
+
+        allow_shutdown.set()
+        stop_thread.join(timeout=2)
+        start_thread.join(timeout=2)
+
+        assert stop_thread.is_alive() is False
+        assert start_thread.is_alive() is False
+        assert start_returned.is_set()
+        assert service._scheduler_executor is not old_executor
+        assert service._scheduler_executor_stopped is False
+        assert service._thread is not None
+        assert service._thread.is_alive()
+    finally:
+        allow_shutdown.set()
+        stop_thread.join(timeout=2)
+        start_thread.join(timeout=2)
         controls["stop"]()
 
 
