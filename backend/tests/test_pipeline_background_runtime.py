@@ -2107,6 +2107,7 @@ def test_background_services_start_after_fork_and_are_periodically_rechecked(
     clock = [100.0]
 
     monkeypatch.setenv("ALPHALAB_ENABLE_TEST_BACKGROUND_SERVICES", "1")
+    monkeypatch.delenv("ALPHALAB_DISABLE_BACKGROUND_SERVICES", raising=False)
     monkeypatch.setattr(
         backend,
         "_CRYPTO_API_CONTROLS",
@@ -2151,6 +2152,93 @@ def test_background_services_start_after_fork_and_are_periodically_rechecked(
         ("kalshi", 202),
         ("equity", 202),
     ]
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on"])
+def test_background_services_explicit_disable_prevents_every_scheduler(
+    monkeypatch,
+    value,
+):
+    starts = []
+    monkeypatch.setenv("ALPHALAB_ENABLE_TEST_BACKGROUND_SERVICES", "1")
+    monkeypatch.setenv("ALPHALAB_DISABLE_BACKGROUND_SERVICES", value)
+    monkeypatch.setattr(
+        backend,
+        "_CRYPTO_API_CONTROLS",
+        {"start": lambda: starts.append("crypto")},
+    )
+    monkeypatch.setattr(
+        backend,
+        "_KALSHI_API_CONTROLS",
+        {"start": lambda: starts.append("kalshi")},
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_ensure_scheduler",
+        lambda: starts.append("equity"),
+    )
+    monkeypatch.setattr(backend, "_BACKGROUND_SERVICES_PID", None)
+    monkeypatch.setattr(backend, "_BACKGROUND_SERVICES_LAST_CHECK", 0.0)
+
+    backend.start_background_services()
+
+    assert starts == []
+    assert backend._BACKGROUND_SERVICES_PID is None
+    assert backend._BACKGROUND_SERVICES_LAST_CHECK == 0.0
+
+
+def test_api_only_disable_makes_background_runtime_optional_and_ready(
+    monkeypatch,
+):
+    monkeypatch.setenv("ALPHALAB_DISABLE_BACKGROUND_SERVICES", "true")
+    monkeypatch.setattr(
+        backend, "_strict_production_runtime", lambda *_args, **_kwargs: False
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_scheduler_health_snapshot",
+        lambda: {"running": False, "threadAlive": False},
+    )
+    monkeypatch.setattr(
+        backend,
+        "_CRYPTO_API_CONTROLS",
+        {"runtime": lambda: {"schedulerAlive": False, "healthy": False}},
+    )
+    monkeypatch.setattr(
+        backend,
+        "_KALSHI_API_CONTROLS",
+        {
+            "runtime": lambda: {
+                "required": True,
+                "healthy": False,
+                "threadAlive": False,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        backend,
+        "_supabase_dependency_snapshot",
+        lambda: {
+            "required": False,
+            "configured": True,
+            "healthy": True,
+            "status": "ready",
+        },
+    )
+    monkeypatch.setattr(backend, "_backend_current_rss_mb", lambda: 256)
+    monkeypatch.setattr(backend, "_BACKEND_MEMORY_ABORT_LIMIT_MB", 3_700)
+
+    snapshot = backend._background_thread_readiness_snapshot()
+    response = backend.app.test_client().get("/api/ready")
+
+    assert snapshot["required"] is False
+    assert snapshot["status"] == "api_only"
+    assert snapshot["healthy"] is True
+    assert snapshot["equityScheduler"]["required"] is False
+    assert snapshot["cryptoScheduler"]["required"] is False
+    assert snapshot["kalshiScheduler"]["required"] is False
+    assert response.status_code == 200
+    assert response.get_json()["components"]["scheduler"]["required"] is False
 
 
 def test_background_readiness_rejects_crypto_when_commands_are_unavailable(
@@ -2337,7 +2425,17 @@ def test_supabase_readiness_requires_two_final_failures_and_recovers(monkeypatch
         def table(self, _name):
             return query
 
-        def rpc(self, _name, _arguments):
+        def rpc(self, name, _arguments):
+            if name == "probe_pipeline_config_atomic_merge":
+                return type(
+                    "MergeContract",
+                    (),
+                    {
+                        "execute": lambda self: {
+                            "data": "20260726060000_v2"
+                        }
+                    },
+                )()
             return query
 
     monkeypatch.setattr(backend, "supabase_admin", Client())
@@ -2367,6 +2465,7 @@ def test_supabase_readiness_requires_two_final_failures_and_recovers(monkeypatch
     assert recovered["healthy"] is True
     assert recovered["consecutiveFailures"] == 0
     assert recovered["migrations"]["healthy"] is True
+    assert recovered["migrations"]["pipelineConfigMergeRpc"] is True
     assert recovered["leases"]["healthy"] is True
 
 
@@ -2411,4 +2510,59 @@ def test_supabase_readiness_fails_immediately_for_missing_lease_migration(monkey
     assert snapshot["healthy"] is True  # one transient dependency grace remains
     assert snapshot["migrations"]["healthy"] is False
     assert snapshot["migrations"]["contractFailure"] is True
+    assert snapshot["migrations"]["pipelineConfigMergeRpc"] is False
     assert snapshot["leases"]["healthy"] is False
+
+
+def test_supabase_readiness_fails_immediately_for_missing_atomic_merge_rpc(
+    monkeypatch,
+):
+    class Query:
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def limit(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            return {"data": []}
+
+    class MissingAtomicMergeRpc:
+        def execute(self):
+            raise RuntimeError(
+                "PGRST202 could not find the function "
+                "public.probe_pipeline_config_atomic_merge"
+            )
+
+    calls = []
+
+    class Client:
+        def table(self, _name):
+            return Query()
+
+        def rpc(self, name, arguments):
+            calls.append((name, arguments))
+            if name == "probe_pipeline_config_atomic_merge":
+                return MissingAtomicMergeRpc()
+            return Query()
+
+    monkeypatch.setattr(backend, "supabase_admin", Client())
+    monkeypatch.setattr(backend, "SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setattr(backend, "SUPABASE_SERVICE_ROLE_KEY", "service-key")
+    monkeypatch.setattr(
+        backend, "_strict_production_runtime", lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_SUPABASE_READINESS_CACHE",
+        {"checkedAt": 0.0, "probeOk": None},
+    )
+
+    snapshot = backend._supabase_dependency_snapshot(force_probe=True)
+
+    assert snapshot["healthy"] is True  # one transient dependency grace remains
+    assert snapshot["migrations"]["healthy"] is False
+    assert snapshot["migrations"]["contractFailure"] is True
+    assert snapshot["migrations"]["pipelineConfigMergeRpc"] is False
+    assert snapshot["leases"]["healthy"] is True
+    assert calls[-1] == ("probe_pipeline_config_atomic_merge", {})

@@ -1,12 +1,16 @@
 import kalshi_api
 
 import copy
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from flask import Flask
 
 from kalshi_api import (
+    KalshiApiError,
     _PaperRobotController,
     _account_equity_cents,
     _brti_proxy,
@@ -128,19 +132,34 @@ def test_hourly_snapshot_fetches_strike_books_in_one_batch():
                 "close_time": (now + timedelta(minutes=12)).isoformat(),
                 "floor_strike": 65_000,
             }]})
-        if url.endswith("/markets") and params.get("series_ticker") == "KXBTCD":
-            return _Response({"markets": [
+        if url.endswith("/events") and params.get("series_ticker") == "KXBTCD":
+            return _Response({"events": [
                 {
-                    "ticker": "KXBTCD-E-T64000", "event_ticker": "KXBTCD-E",
-                    "status": "active", "open_time": (now - timedelta(minutes=30)).isoformat(),
-                    "close_time": (now + timedelta(minutes=30)).isoformat(),
-                    "floor_strike": 64_000, "yes_bid_dollars": "0.70", "yes_ask_dollars": "0.72",
+                    "event_ticker": "KXBTCD-EXPIRED",
+                    "markets": [{
+                        "ticker": "KXBTCD-EXPIRED-T63000",
+                        "event_ticker": "KXBTCD-EXPIRED",
+                        "status": "open",
+                        "close_time": (now - timedelta(minutes=1)).isoformat(),
+                        "floor_strike": 63_000,
+                    }],
                 },
                 {
-                    "ticker": "KXBTCD-E-T65000", "event_ticker": "KXBTCD-E",
-                    "status": "active", "open_time": (now - timedelta(minutes=30)).isoformat(),
-                    "close_time": (now + timedelta(minutes=30)).isoformat(),
-                    "floor_strike": 65_000, "yes_bid_dollars": "0.49", "yes_ask_dollars": "0.51",
+                    "event_ticker": "KXBTCD-E",
+                    "markets": [
+                        {
+                            "ticker": "KXBTCD-E-T64000", "event_ticker": "KXBTCD-E",
+                            "status": "active", "open_time": (now - timedelta(minutes=30)).isoformat(),
+                            "close_time": (now + timedelta(minutes=30)).isoformat(),
+                            "floor_strike": 64_000, "yes_bid_dollars": "0.70", "yes_ask_dollars": "0.72",
+                        },
+                        {
+                            "ticker": "KXBTCD-E-T65000", "event_ticker": "KXBTCD-E",
+                            "status": "active", "open_time": (now - timedelta(minutes=30)).isoformat(),
+                            "close_time": (now + timedelta(minutes=30)).isoformat(),
+                            "floor_strike": 65_000, "yes_bid_dollars": "0.49", "yes_ask_dollars": "0.51",
+                        },
+                    ],
                 },
             ]})
         if url.endswith("/markets/orderbooks"):
@@ -171,10 +190,97 @@ def test_hourly_snapshot_fetches_strike_books_in_one_batch():
     )
 
     batch_calls = [call for call in calls if call[0].endswith("/markets/orderbooks")]
+    hourly_event_calls = [
+        call for call in calls
+        if call[0].endswith("/events")
+        and call[1].get("series_ticker") == "KXBTCD"
+    ]
     assert len(batch_calls) == 1
+    assert hourly_event_calls[0][1]["limit"] == 200
+    assert hourly_event_calls[0][1]["with_nested_markets"] is True
+    assert hourly_event_calls[0][1]["min_close_ts"] >= int(now.timestamp()) + 44
     assert set(batch_calls[0][1]["tickers"]) == {"KXBTCD-E-T64000", "KXBTCD-E-T65000"}
     assert len(snapshot["markets"]) == 2
     assert len(snapshot["ladderFit"]) == 2
+
+
+def test_hourly_snapshot_reports_expected_standby_when_no_event_is_in_window():
+    now = datetime.now(timezone.utc)
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        params = dict(params or {})
+        if url.endswith("/markets"):
+            return _Response({"markets": [{
+                "ticker": "KXBTC15M-TEST",
+                "status": "active",
+                "open_time": (now - timedelta(minutes=3)).isoformat(),
+                "close_time": (now + timedelta(minutes=12)).isoformat(),
+                "floor_strike": 65_000,
+            }]})
+        if url.endswith("/events"):
+            return _Response({"events": [{
+                "event_ticker": "KXBTCD-FUTURE",
+                "markets": [{
+                    "ticker": "KXBTCD-FUTURE-T65000",
+                    "event_ticker": "KXBTCD-FUTURE",
+                    "status": "open",
+                    "close_time": (now + timedelta(hours=3)).isoformat(),
+                    "floor_strike": 65_000,
+                }],
+            }]})
+        if url.endswith("/orderbook"):
+            return _Response({"orderbook_fp": {
+                "yes_dollars": [["0.49", "100"]],
+                "no_dollars": [["0.49", "100"]],
+            }})
+        if url.endswith("/candles"):
+            return _Response([
+                [index, 65_000, 65_001, 65_000, 65_000, 10]
+                for index in range(90)
+            ])
+        raise AssertionError((url, params))
+
+    with pytest.raises(KalshiApiError) as error:
+        _PublicDataClient(http_get=fake_get).hourly_snapshot(
+            now=now,
+            reference_override={
+                "price": 65_000,
+                "timestamp": now.isoformat(),
+                "model": "kalshi_cf_benchmarks_brti",
+                "isOfficialBrti": True,
+                "venueCount": 1,
+            },
+        )
+
+    assert error.value.code == kalshi_api.KALSHI_NO_ACTIVE_HOURLY_MARKET
+
+
+def test_hourly_market_gap_is_loop_standby_not_failure_or_alert():
+    controller = object.__new__(_PaperRobotController)
+    controller._runtime_lock = threading.RLock()
+    controller._loop_last_error = "KalshiApiError"
+    controller._loop_error_counts = {"user-1:btchourly": 2}
+    controller._loop_alerted = {"user-1:btchourly"}
+    controller._market_standby = {}
+    logs = []
+    controller.safe_print = logs.append
+
+    controller._record_loop_failure(
+        "user-1",
+        "btchourly",
+        "paper",
+        KalshiApiError(
+            "No hourly event in window",
+            status=409,
+            code=kalshi_api.KALSHI_NO_ACTIVE_HOURLY_MARKET,
+        ),
+    )
+
+    assert controller._loop_error_counts == {}
+    assert controller._loop_alerted == set()
+    assert controller._loop_last_error == ""
+    assert controller._market_standby["user-1:btchourly"]["family"] == "btchourly"
+    assert "standby" in logs[0]
 
 
 def test_venue_quote_rejects_empty_or_crossed_without_last():
@@ -190,6 +296,249 @@ class _Response:
 
     def json(self):
         return self.payload
+
+
+class _StatusResponse(_Response):
+    def __init__(self, payload, status_code, *, headers=None):
+        super().__init__(payload)
+        self.status_code = status_code
+        self.headers = dict(headers or {})
+
+    def raise_for_status(self):
+        if self.status_code < 400:
+            return None
+        error = RuntimeError(f"HTTP {self.status_code}")
+        error.response = self
+        raise error
+
+
+def test_public_kalshi_429_fails_over_and_shares_host_backoff():
+    calls = []
+
+    def fake_get(url, **_kwargs):
+        calls.append(url)
+        if url.startswith(kalshi_api.KALSHI_PUBLIC_BASE):
+            return _StatusResponse({}, 429)
+        return _StatusResponse({"markets": [{"ticker": "fallback"}]}, 200)
+
+    client = _PublicDataClient(http_get=fake_get, safe_print=lambda *_args: None)
+    first = client._cached_json(
+        "first-market-list",
+        f"{kalshi_api.KALSHI_PUBLIC_BASE}/markets",
+        ttl=0.0,
+    )
+    second = client._cached_json(
+        "second-market-list",
+        f"{kalshi_api.KALSHI_PUBLIC_BASE}/markets",
+        ttl=0.0,
+    )
+
+    assert first == second == {"markets": [{"ticker": "fallback"}]}
+    assert calls == [
+        f"{kalshi_api.KALSHI_PUBLIC_BASE}/markets",
+        f"{kalshi_api.KALSHI_PUBLIC_FALLBACK_BASE}/markets",
+        f"{kalshi_api.KALSHI_PUBLIC_FALLBACK_BASE}/markets",
+    ]
+    runtime = client.runtime_snapshot()
+    assert runtime["healthy"] is True
+    assert runtime["status"] == "fallback"
+    assert {
+        row["host"] for row in runtime["activeBackoffs"]
+    } == {"external-api.kalshi.com"}
+
+
+def test_public_kalshi_retry_after_defers_all_callers_without_retry_storm():
+    calls = []
+
+    def fake_get(url, **_kwargs):
+        calls.append(url)
+        return _StatusResponse({}, 429, headers={"Retry-After": "30"})
+
+    client = _PublicDataClient(http_get=fake_get, safe_print=lambda *_args: None)
+    with pytest.raises(KalshiApiError) as first:
+        client._cached_json(
+            "rate-limited-one",
+            f"{kalshi_api.KALSHI_PUBLIC_BASE}/markets",
+            ttl=0.0,
+        )
+    with pytest.raises(KalshiApiError) as second:
+        client._cached_json(
+            "rate-limited-two",
+            f"{kalshi_api.KALSHI_PUBLIC_BASE}/markets",
+            ttl=0.0,
+        )
+
+    assert first.value.code == second.value.code == "kalshi_public_rate_limited"
+    assert len(calls) == 2
+    runtime = client.runtime_snapshot()
+    assert runtime["healthy"] is False
+    assert runtime["status"] == "degraded"
+    assert len(runtime["activeBackoffs"]) == 2
+    assert min(row["retryInSeconds"] for row in runtime["activeBackoffs"]) > 25
+
+
+@pytest.mark.parametrize("failure_kind", ["http_404", "invalid_json"])
+def test_public_kalshi_any_complete_failure_makes_runtime_unhealthy(failure_kind):
+    calls = []
+
+    def fake_get(url, **_kwargs):
+        calls.append(url)
+        if failure_kind == "http_404":
+            return _StatusResponse({}, 404)
+        response = _StatusResponse({}, 200)
+        response.json = lambda: (_ for _ in ()).throw(ValueError("invalid JSON"))
+        return response
+
+    client = _PublicDataClient(http_get=fake_get, safe_print=lambda *_args: None)
+
+    with pytest.raises(KalshiApiError) as error:
+        client._cached_json(
+            "complete-public-failure",
+            f"{kalshi_api.KALSHI_PUBLIC_BASE}/markets",
+            ttl=0.0,
+        )
+
+    assert error.value.code == "kalshi_public_data_unavailable"
+    assert len(calls) == 2
+    runtime = client.runtime_snapshot()
+    assert runtime["healthy"] is False
+    assert runtime["status"] == "degraded"
+    assert runtime["lastError"] == "kalshi_public_data_unavailable"
+    assert len(runtime["activeBackoffs"]) == (
+        0 if failure_kind == "http_404" else 2
+    )
+
+
+def test_public_kalshi_cross_key_cold_start_shares_host_gate():
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+    calls_lock = threading.Lock()
+
+    def fake_get(url, **_kwargs):
+        with calls_lock:
+            calls.append(url)
+            first_call = len(calls) == 1
+        if first_call:
+            entered.set()
+            assert release.wait(2.0)
+        return _StatusResponse({}, 429, headers={"Retry-After": "30"})
+
+    client = _PublicDataClient(http_get=fake_get, safe_print=lambda *_args: None)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(
+                client._cached_json,
+                f"cross-key-{index}",
+                f"{kalshi_api.KALSHI_PUBLIC_BASE}/markets",
+                ttl=0.0,
+            )
+            for index in range(2)
+        ]
+        assert entered.wait(1.0)
+        release.set()
+        for future in futures:
+            with pytest.raises(KalshiApiError):
+                future.result(timeout=3.0)
+
+    assert len(calls) == 2
+    assert {
+        client._host_name(url) for url in calls
+    } == {
+        "external-api.kalshi.com",
+        "api.elections.kalshi.com",
+    }
+
+
+def test_public_cache_is_bounded_and_old_stale_diagnostics_expire():
+    client = _PublicDataClient(
+        http_get=lambda _url, **_kwargs: _StatusResponse({"ok": True}, 200),
+        safe_print=lambda *_args: None,
+    )
+    client._max_cache_entries = 8
+
+    for index in range(12):
+        client._cached_json(
+            f"bounded-{index}",
+            f"https://example.com/{index}",
+            ttl=0.0,
+        )
+
+    assert len(client._cache) == 8
+    assert "bounded-0" not in client._cache
+    with client._cache_lock:
+        key = "bounded-11"
+        client._cache_meta[key].update({
+            "servedStale": True,
+            "servedStaleAtMonotonic": time.monotonic() - 61.0,
+        })
+    assert client.runtime_snapshot()["staleCacheEntries"] == 0
+
+
+def test_public_cache_coalesces_concurrent_cold_refreshes():
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def fake_get(_url, **_kwargs):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        entered.set()
+        assert release.wait(2.0)
+        return _StatusResponse({"markets": [{"ticker": "single-flight"}]}, 200)
+
+    client = _PublicDataClient(http_get=fake_get, safe_print=lambda *_args: None)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(
+                client._cached_json,
+                "shared-cold-key",
+                f"{kalshi_api.KALSHI_PUBLIC_BASE}/markets",
+                ttl=30.0,
+            )
+            for _index in range(2)
+        ]
+        assert entered.wait(1.0)
+        release.set()
+        results = [future.result(timeout=2.0) for future in futures]
+
+    assert calls == 1
+    assert results[0] == results[1]
+
+
+def test_public_cache_rejects_market_data_beyond_stale_safety_bound():
+    fail = False
+
+    def fake_get(_url, **_kwargs):
+        if fail:
+            return _StatusResponse({}, 429)
+        return _StatusResponse({"markets": [{"ticker": "fresh"}]}, 200)
+
+    client = _PublicDataClient(http_get=fake_get, safe_print=lambda *_args: None)
+    key = "bounded-stale-market"
+    client._cached_json(
+        key,
+        f"{kalshi_api.KALSHI_PUBLIC_BASE}/markets",
+        ttl=30.0,
+        max_stale=8.0,
+    )
+    with client._cache_lock:
+        fetched, payload = client._cache[key]
+        client._cache[key] = (time.monotonic() - 9.0, payload)
+    fail = True
+
+    with pytest.raises(KalshiApiError) as error:
+        client._cached_json(
+            key,
+            f"{kalshi_api.KALSHI_PUBLIC_BASE}/markets",
+            ttl=1.0,
+            max_stale=8.0,
+        )
+
+    assert error.value.code == "kalshi_public_rate_limited"
+    assert client.runtime_snapshot()["healthy"] is False
 
 
 def _fake_get(url, params=None, headers=None, timeout=None):
@@ -304,6 +653,86 @@ def test_real_tick_with_zero_cash_fails_closed_without_routing(monkeypatch):
     assert result["decision"]["executionIntent"] == "WAIT_REAL_NO_CASH"
     assert "real_cash_unavailable" in result["decision"]["blockingReasons"]
     assert result["decision"]["sizing"]["contracts"] == 0
+
+
+@pytest.mark.parametrize(
+    "warning",
+    [
+        "kalshi_market_stale",
+        "kalshi_orderbook_stale",
+        "hourly_markets_stale",
+        "hourly_orderbooks_unavailable",
+        "brti_proxy_stale",
+        "btc_history_stale",
+    ],
+)
+def test_tick_never_routes_when_execution_input_is_not_fresh(monkeypatch, warning):
+    class State:
+        def get(self, _user_id, *, environment=None):
+            return {
+                "enabled": True,
+                "config": {"executionMode": environment or "paper"},
+                "strategy": {},
+                "tradedTickers": [],
+            }
+
+        def record(self, _user_id, decision, order):
+            return {"decision": decision, "order": order}
+
+    class Client:
+        def snapshot(self, *, base_url):
+            return {
+                "market": {"ticker": "KXBTC15M-TEST-00"},
+                "reference": {
+                    "price": 65_000,
+                    "candles": [],
+                    "timestamp": "2026-07-26T12:00:00Z",
+                },
+                "orderbook": {
+                    "yes": [["0.49", "100"]],
+                    "no": [["0.49", "100"]],
+                },
+                "orderbookAsOf": "2026-07-26T12:00:00Z",
+                "warnings": [warning],
+            }
+
+    decision = {
+        "action": "BUY_YES",
+        "side": "YES",
+        "model": {"fairYesProbability": 0.75},
+        "market": {"yesAskDepth": 100},
+        "edge": {"price": 0.50, "conservativeEdge": 0.05},
+        "sizing": {"contracts": 5, "notional": 2.5},
+        "gates": [],
+        "blockingReasons": [],
+        "config": {"executionMode": "paper"},
+    }
+    monkeypatch.setattr(
+        kalshi_api,
+        "evaluate_btc15_contract",
+        lambda *args, **kwargs: decision,
+    )
+    controller = _PaperRobotController(Client(), State(), paper_accounts=None)
+    monkeypatch.setattr(
+        controller,
+        "portfolio",
+        lambda _user_id, *, mode, mutate=False: {
+            "balance": {"balance": 100_000, "portfolio_value": 0},
+            "positions": [],
+            "orders": [],
+            "fills": [],
+            "settlements": [],
+        },
+    )
+
+    result = controller.tick("user-1", submit_order=True, mode="paper")
+
+    assert result["orderSubmitted"] is False
+    assert result["decision"]["action"] == "WAIT"
+    assert result["decision"]["executionIntent"] == "WAIT_DATA_QUALITY"
+    assert result["decision"]["dataQuality"]["executionBlocked"] is True
+    assert result["decision"]["dataQuality"]["executionBlockingWarnings"] == [warning]
+    assert "market_data_not_fresh" in result["decision"]["blockingReasons"]
 
 
 def test_same_side_signal_becomes_add_on_without_a_trade_count_gate(monkeypatch):
@@ -540,6 +969,42 @@ def test_registered_scheduler_controls_are_idempotent_and_restartable(
         assert controls["paper_robot"]._thread is not first_thread
     finally:
         controls["stop"]()
+
+
+@pytest.mark.parametrize(
+    ("lease_owned", "enabled_user_count"),
+    [(False, None), (True, 0)],
+)
+def test_public_data_failure_is_diagnostic_only_for_standby_scheduler(
+    lease_owned,
+    enabled_user_count,
+):
+    class Client:
+        @staticmethod
+        def runtime_snapshot():
+            return {
+                "healthy": False,
+                "status": "degraded",
+                "lastError": "kalshi_public_rate_limited",
+            }
+
+    class Thread:
+        @staticmethod
+        def is_alive():
+            return True
+
+    controller = _PaperRobotController(Client(), state=None, paper_accounts=None)
+    controller._background_requested = True
+    controller._thread = Thread()
+    controller._scheduler_lease_owned = lease_owned
+    controller._enabled_user_count = enabled_user_count
+
+    runtime = controller.runtime_snapshot()
+
+    assert runtime["required"] is True
+    assert runtime["healthy"] is True
+    assert runtime["publicDataRequired"] is False
+    assert runtime["publicData"]["healthy"] is False
 
 
 def test_start_background_uses_the_same_registered_scheduler_lifecycle(

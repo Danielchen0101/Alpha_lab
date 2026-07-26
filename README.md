@@ -202,9 +202,10 @@ Create a Supabase project, enable the authentication providers you intend to use
 1. <code>backend/supabase_schema.sql</code> for encrypted provider configuration, workspace preferences, pipeline schedules, and run history;
 2. <code>backend/supabase_operations_store.sql</code> for Safety Center state, readiness, append-only operational records, order and notification history, and cross-device artifacts;
 3. <code>backend/supabase_security_hardening.sql</code> to make browser roles read-only and keep all validated mutations behind the backend;
-4. <code>backend/migrations/20260726010000_worker_lease_runtime_hardening.sql</code> for fenced, exact-owner worker leases used by unattended Kalshi and crypto order routing.
+4. <code>backend/migrations/20260726010000_worker_lease_runtime_hardening.sql</code> for fenced, exact-owner worker leases used by unattended Kalshi and crypto order routing;
+5. <code>backend/migrations/20260726060000_pipeline_config_atomic_merge.sql</code> for atomic pipeline-config patches and the side-effect-free PostgREST readiness probe.
 
-All four SQL files are required in production. Real new-entry paths fail closed when durable operations storage or the fenced lease contract cannot be read, and the Safety Center and artifact APIs return an unavailable response instead of silently switching to process-local files. Local operations fallback is limited to development and test environments.
+All five SQL files are required in production. Readiness fails closed when the atomic pipeline-config or fenced lease contract is missing. Real new-entry paths also fail closed when durable operations storage cannot be read, and the Safety Center and artifact APIs return an unavailable response instead of silently switching to process-local files. Local operations fallback is limited to development and test environments.
 
 Collect:
 

@@ -166,6 +166,7 @@ _SUPABASE_READINESS_CACHE = {
     'probeOk': None,
     'migrationOk': None,
     'leaseRpcOk': None,
+    'pipelineConfigMergeRpcOk': None,
     'migrationContractFailure': False,
     'consecutiveFailures': 0,
     'lastSuccessAt': 0.0,
@@ -332,6 +333,7 @@ def _supabase_dependency_snapshot(force_probe=False, now_ts=None):
     probe_failure_type = ''
     migration_ok = None
     lease_rpc_ok = None
+    pipeline_config_merge_rpc_ok = None
     migration_contract_failure = False
     if configured:
         with _SUPABASE_READINESS_LOCK:
@@ -351,10 +353,14 @@ def _supabase_dependency_snapshot(force_probe=False, now_ts=None):
             )[:80]
             migration_ok = _SUPABASE_READINESS_CACHE.get('migrationOk')
             lease_rpc_ok = _SUPABASE_READINESS_CACHE.get('leaseRpcOk')
+            pipeline_config_merge_rpc_ok = _SUPABASE_READINESS_CACHE.get(
+                'pipelineConfigMergeRpcOk'
+            )
             migration_contract_failure = bool(
                 _SUPABASE_READINESS_CACHE.get('migrationContractFailure')
             )
             if force_probe or now_ts - checked_at >= 15:
+                probe_stage = 'base'
                 try:
                     _supabase_execute(
                         lambda: [
@@ -405,6 +411,27 @@ def _supabase_dependency_snapshot(force_probe=False, now_ts=None):
                     )
                     migration_ok = True
                     lease_rpc_ok = True
+                    probe_stage = 'pipeline_config_merge'
+                    pipeline_config_merge_rpc_ok = False
+                    merge_contract_response = _supabase_execute(
+                        lambda: supabase_admin.rpc(
+                            'probe_pipeline_config_atomic_merge',
+                            {},
+                        ).execute(),
+                        'pipeline config merge RPC probe',
+                        attempts=1,
+                        lock_timeout=1.0,
+                    )
+                    merge_contract_data = (
+                        merge_contract_response.get('data')
+                        if isinstance(merge_contract_response, dict)
+                        else getattr(merge_contract_response, 'data', None)
+                    )
+                    if merge_contract_data != '20260726060000_v2':
+                        raise RuntimeError(
+                            'pipeline config merge RPC contract mismatch'
+                        )
+                    pipeline_config_merge_rpc_ok = True
                     migration_contract_failure = False
                     probe_ok = True
                     probe_failures = 0
@@ -412,8 +439,11 @@ def _supabase_dependency_snapshot(force_probe=False, now_ts=None):
                     probe_failure_type = ''
                 except Exception as probe_error:
                     probe_ok = False
-                    migration_ok = False
-                    lease_rpc_ok = False
+                    if probe_stage == 'pipeline_config_merge':
+                        pipeline_config_merge_rpc_ok = False
+                    else:
+                        migration_ok = False
+                        lease_rpc_ok = False
                     probe_error_text = (
                         '%s %s' % (type(probe_error).__name__, probe_error)
                     ).lower()
@@ -426,6 +456,7 @@ def _supabase_dependency_snapshot(force_probe=False, now_ts=None):
                             'could not find the function',
                             'does not exist',
                             'schema cache',
+                            'pipeline config merge rpc contract mismatch',
                         )
                     )
                     probe_failures += 1
@@ -437,6 +468,7 @@ def _supabase_dependency_snapshot(force_probe=False, now_ts=None):
                     'probeOk': probe_ok,
                     'migrationOk': migration_ok,
                     'leaseRpcOk': lease_rpc_ok,
+                    'pipelineConfigMergeRpcOk': pipeline_config_merge_rpc_ok,
                     'migrationContractFailure': migration_contract_failure,
                     'consecutiveFailures': probe_failures,
                     'lastSuccessAt': probe_last_success,
@@ -456,7 +488,10 @@ def _supabase_dependency_snapshot(force_probe=False, now_ts=None):
     migration_healthy = bool(
         configured
         and (
-            migration_ok is True
+            (
+                migration_ok is True
+                and pipeline_config_merge_rpc_ok is True
+            )
             or (
                 not migration_contract_failure
                 and probe_failures < 2
@@ -517,8 +552,13 @@ def _supabase_dependency_snapshot(force_probe=False, now_ts=None):
             'workerLeaseTable': bool(migration_ok),
             'fencingTokenColumn': bool(migration_ok),
             'renewRpc': bool(lease_rpc_ok),
+            'pipelineConfigMergeRpc': bool(pipeline_config_merge_rpc_ok),
             'contractFailure': migration_contract_failure,
             'expectedMigration': '20260726010000_worker_lease_runtime_hardening',
+            'expectedMigrations': [
+                '20260726010000_worker_lease_runtime_hardening',
+                '20260726060000_pipeline_config_atomic_merge',
+            ],
         },
         'leases': {
             'required': required,
@@ -6952,6 +6992,11 @@ def get_mock_response(message):
 
 
 def _background_thread_readiness_snapshot():
+    api_only_disabled = bool(
+        str(os.getenv('ALPHALAB_DISABLE_BACKGROUND_SERVICES') or '')
+        .strip().lower() in {'1', 'true', 'yes', 'on'}
+        and not _strict_production_runtime()
+    )
     scheduler_reader = globals().get('_pa_scheduler_health_snapshot')
     scheduler = (
         scheduler_reader()
@@ -6959,9 +7004,9 @@ def _background_thread_readiness_snapshot():
         else {'running': False, 'threadAlive': False, 'lastError': 'scheduler_not_initialized'}
     )
 
-    crypto_required = str(
+    crypto_required = bool(not api_only_disabled and str(
         os.getenv('ALPHALAB_DISABLE_CRYPTO_SCHEDULER', '')
-    ).strip().lower() not in {'1', 'true', 'yes', 'on'}
+    ).strip().lower() not in {'1', 'true', 'yes', 'on'})
     crypto = {}
     crypto_controls = globals().get('_CRYPTO_API_CONTROLS')
     crypto_reader = (
@@ -7003,33 +7048,37 @@ def _background_thread_readiness_snapshot():
             kalshi = dict(kalshi_reader() or {})
         except Exception as exc:
             kalshi = {'required': True, 'healthy': False, 'lastError': type(exc).__name__}
-    kalshi_required = bool(kalshi.get('required'))
+    kalshi_required = bool(not api_only_disabled and kalshi.get('required'))
     kalshi_thread_healthy = bool(
         not kalshi_required or kalshi.get('healthy')
     )
 
-    equity_thread_healthy = bool(scheduler.get('threadAlive'))
+    equity_required = not api_only_disabled
+    equity_thread_healthy = bool(
+        not equity_required or scheduler.get('threadAlive')
+    )
     return {
-        'required': True,
+        'required': not api_only_disabled,
+        'status': 'api_only' if api_only_disabled else 'required',
         'healthy': bool(
             equity_thread_healthy
             and crypto_thread_healthy
             and kalshi_thread_healthy
         ),
         'equityScheduler': {
-            'required': True,
-            'healthy': equity_thread_healthy,
             **scheduler,
+            'required': equity_required,
+            'healthy': equity_thread_healthy,
         },
         'cryptoScheduler': {
+            **crypto,
             'required': crypto_required,
             'healthy': crypto_thread_healthy,
-            **crypto,
         },
         'kalshiScheduler': {
+            **kalshi,
             'required': kalshi_required,
             'healthy': kalshi_thread_healthy,
-            **kalshi,
         },
     }
 
@@ -7037,6 +7086,7 @@ def _background_thread_readiness_snapshot():
 @app.route("/api/health", methods=["GET"])
 def health_check():
     payload = {"status": "ok"}
+    threads = _background_thread_readiness_snapshot()
     rss_reader = globals().get('_backend_current_rss_mb')
     limiter = globals().get('_INST_SCANNER_CAPACITY')
     if callable(rss_reader):
@@ -7060,9 +7110,8 @@ def health_check():
     if callable(scheduler_reader):
         scheduler = scheduler_reader()
         payload['scheduler'] = scheduler
-        if not scheduler.get('running'):
+        if threads.get('required') and not scheduler.get('running'):
             payload['status'] = 'degraded'
-    threads = _background_thread_readiness_snapshot()
     persistence = _supabase_dependency_snapshot()
     payload['threads'] = threads
     payload['leases'] = persistence.get('leases') or {}
@@ -7127,7 +7176,7 @@ def readiness_check():
         or rss_mb < abort_limit_mb
     )
     ready = bool(
-        scheduler.get('running')
+        (not threads.get('required') or scheduler.get('running'))
         and threads.get('healthy')
         and memory_ready
         and (not persistence.get('required') or persistence.get('healthy'))
@@ -7139,9 +7188,11 @@ def readiness_check():
         'status': 'ready' if ready else 'not_ready',
         'components': {
             'scheduler': {
-                'required': True,
-                'healthy': bool(scheduler.get('running')),
                 **scheduler,
+                'required': bool(threads.get('required')),
+                'healthy': bool(
+                    not threads.get('required') or scheduler.get('running')
+                ),
             },
             'persistence': persistence,
             'threads': threads,
@@ -43524,10 +43575,11 @@ def _pa_save_config(uid, config):
 def _pa_patch_config(uid, patch, remove_keys=None):
     """Atomically merge runtime fields into the durable per-user JSON config.
 
-    Production prefers the database function installed by ``supabase_schema``;
+    Production requires the database function installed by ``supabase_schema``;
     it takes a row lock and performs the JSONB merge in one transaction.  The
-    read/merge/write fallback remains serialized for development and for a
-    rolling deploy where application code may briefly precede the SQL function.
+    read/merge/write fallback is development-only and is used solely when the
+    RPC is explicitly absent. Ambiguous network/database failures must not
+    replay through a non-atomic path.
     """
     if not uid or not isinstance(patch, dict):
         return False, 'invalid_config_patch'
@@ -43555,14 +43607,28 @@ def _pa_patch_config(uid, patch, remove_keys=None):
             )
             if getattr(response, 'data', None) is not None:
                 return True, ''
+            raise RuntimeError('atomic merge returned no data')
         except Exception as exc:
-            # Rolling deploy compatibility only. The serialized fallback still
-            # preserves unrelated fields within this process; production SQL
-            # should be applied so multiple workers also merge atomically.
+            error_text = ('%s %s' % (type(exc).__name__, exc)).lower()
+            missing_rpc = any(marker in error_text for marker in (
+                'pgrst202',
+                'could not find the function',
+                'function public.merge_user_pipeline_auto_config',
+                'schema cache',
+            ))
+            if _strict_production_runtime() or not missing_rpc:
+                _pa_log_error(
+                    '[PipelineAutoConfig] atomic merge failed closed (%s)'
+                    % type(exc).__name__
+                )
+                return False, 'atomic_merge_unavailable'
             _pa_log_error(
-                '[PipelineAutoConfig] atomic merge unavailable (%s); using serialized fallback'
+                '[PipelineAutoConfig] atomic merge RPC absent in development '
+                '(%s); using serialized fallback'
                 % type(exc).__name__
             )
+    elif _strict_production_runtime():
+        return False, 'service_role_missing'
 
     with _PA_CONFIG_MUTATION_LOCK:
         current = _pa_get_config(uid) or {}
@@ -52815,6 +52881,14 @@ def start_background_services():
     negligible and lets Render health traffic recover a dead scheduler.
     """
     global _BACKGROUND_SERVICES_PID, _BACKGROUND_SERVICES_LAST_CHECK
+
+    if str(
+        os.getenv('ALPHALAB_DISABLE_BACKGROUND_SERVICES') or ''
+    ).strip().lower() in {'1', 'true', 'yes', 'on'}:
+        # Local API-only development may intentionally point at a shared
+        # Supabase project. Never start schedulers or claim production leases
+        # when the operator has explicitly selected that mode.
+        return
 
     if (
         os.getenv('PYTEST_CURRENT_TEST')

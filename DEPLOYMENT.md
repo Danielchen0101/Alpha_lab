@@ -37,10 +37,11 @@ Create a project and apply the repository SQL files in this order:
 2. [`backend/supabase_operations_store.sql`](backend/supabase_operations_store.sql) — durable Safety Center state, readiness, audit events, order lifecycle, notification delivery, and versioned cross-device artifacts.
 3. [`backend/supabase_security_hardening.sql`](backend/supabase_security_hardening.sql) — browser-role write lockdown, owner-only reads, and database security hardening.
 4. [`backend/migrations/20260726010000_worker_lease_runtime_hardening.sql`](backend/migrations/20260726010000_worker_lease_runtime_hardening.sql) — monotonic fencing tokens and exact-owner renewal/release for unattended Kalshi and crypto order routing.
+5. [`backend/migrations/20260726060000_pipeline_config_atomic_merge.sql`](backend/migrations/20260726060000_pipeline_config_atomic_merge.sql) — additive atomic pipeline-config merge and its side-effect-free readiness probe for projects created before that RPC existed.
 
-All four files are mandatory, not optional feature migrations. Production real new-entry checks fail closed if the operations store or fenced worker-lease contract cannot be read. Safety Center and artifact writes return HTTP 503 rather than silently falling back to local files.
+All five files are mandatory, not optional feature migrations. Readiness fails closed when the atomic pipeline-config RPC or fenced worker-lease contract is missing. Production real new-entry checks also fail closed if the operations store cannot be read. Safety Center and artifact writes return HTTP 503 rather than silently falling back to local files.
 
-After applying all four files, run this verification query in the Supabase SQL editor. Every result must contain a table or function name rather than `null`, and `lease_fencing_token` must be `true`:
+After applying all five files, run this verification query in the Supabase SQL editor. Every result must contain a table or function name rather than `null`, and `lease_fencing_token` must be `true`:
 
 ```sql
 select
@@ -50,6 +51,12 @@ select
   to_regclass('public.user_order_lifecycle_events') as order_events,
   to_regclass('public.user_readiness_status') as readiness_status,
   to_regclass('public.user_operation_artifacts') as operation_artifacts,
+  to_regprocedure(
+    'public.merge_user_pipeline_auto_config(uuid,jsonb,text[])'
+  ) as pipeline_config_atomic_merge,
+  to_regprocedure(
+    'public.probe_pipeline_config_atomic_merge()'
+  ) as pipeline_config_atomic_merge_probe,
   exists (
     select 1
     from information_schema.columns
@@ -103,6 +110,11 @@ Required backend variables:
 | `APP_SECRET_KEY` | Flask session and application signing secret |
 | `FRONTEND_ORIGIN` | Exact deployed frontend origin allowed by CORS |
 | `FLASK_ENV` | Set to `production`; prevents development-only behavior |
+
+For a local API-only backend that intentionally uses a shared or production
+Supabase project, set `ALPHALAB_DISABLE_BACKGROUND_SERVICES=true`. This prevents
+equity, crypto, and Kalshi schedulers from starting or claiming worker leases.
+Never set this variable on the production Render service.
 
 For the Render Pro 4 GB / 2 CPU plan, use these runtime guards:
 

@@ -72,7 +72,7 @@ CREATE OR REPLACE FUNCTION public.merge_user_pipeline_auto_config(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY DEFINER
+SECURITY INVOKER
 SET search_path = public
 AS $$
 DECLARE
@@ -80,10 +80,8 @@ DECLARE
   v_merged JSONB;
   v_next_run_at TIMESTAMPTZ;
   v_preference_key TEXT;
+  v_preference_value JSONB;
 BEGIN
-  IF auth.role() IS DISTINCT FROM 'service_role' THEN
-    RAISE EXCEPTION 'service_role required' USING ERRCODE = '42501';
-  END IF;
   IF p_user_id IS NULL OR jsonb_typeof(COALESCE(p_patch, '{}'::JSONB)) <> 'object' THEN
     RAISE EXCEPTION 'invalid pipeline config patch' USING ERRCODE = '22023';
   END IF;
@@ -112,7 +110,9 @@ BEGIN
       TRUE
     );
   END IF;
-  IF COALESCE(p_patch, '{}'::JSONB) ? 'user_preferences' THEN
+  IF COALESCE(p_patch, '{}'::JSONB) ? 'user_preferences'
+    AND jsonb_typeof(p_patch->'user_preferences') = 'object'
+  THEN
     v_merged := jsonb_set(
       v_merged,
       '{user_preferences}',
@@ -120,16 +120,24 @@ BEGIN
         || COALESCE(p_patch->'user_preferences', '{}'::JSONB),
       TRUE
     );
-    FOREACH v_preference_key IN ARRAY ARRAY[
-      'appearance', 'notifications', 'risk', 'security', 'trading'
-    ]
+    -- Deep-merge one level for every object-valued workspace section. This
+    -- covers general, trading, risk, research, charts, notifications,
+    -- security and legacy appearance while keeping future sections safe.
+    FOR v_preference_key, v_preference_value IN
+      SELECT key, value
+      FROM jsonb_each(p_patch->'user_preferences')
     LOOP
-      IF COALESCE(p_patch->'user_preferences', '{}'::JSONB) ? v_preference_key THEN
+      IF jsonb_typeof(v_preference_value) = 'object' THEN
         v_merged := jsonb_set(
           v_merged,
           ARRAY['user_preferences', v_preference_key],
-          COALESCE(v_current->'user_preferences'->v_preference_key, '{}'::JSONB)
-            || COALESCE(p_patch->'user_preferences'->v_preference_key, '{}'::JSONB),
+          CASE
+            WHEN jsonb_typeof(
+              v_current->'user_preferences'->v_preference_key
+            ) = 'object'
+            THEN v_current->'user_preferences'->v_preference_key
+            ELSE '{}'::JSONB
+          END || v_preference_value,
           TRUE
         );
       END IF;
@@ -163,6 +171,35 @@ $$;
 REVOKE ALL ON FUNCTION public.merge_user_pipeline_auto_config(UUID, JSONB, TEXT[])
   FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.merge_user_pipeline_auto_config(UUID, JSONB, TEXT[])
+  TO service_role;
+
+-- Side-effect-free PostgREST contract probe used by backend readiness. Keeping
+-- it as a separate RPC avoids touching a user's updated_at timestamp merely to
+-- prove that the mutating function is available in the schema cache.
+CREATE OR REPLACE FUNCTION public.probe_pipeline_config_atomic_merge()
+RETURNS TEXT
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = public
+AS $$
+  SELECT CASE
+    WHEN to_regprocedure(
+      'public.merge_user_pipeline_auto_config(uuid,jsonb,text[])'
+    ) IS NOT NULL
+      AND has_function_privilege(
+        'service_role',
+        'public.merge_user_pipeline_auto_config(uuid,jsonb,text[])',
+        'EXECUTE'
+      )
+    THEN '20260726060000_v2'
+    ELSE 'missing'
+  END;
+$$;
+
+REVOKE ALL ON FUNCTION public.probe_pipeline_config_atomic_merge()
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.probe_pipeline_config_atomic_merge()
   TO service_role;
 
 -- Pipeline Auto Run History
