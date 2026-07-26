@@ -5,8 +5,8 @@
   --public-ink: #171a17;
   --public-muted: #626760;
   --public-blue: #2b5fae;
-  --public-moss: #687b5b;
-  --public-copper: #b86f4b;
+  --public-moss: #4f6847;
+  --public-copper: #985033;
   --public-rule: rgba(23, 26, 23, 0.18);
   --public-rule-soft: rgba(23, 26, 23, 0.1);
   --public-display-en: 'SF Pro Display', 'Segoe UI Variable Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
@@ -23,6 +23,86 @@
     var(--public-paper);
   background-size: auto, 18px 16px, auto;
   font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
+}
+
+html[data-theme='dark'] .public-page {
+  --public-paper: #15191a;
+  --public-paper-bright: #1d2223;
+  --public-paper-deep: #101415;
+  --public-ink: #f3f1e9;
+  --public-muted: #b9c1bb;
+  --public-blue: #91baff;
+  --public-moss: #acc99f;
+  --public-copper: #efa984;
+  --public-rule: rgba(243, 241, 233, .24);
+  --public-rule-soft: rgba(243, 241, 233, .14);
+  color-scheme: dark;
+  background:
+    radial-gradient(circle at 9% 1%, rgba(145, 186, 255, .09), transparent 25%),
+    repeating-radial-gradient(circle at 27% 31%, rgba(243, 241, 233, .045) 0 .45px, transparent .65px 4px),
+    var(--public-paper);
+}
+
+html[data-theme='dark'] .public-page .public-kicker b,
+html[data-theme='dark'] .public-page .public-section-heading > p,
+html[data-theme='dark'] .public-page .public-cta > p {
+  color: #b5cda9;
+}
+
+html[data-theme='dark'] .public-page .public-kicker i {
+  background: rgba(243, 241, 233, .38);
+}
+
+html[data-theme='dark'] .public-page .public-hero-copy > p {
+  color: #c8cec9;
+}
+
+html[data-theme='dark'] .public-page .public-primary {
+  color: #101415;
+  border-color: #a8c7ff;
+  background: #a8c7ff;
+}
+
+html[data-theme='dark'] .public-page .public-primary:hover {
+  background: #c3d8ff;
+}
+
+html[data-theme='dark'] .public-page .public-instrument {
+  border-color: rgba(243, 241, 233, .45);
+  box-shadow: 0 22px 70px rgba(0, 0, 0, .28);
+}
+
+html[data-theme='dark'] .public-page .public-sparkline-bands rect {
+  fill: rgba(145, 186, 255, .045);
+}
+
+html[data-theme='dark'] .public-page .public-sparkline-bands rect.is-even {
+  fill: rgba(145, 186, 255, .09);
+}
+
+html[data-theme='dark'] .public-page .public-sparkline-grid line {
+  stroke: rgba(243, 241, 233, .14);
+}
+
+html[data-theme='dark'] .public-page .public-sparkline-comparison {
+  stroke: rgba(205, 213, 207, .72);
+}
+
+html[data-theme='dark'] .public-page .public-sparkline-comparison-end {
+  stroke: rgba(205, 213, 207, .82);
+}
+
+html[data-theme='dark'] .public-page .public-card {
+  background: rgba(255, 255, 255, .025);
+}
+
+html[data-theme='dark'] .public-page .public-card:hover,
+html[data-theme='dark'] .public-page .public-audience-section .public-card {
+  background: rgba(255, 255, 255, .055);
+}
+
+html[data-theme='dark'] .public-page .public-tab-list button.is-active {
+  color: #101415;
 }
 
 .public-page *, .public-page *::before, .public-page *::after { box-sizing: border-box; }
@@ -230,9 +310,17 @@
 .public-topic-section .public-card-index span { color: #8fa9cf; }
 .public-topic-section .public-card-index i { height: 1px; background: rgba(245,241,232,.22); }
 .public-topic-section .public-card-index b {
-  color: rgba(245,241,232,.48);
+  color: rgba(245,241,232,.72);
   font-weight: 550;
   font-variant-numeric: tabular-nums;
+}
+
+.public-section.is-dark .public-card > span {
+  color: #9ebdff;
+}
+
+.public-section.is-dark .public-feature-row > b {
+  color: #b8d0ac;
 }
 .public-page.is-en .public-topic-section .public-card h3 {
   max-width: 16ch;

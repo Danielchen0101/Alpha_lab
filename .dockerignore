@@ -18,6 +18,21 @@ backend/venv
 backend/__pycache__
 backend/.pytest_cache
 backend/*.log
+backend/*.lock
+backend/.*.lock
+# Backend-root JSON files are runtime credentials, caches, ledgers, or local
+# fallback state. Production state is supplied through env/Supabase instead.
+backend/*.json
+backend/*.json.*
+backend/*_config.json
+backend/*_configs.json
+backend/*_state.json
+backend/*_accounts.json
+backend/*_history.json
+backend/*_positions.json
+backend/*.local.json
+backend/crypto_paper_ml.json
+backend/crypto_paper_state.json
 backend/debug_*_pipeline_result.json
 backend/pipeline_runtime_state.json
 backend/pipeline_managed_positions.json

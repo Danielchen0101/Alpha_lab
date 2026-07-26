@@ -51,6 +51,14 @@ class _TrackedThread:
         return self.alive
 
 
+class _FailingStartThread:
+    def __init__(self, target, args=(), kwargs=None, **_options):
+        self.target = target
+
+    def start(self):
+        raise RuntimeError("thread start failed")
+
+
 def test_pipeline_timezone_helpers_do_not_depend_on_pytz(monkeypatch):
     monkeypatch.setitem(sys.modules, "pytz", object())
 
@@ -281,13 +289,12 @@ def test_new_browser_device_is_registered_once_and_alerted(monkeypatch):
     monkeypatch.setattr(backend, "require_auth", lambda: {"id": "user-1"})
     monkeypatch.setattr(backend, "_pa_get_config", lambda uid: dict(config))
 
-    def save_config(uid, value):
+    def patch_config(uid, value):
         saves.append(dict(value))
-        config.clear()
         config.update(value)
         return True, ""
 
-    monkeypatch.setattr(backend, "_pa_save_config", save_config)
+    monkeypatch.setattr(backend, "_pa_patch_config", patch_config)
     monkeypatch.setattr(
         backend,
         "send_discord_notification",
@@ -855,10 +862,24 @@ def test_pipeline_status_exposes_active_stage_progress_and_quiet_discord_policy(
 
 def test_headless_pipeline_initializes_stage_timeout_tracking(monkeypatch):
     updates = []
+    with backend._PA_ACTIVE_RUNS_LOCK:
+        backend._PA_ACTIVE_RUNS.pop("user-1", None)
 
-    monkeypatch.setattr(backend, "_pa_clear_active_run", lambda uid: None)
-    monkeypatch.setattr(backend, "_pa_update_active_run", lambda uid, **kwargs: updates.append(kwargs))
-    monkeypatch.setattr(backend, "_pa_check_stop_requested", lambda uid: False)
+    def clear_active_run(uid):
+        with backend._PA_ACTIVE_RUNS_LOCK:
+            backend._PA_ACTIVE_RUNS.pop(uid, None)
+
+    monkeypatch.setattr(backend, "_pa_clear_active_run", clear_active_run)
+    monkeypatch.setattr(
+        backend,
+        "_pa_update_active_run",
+        lambda uid, **kwargs: updates.append(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_check_stop_requested",
+        lambda uid, expected_run_id=None: False,
+    )
     monkeypatch.setattr(backend, "_pa_reconcile_order_lifecycle", lambda *args, **kwargs: {})
     monkeypatch.setattr(backend, "_pa_save_pipeline_debug_dump", lambda *args, **kwargs: None)
 
@@ -986,6 +1007,417 @@ def test_stop_request_preserves_stage_progress(monkeypatch):
     assert run["progressPct"] == 9
     assert run["steps"]["market_scanner"]["status"] == "stopped"
     assert run["steps"]["market_scanner"]["progressPct"] == 63
+
+
+def test_stop_endpoint_requires_and_matches_exact_run_id(monkeypatch):
+    updates = []
+    patches = []
+    cached = []
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "stop-user"})
+    monkeypatch.setattr(
+        backend,
+        "_pa_get_active_run",
+        lambda uid: {
+            "runId": "active-run-2",
+            "status": "running",
+            "stopRequested": False,
+        },
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_update_active_run",
+        lambda uid, **kwargs: updates.append((uid, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_patch_config",
+        lambda uid, patch: patches.append((uid, patch)) or (True, ""),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_cache_stop_request",
+        lambda uid, request: cached.append((uid, request)),
+    )
+    client = backend.app.test_client()
+
+    missing = client.post("/api/ai-agent/pipeline/stop", json={})
+    mismatch = client.post(
+        "/api/ai-agent/pipeline/stop",
+        json={"runId": "stale-run-1"},
+    )
+    accepted = client.post(
+        "/api/ai-agent/pipeline/stop",
+        json={"runId": "active-run-2", "reason": "operator_requested"},
+    )
+
+    assert missing.status_code == 400
+    assert missing.get_json()["code"] == "run_id_required"
+    assert mismatch.status_code == 409
+    assert mismatch.get_json()["code"] == "run_id_mismatch"
+    assert accepted.status_code == 202
+    assert accepted.get_json()["durable"] is True
+    assert len(updates) == 1
+    assert updates[0][1]["status"] == "cancelling"
+    assert updates[0][1]["stopRequested"] is True
+    assert patches[0][1]["active_stop_request"]["runId"] == "active-run-2"
+    assert cached[0][1]["runId"] == "active-run-2"
+
+
+def test_stop_endpoint_is_idempotent_without_refreshing_cancel_deadline(
+    monkeypatch,
+):
+    requested_at = "2026-07-25T20:00:00Z"
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "stop-user"})
+    monkeypatch.setattr(
+        backend,
+        "_pa_get_active_run",
+        lambda uid: {
+            "runId": "active-run-2",
+            "status": "cancelling",
+            "stopRequested": True,
+            "stopRequestedAt": requested_at,
+        },
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_update_active_run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("idempotent stop must not rewrite active state")
+        ),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_patch_config",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("idempotent stop must not refresh durable state")
+        ),
+    )
+
+    response = backend.app.test_client().post(
+        "/api/ai-agent/pipeline/stop",
+        json={"runId": "active-run-2"},
+    )
+
+    assert response.status_code == 202
+    assert response.get_json()["alreadyRequested"] is True
+    assert response.get_json()["requestedAt"] == requested_at
+
+
+def test_active_run_compare_and_set_rejects_aba_update(monkeypatch):
+    uid = "active-run-cas-user"
+    monkeypatch.setattr(backend, "_pa_persist_runtime_state", lambda: None)
+    try:
+        backend._pa_update_active_run(
+            uid,
+            runId="run-a",
+            status="running",
+        )
+        with backend._PA_ACTIVE_RUNS_LOCK:
+            backend._PA_ACTIVE_RUNS[uid]["runId"] = "run-b"
+            backend._PA_ACTIVE_RUNS[uid]["status"] = "running"
+
+        changed = backend._pa_update_active_run(
+            uid,
+            expected_run_id="run-a",
+            expected_statuses=("running",),
+            status="cancelling",
+            stopRequested=True,
+        )
+
+        assert changed is False
+        assert backend._pa_get_active_run(uid)["runId"] == "run-b"
+        assert backend._pa_get_active_run(uid)["status"] == "running"
+    finally:
+        with backend._PA_ACTIVE_RUNS_LOCK:
+            backend._PA_ACTIVE_RUNS.pop(uid, None)
+
+
+def test_stop_endpoint_aba_race_does_not_cancel_new_run(monkeypatch):
+    reads = [
+        {"runId": "run-a", "status": "running"},
+        {"runId": "run-b", "status": "running"},
+    ]
+    cached = []
+    patches = []
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": "stop-user"})
+    monkeypatch.setattr(
+        backend,
+        "_pa_get_active_run",
+        lambda uid: reads.pop(0),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_update_active_run",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_cache_stop_request",
+        lambda *args, **kwargs: cached.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_patch_config",
+        lambda *args, **kwargs: patches.append((args, kwargs)) or (True, ""),
+    )
+
+    response = backend.app.test_client().post(
+        "/api/ai-agent/pipeline/stop",
+        json={"runId": "run-a"},
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["activeRunId"] == "run-b"
+    assert cached == []
+    assert patches == []
+
+
+def test_pipeline_run_is_queued_before_worker_start_and_can_be_stopped(
+    monkeypatch,
+):
+    uid = "queued-stop-user"
+    patches = []
+    monkeypatch.setattr(backend, "require_auth", lambda: {"id": uid})
+    monkeypatch.setattr(
+        backend,
+        "_pa_try_reserve_user_run",
+        lambda candidate_uid, source: True,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_start_reserved_thread",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(backend, "_pa_persist_runtime_state", lambda: None)
+    monkeypatch.setattr(
+        backend,
+        "_pa_patch_config",
+        lambda candidate_uid, patch: patches.append(
+            (candidate_uid, patch)
+        ) or (True, ""),
+    )
+    try:
+        started = backend.app.test_client().post(
+            "/api/ai-agent/pipeline/run",
+            json={"trigger": "manual", "mode": "hybrid"},
+        )
+        run_id = started.get_json()["runId"]
+        queued = backend._pa_get_active_run(uid)
+
+        stopped = backend.app.test_client().post(
+            "/api/ai-agent/pipeline/stop",
+            json={"runId": run_id},
+        )
+
+        assert started.status_code == 200
+        assert queued["status"] == "queued"
+        assert queued["runId"] == run_id
+        assert stopped.status_code == 202
+        assert patches[0][1]["active_stop_request"]["runId"] == run_id
+    finally:
+        with backend._PA_ACTIVE_RUNS_LOCK:
+            backend._PA_ACTIVE_RUNS.pop(uid, None)
+        with backend._PA_STOP_REQUEST_CACHE_LOCK:
+            backend._PA_STOP_REQUEST_CACHE.pop(uid, None)
+
+
+def test_durable_stop_request_cannot_stop_a_new_run_or_position_guard(monkeypatch):
+    monkeypatch.setattr(backend, "_pa_get_active_run", lambda uid: None)
+    monkeypatch.setattr(
+        backend,
+        "_pa_get_cached_stop_request",
+        lambda uid: {
+            "runId": "completed-run-1",
+            "requestedAt": "2026-07-25T10:00:00+00:00",
+        },
+    )
+
+    assert backend._pa_check_stop_requested(
+        "stop-user",
+        expected_run_id="completed-run-1",
+    ) is True
+    assert backend._pa_check_stop_requested(
+        "stop-user",
+        expected_run_id="new-run-2",
+    ) is False
+    assert backend._pa_check_stop_requested(
+        "stop-user",
+        expected_run_id="position-guard-stop-user-3",
+    ) is False
+
+
+def test_scheduler_watchdog_persists_stale_exact_run_cancel_without_status_poll(
+    monkeypatch,
+):
+    uid = "watchdog-user"
+    now_ts = datetime.now(timezone.utc).timestamp()
+    stale_at = datetime.fromtimestamp(
+        now_ts - backend._PA_WATCHDOG_STALE_SECONDS - 1,
+        timezone.utc,
+    ).isoformat()
+    patches = []
+    monkeypatch.setattr(backend, "_pa_persist_runtime_state", lambda: None)
+    monkeypatch.setattr(
+        backend,
+        "_pa_user_run_is_reserved",
+        lambda candidate_uid: candidate_uid == uid,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_patch_config",
+        lambda candidate_uid, patch: patches.append(
+            (candidate_uid, patch)
+        ) or (True, ""),
+    )
+    try:
+        backend._pa_update_active_run(
+            uid,
+            runId="watchdog-run-1",
+            status="running",
+            currentStep="deeper_validation",
+            stopRequested=False,
+        )
+        with backend._PA_ACTIVE_RUNS_LOCK:
+            backend._PA_ACTIVE_RUNS[uid]["updatedAt"] = stale_at
+
+        summary = backend._pa_watchdog_active_runs(
+            now_ts=now_ts,
+            only_uid=uid,
+        )
+        active = backend._pa_get_active_run(uid)
+
+        assert summary["cancellationRequested"] == 1
+        assert active["status"] == "cancelling"
+        assert active["stopRequested"] is True
+        assert active["stopRequestedAt"]
+        assert patches == [
+            (
+                uid,
+                {
+                    "active_stop_request": {
+                        "runId": "watchdog-run-1",
+                        "requestedAt": active["stopRequestedAt"],
+                        "reason": "stale_run_watchdog",
+                    }
+                },
+            )
+        ]
+    finally:
+        with backend._PA_ACTIVE_RUNS_LOCK:
+            backend._PA_ACTIVE_RUNS.pop(uid, None)
+        with backend._PA_STOP_REQUEST_CACHE_LOCK:
+            backend._PA_STOP_REQUEST_CACHE.pop(uid, None)
+        with backend._PA_WATCHDOG_LOCK:
+            backend._PA_WATCHDOG_STALLED_RUNS.clear()
+
+
+def test_watchdog_snapshot_cannot_cancel_replacement_run(monkeypatch):
+    uid = "watchdog-aba-user"
+    now_ts = datetime.now(timezone.utc).timestamp()
+    stale_at = datetime.fromtimestamp(
+        now_ts - backend._PA_WATCHDOG_STALE_SECONDS - 1,
+        timezone.utc,
+    ).isoformat()
+    patches = []
+    monkeypatch.setattr(backend, "_pa_persist_runtime_state", lambda: None)
+    monkeypatch.setattr(
+        backend,
+        "_pa_patch_config",
+        lambda candidate_uid, patch: patches.append(
+            (candidate_uid, patch)
+        ) or (True, ""),
+    )
+    try:
+        backend._pa_update_active_run(
+            uid,
+            runId="watchdog-run-a",
+            status="running",
+            currentStep="fine_scan",
+        )
+        with backend._PA_ACTIVE_RUNS_LOCK:
+            backend._PA_ACTIVE_RUNS[uid]["updatedAt"] = stale_at
+
+        def replace_before_cas(candidate_uid):
+            with backend._PA_ACTIVE_RUNS_LOCK:
+                backend._PA_ACTIVE_RUNS[candidate_uid].update({
+                    "runId": "watchdog-run-b",
+                    "status": "running",
+                    "stopRequested": False,
+                })
+            return True
+
+        monkeypatch.setattr(
+            backend,
+            "_pa_user_run_is_reserved",
+            replace_before_cas,
+        )
+
+        summary = backend._pa_watchdog_active_runs(
+            now_ts=now_ts,
+            only_uid=uid,
+        )
+
+        assert summary["cancellationRequested"] == 0
+        assert backend._pa_get_active_run(uid)["runId"] == "watchdog-run-b"
+        assert backend._pa_get_active_run(uid)["status"] == "running"
+        assert patches == []
+    finally:
+        with backend._PA_ACTIVE_RUNS_LOCK:
+            backend._PA_ACTIVE_RUNS.pop(uid, None)
+        with backend._PA_WATCHDOG_LOCK:
+            backend._PA_WATCHDOG_STALLED_RUNS.clear()
+
+
+def test_stalled_watchdog_cancellation_fails_scheduler_readiness(monkeypatch):
+    uid = "stalled-watchdog-user"
+    now_ts = datetime.now(timezone.utc).timestamp()
+    requested_at = datetime.fromtimestamp(
+        now_ts - backend._PA_WATCHDOG_CANCEL_GRACE_SECONDS - 1,
+        timezone.utc,
+    ).isoformat()
+
+    class AliveThread:
+        @staticmethod
+        def is_alive():
+            return True
+
+    monkeypatch.setattr(backend, "_pa_persist_runtime_state", lambda: None)
+    monkeypatch.setattr(
+        backend,
+        "_pa_user_run_is_reserved",
+        lambda candidate_uid: candidate_uid == uid,
+    )
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_THREAD", AliveThread())
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_HEARTBEAT", now_ts - 5)
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_COMPLETED_AT", now_ts - 10)
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_ERROR", "")
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_CONSECUTIVE_ERRORS", 0)
+    monkeypatch.setattr(backend, "_pa_read_shared_scheduler_heartbeat", lambda: {})
+    try:
+        backend._pa_update_active_run(
+            uid,
+            runId="stalled-run-1",
+            status="cancelling",
+            currentStep="execution",
+            stopRequested=True,
+            stopRequestedAt=requested_at,
+        )
+
+        watchdog = backend._pa_watchdog_active_runs(
+            now_ts=now_ts,
+            only_uid=uid,
+        )
+        health = backend._pa_scheduler_health_snapshot(now_ts=now_ts)
+
+        assert watchdog["stalled"] == 1
+        assert health["stalledRunCount"] == 1
+        assert health["stalledRuns"][0]["stage"] == "execution"
+        assert health["running"] is False
+    finally:
+        with backend._PA_ACTIVE_RUNS_LOCK:
+            backend._PA_ACTIVE_RUNS.pop(uid, None)
+        with backend._PA_WATCHDOG_LOCK:
+            backend._PA_WATCHDOG_STALLED_RUNS.clear()
 
 
 def test_auto_run_now_respects_open_circuit_breaker(monkeypatch):
@@ -1196,8 +1628,53 @@ def test_position_guard_runs_deterministic_protection_and_notifies(monkeypatch):
     assert notifications[0][2]["status"] == "review_required"
     assert notifications[0][2]["symbol"] == "AAPL"
     assert any(config.get("position_guard_alert_fingerprint") for config in saved_configs)
-    assert releases == []
+    assert releases == ["user-1"]
     assert backend._PA_POSITION_GUARD_STATE["user-1"]["running"] is False
+
+
+def test_position_guard_does_not_run_without_user_routing_lease(monkeypatch):
+    with backend._PA_POSITION_GUARD_LOCK:
+        backend._PA_POSITION_GUARD_STATE.clear()
+
+    monkeypatch.setattr(backend, "_pa_try_reserve_user_run", lambda uid, source: False)
+    monkeypatch.setattr(
+        backend,
+        "_pa_exit_scan_headless",
+        lambda *args, **kwargs: pytest.fail("guard ran without a routing lease"),
+    )
+
+    started = backend._pa_maybe_start_position_guard(
+        "user-1",
+        {"enabled": True},
+        datetime(2026, 7, 13, 10, 0, tzinfo=timezone.utc),
+        "ai",
+        "medium",
+        "mid",
+        "paper",
+        True,
+    )
+
+    assert started is False
+    assert "user-1" not in backend._PA_POSITION_GUARD_STATE
+
+
+def test_cooperative_scanner_budget_raises_inside_long_running_batch(monkeypatch):
+    monkeypatch.setattr(backend.time, "time", lambda: 1_000.0)
+    backend._backend_set_pipeline_runtime_budget(
+        "market_scanner",
+        pipeline_started_at=0.0,
+        pipeline_limit=1_800,
+        stage_started_at=0.0,
+        stage_limit=900,
+    )
+    try:
+        with pytest.raises(backend._BackendStageDeadlineExceeded) as exc_info:
+            backend._backend_enforce_runtime_budget()
+    finally:
+        backend._backend_clear_pipeline_runtime_budget()
+
+    assert exc_info.value.stage == "market_scanner"
+    assert exc_info.value.limit == 900
 
 
 def test_execute_and_save_preserves_failure_state_on_early_exception(monkeypatch):
@@ -1282,6 +1759,180 @@ def test_execute_and_save_resets_auto_run_count_on_next_trading_date(monkeypatch
     assert saved[-1]["run_count_today"] == 1
 
 
+def test_pipeline_outcome_never_masks_errors_as_stopped_or_skipped():
+    assert backend._pa_pipeline_outcome({"errors": 0}) == "success"
+    assert backend._pa_pipeline_outcome({"errors": 0, "stopped": True}) == "stopped"
+    assert backend._pa_pipeline_outcome({"errors": 0, "skipped": True}) == "skipped"
+    assert backend._pa_pipeline_outcome({"errors": 1, "stopped": True}) == "failed"
+    assert backend._pa_pipeline_outcome({"errors": "invalid", "skipped": True}) == "failed"
+
+
+def test_debug_dump_reclassification_updates_only_matching_run(monkeypatch, tmp_path):
+    uid = "debug-reclassification-user"
+    run_id = "debug-run-1"
+    other_run_id = "debug-run-2"
+    monkeypatch.setattr(
+        backend,
+        "__file__",
+        str(tmp_path / "start_quant_backend.py"),
+    )
+    original = {
+        "success": True,
+        "outcome": "success",
+        "runId": run_id,
+        "userId": uid,
+        "summary": {"errors": 0},
+    }
+    other = {
+        "success": True,
+        "outcome": "success",
+        "runId": other_run_id,
+        "userId": uid,
+        "summary": {"errors": 0},
+    }
+    with backend._PA_LAST_PIPELINE_RESULTS_LOCK:
+        for key in (
+            (uid, run_id),
+            (uid, "__last__"),
+            (uid, "__last_auto__"),
+        ):
+            backend._PA_LAST_PIPELINE_RESULTS[key] = dict(original)
+        backend._PA_LAST_PIPELINE_RESULTS[(uid, other_run_id)] = dict(other)
+    debug_path = tmp_path / "debug_auto_pipeline_result.json"
+    debug_path.write_text(json.dumps(original), encoding="utf-8")
+
+    updated = backend._pa_reclassify_pipeline_debug_dump(
+        uid,
+        run_id,
+        "market_auto_run",
+        {
+            "errors": 1,
+            "lastError": "pipeline result persistence failed",
+            "persistenceError": "write unavailable",
+        },
+    )
+
+    assert updated["success"] is False
+    assert updated["outcome"] == "failed"
+    assert updated["summary"]["persistenceError"] == "write unavailable"
+    with backend._PA_LAST_PIPELINE_RESULTS_LOCK:
+        assert backend._PA_LAST_PIPELINE_RESULTS[(uid, "__last__")]["outcome"] == "failed"
+        assert backend._PA_LAST_PIPELINE_RESULTS[(uid, other_run_id)] == other
+        for key in (
+            (uid, run_id),
+            (uid, other_run_id),
+            (uid, "__last__"),
+            (uid, "__last_auto__"),
+        ):
+            backend._PA_LAST_PIPELINE_RESULTS.pop(key, None)
+            backend._PA_LAST_PIPELINE_RESULT_TIMESTAMPS.pop(key, None)
+    on_disk = json.loads(debug_path.read_text(encoding="utf-8"))
+    assert on_disk["success"] is False
+    assert on_disk["outcome"] == "failed"
+
+
+def test_execute_and_save_marks_successful_scan_failed_when_result_is_not_durable(
+    monkeypatch,
+):
+    uid = "persistence-failure-user"
+    run_id = "persistence-run-1"
+    config = {"enabled": True, "consecutive_failures": 0}
+    with backend._PA_ACTIVE_RUNS_LOCK:
+        backend._PA_ACTIVE_RUNS[uid] = {
+            "runId": run_id,
+            "status": "completed",
+            "steps": backend._pa_initial_steps(),
+        }
+    backend._pa_clear_user_runtime_backoff(uid)
+    monkeypatch.setattr(
+        backend,
+        "_pa_now_et",
+        lambda: datetime(2026, 7, 13, 15, 0, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_run_pipeline",
+        lambda *args, **kwargs: {"errors": 0, "finishedAt": "2026-07-13T15:01:00Z"},
+    )
+    monkeypatch.setattr(backend, "_pa_get_config", lambda candidate_uid: dict(config))
+    monkeypatch.setattr(
+        backend,
+        "_pa_patch_config",
+        lambda *args, **kwargs: (False, "durable write unavailable"),
+    )
+
+    try:
+        summary = backend._pa_execute_and_save(
+            uid,
+            config,
+            30,
+            "ai",
+            trigger="auto_run_now",
+            trade_mode="paper",
+            run_id=run_id,
+        )
+
+        assert summary["errors"] == 1
+        assert summary["persistenceError"] == "durable write unavailable"
+        assert backend._pa_pipeline_outcome(summary) == "failed"
+        assert backend._pa_get_user_runtime_backoff(uid)["reason"] == (
+            "pipeline_result_persistence_failed"
+        )
+        with backend._PA_ACTIVE_RUNS_LOCK:
+            assert backend._PA_ACTIVE_RUNS[uid]["status"] == "failed"
+            assert backend._PA_ACTIVE_RUNS[uid]["lastError"] == (
+                "pipeline_result_persistence_failed"
+            )
+        assert backend._pa_user_run_is_reserved(uid) is False
+    finally:
+        backend._pa_clear_user_runtime_backoff(uid)
+        with backend._PA_ACTIVE_RUNS_LOCK:
+            backend._PA_ACTIVE_RUNS.pop(uid, None)
+
+
+def test_executor_decorator_releases_exact_reservation_when_finalizer_raises(
+    monkeypatch,
+):
+    uid = "executor-finalizer-user"
+    token = "executor-finalizer-token"
+    with backend._PA_RUNNING_USERS_LOCK:
+        backend._PA_RUNNING_USERS.add(uid)
+        backend._PA_RUNNING_USER_TOKENS[uid] = token
+        backend._PA_RUNNING_USER_SOURCES[uid] = "auto_run_now"
+    backend._pa_clear_user_runtime_backoff(uid)
+    monkeypatch.setattr(
+        backend,
+        "_pa_run_pipeline",
+        lambda *args, **kwargs: {"errors": 0},
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_pipeline_outcome",
+        lambda summary: (_ for _ in ()).throw(RuntimeError("finalizer failed")),
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="finalizer failed"):
+            backend._pa_execute_and_save(
+                uid,
+                {"enabled": True},
+                30,
+                "ai",
+                trigger="auto_run_now",
+                trade_mode="paper",
+                run_id="executor-finalizer-run",
+            )
+
+        assert backend._pa_user_run_is_reserved(uid) is False
+        assert backend._pa_current_user_reservation_token(uid) is None
+        assert backend._pa_get_user_runtime_backoff(uid)["reason"] == (
+            "pipeline_executor_finalization_failed"
+        )
+    finally:
+        backend._pa_clear_user_runtime_backoff(uid)
+        backend._pa_release_user_run(uid)
+
+
 def test_managed_position_plan_persists_in_existing_pipeline_config(monkeypatch):
     saved = []
     monkeypatch.setattr(
@@ -1318,7 +1969,7 @@ def test_managed_position_plan_persists_in_existing_pipeline_config(monkeypatch)
     assert saved[-1][0] == "user-1"
     config = saved[-1][1]
     assert config["enabled"] is True
-    assert config["managed_positions_version"] == 1
+    assert config["managed_positions_version"] == 2
     assert config["managed_positions"]["paper:MSFT"]["symbol"] == "MSFT"
     assert config["managed_positions"]["real:AAPL"]["stopLoss"] == 95
 
@@ -1364,6 +2015,7 @@ def test_scheduler_health_requires_a_live_thread_and_fresh_heartbeat(monkeypatch
     monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_HEARTBEAT", 990.0)
     monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_COMPLETED_AT", 980.0)
     monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_ERROR", "")
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_CONSECUTIVE_ERRORS", 0)
     monkeypatch.setattr(backend, "_pa_read_shared_scheduler_heartbeat", lambda: {})
 
     healthy = backend._pa_scheduler_health_snapshot(now_ts=1000.0)
@@ -1387,6 +2039,7 @@ def test_scheduler_health_reads_master_process_heartbeat(monkeypatch):
     monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_HEARTBEAT", 0)
     monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_COMPLETED_AT", 0)
     monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_ERROR", "")
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_CONSECUTIVE_ERRORS", 0)
     monkeypatch.setattr(
         backend,
         "_pa_read_shared_scheduler_heartbeat",
@@ -1410,6 +2063,27 @@ def test_scheduler_health_reads_master_process_heartbeat(monkeypatch):
     assert stale["threadAlive"] is False
 
 
+def test_scheduler_health_fails_after_three_completed_tick_errors(monkeypatch):
+    class AliveThread:
+        @staticmethod
+        def is_alive():
+            return True
+
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_THREAD", AliveThread())
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_HEARTBEAT", 995.0)
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_COMPLETED_AT", 980.0)
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_LAST_ERROR", "scheduler_user_discovery_failed")
+    monkeypatch.setattr(backend, "_PA_SCHEDULER_CONSECUTIVE_ERRORS", 3)
+    monkeypatch.setattr(backend, "_pa_read_shared_scheduler_heartbeat", lambda: {})
+
+    snapshot = backend._pa_scheduler_health_snapshot(now_ts=1000.0)
+
+    assert snapshot["threadAlive"] is True
+    assert snapshot["heartbeatAgeSeconds"] == 5.0
+    assert snapshot["consecutiveErrors"] == 3
+    assert snapshot["running"] is False
+
+
 def test_scheduler_start_is_singleton(monkeypatch):
     _TrackedThread.starts = 0
     monkeypatch.setattr(backend, "_PA_SCHEDULER_STARTED", False)
@@ -1423,3 +2097,218 @@ def test_scheduler_start_is_singleton(monkeypatch):
     assert _TrackedThread.starts == 1
     assert backend._PA_SCHEDULER_THREAD is first_thread
     assert first_thread.is_alive() is True
+
+
+def test_reserved_thread_start_failure_releases_only_its_token(monkeypatch):
+    uid = "thread-start-failure-user"
+    token = "reservation-token-1"
+    with backend._PA_RUNNING_USERS_LOCK:
+        backend._PA_RUNNING_USERS.add(uid)
+        backend._PA_RUNNING_USER_TOKENS[uid] = token
+        backend._PA_RUNNING_USER_SOURCES[uid] = "pipeline_endpoint"
+    monkeypatch.setattr(backend.threading, "Thread", _FailingStartThread)
+
+    with pytest.raises(RuntimeError, match="thread start failed"):
+        backend._pa_start_reserved_thread(
+            uid,
+            lambda: None,
+            daemon=True,
+        )
+
+    assert backend._pa_user_run_is_reserved(uid) is False
+    assert backend._pa_current_user_reservation_token(uid) is None
+
+
+def test_reserved_thread_preflight_failure_releases_only_original_run(monkeypatch):
+    uid = "thread-preflight-failure-user"
+    token = "reservation-token-2"
+    with backend._PA_RUNNING_USERS_LOCK:
+        backend._PA_RUNNING_USERS.add(uid)
+        backend._PA_RUNNING_USER_TOKENS[uid] = token
+        backend._PA_RUNNING_USER_SOURCES[uid] = "pipeline_endpoint"
+    monkeypatch.setattr(backend.threading, "Thread", _ImmediateThread)
+
+    def fail_before_executor():
+        raise RuntimeError("config preflight failed")
+
+    with pytest.raises(RuntimeError, match="config preflight failed"):
+        backend._pa_start_reserved_thread(
+            uid,
+            fail_before_executor,
+            daemon=True,
+        )
+
+    assert backend._pa_user_run_is_reserved(uid) is False
+    assert backend._pa_current_user_reservation_token(uid) is None
+
+
+def test_readiness_fails_with_safe_component_diagnostics(monkeypatch):
+    monkeypatch.setattr(
+        backend,
+        "_pa_scheduler_health_snapshot",
+        lambda: {
+            "running": False,
+            "threadAlive": True,
+            "heartbeatAgeSeconds": 180,
+            "lastError": "stale",
+        },
+    )
+    monkeypatch.setattr(
+        backend,
+        "_supabase_dependency_snapshot",
+        lambda: {
+            "required": True,
+            "configured": True,
+            "healthy": True,
+            "status": "ready",
+        },
+    )
+    monkeypatch.setattr(backend, "_backend_current_rss_mb", lambda: 512)
+    monkeypatch.setattr(backend, "_BACKEND_MEMORY_ABORT_LIMIT_MB", 3_700)
+    monkeypatch.setattr(
+        backend,
+        "_background_thread_readiness_snapshot",
+        lambda: {"required": True, "healthy": True},
+    )
+
+    response = backend.app.test_client().get("/api/ready")
+    payload = response.get_json()
+
+    assert response.status_code == 503
+    assert payload["status"] == "not_ready"
+    assert payload["components"]["scheduler"]["healthy"] is False
+    assert payload["components"]["persistence"]["healthy"] is True
+    assert payload["components"]["threads"]["healthy"] is True
+    assert payload["components"]["migrations"]["healthy"] is True
+    assert payload["components"]["leases"]["healthy"] is True
+    assert payload["components"]["memory"]["healthy"] is True
+
+
+def test_readiness_is_200_when_required_dependencies_are_healthy(monkeypatch):
+    monkeypatch.setattr(
+        backend,
+        "_pa_scheduler_health_snapshot",
+        lambda: {"running": True, "heartbeatAgeSeconds": 5},
+    )
+    monkeypatch.setattr(
+        backend,
+        "_supabase_dependency_snapshot",
+        lambda: {
+            "required": True,
+            "configured": True,
+            "healthy": True,
+            "status": "ready",
+        },
+    )
+    monkeypatch.setattr(backend, "_backend_current_rss_mb", lambda: 512)
+    monkeypatch.setattr(backend, "_BACKEND_MEMORY_ABORT_LIMIT_MB", 3_700)
+    monkeypatch.setattr(
+        backend,
+        "_background_thread_readiness_snapshot",
+        lambda: {"required": True, "healthy": True},
+    )
+
+    response = backend.app.test_client().get("/api/ready")
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "ready"
+    assert response.headers["Cache-Control"] == "no-store, max-age=0"
+    assert response.headers["Pragma"] == "no-cache"
+
+
+def test_supabase_readiness_requires_two_final_failures_and_recovers(monkeypatch):
+    class Query:
+        should_fail = True
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def limit(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            if self.should_fail:
+                raise TimeoutError("probe timed out")
+            return {"data": []}
+
+    query = Query()
+
+    class Client:
+        def table(self, _name):
+            return query
+
+        def rpc(self, _name, _arguments):
+            return query
+
+    monkeypatch.setattr(backend, "supabase_admin", Client())
+    monkeypatch.setattr(backend, "SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setattr(backend, "SUPABASE_SERVICE_ROLE_KEY", "service-key")
+    monkeypatch.setattr(backend, "_strict_production_runtime", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(backend, "_SUPABASE_LAST_SUCCESS_AT", 0.0)
+    monkeypatch.setattr(backend, "_SUPABASE_LAST_FAILURE_AT", 0.0)
+    monkeypatch.setattr(backend, "_SUPABASE_CONSECUTIVE_FAILURES", 0)
+    monkeypatch.setattr(backend, "_SUPABASE_LAST_FAILURE_LABEL", "")
+    monkeypatch.setattr(backend, "_SUPABASE_LAST_FAILURE_TYPE", "")
+    monkeypatch.setattr(
+        backend,
+        "_SUPABASE_READINESS_CACHE",
+        {"checkedAt": 0.0, "probeOk": None},
+    )
+
+    first = backend._supabase_dependency_snapshot(force_probe=True)
+    second = backend._supabase_dependency_snapshot(force_probe=True)
+    query.should_fail = False
+    recovered = backend._supabase_dependency_snapshot(force_probe=True)
+
+    assert first["healthy"] is True
+    assert first["consecutiveFailures"] == 1
+    assert second["healthy"] is False
+    assert second["consecutiveFailures"] == 2
+    assert recovered["healthy"] is True
+    assert recovered["consecutiveFailures"] == 0
+    assert recovered["migrations"]["healthy"] is True
+    assert recovered["leases"]["healthy"] is True
+
+
+def test_supabase_readiness_fails_immediately_for_missing_lease_migration(monkeypatch):
+    class Query:
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def limit(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            return {"data": []}
+
+    class MissingRpc:
+        def execute(self):
+            raise RuntimeError(
+                "PGRST202 could not find the function public.renew_app_worker_lease"
+            )
+
+    class Client:
+        def table(self, _name):
+            return Query()
+
+        def rpc(self, _name, _arguments):
+            return MissingRpc()
+
+    monkeypatch.setattr(backend, "supabase_admin", Client())
+    monkeypatch.setattr(backend, "SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setattr(backend, "SUPABASE_SERVICE_ROLE_KEY", "service-key")
+    monkeypatch.setattr(
+        backend, "_strict_production_runtime", lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_SUPABASE_READINESS_CACHE",
+        {"checkedAt": 0.0, "probeOk": None},
+    )
+
+    snapshot = backend._supabase_dependency_snapshot(force_probe=True)
+
+    assert snapshot["healthy"] is True  # one transient dependency grace remains
+    assert snapshot["migrations"]["healthy"] is False
+    assert snapshot["migrations"]["contractFailure"] is True
+    assert snapshot["leases"]["healthy"] is False

@@ -261,6 +261,9 @@ const ThemedApp: React.FC = () => {
             <Route path="/mfa" element={<MfaChallenge />} />
             <Route path="/scanner" element={<PreservingRedirect to={MARKET_SCANNER_PATH} />} />
             <Route path="/security" element={<Security />} />
+            {process.env.NODE_ENV === 'development' && (
+              <Route path="/agent-preview" element={<AgentRoute />} />
+            )}
 
             {/* Protected routes - with the authenticated research workspace shell */}
             <Route element={<ProtectedRoute><AuthenticatedShell /></ProtectedRoute>}>

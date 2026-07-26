@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import math
 import os
 import re
@@ -13,8 +14,9 @@ import time
 import uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Tuple
 
 import requests
 from cryptography.hazmat.primitives import hashes, serialization
@@ -57,6 +59,8 @@ KRAKEN_BASE = "https://api.kraken.com/0/public"
 KALSHI_ENVIRONMENTS = {
     "production": KALSHI_PUBLIC_BASE,
 }
+KALSHI_ROUTING_LEASE_TTL_SECONDS = 30
+KALSHI_ROUTING_LEASE_TIMEOUT_SECONDS = 5.0
 
 
 def _is_btc15_ticker(value: Any) -> bool:
@@ -2097,6 +2101,7 @@ class _PaperRobotController:
         portfolio_display_loader: Optional[Callable[[str], Mapping[str, Any]]] = None,
         portfolio_display_saver: Optional[Callable[[str, Mapping[str, Any]], Any]] = None,
         scheduler_lease_acquirer: Optional[Callable[[], bool]] = None,
+        worker_lease_store=None,
         reference_stream: Optional[KalshiReferenceStream] = None,
         safe_print=print,
         start_background=False,
@@ -2111,6 +2116,7 @@ class _PaperRobotController:
         self.portfolio_display_loader = portfolio_display_loader
         self.portfolio_display_saver = portfolio_display_saver
         self.scheduler_lease_acquirer = scheduler_lease_acquirer
+        self.worker_lease_store = worker_lease_store
         self.reference_stream = reference_stream
         self.safe_print = safe_print
         self._stop_event = threading.Event()
@@ -2119,14 +2125,35 @@ class _PaperRobotController:
         self._historical_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self._historical_cache_lock = threading.RLock()
         self._last_hourly_tick: Dict[str, float] = {}
+        self._loop_error_counts: Dict[str, int] = {}
+        self._loop_alerted: set[str] = set()
         self._portfolio_display_lock = threading.RLock()
         self._local_portfolio_display: Dict[str, Dict[str, Any]] = {}
+        self._runtime_lock = threading.RLock()
+        self._thread = None
+        self._loop_started_at = datetime.now(timezone.utc).isoformat()
+        self._loop_last_heartbeat_monotonic = time.monotonic()
+        self._loop_last_heartbeat_at = self._loop_started_at
+        self._loop_last_error = ""
+        self._scheduler_lease_owned: Optional[bool] = None
+        self._scheduler_lease_checked_at = ""
+        self._routing_owner_prefix = "%s:%s" % (
+            os.environ.get("RENDER_INSTANCE_ID")
+            or os.environ.get("HOSTNAME")
+            or "local",
+            uuid.uuid4().hex,
+        )
         scheduler_disabled = str(
             os.environ.get("ALPHALAB_DISABLE_KALSHI_SCHEDULER") or ""
         ).strip().lower() in {"1", "true", "yes", "on"}
+        self._background_requested = bool(start_background)
+        self._scheduler_disabled = scheduler_disabled
         self.persist_derived_state = not scheduler_disabled
         if start_background and not scheduler_disabled:
-            threading.Thread(target=self._loop, name="kalshi-robot", daemon=True).start()
+            self._thread = threading.Thread(
+                target=self._loop, name="kalshi-robot", daemon=True,
+            )
+            self._thread.start()
         elif start_background and scheduler_disabled:
             self.safe_print("[KalshiRobot] background scheduler disabled by environment")
 
@@ -2168,7 +2195,7 @@ class _PaperRobotController:
     def reset_portfolio_display(self, user_id: str, *, mode: str = "paper") -> Dict[str, Any]:
         """Start a new visible Portfolio period without mutating its ledger."""
         environment = _execution_mode(mode)
-        portfolio = self.portfolio(user_id, mode=environment, include_display=False)
+        portfolio = self.portfolio(user_id, mode=environment, include_display=False, mutate=False)
         balance = dict(portfolio.get("balance") or {})
         baseline = {
             "resetAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -2261,7 +2288,7 @@ class _PaperRobotController:
             self._historical_cache[cache_key] = (now, copy.deepcopy(result))
         return result
 
-    def _live_portfolio(self, user_id: str) -> Dict[str, Any]:
+    def _live_portfolio(self, user_id: str, *, mutate: bool = True) -> Dict[str, Any]:
         config = self._real_config(user_id)
         # These endpoints are independent. Reading them concurrently cuts the
         # pre-decision account snapshot latency without increasing request count
@@ -2430,13 +2457,26 @@ class _PaperRobotController:
             if _is_supported_kalshi_ticker(normalized.get("ticker") or normalized.get("market_ticker")):
                 settlements.append(normalized)
 
-        state = self.state.reconcile_settlements(
-            user_id,
-            settlements,
-            fills,
-            environment="real",
-            persist=self.persist_derived_state,
-        )
+        before_state = self.state.get(user_id, environment="real")
+        before_records = {
+            str(row.get("key") or "")
+            for row in ((before_state.get("strategy") or {}).get("settlementRecords") or [])
+            if row.get("key")
+        }
+        if mutate:
+            state = self.state.reconcile_settlements(
+                user_id,
+                settlements,
+                fills,
+                environment="real",
+                persist=self.persist_derived_state,
+            )
+            if self.persist_derived_state:
+                for record in ((state.get("strategy") or {}).get("settlementRecords") or []):
+                    if str(record.get("key") or "") not in before_records:
+                        self._notify_settlement(user_id, record)
+        else:
+            state = before_state
         analytics = _portfolio_analytics(state.get("strategy") or {})
 
         return {
@@ -2460,14 +2500,15 @@ class _PaperRobotController:
         *,
         mode: str = "paper",
         include_display: bool = False,
+        mutate: bool = True,
     ) -> Dict[str, Any]:
         environment = _execution_mode(mode)
         if environment == "real":
-            result = self._live_portfolio(user_id)
+            result = self._live_portfolio(user_id, mutate=mutate)
             return self._apply_portfolio_display(user_id, result, environment) if include_display else result
         open_tickers = set(self.paper_accounts.open_tickers(user_id))
         refreshed_markets: Dict[str, Mapping[str, Any]] = {}
-        if open_tickers:
+        if open_tickers and mutate:
             # A user can hold several rolling contracts at once. Sequential
             # market refreshes used to exceed the frontend's ten-second poll,
             # causing every completed response to be discarded as stale. Fetch
@@ -2486,7 +2527,7 @@ class _PaperRobotController:
                             f"[KalshiPaper] market refresh failed ticker={ticker} "
                             f"error={type(exc).__name__}"
                         )
-        for ticker in sorted(open_tickers):
+        for ticker in (sorted(open_tickers) if mutate else []):
             market = refreshed_markets.get(ticker)
             if not market:
                 continue
@@ -2511,24 +2552,177 @@ class _PaperRobotController:
                 row for row in result.get(collection) or []
                 if _is_supported_kalshi_ticker((row or {}).get("ticker") or (row or {}).get("market_ticker"))
             ]
-        state = self.state.reconcile_settlements(
-            user_id,
-            result["settlements"],
-            result["fills"],
-            environment=environment,
-            persist=self.persist_derived_state,
+        state = (
+            self.state.reconcile_settlements(
+                user_id,
+                result["settlements"],
+                result["fills"],
+                environment=environment,
+                persist=self.persist_derived_state,
+            )
+            if mutate
+            else self.state.get(user_id, environment=environment)
         )
         result["analytics"] = _portfolio_analytics(state.get("strategy") or {})
         for collection in ("positions", "orders", "fills", "settlements"):
             result[collection] = [_tag_market_family(row) for row in result.get(collection) or []]
         return self._apply_portfolio_display(user_id, result, environment) if include_display else result
 
+    @contextmanager
+    def _live_routing_lease(self, user_id: str) -> Iterator[Dict[str, Any]]:
+        claim = getattr(self.worker_lease_store, "claim_worker_lease_fenced", None)
+        renew = getattr(self.worker_lease_store, "renew_worker_lease", None)
+        release = getattr(self.worker_lease_store, "release_worker_lease", None)
+        if not (callable(claim) and callable(renew) and callable(release)):
+            raise KalshiApiError(
+                "Fenced Kalshi order-routing coordination is unavailable",
+                status=503,
+                code="kalshi_routing_fence_unavailable",
+            )
+        uid_digest = hashlib.sha256(str(user_id).encode("utf-8")).hexdigest()[:32]
+        lease_name = "kalshi-routing:%s" % uid_digest
+        owner_id = "%s:routing:%s" % (
+            self._routing_owner_prefix, uuid.uuid4().hex,
+        )
+        deadline = time.monotonic() + KALSHI_ROUTING_LEASE_TIMEOUT_SECONDS
+        lease = None
+        while True:
+            try:
+                result = claim(
+                    lease_name,
+                    owner_id,
+                    ttl_seconds=KALSHI_ROUTING_LEASE_TTL_SECONDS,
+                    metadata={
+                        "component": "kalshi_order_routing",
+                        "userScope": uid_digest,
+                    },
+                )
+            except Exception as exc:
+                raise KalshiApiError(
+                    "Durable Kalshi order-routing coordination is unavailable",
+                    status=503,
+                    code="kalshi_routing_lease_unavailable",
+                ) from exc
+            if (
+                isinstance(result, Mapping)
+                and result.get("acquired")
+                and result.get("fencingToken")
+            ):
+                lease = {
+                    "lease_name": lease_name,
+                    "owner_id": owner_id,
+                    "fencing_token": int(result["fencingToken"]),
+                    "user_scope": uid_digest,
+                }
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise KalshiApiError(
+                    "Kalshi order routing is busy; retry shortly",
+                    status=423,
+                    code="kalshi_routing_lease_timeout",
+                )
+            time.sleep(min(0.025, remaining))
+        try:
+            yield lease
+        finally:
+            try:
+                release(
+                    lease["lease_name"],
+                    lease["owner_id"],
+                    lease["fencing_token"],
+                )
+            except Exception as exc:
+                self.safe_print(
+                    "[KalshiReal] routing lease release failed error=%s"
+                    % type(exc).__name__
+                )
+
+    def _renew_live_routing_lease(self, lease: Mapping[str, Any]) -> None:
+        renew = getattr(self.worker_lease_store, "renew_worker_lease", None)
+        if not callable(renew):
+            raise KalshiApiError(
+                "Fenced Kalshi order-routing coordination is unavailable",
+                status=503,
+                code="kalshi_routing_fence_unavailable",
+            )
+        try:
+            renewed = bool(renew(
+                lease.get("lease_name"),
+                lease.get("owner_id"),
+                lease.get("fencing_token"),
+                ttl_seconds=KALSHI_ROUTING_LEASE_TTL_SECONDS,
+                metadata={
+                    "component": "kalshi_order_routing",
+                    "userScope": lease.get("user_scope"),
+                },
+            ))
+        except Exception as exc:
+            raise KalshiApiError(
+                "Durable Kalshi order-routing coordination is unavailable",
+                status=503,
+                code="kalshi_routing_lease_unavailable",
+            ) from exc
+        if not renewed:
+            raise KalshiApiError(
+                "This backend no longer owns the fenced Kalshi routing lease",
+                status=423,
+                code="kalshi_routing_lease_lost",
+            )
+
     def _submit_live_order(self, user_id: str, payload: Mapping[str, Any], decision: Mapping[str, Any]) -> Dict[str, Any]:
-        config = self._real_config(user_id)
         live_payload = _live_order_payload(payload)
         if not live_payload.get("ticker") or not live_payload.get("client_order_id"):
             raise KalshiApiError("Real Kalshi order payload is incomplete", status=400, code="kalshi_live_order_incomplete")
-        response = self._signed(config, "POST", "/portfolio/events/orders", json_body=live_payload)
+        with self._live_routing_lease(user_id) as lease:
+            if self.state is None or not callable(getattr(self.state, "get", None)):
+                raise KalshiApiError(
+                    "Durable Kalshi robot state is unavailable",
+                    status=503,
+                    code="kalshi_robot_state_unavailable",
+                )
+            latest_state = self.state.get(user_id, environment="real")
+            latest_config = dict((latest_state or {}).get("config") or {})
+            if (
+                not bool((latest_state or {}).get("enabled"))
+                or _execution_mode(latest_config.get("executionMode")) != "real"
+            ):
+                raise KalshiApiError(
+                    "Real Kalshi automation was stopped before order submission",
+                    status=409,
+                    code="kalshi_automation_stopped",
+                )
+            config = self._real_config(user_id)
+            recent = self._signed(
+                config,
+                "GET",
+                "/portfolio/orders",
+                params={"ticker": live_payload["ticker"], "limit": 100},
+            )
+            existing = next(
+                (
+                    dict(row)
+                    for row in (recent.get("orders") or [])
+                    if isinstance(row, Mapping)
+                    and str(row.get("client_order_id") or "")
+                    == str(live_payload["client_order_id"])
+                ),
+                None,
+            )
+            if existing is not None:
+                return {
+                    **_normalise_live_order(existing, payload, decision),
+                    "idempotent": True,
+                }
+            # The account read above can outlive a lease generation. An exact
+            # unexpired-token renewal is the final fence before the real POST.
+            self._renew_live_routing_lease(lease)
+            response = self._signed(
+                config,
+                "POST",
+                "/portfolio/events/orders",
+                json_body=live_payload,
+            )
         raw_order = response.get("order") or response.get("order_response") or response
         if not isinstance(raw_order, Mapping):
             raw_order = {}
@@ -2578,7 +2772,18 @@ class _PaperRobotController:
         execution_mode = _execution_mode(mode or strategy_seed.get("executionMode") or "paper")
         robot_state = self.state.get(user_id, environment=execution_mode)
         strategy_seed = dict(robot_state.get("config") or {})
-        portfolio = self.portfolio(user_id, mode=execution_mode)
+        try:
+            portfolio = self.portfolio(
+                user_id,
+                mode=execution_mode,
+                mutate=bool(submit_order),
+            )
+        except TypeError as exc:
+            # Preserve compatibility with small injected portfolio adapters used
+            # by integrations/tests that predate the explicit read-only flag.
+            if "unexpected keyword argument 'mutate'" not in str(exc):
+                raise
+            portfolio = self.portfolio(user_id, mode=execution_mode)
         environment = "real" if execution_mode == "real" else "paper"
         balance = portfolio.get("balance") or {}
         cash_cents = _finite_number(balance.get("balance"), 0.0)
@@ -3066,7 +3271,7 @@ class _PaperRobotController:
             # submission so the UI can immediately show filled positions, fills,
             # and any rejected/unfilled order status.
             try:
-                portfolio = self.portfolio(user_id, mode=execution_mode)
+                portfolio = self.portfolio(user_id, mode=execution_mode, mutate=True)
             except Exception as exc:
                 self.safe_print(f"[KalshiPaper] post-order portfolio refresh failed user={user_id} error={type(exc).__name__}")
         clean_snapshot = dict(snapshot)
@@ -3105,6 +3310,8 @@ class _PaperRobotController:
         action_zh = "卖出减仓" if action_name == "SELL" else "买入"
         payload = {
             "source": source,
+            "notificationScope": "kalshi",
+            "assetClass": "kalshi",
             "event_id": order.get("order_id") or order.get("client_order_id"),
             "mode": mode,
             "symbol": symbol,
@@ -3131,79 +3338,238 @@ class _PaperRobotController:
 
     def _notify_settlement(self, user_id: str, settlement: Mapping[str, Any]) -> None:
         ticker = str(settlement.get("ticker") or "")
-        result = str(settlement.get("result") or "").upper()
-        pnl = _finite_number(settlement.get("pnl_dollars"), 0.0)
-        revenue = _finite_number(settlement.get("revenue_dollars"), 0.0)
-        fees = _finite_number(settlement.get("fee_cost_dollars"), 0.0)
+        result = str(settlement.get("result") or settlement.get("market_result") or "").upper()
+        environment = _execution_mode(settlement.get("environment") or "paper")
+        revenue = _finite_number(
+            settlement.get("revenue") if settlement.get("revenue") is not None else settlement.get("revenue_dollars"),
+            0.0,
+        )
+        yes_cost = _finite_number(settlement.get("yes_total_cost_dollars"), 0.0)
+        no_cost = _finite_number(settlement.get("no_total_cost_dollars"), 0.0)
+        cost = _finite_number(settlement.get("cost"), yes_cost + no_cost)
+        fees = _finite_number(
+            settlement.get("fees"),
+            _finite_number(settlement.get("fee_cost_dollars"), 0.0)
+            + _finite_number(settlement.get("settlement_fee_dollars"), 0.0),
+        )
+        raw_pnl = settlement.get("pnl")
+        if raw_pnl is None:
+            raw_pnl = settlement.get("pnl_dollars")
+        pnl = _finite_number(raw_pnl, revenue - cost - fees)
+        side = str(settlement.get("side") or "").upper()
+        yes_count = _finite_number(settlement.get("yes_count_fp") or settlement.get("yes_count"), 0.0)
+        no_count = _finite_number(settlement.get("no_count_fp") or settlement.get("no_count"), 0.0)
+        if side not in {"YES", "NO"}:
+            side = "YES" if yes_count > 0 else "NO" if no_count > 0 else ""
+        contracts = _finite_number(
+            settlement.get("contracts"),
+            yes_count if side == "YES" else no_count if side == "NO" else yes_count + no_count,
+        )
+        settled_at = (
+            settlement.get("settledAt")
+            or settlement.get("settled_time")
+            or settlement.get("created_time")
+        )
+        source = "Kalshi Real Settlement" if environment == "real" else "Kalshi Paper Settlement"
         payload = {
-            "source": "Kalshi Paper Settlement",
-            "event_id": settlement.get("settlement_id") or f"{ticker}:{settlement.get('settled_time')}",
-            "trigger": "settlement",
-            "mode": "paper",
-            "timeEt": settlement.get("settled_time"),
-            "processed": 1,
-            "passedCandidates": 0,
-            "runTime": "-",
-            "warning": "",
-            "topCandidates": [
-                f"{ticker} settled {result} · payout ${revenue:.2f} · fees ${fees:.4f} · net P/L ${pnl:.2f}"
-            ],
-            "topSymbols": [ticker],
-            "recommendations": [],
-            "description": f"Kalshi Paper settlement: {ticker} resolved {result}. Net P/L ${pnl:.2f}.",
-            "descriptionZh": f"Kalshi 模拟盘结算：{ticker} 结果 {result}，净盈亏 ${pnl:.2f}。",
+            "source": source,
+            "notificationScope": "kalshi",
+            "assetClass": "kalshi",
+            "event_id": settlement.get("key") or settlement.get("settlement_id") or f"{environment}:{ticker}:{settled_at}:{result}",
+            "mode": environment,
+            "symbol": ticker,
+            "result": result,
+            "outcome": side,
+            "contracts": contracts,
+            "revenue": revenue,
+            "cost": cost,
+            "fees": fees,
+            "pnl": pnl,
+            "settledAt": settled_at,
+            "description": f"{source}: {ticker} resolved {result}; net P/L ${pnl:.4f}.",
+            "descriptionZh": f"Kalshi {'实盘' if environment == 'real' else '模拟盘'}结算：{ticker} 结果 {result}，净盈亏 ${pnl:.4f}。",
         }
-        self._notify(user_id, "cycle_digest", payload)
+        self._notify(user_id, "settlement", payload)
+
+    def _record_loop_success(self, user_id: str, family: str, mode: str) -> None:
+        runtime_lock = getattr(self, "_runtime_lock", None)
+        if runtime_lock is None:
+            self._loop_last_error = ""
+        else:
+            with runtime_lock:
+                self._loop_last_error = ""
+        key = f"{user_id}:{family}"
+        previous = self._loop_error_counts.pop(key, 0)
+        if key not in self._loop_alerted:
+            return
+        self._loop_alerted.discard(key)
+        self._notify(
+            user_id,
+            "lifecycle",
+            {
+                "source": "Kalshi Robot",
+                "notificationScope": "kalshi",
+                "assetClass": "kalshi",
+                "event_id": f"kalshi-recovered:{family}:{datetime.now(timezone.utc).strftime('%Y%m%d%H%M')}",
+                "component": "BTC Hourly Robot" if family == "btchourly" else "BTC 15-Minute Robot",
+                "state": "recovered",
+                "mode": mode,
+                "detail": f"Background cycles recovered after {previous} consecutive failures.",
+                "detailZh": f"后台周期已恢复，此前连续失败 {previous} 次。",
+            },
+        )
+
+    def _record_loop_failure(self, user_id: str, family: str, mode: str, exc: Exception) -> None:
+        runtime_lock = getattr(self, "_runtime_lock", None)
+        if runtime_lock is None:
+            self._loop_last_error = type(exc).__name__
+        else:
+            with runtime_lock:
+                self._loop_last_error = type(exc).__name__
+        key = f"{user_id}:{family}"
+        count = int(self._loop_error_counts.get(key, 0)) + 1
+        self._loop_error_counts[key] = count
+        error_type = type(exc).__name__
+        is_version_conflict = error_type == "OperationsVersionConflict"
+        self.safe_print(
+            f"[KalshiRobot] {family} tick failed user={user_id} "
+            f"error={error_type} consecutive={count}"
+        )
+        if not is_version_conflict:
+            try:
+                self.state.error(user_id, f"{error_type}: background cycle failed")
+            except Exception as state_exc:
+                self.safe_print(
+                    f"[KalshiRobot] state error record skipped user={user_id} "
+                    f"error={type(state_exc).__name__}"
+                )
+        if count < 3 or key in self._loop_alerted:
+            return
+
+        self._loop_alerted.add(key)
+        if is_version_conflict:
+            reason = "State changed on another backend instance; AlphaLab reloaded it and will retry."
+            reason_zh = "状态已被另一后端实例更新；AlphaLab 已重新读取，并将在下一周期重试。"
+            severity = "medium"
+        else:
+            reason = f"{family} background cycle failed {count} consecutive times ({error_type})."
+            reason_zh = f"{'BTC 小时' if family == 'btchourly' else 'BTC 15 分钟'}后台周期已连续失败 {count} 次（{error_type}）。"
+            severity = "high"
+        self._notify(
+            user_id,
+            "risk_alert",
+            {
+                "source": "Kalshi Robot",
+                "notificationScope": "kalshi",
+                "assetClass": "kalshi",
+                "event_id": f"kalshi-loop:{family}:{error_type}:{datetime.now(timezone.utc).strftime('%Y%m%d%H%M')}",
+                "fingerprint": f"kalshi:{family}:{error_type}",
+                "symbol": BTC_HOURLY_SERIES if family == "btchourly" else BTC_15M_SERIES,
+                "step": "Kalshi Hourly Robot" if family == "btchourly" else "Kalshi BTC15 Robot",
+                "status": "attention",
+                "severity": severity,
+                "reason": reason,
+                "reasonZh": reason_zh,
+                "action": "The robot remains fail-closed and will keep retrying. Review backend health if it does not recover.",
+                "actionZh": "机器人保持安全关闭并继续重试；若未自动恢复，请检查后端健康状态。",
+                "mode": mode,
+            },
+        )
 
     def _loop(self):
         while not self._stop_event.wait(5.0):
+            with self._runtime_lock:
+                self._loop_last_heartbeat_monotonic = time.monotonic()
+                self._loop_last_heartbeat_at = datetime.now(timezone.utc).isoformat()
             if callable(self.scheduler_lease_acquirer):
                 try:
-                    if not self.scheduler_lease_acquirer():
+                    owns_lease = bool(self.scheduler_lease_acquirer())
+                    with self._runtime_lock:
+                        self._scheduler_lease_owned = owns_lease
+                        self._scheduler_lease_checked_at = (
+                            datetime.now(timezone.utc).isoformat()
+                        )
+                    if not owns_lease:
                         continue
                 except Exception as exc:
+                    with self._runtime_lock:
+                        self._scheduler_lease_owned = False
+                        self._scheduler_lease_checked_at = (
+                            datetime.now(timezone.utc).isoformat()
+                        )
+                        self._loop_last_error = type(exc).__name__
                     self.safe_print(
                         f"[KalshiRobot] scheduler lease unavailable "
                         f"error={type(exc).__name__}"
                     )
                     continue
-            for user_id in self.state.enabled_users():
+            try:
+                enabled_users = self.state.enabled_users()
+                with self._runtime_lock:
+                    if not self._loop_error_counts:
+                        self._loop_last_error = ""
+            except Exception as exc:
+                with self._runtime_lock:
+                    self._loop_last_error = type(exc).__name__
+                self.safe_print(
+                    f"[KalshiRobot] enabled-user discovery failed error={type(exc).__name__}"
+                )
+                continue
+            for user_id in enabled_users:
+                mode = "paper"
                 try:
                     state = self.state.get(user_id)
                     mode = _execution_mode((state.get("config") or {}).get("executionMode"))
                     self.tick(user_id, submit_order=True, mode=mode, family="btc15m")
+                    self._record_loop_success(user_id, "btc15m", mode)
                     now_monotonic = time.monotonic()
                     if now_monotonic - self._last_hourly_tick.get(str(user_id), 0.0) >= 5.0:
                         try:
                             self.tick(user_id, submit_order=True, mode=mode, family="btchourly")
+                            self._record_loop_success(user_id, "btchourly", mode)
                         except Exception as exc:
-                            # Strategy runtimes are isolated: ladder-data
-                            # degradation cannot mark BTC15 as failed.
-                            self.safe_print(
-                                f"[KalshiHourlyRobot] tick failed user={user_id} "
-                                f"error={type(exc).__name__}"
-                            )
+                            self._record_loop_failure(user_id, "btchourly", mode, exc)
                         finally:
                             self._last_hourly_tick[str(user_id)] = now_monotonic
                 except Exception as exc:
-                    self.safe_print(f"[KalshiRobot] tick failed user={user_id} error={type(exc).__name__}")
-                    self.state.error(user_id, str(exc))
-                    minute_key = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
-                    self._notify(
-                        user_id,
-                        "risk_alert",
-                        {
-                            "source": "Kalshi Robot",
-                            "event_id": f"kalshi-loop:{type(exc).__name__}:{minute_key}",
-                            "symbol": BTC_15M_SERIES,
-                            "step": "Kalshi robot",
-                            "status": "attention",
-                            "reason": f"Background tick failed: {type(exc).__name__}. {str(exc)[:180]}",
-                            "reasonZh": f"Kalshi 后台机器人运行失败：{type(exc).__name__}。{str(exc)[:180]}",
-                            "action": "The bot will keep retrying. Check Kalshi connectivity, quote freshness, and backend logs.",
-                            "actionZh": "机器人会继续重试。请检查 Kalshi 连接、行情刷新和后端日志。",
-                        },
-                    )
+                    self._record_loop_failure(user_id, "btc15m", mode, exc)
+
+    def runtime_snapshot(self) -> Dict[str, Any]:
+        with self._runtime_lock:
+            heartbeat_mono = self._loop_last_heartbeat_monotonic
+            heartbeat_at = self._loop_last_heartbeat_at
+            last_error = self._loop_last_error
+            lease_owned = self._scheduler_lease_owned
+            lease_checked_at = self._scheduler_lease_checked_at
+        thread_alive = bool(self._thread and self._thread.is_alive())
+        heartbeat_age = max(0.0, time.monotonic() - heartbeat_mono)
+        required = bool(self._background_requested and not self._scheduler_disabled)
+        healthy = bool(
+            (not required)
+            or (thread_alive and heartbeat_age <= 30 and not last_error)
+        )
+        return {
+            "required": required,
+            "healthy": healthy,
+            "status": (
+                "disabled" if self._scheduler_disabled else
+                "standby" if healthy and lease_owned is False else
+                "healthy" if healthy else
+                "degraded"
+            ),
+            "threadAlive": thread_alive,
+            "startedAt": self._loop_started_at,
+            "lastHeartbeatAt": heartbeat_at,
+            "heartbeatAgeSeconds": round(heartbeat_age, 3),
+            "lastError": last_error,
+            "schedulerLeaseOwned": lease_owned,
+            "schedulerLeaseCheckedAt": lease_checked_at,
+            "routingFencingSupported": bool(
+                callable(getattr(self.worker_lease_store, "claim_worker_lease_fenced", None))
+                and callable(getattr(self.worker_lease_store, "renew_worker_lease", None))
+                and callable(getattr(self.worker_lease_store, "release_worker_lease", None))
+            ),
+        }
 
 
 
@@ -3231,6 +3597,7 @@ def register_kalshi_api(
     observation_saver=None,
     observation_loader=None,
     scheduler_lease_acquirer=None,
+    worker_lease_store=None,
 ):
     """Register Kalshi research and per-user connection APIs once per app."""
     existing = app.extensions.get("alphalab_kalshi_api")
@@ -3438,6 +3805,7 @@ def register_kalshi_api(
         portfolio_display_loader=portfolio_display_loader,
         portfolio_display_saver=portfolio_display_saver,
         scheduler_lease_acquirer=scheduler_lease_acquirer,
+        worker_lease_store=worker_lease_store,
         reference_stream=reference_stream,
         safe_print=safe_print,
         start_background=start_background,
@@ -3660,7 +4028,9 @@ def register_kalshi_api(
             mode = request_mode()
             return ok({
                 "success": True,
-                "portfolio": paper_robot.portfolio(user["id"], mode=mode, include_display=True),
+                "portfolio": paper_robot.portfolio(
+                    user["id"], mode=mode, include_display=True, mutate=False
+                ),
                 "state": robot_state.get(user["id"], environment=mode),
             })
         except Exception as exc:
@@ -3725,8 +4095,34 @@ def register_kalshi_api(
             config["executionMode"] = mode
             if body["enabled"]:
                 ensure_real_ready(user["id"], mode)
+            previous = robot_state.get(user["id"], environment=mode)
             state = robot_state.configure(user["id"], body["enabled"], config)
             payload = {"success": True, "state": state}
+            if bool(previous.get("enabled")) != bool(body["enabled"]):
+                paper_robot._notify(
+                    user["id"],
+                    "lifecycle",
+                    {
+                        "source": "Kalshi Robot",
+                        "notificationScope": "kalshi",
+                        "assetClass": "kalshi",
+                        "event_id": f"kalshi-robot:{mode}:{'start' if body['enabled'] else 'stop'}:{time.time_ns()}",
+                        "component": "Kalshi BTC Robot",
+                        "state": "started" if body["enabled"] else "stopped",
+                        "mode": mode,
+                        "trigger": "user",
+                        "description": (
+                            f"Kalshi {mode} automation is armed."
+                            if body["enabled"]
+                            else f"Kalshi {mode} automation is stopped."
+                        ),
+                        "descriptionZh": (
+                            f"Kalshi {'实盘' if mode == 'real' else '模拟盘'}自动化已启动。"
+                            if body["enabled"]
+                            else f"Kalshi {'实盘' if mode == 'real' else '模拟盘'}自动化已停止。"
+                        ),
+                    },
+                )
             if body["enabled"]:
                 payload.update(paper_robot.tick(user["id"], submit_order=True, mode=mode))
             return ok(payload)
@@ -3852,6 +4248,7 @@ def register_kalshi_api(
         "robot_state": robot_state,
         "paper_accounts": paper_accounts,
         "paper_robot": paper_robot,
+        "runtime": paper_robot.runtime_snapshot,
         "reference_stream": reference_stream,
     }
     app.extensions["alphalab_kalshi_api"] = controls

@@ -653,3 +653,126 @@ def test_worker_lease_release_migration_is_owner_checked_and_service_role_only()
     assert "set search_path = public, pg_temp" in sql
     assert "from public, anon, authenticated" in sql
     assert "to service_role" in sql
+
+
+def test_fenced_worker_lease_generation_is_exact_and_monotonic_locally(tmp_path):
+    store = local_store(tmp_path)
+
+    first = store.claim_worker_lease_fenced(
+        "crypto-routing:user-a", "worker-a", ttl_seconds=30,
+    )
+    renewed_claim = store.claim_worker_lease_fenced(
+        "crypto-routing:user-a", "worker-a", ttl_seconds=30,
+    )
+
+    assert first["acquired"] is True
+    assert first["fencingToken"] > 0
+    assert renewed_claim["fencingToken"] == first["fencingToken"]
+    assert store.claim_worker_lease_fenced(
+        "crypto-routing:user-a", "worker-b", ttl_seconds=30,
+    )["acquired"] is False
+    assert store.renew_worker_lease(
+        "crypto-routing:user-a",
+        "worker-a",
+        first["fencingToken"],
+        ttl_seconds=30,
+    ) is True
+    store._local["worker_leases"]["crypto-routing:user-a"][
+        "lease_expires_epoch"
+    ] = 0
+    assert store.renew_worker_lease(
+        "crypto-routing:user-a",
+        "worker-a",
+        first["fencingToken"],
+        ttl_seconds=30,
+    ) is False
+    replacement = store.claim_worker_lease_fenced(
+        "crypto-routing:user-a", "worker-a", ttl_seconds=30,
+    )
+    assert replacement["fencingToken"] > first["fencingToken"]
+    assert store.release_worker_lease(
+        "crypto-routing:user-a", "worker-a", first["fencingToken"],
+    ) is False
+    assert store.release_worker_lease(
+        "crypto-routing:user-a", "worker-a", replacement["fencingToken"],
+    ) is True
+
+    next_generation = store.claim_worker_lease_fenced(
+        "crypto-routing:user-a", "worker-b", ttl_seconds=30,
+    )
+    assert next_generation["fencingToken"] > replacement["fencingToken"]
+
+
+def test_worker_lease_hardening_migration_is_rls_safe_and_rolling_compatible():
+    root = Path(__file__).parents[1]
+    migration = (
+        root / "migrations" / "20260726010000_worker_lease_runtime_hardening.sql"
+    ).read_text(encoding="utf-8").lower()
+    fresh_schema = (root / "supabase_schema.sql").read_text(encoding="utf-8").lower()
+
+    for sql in (migration, fresh_schema):
+        assert "create table if not exists public.app_worker_leases" in sql
+        assert "alter table public.app_worker_leases enable row level security" in sql
+        assert "revoke all on table public.app_worker_leases from public, anon, authenticated" in sql
+        assert "fencing_token bigint" in sql
+        assert "claim_app_worker_lease_fenced" in sql
+        assert "renew_app_worker_lease" in sql
+        assert "release_app_worker_lease_fenced" in sql
+        assert "and lease_expires_at > statement_timestamp()" in sql
+        assert "security invoker" in sql
+        assert "to service_role" in sql
+
+    # Legacy rolling-deploy RPC signatures remain available.
+    assert "create or replace function public.claim_app_worker_lease(" in migration
+    assert "create or replace function public.release_app_worker_lease(" in migration
+    assert "p_fencing_token bigint default null" not in migration
+
+
+def test_remote_fenced_worker_lease_uses_new_rpc_chain():
+    calls = []
+
+    class Response:
+        def __init__(self, data):
+            self.data = data
+
+    class Rpc:
+        def __init__(self, name):
+            self.name = name
+
+        def execute(self):
+            payloads = {
+                "claim_app_worker_lease_fenced": {
+                    "acquired": True,
+                    "fencingToken": 91,
+                },
+                "renew_app_worker_lease": {
+                    "renewed": True,
+                    "fencingToken": 91,
+                },
+                "release_app_worker_lease_fenced": True,
+            }
+            return Response(payloads[self.name])
+
+    class Client:
+        def rpc(self, name, arguments):
+            calls.append((name, dict(arguments)))
+            return Rpc(name)
+
+    store = OperationsStore(Client())
+    claim = store.claim_worker_lease_fenced("lease-a", "owner-a")
+    renewed = store.renew_worker_lease(
+        "lease-a", "owner-a", claim["fencingToken"],
+    )
+    released = store.release_worker_lease(
+        "lease-a", "owner-a", claim["fencingToken"],
+    )
+
+    assert renewed is True
+    assert released is True
+    assert [name for name, _arguments in calls] == [
+        "claim_app_worker_lease_fenced",
+        "renew_app_worker_lease",
+        "release_app_worker_lease_fenced",
+    ]
+    assert calls[1][1]["p_fencing_token"] == 91
+    assert calls[2][1]["p_fencing_token"] == 91

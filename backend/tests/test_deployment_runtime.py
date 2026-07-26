@@ -29,6 +29,11 @@ def test_container_context_excludes_local_dependencies_and_secrets():
     assert "frontend/node_modules" in dockerignore
     assert "backend/.venv" in dockerignore
     assert "backend/pipeline_runtime_state.json" in dockerignore
+    assert "backend/*.json" in dockerignore
+    assert "backend/*_config.json" in dockerignore
+    assert "backend/*_state.json" in dockerignore
+    assert "backend/*.lock" in dockerignore
+    assert "backend/.*.lock" in dockerignore
 
 
 def test_nginx_has_no_backend_port_collision_and_supports_supabase():

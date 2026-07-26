@@ -1130,6 +1130,74 @@ def test_lost_distributed_routing_lease_blocks_broker_post(monkeypatch):
         controls["stop"]()
 
 
+def test_live_broker_post_requires_exact_fenced_lease_renewal(monkeypatch):
+    class FencedRoutingStore(FakeStore):
+        def __init__(self):
+            super().__init__()
+            self.events = []
+
+        def claim_worker_lease_fenced(self, lease_name, owner_id, **_kwargs):
+            self.events.append(("claim", lease_name, owner_id, 41))
+            return {"acquired": True, "fencingToken": 41}
+
+        def renew_worker_lease(
+            self, lease_name, owner_id, fencing_token, **_kwargs,
+        ):
+            self.events.append(("renew", lease_name, owner_id, fencing_token))
+            return fencing_token == 41
+
+        def release_worker_lease(
+            self, lease_name, owner_id, fencing_token=None,
+        ):
+            self.events.append(("release", lease_name, owner_id, fencing_token))
+            return fencing_token == 41
+
+    store = FencedRoutingStore()
+    _, _, _, _, controls = make_api(monkeypatch, store=store)
+    service = controls["service"]
+    monkeypatch.setattr(service, "_assert_order_routing_allowed", lambda *_a, **_k: {})
+    monkeypatch.setattr(service, "open_orders", lambda *_args: [])
+    monkeypatch.setattr(service, "_existing_order", lambda *_args: None)
+    monkeypatch.setattr(
+        service,
+        "_broker_config",
+        lambda *_args: {
+            "base_url": "https://broker.test",
+            "api_key": "key",
+            "api_secret": "secret",
+        },
+    )
+    monkeypatch.setattr(service, "_headers", lambda *_args: {})
+
+    def broker_request(*_args, **_kwargs):
+        store.events.append(("post",))
+        return {"id": "live-order-1"}
+
+    monkeypatch.setattr(crypto_api, "_request_json", broker_request)
+    try:
+        result = service._submit_order_guarded(
+            "user-a",
+            "live",
+            {"symbol": "BTC/USD", "client_order_id": "fenced-live-order"},
+            expected_config_version=1,
+            source="scheduler",
+        )
+    finally:
+        controls["stop"]()
+
+    assert result["id"] == "live-order-1"
+    post_index = store.events.index(("post",))
+    assert store.events[0][0] == "claim"
+    assert store.events[post_index - 1][0] == "renew"
+    assert all(
+        event[3] == 41
+        for event in store.events[:post_index]
+        if event[0] == "renew"
+    )
+    assert store.events[-1][0] == "release"
+    assert store.events[-1][3] == 41
+
+
 def test_broker_idempotency_lookup_is_followed_by_a_final_lifecycle_fence(monkeypatch):
     store = FakeStore()
     config = crypto_api._default_config()

@@ -25,13 +25,14 @@ Four request threads fit the Render Pro 2-CPU profile while leaving room for two
 
 Create a project and apply the repository SQL files in this order:
 
-1. [`backend/supabase_schema.sql`](backend/supabase_schema.sql) — encrypted user configuration, workspace preferences, scheduler configuration, and pipeline history.
+1. [`backend/supabase_schema.sql`](backend/supabase_schema.sql) — encrypted user configuration, atomic runtime-state patches, workspace preferences, scheduler configuration, and pipeline history.
 2. [`backend/supabase_operations_store.sql`](backend/supabase_operations_store.sql) — durable Safety Center state, readiness, audit events, order lifecycle, notification delivery, and versioned cross-device artifacts.
 3. [`backend/supabase_security_hardening.sql`](backend/supabase_security_hardening.sql) — browser-role write lockdown, owner-only reads, and database security hardening.
+4. [`backend/migrations/20260726010000_worker_lease_runtime_hardening.sql`](backend/migrations/20260726010000_worker_lease_runtime_hardening.sql) — monotonic fencing tokens and exact-owner renewal/release for unattended Kalshi and crypto order routing.
 
-The operations migration is mandatory, not an optional feature migration. Production real new-entry checks fail closed if the operations store cannot be read. Safety Center and artifact writes return HTTP 503 rather than silently falling back to local files.
+All four files are mandatory, not optional feature migrations. Production real new-entry checks fail closed if the operations store or fenced worker-lease contract cannot be read. Safety Center and artifact writes return HTTP 503 rather than silently falling back to local files.
 
-After applying all three files, run this verification query in the Supabase SQL editor. Every result must contain a table name rather than `null`:
+After applying all four files, run this verification query in the Supabase SQL editor. Every result must contain a table or function name rather than `null`, and `lease_fencing_token` must be `true`:
 
 ```sql
 select
@@ -40,7 +41,23 @@ select
   to_regclass('public.user_notification_delivery_events') as notification_events,
   to_regclass('public.user_order_lifecycle_events') as order_events,
   to_regclass('public.user_readiness_status') as readiness_status,
-  to_regclass('public.user_operation_artifacts') as operation_artifacts;
+  to_regclass('public.user_operation_artifacts') as operation_artifacts,
+  exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'app_worker_leases'
+      and column_name = 'fencing_token'
+  ) as lease_fencing_token,
+  to_regprocedure(
+    'public.claim_app_worker_lease_fenced(text,text,integer,jsonb)'
+  ) as fenced_claim,
+  to_regprocedure(
+    'public.renew_app_worker_lease(text,text,bigint,integer,jsonb)'
+  ) as fenced_renew,
+  to_regprocedure(
+    'public.release_app_worker_lease_fenced(text,text,bigint)'
+  ) as fenced_release;
 ```
 
 Record:
@@ -65,6 +82,7 @@ Configure a Python web service:
 | Build command | `pip install -r requirements.txt` |
 | Start command | `MALLOC_ARENA_MAX=2 gunicorn start_quant_backend:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 900` |
 | Health path | `/api/health` |
+| Readiness/alert path | `/api/ready` |
 | Instance count | `1` (the in-process scheduler must have one owner) |
 
 Required backend variables:
@@ -121,11 +139,19 @@ Build-time variables:
 | Variable | Purpose |
 | --- | --- |
 | `REACT_APP_API_BASE_URL` | Public backend URL ending in `/api` |
+| `REACT_APP_SITE_URL` | Canonical public origin used for authentication callbacks; set to `https://www.alphalabquant.com` in production |
 | `REACT_APP_SUPABASE_URL` | Supabase project URL |
 | `REACT_APP_SUPABASE_ANON_KEY` | Public browser-safe Supabase key |
-| `REACT_APP_TURNSTILE_SITE_KEY` | Optional public Turnstile site key |
+| `REACT_APP_TURNSTILE_SITE_KEY` | Public Turnstile site key; required when production account creation, sign-in, resend, or recovery forms are enabled |
 
 The repository's `frontend/public/_headers` supplies the production security headers. Confirm the deployed response includes the expected Content Security Policy before enabling sign-in.
+
+Branch-preview origins are intentionally excluded from production API CORS and
+must not be treated as authenticated end-to-end environments. Use the canonical
+custom domain for production authentication checks, or provision a dedicated
+staging backend and explicitly scoped preview origin before enabling authenticated
+API calls from a Pages preview. This keeps an arbitrary preview branch from
+receiving production user bearer tokens.
 
 ## Docker deployment
 
@@ -154,9 +180,13 @@ docker run --rm -p 8080:8080 \
 
 Nginx listens on port `8080`, serves the SPA, proxies `/api`, and writes access/error output to the container logs. The image health check calls `http://127.0.0.1:8080/api/health`.
 
+Keep `/api/health` as the container liveness probe. Monitor `/api/ready` separately for traffic readiness and alerting: it returns HTTP 503 when the scheduler heartbeat is stale, durable persistence repeatedly fails, a cancelled run remains stalled beyond its grace period, a runtime-persistence backoff is active, or memory reaches the abort threshold. Both endpoints are explicitly non-cacheable. Alert on two consecutive readiness failures and inspect the returned component diagnostics before restarting; do not expose credentials or raw provider exceptions in the alert payload.
+
+The supported topology is one backend instance and one Gunicorn worker. Horizontal scaling requires moving the scheduler to a dedicated service or adding a database-backed distributed scheduler/run lease first; process-local reservations alone are not a multi-host ownership mechanism.
+
 ## Post-deployment checks
 
-1. `GET /api/health` returns HTTP 200.
+1. `GET /api/health` returns HTTP 200 and `GET /api/ready` returns HTTP 200 with healthy scheduler, persistence, and memory components.
 2. Public routes load directly and after a browser refresh.
 3. Sign-in completes through the deployed Supabase project; an enrolled TOTP account is routed through `/mfa` and completes its AAL2 challenge.
 4. The Supabase verification query above reports all six operations tables.
@@ -166,7 +196,7 @@ Nginx listens on port `8080`, serves the SPA, proxies `/api`, and writes access/
 8. Watchlist symbols, saved strategy blueprints, paper/live mode, and language restore for the same user on another browser profile. Supported Discord test copy follows the saved language.
 9. On a paper account or controlled broker test account, pausing new entries blocks an entry and leaves existing protective sell/stop/OCO orders intact. Do not perform this check against an unmanaged live position.
 10. Evidence JSON and portfolio CSV/JSON exports download without exposing credential fields.
-11. The application has one scheduler owner and an always-on backend instance.
+11. The application has one scheduler owner and an always-on backend instance; readiness monitoring is configured independently from liveness restarts.
 12. Live credentials and unattended order authority remain disabled until operations storage, risk settings, protective orders, and notification delivery are reviewed.
 
 ## Migration workflow

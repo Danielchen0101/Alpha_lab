@@ -18,7 +18,10 @@ export default defineConfig({
   webServer: externalBaseURL ? undefined : {
     command: 'npm run build && npm run serve:e2e',
     url: localBaseURL,
-    reuseExistingServer: !process.env.CI,
+    // A stale local server can otherwise make Playwright validate an older
+    // bundle and hide regressions. Always build and serve the exact tree under
+    // test.
+    reuseExistingServer: false,
     timeout: 120_000,
     env: {
       HOST: '127.0.0.1',
@@ -28,7 +31,9 @@ export default defineConfig({
       REACT_APP_ENABLE_ANALYTICS: 'false',
       REACT_APP_SUPABASE_URL: 'https://example.supabase.co',
       REACT_APP_SUPABASE_ANON_KEY: 'ci-public-placeholder',
-      REACT_APP_TURNSTILE_SITE_KEY: '',
+      // Cloudflare's documented always-pass test key keeps auth controls
+      // usable without contacting the production Turnstile configuration.
+      REACT_APP_TURNSTILE_SITE_KEY: '1x00000000000000000000AA',
     },
   },
   projects: [

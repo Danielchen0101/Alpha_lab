@@ -8,8 +8,8 @@
   --market-rule-soft: rgba(23, 26, 23, 0.11);
   --market-blue: #2b5fae;
   --market-blue-soft: #7b9fab;
-  --market-moss: #687b5b;
-  --market-copper: #b86f4b;
+  --market-moss: #4f6847;
+  --market-copper: #985033;
   --market-font-ui: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif;
   --market-font-display-en: 'SF Pro Display', 'Segoe UI Variable Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
   --market-font-display-zh: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Source Han Sans SC', sans-serif;
@@ -26,6 +26,108 @@
   font-family: var(--market-font-ui);
   -webkit-font-smoothing: antialiased;
   color-scheme: light;
+}
+
+html[data-theme='dark'] .market-field-page {
+  --market-paper: #15191a;
+  --market-paper-bright: #1d2223;
+  --market-paper-deep: #101415;
+  --market-ink: #f3f1e9;
+  --market-muted: #b9c1bb;
+  --market-rule: rgba(243, 241, 233, .24);
+  --market-rule-soft: rgba(243, 241, 233, .14);
+  --market-blue: #91baff;
+  --market-blue-soft: #9ec6d2;
+  --market-moss: #acc99f;
+  --market-copper: #efa984;
+  color-scheme: dark;
+  background:
+    radial-gradient(circle at 8% 4%, rgba(145, 186, 255, .09), transparent 26%),
+    repeating-radial-gradient(circle at 27% 31%, rgba(243, 241, 233, .045) 0 .45px, transparent .65px 4px),
+    var(--market-paper);
+}
+
+html[data-theme='dark'] .market-field-page .market-eyebrow,
+html[data-theme='dark'] .market-field-page .specimen-kicker {
+  color: #b5cda9;
+}
+
+html[data-theme='dark'] .market-field-page .paper-register::before,
+html[data-theme='dark'] .market-field-page .paper-register::after,
+html[data-theme='dark'] .market-field-page .market-title-meta > i {
+  background: rgba(243, 241, 233, .38);
+}
+
+html[data-theme='dark'] .market-field-page .market-hero-subtitle {
+  color: #c8cec9;
+}
+
+html[data-theme='dark'] .market-field-page .market-primary-action {
+  color: #101415;
+  border-color: #a8c7ff;
+  background: #a8c7ff;
+  box-shadow: 0 7px 18px rgba(0, 0, 0, .28);
+}
+
+html[data-theme='dark'] .market-field-page .market-primary-action:hover {
+  background: #c3d8ff;
+}
+
+html[data-theme='dark'] .market-field-page .research-specimen-shell {
+  border-color: rgba(243, 241, 233, .45);
+  background:
+    linear-gradient(108deg, rgba(243, 241, 233, .025) 0 1px, transparent 1px 8px),
+    var(--market-paper-bright);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .28);
+}
+
+html[data-theme='dark'] .market-field-page .specimen-mode-badge {
+  color: #a8c7ff;
+  border-color: rgba(145, 186, 255, .68);
+}
+
+html[data-theme='dark'] .market-field-page .specimen-next-peek,
+html[data-theme='dark'] .market-field-page .filter-row,
+html[data-theme='dark'] .market-field-page .test-metrics dt,
+html[data-theme='dark'] .market-field-page .trade-plan-mini > div,
+html[data-theme='dark'] .market-field-page .evidence-mini > div,
+html[data-theme='dark'] .market-field-page .trade-plan-mini b {
+  color: #c1c8c2;
+}
+
+html[data-theme='dark'] .market-field-page .filter-status.is-passed,
+html[data-theme='dark'] .market-field-page .filter-gate b,
+html[data-theme='dark'] .market-field-page .plan-map-header strong {
+  color: #b6d4a8;
+}
+
+html[data-theme='dark'] .market-field-page .filter-status.is-review,
+html[data-theme='dark'] .market-field-page .approval-state {
+  color: #f0bd82;
+}
+
+html[data-theme='dark'] .market-field-page .filter-status.is-blocked {
+  color: #ff9e91;
+}
+
+html[data-theme='dark'] .market-field-page .market-equity-grid text,
+html[data-theme='dark'] .market-field-page .plan-chart-area text {
+  fill: #bdc5bf;
+}
+
+html[data-theme='dark'] .market-field-page .market-benchmark-line {
+  stroke: #c1c9c3;
+}
+
+html[data-theme='dark'] .market-field-page .market-story {
+  background: rgba(255, 255, 255, .035);
+}
+
+html[data-theme='dark'] .market-field-page .market-stage-rail li.is-active button,
+html[data-theme='dark'] .market-field-page .market-stage-rail li.is-active .market-stage-number,
+html[data-theme='dark'] .market-field-page .market-stage-rail li.is-active .market-stage-name,
+html[data-theme='dark'] .market-field-page .market-stage-rail li.is-active .market-stage-short {
+  color: #101415;
 }
 
 .market-field-page *,
@@ -62,6 +164,11 @@
 .market-field-page button:focus-visible {
   outline: 2px solid var(--market-blue);
   outline-offset: 4px;
+}
+
+.market-mobile-track:focus-visible {
+  outline: 2px solid var(--market-blue);
+  outline-offset: -2px;
 }
 
 .market-eyebrow,

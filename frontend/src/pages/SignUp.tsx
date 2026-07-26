@@ -1,18 +1,30 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Form, Input, Button, Typography, Alert, Checkbox } from 'antd';
-import { UserOutlined, LockOutlined, MailOutlined, ArrowLeftOutlined } from '@ant-design/icons';
+import { UserOutlined, LockOutlined, MailOutlined } from '@ant-design/icons';
 import Turnstile, { BoundTurnstileObject } from 'react-turnstile';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { supabase } from '../lib/supabaseClient';
-import { getEmailConfirmationRedirect } from '../lib/authRedirect';
+import {
+  getAuthRedirect,
+  getEmailConfirmationRedirect,
+} from '../lib/authRedirect';
+import AuthPageNav from '../components/AuthPageNav';
 import type { Provider } from '@supabase/supabase-js';
 import '../styles/Auth.css';
 
 const { Title, Text } = Typography;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PASSWORD_MIN_LENGTH = 8;
+
+export const satisfiesSignUpPasswordPolicy = (password: string) => (
+  password.length >= PASSWORD_MIN_LENGTH
+  && /[a-z]/.test(password)
+  && /[A-Z]/.test(password)
+  && /[0-9]/.test(password)
+);
 
 const useCompactCaptcha = () => {
   const [compact, setCompact] = useState(false);
@@ -31,7 +43,7 @@ const useCompactCaptcha = () => {
 const SignUp: React.FC = () => {
   const navigate = useNavigate();
   const { signUp } = useAuth();
-  const { t, language, setLanguage } = useLanguage();
+  const { t, language } = useLanguage();
   const { resolvedTheme } = useTheme();
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
@@ -51,6 +63,7 @@ const SignUp: React.FC = () => {
   const isDev = process.env.NODE_ENV === 'development';
   const captchaConfigured = !!turnstileSiteKey;
   const canSubmit = formValid && (captchaConfigured ? !!captchaToken : isDev);
+  const canResendConfirmation = !resending && (captchaConfigured ? !!captchaToken : isDev);
 
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -79,13 +92,25 @@ const SignUp: React.FC = () => {
       setError(t.auth.passwordsDoNotMatchError);
       return;
     }
+    if (!satisfiesSignUpPasswordPolicy(values.password)) {
+      setError(t.auth.errorWeakPassword);
+      return;
+    }
+    if (!captchaConfigured && !isDev) {
+      setError(t.auth.captchaNotConfigured);
+      return;
+    }
+    if (captchaConfigured && !captchaToken) {
+      setError(t.auth.signUpHelperCaptcha);
+      return;
+    }
     const redirectTo = getEmailConfirmationRedirect();
     setSubmitting(true);
     const result = await signUp(values.email, values.password, captchaToken, values.fullName, redirectTo);      
     setSubmitting(false);
+    setCaptchaToken('');
+    turnstileRef.current?.reset();
     if (result.success) {
-      setCaptchaToken('');
-      turnstileRef.current?.reset();
       setSubmittedEmail(values.email.trim());
       setConfirmationRequired(result.confirmationRequired !== false);
       setSubmitted(true);
@@ -96,7 +121,12 @@ const SignUp: React.FC = () => {
       } else if (errMsg.includes('invalid login credentials')) {
         setError(t.auth.registrationFailed || t.auth.errorUnexpected);
       } else if (errMsg.includes('already') && errMsg.includes('registered')) {
-        setError(t.auth.errorEmailExists);
+        // Some Supabase Auth configurations return an explicit duplicate-user
+        // error while others return an obfuscated user. Present the same
+        // neutral outcome in both cases to avoid account enumeration.
+        setSubmittedEmail(values.email.trim());
+        setConfirmationRequired(true);
+        setSubmitted(true);
       } else if (errMsg.includes('weak') || errMsg.includes('password')) {
         setError(t.auth.errorWeakPassword);
       } else if (errMsg.includes('captcha') || errMsg.includes('captcha_token')) {
@@ -110,31 +140,43 @@ const SignUp: React.FC = () => {
   };
 
   const handleResendConfirmation = async () => {
-    if (!submittedEmail || resending) return;
+    if (!submittedEmail) return;
+    if (!captchaConfigured && !isDev) {
+      setResendMessage(t.auth.captchaNotConfigured);
+      return;
+    }
+    if (captchaConfigured && !captchaToken) {
+      setResendMessage(t.auth.confirmationResendCaptcha);
+      return;
+    }
+    if (!canResendConfirmation) return;
     setResending(true);
     setResendMessage('');
     try {
       const { error: resendError } = await supabase.auth.resend({
         type: 'signup',
         email: submittedEmail,
-        options: { emailRedirectTo: getEmailConfirmationRedirect() },
+        options: {
+          emailRedirectTo: getEmailConfirmationRedirect(),
+          captchaToken: captchaToken || undefined,
+        },
       });
       if (resendError) throw resendError;
       setResendMessage(t.auth.confirmationResent);
     } catch (resendError: unknown) {
       const message = resendError instanceof Error ? resendError.message.toLowerCase() : '';
       setResendMessage(
-        message.includes('rate') || message.includes('too many')
+        message.includes('captcha')
+          ? t.auth.confirmationResendCaptcha
+          : message.includes('rate') || message.includes('too many')
           ? t.auth.confirmationResendRateLimit
           : t.auth.confirmationResendFailed,
       );
     } finally {
+      setCaptchaToken('');
+      turnstileRef.current?.reset();
       setResending(false);
     }
-  };
-
-  const toggleLang = () => {
-    setLanguage(language === 'zh-CN' ? 'en-US' : 'zh-CN');
   };
 
   const handleOAuthLogin = async (provider: Provider) => {
@@ -150,7 +192,7 @@ const SignUp: React.FC = () => {
       const { error } = await supabase.auth.signInWithOAuth({
         provider,
         options: {
-          redirectTo: `${window.location.origin}/dashboard`,
+          redirectTo: getAuthRedirect('/dashboard'),
         },
       });
       if (error) {
@@ -178,6 +220,9 @@ const SignUp: React.FC = () => {
       if (values.password && values.confirmPassword && values.password !== values.confirmPassword) {
         return t.auth.signUpHelperPasswordMismatch;
       }
+      if (values.password && !satisfiesSignUpPasswordPolicy(values.password)) {
+        return t.auth.passwordPolicyError;
+      }
       return t.auth.signUpHelperFields;
     }
     return '';
@@ -190,14 +235,7 @@ const SignUp: React.FC = () => {
       <div className="auth-glow auth-glow-1" />
       <div className="auth-glow auth-glow-2" />
 
-      <div className="auth-nav-top">
-        <Link to="/" className="auth-back-link-top">
-          <ArrowLeftOutlined aria-hidden="true" /> {t.auth.backToHome}
-        </Link>
-        <button type="button" onClick={toggleLang} className="lang-toggle-btn" aria-label={language === 'zh-CN' ? 'Switch language to English' : '切换语言为中文'}>
-          {language === 'zh-CN' ? 'EN' : '中文'}
-        </button>
-      </div>
+      <AuthPageNav backLabel={t.auth.backToHome} />
 
       <div className="auth-card-container">
         <div className="auth-card signup">
@@ -219,7 +257,31 @@ const SignUp: React.FC = () => {
                 <Text className="auth-success-copy">{confirmationRequired ? t.auth.accountCreatedDesc : t.auth.accountReadyDesc}</Text>
                 {confirmationRequired && (
                   <>
-                    <Button loading={resending} disabled={resending} size="large" onClick={handleResendConfirmation} style={{ width: '100%', maxWidth: 300 }}>
+                    {captchaConfigured && <Text className="auth-success-copy">{t.auth.confirmationResendCaptcha}</Text>}
+                    <div className="auth-captcha-wrapper" style={{ margin: '4px auto 12px' }}>
+                      {captchaConfigured ? (
+                        <Turnstile
+                          key={`resend-${resolvedTheme}-${language}`}
+                          sitekey={turnstileSiteKey || ''}
+                          className="auth-turnstile"
+                          size={compactCaptcha ? 'compact' : 'flexible'}
+                          fixedSize
+                          onLoad={(_widgetId, bound) => { turnstileRef.current = bound; }}
+                          onVerify={(token) => setCaptchaToken(token)}
+                          onError={() => setCaptchaToken('')}
+                          onExpire={() => setCaptchaToken('')}
+                          theme={resolvedTheme}
+                          language={language === 'zh-CN' ? 'zh-CN' : 'en'}
+                        />
+                      ) : isDev ? (
+                        <div className="auth-captcha-placeholder" role="status">
+                          {t.auth.captchaBypassDev}
+                        </div>
+                      ) : (
+                        <div className="auth-captcha-placeholder error" role="alert">{t.auth.captchaNotConfigured}</div>
+                      )}
+                    </div>
+                    <Button loading={resending} disabled={!canResendConfirmation} size="large" onClick={handleResendConfirmation} style={{ width: '100%', maxWidth: 300 }}>
                       {resending ? t.auth.resendingConfirmation : t.auth.resendConfirmation}
                     </Button>
                     {resendMessage && <Text className="auth-success-copy" role="status" aria-live="polite">{resendMessage}</Text>}
@@ -240,7 +302,7 @@ const SignUp: React.FC = () => {
                   onValuesChange={() => {
                     const vals = form.getFieldsValue();
                     const password = vals.password || '';
-                    const passwordsMatch = password.length >= 8 && password === vals.confirmPassword;
+                    const passwordsMatch = satisfiesSignUpPasswordPolicy(password) && password === vals.confirmPassword;
                     setTermsAccepted(!!vals.terms);
                     setFormValid(
                       !!vals.fullName?.trim()
@@ -262,7 +324,20 @@ const SignUp: React.FC = () => {
                   </div>
 
                   <div className="signup-form-grid">
-                    <Form.Item name="password" label={t.auth.password} rules={[{ required: true, message: t.auth.passwordMinLength }, { min: 8, message: t.auth.passwordMinLength }]}>
+                    <Form.Item
+                      name="password"
+                      label={t.auth.password}
+                      rules={[
+                        { required: true, message: t.auth.passwordPolicyError },
+                        {
+                          validator: (_, value) => (
+                            !value || satisfiesSignUpPasswordPolicy(value)
+                              ? Promise.resolve()
+                              : Promise.reject(new Error(t.auth.passwordPolicyError))
+                          ),
+                        },
+                      ]}
+                    >
                       <Input.Password autoComplete="new-password" prefix={<LockOutlined aria-hidden="true" />} placeholder={t.auth.passwordPlaceholder} className="auth-input" />
                     </Form.Item>
                     <Form.Item
@@ -285,7 +360,10 @@ const SignUp: React.FC = () => {
 
                   <div className="auth-password-rules" aria-live="polite">
                     {[
-                      { test: (v: string) => v.length >= 8, label: t.auth.passwordRuleLength },
+                      { test: (v: string) => v.length >= PASSWORD_MIN_LENGTH, label: t.auth.passwordRuleLength },
+                      { test: (v: string) => /[a-z]/.test(v), label: t.auth.passwordRuleLower },
+                      { test: (v: string) => /[A-Z]/.test(v), label: t.auth.passwordRuleUpper },
+                      { test: (v: string) => /[0-9]/.test(v), label: t.auth.passwordRuleNumber },
                       { test: (v: string) => v === form.getFieldValue('confirmPassword') && v.length > 0, label: t.auth.passwordRuleMatch },
                     ].map((rule, i) => {
                       const pw = form.getFieldValue('password') || '';
@@ -327,7 +405,7 @@ const SignUp: React.FC = () => {
                         {t.auth.captchaNotConfigured} · {t.auth.captchaBypassDev}
                       </div>
                     ) : (
-                      <div className="auth-captcha-placeholder error">{t.auth.captchaNotConfigured}</div>
+                      <div className="auth-captcha-placeholder error" role="alert">{t.auth.captchaNotConfigured}</div>
                     )}
                   </div>
 

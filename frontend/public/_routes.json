@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "include": [
+    "/*"
+  ],
+  "exclude": [
+    "/static/*",
+    "/brand/*",
+    "/alphalab-email-logo.png",
+    "/asset-manifest.json"
+  ]
+}

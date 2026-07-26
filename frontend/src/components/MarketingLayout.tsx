@@ -497,6 +497,16 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'pap
           overflow-x: clip;
           overflow-y: visible;
         }
+        html[data-theme='dark'] .landing-container.marketing-paper {
+          --paper: #15191a;
+          --paper-bright: #1d2223;
+          --paper-ink: #f3f1e9;
+          --paper-muted: #b9c1bb;
+          --paper-line: rgba(243, 241, 233, 0.22);
+          background: var(--paper);
+          color: var(--paper-ink);
+          color-scheme: dark;
+        }
         .marketing-paper p,
         .marketing-paper h1,
         .marketing-paper h2,
@@ -578,11 +588,49 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'pap
           border-top-color: var(--paper-line) !important;
         }
         .marketing-paper .footer-trust-badge {
-          color: #3569c8 !important;
+          color: #2557a3 !important;
         }
         .marketing-paper .footer-system-status > span {
           color: #4e644c !important;
           font-size: 0.75rem !important;
+        }
+        html[data-theme='dark'] .marketing-paper .nav-header:not(.scrolled) {
+          background: rgba(21, 25, 26, 0.9) !important;
+          border-bottom-color: rgba(243, 241, 233, 0.14) !important;
+        }
+        html[data-theme='dark'] .marketing-paper .nav-header.scrolled {
+          background: rgba(21, 25, 26, 0.97) !important;
+          border-bottom-color: rgba(243, 241, 233, 0.18) !important;
+          box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3) !important;
+        }
+        html[data-theme='dark'] .marketing-paper .nav-item,
+        html[data-theme='dark'] .marketing-paper .mobile-menu-nav-item {
+          color: #c5ccc6;
+        }
+        html[data-theme='dark'] .marketing-paper .mobile-menu-overlay {
+          background: rgba(21, 25, 26, 0.99);
+          color: var(--paper-ink);
+        }
+        html[data-theme='dark'] .marketing-paper .mobile-menu-nav-item:hover,
+        html[data-theme='dark'] .marketing-paper .mobile-menu-nav-item.mobile-active {
+          color: var(--paper-ink);
+          background: rgba(145, 186, 255, 0.1);
+        }
+        html[data-theme='dark'] .marketing-paper .footer {
+          background: #101415 !important;
+        }
+        html[data-theme='dark'] .marketing-paper .footer-link,
+        html[data-theme='dark'] .marketing-paper .footer-brand-tagline,
+        html[data-theme='dark'] .marketing-paper .footer-disclaimer,
+        html[data-theme='dark'] .marketing-paper .footer-copyright {
+          color: #b9c1bb !important;
+        }
+        html[data-theme='dark'] .marketing-paper .footer-link:hover,
+        html[data-theme='dark'] .marketing-paper .footer-trust-badge {
+          color: #91baff !important;
+        }
+        html[data-theme='dark'] .marketing-paper .footer-system-status > span {
+          color: #acc99f !important;
         }
         .marketing-paper .nav-logo:focus-visible,
         .marketing-paper .mobile-menu-nav-item:focus-visible,

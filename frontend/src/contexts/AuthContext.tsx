@@ -8,6 +8,7 @@ import {
   markSessionAway,
   readAwaySince,
 } from '../services/authSession';
+import { getSessionAssuranceKey } from '../lib/sessionAssurance';
 
 interface AuthContextType {
   user: { id: string; email: string } | null;
@@ -50,8 +51,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
   const [mfaStatus, setMfaStatus] = useState<MfaAssuranceStatus>('checking');
   const assuranceRequestRef = React.useRef(0);
-  const sessionUserIdRef = React.useRef<string | null>(null);
-  const authenticatedUserId = session?.user.id ?? null;
+  const assuranceSessionKeyRef = React.useRef<string | null>(null);
+  const authenticatedAssuranceKey = getSessionAssuranceKey(session);
 
   const setSignedOutState = useCallback(() => {
     assuranceRequestRef.current += 1;
@@ -91,7 +92,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let active = true;
     supabase.auth.getSession().then(({ data: { session: currentSession } }: { data: { session: Session | null } }) => {
       if (!active) return;
-      sessionUserIdRef.current = currentSession?.user.id ?? null;
+      assuranceSessionKeyRef.current = getSessionAssuranceKey(currentSession);
       setSession(currentSession);
       setUser(mapSupabaseUser(currentSession?.user ?? null));
       if (!currentSession) setSignedOutState();
@@ -106,18 +107,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event: AuthChangeEvent, newSession: Session | null) => {
-        const previousUserId = sessionUserIdRef.current;
-        const nextUserId = newSession?.user.id ?? null;
-        sessionUserIdRef.current = nextUserId;
+        const previousAssuranceKey = assuranceSessionKeyRef.current;
+        const nextAssuranceKey = getSessionAssuranceKey(newSession);
+        assuranceSessionKeyRef.current = nextAssuranceKey;
         setSession(newSession);
         setUser(mapSupabaseUser(newSession?.user ?? null));
         if (!newSession) {
           setMfaStatus('not_required');
           assuranceRequestRef.current += 1;
-        } else if (previousUserId !== nextUserId || event === 'MFA_CHALLENGE_VERIFIED') {
-          // Token refreshes happen in the background and must not blank the app
-          // behind a fresh MFA check when the signed-in identity is unchanged.
+        } else if (previousAssuranceKey !== nextAssuranceKey) {
+          // Invalidate a result that may still be in flight for the previous
+          // security session. Token refreshes retain the JWT session_id, while
+          // sign-in and password recovery issue a new one and must recheck AAL.
+          assuranceRequestRef.current += 1;
           setMfaStatus('checking');
+        } else if (event === 'MFA_CHALLENGE_VERIFIED') {
+          void refreshMfaAssurance();
         }
         setLoading(false);
       }
@@ -127,12 +132,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       active = false;
       subscription.unsubscribe();
     };
-  }, [setSignedOutState]);
+  }, [refreshMfaAssurance, setSignedOutState]);
 
   useEffect(() => {
-    if (!authenticatedUserId) return;
+    if (!authenticatedAssuranceKey) return;
     void refreshMfaAssurance();
-  }, [authenticatedUserId, refreshMfaAssurance]);
+  }, [authenticatedAssuranceKey, refreshMfaAssurance]);
 
   useEffect(() => {
     let disposed = false;

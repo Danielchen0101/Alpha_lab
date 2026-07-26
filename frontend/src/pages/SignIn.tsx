@@ -4,7 +4,6 @@ import { Form, Input, Button, Typography, Alert, Checkbox } from 'antd';
 import { 
   UserOutlined, 
   LockOutlined, 
-  ArrowLeftOutlined, 
   SafetyCertificateOutlined,
   BarChartOutlined,
   SecurityScanOutlined,
@@ -15,7 +14,16 @@ import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { supabase } from '../lib/supabaseClient';
-import { getEmailConfirmationRedirect } from '../lib/authRedirect';
+import {
+  getEmailConfirmationRedirect,
+  getOAuthSignInRedirect,
+} from '../lib/authRedirect';
+import {
+  classifyAuthCallbackError,
+  parseAuthCallback,
+} from '../lib/authCallback';
+import { getSafeInternalRedirect } from '../lib/safeRedirect';
+import AuthPageNav from '../components/AuthPageNav';
 import type { Provider } from '@supabase/supabase-js';
 import '../styles/Auth.css';
 
@@ -32,10 +40,11 @@ interface SignInLocationState {
 }
 
 const getSafeRedirectPath = (candidate?: string | null) => {
-  if (!candidate || !candidate.startsWith('/') || candidate.startsWith('//')) return null;
-  const pathname = candidate.split(/[?#]/, 1)[0];
+  const safePath = getSafeInternalRedirect(candidate);
+  if (!safePath) return null;
+  const pathname = safePath.split(/[?#]/, 1)[0];
   if (pathname === '/signin' || pathname === '/login') return null;
-  return candidate;
+  return safePath;
 };
 
 const getRememberedLandingPage = () => {
@@ -64,7 +73,7 @@ const SignIn: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { login, isAuthenticated, loading, mfaRequired } = useAuth();
-  const { t, language, setLanguage } = useLanguage();
+  const { t, language } = useLanguage();
   const { resolvedTheme } = useTheme();
   const [submitting, setSubmitting] = useState(false);
   const [oauthLoading, setOauthLoading] = useState<string | null>(null);
@@ -79,12 +88,30 @@ const SignIn: React.FC = () => {
   const isDev = process.env.NODE_ENV === 'development';
   const captchaConfigured = !!turnstileSiteKey;
   const canSubmit = captchaConfigured ? !!captchaToken : isDev;
+  const canResendConfirmation = !resendingConfirmation && (captchaConfigured ? !!captchaToken : isDev);
   const [form] = Form.useForm();
+  const initialOAuthCallbackRef = useRef<ReturnType<typeof parseAuthCallback> | null>(null);
+  if (initialOAuthCallbackRef.current === null) {
+    initialOAuthCallbackRef.current = parseAuthCallback(
+      window.location.search,
+      window.location.hash,
+    );
+  }
+  const initialOAuthCallback = initialOAuthCallbackRef.current;
+  const oauthCallbackErrorMessage = initialOAuthCallback.kind === 'provider_error'
+    ? classifyAuthCallbackError(
+      `${initialOAuthCallback.code} ${initialOAuthCallback.description}`,
+    ) === 'network'
+      ? t.auth.errorNetworkIssue
+      : t.auth.oauthFailed
+    : '';
   const from = (location.state as SignInLocationState | null)?.from;
   const stateRedirect = from?.pathname
     ? `${from.pathname}${from.search || ''}${from.hash || ''}`
     : null;
   const queryRedirect = new URLSearchParams(location.search).get('next');
+  const passwordUpdated = new URLSearchParams(location.search).get('passwordUpdated') === '1';
+  const passwordSessionWarning = new URLSearchParams(location.search).get('sessionWarning') === '1';
   const redirectPath = getSafeRedirectPath(queryRedirect)
     || getSafeRedirectPath(stateRedirect)
     || getRememberedLandingPage()
@@ -97,6 +124,21 @@ const SignIn: React.FC = () => {
       form.setFieldsValue({ email: savedEmail, remember: true });
     }
   }, [form]);
+
+  useEffect(() => {
+    if (!oauthCallbackErrorMessage) return;
+    setError(oauthCallbackErrorMessage);
+    const cleanUrl = new URL(window.location.href);
+    for (const key of ['error', 'error_code', 'error_description']) {
+      cleanUrl.searchParams.delete(key);
+    }
+    cleanUrl.hash = '';
+    window.history.replaceState(
+      window.history.state,
+      document.title,
+      `${cleanUrl.pathname}${cleanUrl.search}`,
+    );
+  }, [oauthCallbackErrorMessage]);
 
   useEffect(() => {
     setCaptchaToken('');
@@ -121,6 +163,14 @@ const SignIn: React.FC = () => {
   if (isAuthenticated) return <Navigate to={mfaRequired ? `/mfa?next=${encodeURIComponent(redirectPath)}` : redirectPath} replace />;
 
   const handleLogin = async (values: { email: string; password: string; remember?: boolean }) => {
+    if (!captchaConfigured && !isDev) {
+      setError(t.auth.captchaNotConfigured);
+      return;
+    }
+    if (captchaConfigured && !captchaToken) {
+      setError(t.auth.captchaSignInError);
+      return;
+    }
     setSubmitting(true);
     setError('');
     setUnconfirmedEmail('');
@@ -156,31 +206,43 @@ const SignIn: React.FC = () => {
   };
 
   const handleResendConfirmation = async () => {
-    if (!unconfirmedEmail || resendingConfirmation) return;
+    if (!unconfirmedEmail) return;
+    if (!captchaConfigured && !isDev) {
+      setConfirmationMessage(t.auth.captchaNotConfigured);
+      return;
+    }
+    if (captchaConfigured && !captchaToken) {
+      setConfirmationMessage(t.auth.confirmationResendCaptcha);
+      return;
+    }
+    if (!canResendConfirmation) return;
     setResendingConfirmation(true);
     setConfirmationMessage('');
     try {
       const { error: resendError } = await supabase.auth.resend({
         type: 'signup',
         email: unconfirmedEmail,
-        options: { emailRedirectTo: getEmailConfirmationRedirect() },
+        options: {
+          emailRedirectTo: getEmailConfirmationRedirect(),
+          captchaToken: captchaToken || undefined,
+        },
       });
       if (resendError) throw resendError;
       setConfirmationMessage(t.auth.confirmationResent);
     } catch (resendError: unknown) {
       const message = resendError instanceof Error ? resendError.message.toLowerCase() : '';
       setConfirmationMessage(
-        message.includes('rate') || message.includes('too many')
+        message.includes('captcha')
+          ? t.auth.confirmationResendCaptcha
+          : message.includes('rate') || message.includes('too many')
           ? t.auth.confirmationResendRateLimit
           : t.auth.confirmationResendFailed,
       );
     } finally {
+      setCaptchaToken('');
+      turnstileRef.current?.reset();
       setResendingConfirmation(false);
     }
-  };
-
-  const toggleLang = () => {
-    setLanguage(language === 'zh-CN' ? 'en-US' : 'zh-CN');
   };
 
   const handleOAuthLogin = async (provider: Provider) => {
@@ -191,7 +253,7 @@ const SignIn: React.FC = () => {
       const { error } = await supabase.auth.signInWithOAuth({
         provider,
         options: {
-          redirectTo: `${window.location.origin}/signin?next=${encodeURIComponent(redirectPath)}`,
+          redirectTo: getOAuthSignInRedirect(redirectPath),
         },
       });
       if (error) {
@@ -227,14 +289,7 @@ const SignIn: React.FC = () => {
       <div className="auth-glow auth-glow-1" />
       <div className="auth-glow auth-glow-2" />
 
-      <div className="auth-nav-top">
-        <Link to="/" className="auth-back-link-top">
-          <ArrowLeftOutlined aria-hidden="true" /> {t.auth.backToHome}
-        </Link>
-        <button type="button" onClick={toggleLang} className="lang-toggle-btn" aria-label={language === 'zh-CN' ? 'Switch language to English' : '切换语言为中文'}>
-          {language === 'zh-CN' ? 'EN' : '中文'}
-        </button>
-      </div>
+      <AuthPageNav backLabel={t.auth.backToHome} />
 
       <div className="auth-card-container">
         <div className="auth-card signin">
@@ -268,17 +323,33 @@ const SignIn: React.FC = () => {
 
             {/* Right Column: Form */}
             <div style={{ paddingLeft: 4, width: '100%', maxWidth: 420 }}>
-              <Title level={3} className="auth-form-title" style={{ marginBottom: 16 }}>{t.auth.signInBtn}</Title>
+              <Title level={2} className="auth-form-title" style={{ marginBottom: 16 }}>{t.auth.signInBtn}</Title>
               
               {error && (
                 <Alert message={error} type="error" showIcon closable onClose={() => setError('')} style={{ marginBottom: 14, borderRadius: 12 }} />
               )}
+              {passwordUpdated && (
+                <Alert
+                  message={t.auth.passwordUpdated}
+                  description={passwordSessionWarning ? t.auth.passwordUpdatedSignOutWarning : undefined}
+                  type={passwordSessionWarning ? 'warning' : 'success'}
+                  showIcon
+                  style={{ marginBottom: 14, borderRadius: 12 }}
+                />
+              )}
               {unconfirmedEmail && (
                 <div className="auth-inline-action" role="status" aria-live="polite">
-                  <Button onClick={handleResendConfirmation} loading={resendingConfirmation} disabled={resendingConfirmation}>
+                  <Button onClick={handleResendConfirmation} loading={resendingConfirmation} disabled={!canResendConfirmation}>
                     {resendingConfirmation ? t.auth.resendingConfirmation : t.auth.resendConfirmation}
                   </Button>
-                  {confirmationMessage && <Text>{confirmationMessage}</Text>}
+                  <Text>
+                    {confirmationMessage
+                      || (captchaConfigured
+                        ? t.auth.confirmationResendCaptcha
+                        : isDev
+                          ? t.auth.captchaBypassDev
+                          : t.auth.captchaNotConfigured)}
+                  </Text>
                 </div>
               )}
 
@@ -325,7 +396,7 @@ const SignIn: React.FC = () => {
                       {t.auth.captchaNotConfigured} · {t.auth.captchaBypassDev}
                     </div>
                   ) : (
-                    <div className="auth-captcha-placeholder error">{t.auth.captchaNotConfigured}</div>
+                    <div className="auth-captcha-placeholder error" role="alert">{t.auth.captchaNotConfigured}</div>
                   )}
                 </div>
 

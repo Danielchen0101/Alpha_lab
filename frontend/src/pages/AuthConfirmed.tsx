@@ -1,108 +1,212 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Button, Typography } from 'antd';
-import { ArrowLeftOutlined } from '@ant-design/icons';
 import { Link, useNavigate } from 'react-router-dom';
-import { supabase } from '../lib/supabaseClient';
+import {
+  clearPersistedSupabaseAuthSession,
+  supabase,
+} from '../lib/supabaseClient';
 import { useLanguage } from '../contexts/LanguageContext';
-import type { EmailOtpType } from '@supabase/supabase-js';
+import {
+  classifyAuthCallbackError,
+  parseAuthCallback,
+  scheduleAuthCallbackRedemption,
+} from '../lib/authCallback';
+import type { AuthCallbackErrorKind } from '../lib/authCallback';
+import AuthPageNav from '../components/AuthPageNav';
 import '../styles/Auth.css';
 
 const { Title, Text } = Typography;
 
+type ConfirmationState =
+  | { phase: 'checking'; hasSession: false; errorKind: null }
+  | { phase: 'confirmed'; hasSession: boolean; errorKind: null }
+  | { phase: 'error'; hasSession: false; errorKind: AuthCallbackErrorKind };
+
 const AuthConfirmed: React.FC = () => {
   const navigate = useNavigate();
-  const { t, language, setLanguage } = useLanguage();
-  const [checking, setChecking] = useState(true);
-  const [confirmed, setConfirmed] = useState(false);
-  const [hasSession, setHasSession] = useState(false);
+  const { t } = useLanguage();
+  const [state, setState] = useState<ConfirmationState>({
+    phase: 'checking',
+    hasSession: false,
+    errorKind: null,
+  });
+  const initialCallbackRef = useRef<ReturnType<typeof parseAuthCallback> | null>(null);
+  if (initialCallbackRef.current === null) {
+    initialCallbackRef.current = parseAuthCallback(window.location.search, window.location.hash);
+  }
 
   useEffect(() => {
     let active = true;
-    const query = new URLSearchParams(window.location.search);
-    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
-    const callbackError = query.get('error_description') || query.get('error') || hash.get('error_description') || hash.get('error');
-    const code = query.get('code');
-    const tokenHash = query.get('token_hash');
-    const otpType = query.get('type') as EmailOtpType | null;
-    const hasImplicitToken = Boolean(hash.get('access_token'));
+    let settled = false;
+    const callback = initialCallbackRef.current!;
+    window.history.replaceState({}, document.title, '/auth/confirmed');
 
-    const finish = (sessionAvailable: boolean) => {
-      if (!active) return;
-      setConfirmed(true);
-      setHasSession(sessionAvailable);
-      setChecking(false);
-      window.history.replaceState({}, document.title, '/auth/confirmed');
+    const finishConfirmed = (sessionAvailable: boolean) => {
+      if (!active || settled) return;
+      settled = true;
+      setState({
+        phase: 'confirmed',
+        hasSession: sessionAvailable,
+        errorKind: null,
+      });
+    };
+
+    const finishError = (kind: AuthCallbackErrorKind) => {
+      if (!active || settled) return;
+      settled = true;
+      setState({
+        phase: 'error',
+        hasSession: false,
+        errorKind: kind,
+      });
+    };
+
+    const timeout = window.setTimeout(() => finishError('network'), 15000);
+
+    const discardCancelledSession = async (sessionAvailable: boolean) => {
+      if (!sessionAvailable || (active && !settled)) return false;
+      try {
+        await supabase.auth.signOut({ scope: 'local' });
+      } catch {
+        // Persisted storage is cleared below and the timeout path hard reloads.
+      } finally {
+        clearPersistedSupabaseAuthSession();
+      }
+      if (active && settled) {
+        window.location.replace(
+          '/auth/confirmed?error=timeout&error_description=Verification+timed+out',
+        );
+      } else if (!active) {
+        window.location.replace('/signin');
+      }
+      return true;
     };
 
     const verify = async () => {
-      if (callbackError) {
-        if (active) setChecking(false);
-        return;
-      }
+      try {
+        if (callback.kind === 'provider_error') {
+          finishError(classifyAuthCallbackError(`${callback.code} ${callback.description}`));
+          return;
+        }
 
-      if (tokenHash && otpType) {
-        const { data, error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type: otpType });
-        if (!error) finish(Boolean(data.session));
-        else if (active) setChecking(false);
-        return;
-      }
+        // Always process the email callback before looking at an existing
+        // browser session. Otherwise an unrelated signed-in account can cause
+        // this confirmation code to be skipped.
+        if (callback.kind === 'token_hash') {
+          if (callback.otpType !== 'signup') {
+            finishError('invalid');
+            return;
+          }
+          const { data, error } = await supabase.auth.verifyOtp({
+            token_hash: callback.tokenHash,
+            type: callback.otpType,
+          });
+          if (!error) {
+            if (await discardCancelledSession(Boolean(data.session))) return;
+            finishConfirmed(Boolean(data.session));
+            return;
+          }
+          finishError(classifyAuthCallbackError(error.message));
+          return;
+        }
 
-      const current = await supabase.auth.getSession();
-      if (current.data.session) {
-        finish(true);
-        return;
-      }
+        if (callback.kind === 'code') {
+          const { data, error } = await supabase.auth.exchangeCodeForSession(callback.code);
+          const redirectType = (data as typeof data & { redirectType?: string | null }).redirectType;
+          if (await discardCancelledSession(Boolean(data.session))) return;
+          if (!error && data.session && redirectType !== 'recovery') {
+            finishConfirmed(Boolean(data.session));
+            return;
+          }
+          if (data.session) await supabase.auth.signOut({ scope: 'local' });
+          finishError(classifyAuthCallbackError(error?.message || 'unexpected confirmation flow'));
+          return;
+        }
 
-      if (code) {
-        const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-        if (!error) finish(Boolean(data.session));
-        else if (active) setChecking(false);
-        return;
-      }
+        if (callback.kind === 'implicit') {
+          if (callback.flowType !== 'signup') {
+            finishError('invalid');
+            return;
+          }
+          const { data, error } = await supabase.auth.setSession({
+            access_token: callback.accessToken,
+            refresh_token: callback.refreshToken,
+          });
+          if (!error) {
+            if (await discardCancelledSession(Boolean(data.session))) return;
+            finishConfirmed(Boolean(data.session));
+            return;
+          }
+          finishError(classifyAuthCallbackError(error.message));
+          return;
+        }
 
-      if (!hasImplicitToken && active) setChecking(false);
+        finishError('invalid');
+      } catch (error: unknown) {
+        finishError(classifyAuthCallbackError(
+          error instanceof Error ? error.message : 'invalid confirmation callback',
+        ));
+      } finally {
+        window.clearTimeout(timeout);
+      }
     };
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if ((event === 'SIGNED_IN' || event === 'USER_UPDATED' || event === 'INITIAL_SESSION') && session) {
-        finish(true);
-      }
-    });
-    void verify();
-    const timeout = window.setTimeout(() => { if (active) setChecking(false); }, 7000);
-    return () => { active = false; window.clearTimeout(timeout); subscription.unsubscribe(); };
+    // Deferring one task makes this effect safe under React 18 development
+    // StrictMode: the throwaway first effect is cleaned up before it can redeem
+    // a single-use email token.
+    const cancelRedemption = scheduleAuthCallbackRedemption(() => void verify());
+    return () => {
+      active = false;
+      cancelRedemption();
+      window.clearTimeout(timeout);
+    };
   }, []);
+
+  const errorTitle = state.errorKind === 'expired'
+    ? t.authConfirmed.expiredTitle
+    : state.errorKind === 'network'
+      ? t.authConfirmed.networkTitle
+      : t.authConfirmed.invalidTitle;
+  const errorDescription = state.errorKind === 'expired'
+    ? t.authConfirmed.expiredDescription
+    : state.errorKind === 'network'
+      ? t.authConfirmed.networkDescription
+      : t.authConfirmed.invalidDescription;
 
   return (
     <main className="auth-shell">
-      <nav className="auth-nav-top" aria-label={t.authConfirmed.backToHome}>
-        <Link to="/" className="auth-back-link-top"><ArrowLeftOutlined aria-hidden="true" />{t.authConfirmed.backToHome}</Link>
-        <button type="button" className="lang-toggle-btn" onClick={() => setLanguage(language === 'zh-CN' ? 'en-US' : 'zh-CN')} aria-label={language === 'zh-CN' ? 'Switch language to English' : '切换语言为中文'}>{language === 'zh-CN' ? 'EN' : '中文'}</button>
-      </nav>
+      <AuthPageNav backLabel={t.authConfirmed.backToHome} />
       <div className="auth-card-container">
         <section className="auth-card signup auth-card--compact auth-state-card">
           <Link to="/" className="auth-brand-logo-text">Alpha<span className="accent">Lab</span></Link>
-          <span className="auth-card-eyebrow">{language === 'zh-CN' ? '邮箱验证 / 状态' : 'EMAIL VERIFICATION / STATUS'}</span>
-          {checking ? (
+          <span className="auth-card-eyebrow">{t.authConfirmed.eyebrow}</span>
+          {state.phase === 'checking' ? (
             <div className="auth-status-panel" role="status" aria-live="polite">
               <span className="spinner is-dark" aria-hidden="true" />
-              <Text>{language === 'zh-CN' ? '正在验证确认链接…' : 'Verifying confirmation link…'}</Text>
+              <Text>{t.authConfirmed.verifying}</Text>
             </div>
-          ) : confirmed ? (
+          ) : state.phase === 'confirmed' ? (
             <div className="auth-status-panel" role="status" aria-live="polite">
               <div className="auth-status-mark is-success" aria-hidden="true">✓</div>
               <Title level={1} className="auth-title">{t.authConfirmed.title}</Title>
               <Text className="auth-subtitle">{t.authConfirmed.description}</Text>
-              <Button type="primary" className="auth-btn" block onClick={() => navigate(hasSession ? '/dashboard' : '/signin')}>
-                {hasSession ? t.auth.continueToWorkspace : t.authConfirmed.continueToSignIn}
+              <Button type="primary" className="auth-btn" block onClick={() => navigate(state.hasSession ? '/dashboard' : '/signin')}>
+                {state.hasSession ? t.auth.continueToWorkspace : t.authConfirmed.continueToSignIn}
               </Button>
             </div>
           ) : (
             <div className="auth-status-panel" role="alert">
               <div className="auth-status-mark is-error" aria-hidden="true">!</div>
-              <Title level={1} className="auth-title">{language === 'zh-CN' ? '确认链接无效' : 'Confirmation link is invalid'}</Title>
-              <Text className="auth-subtitle">{language === 'zh-CN' ? '请使用邮件中的最新确认链接，或返回注册页面重新开始。' : 'Use the latest link from your email, or return to sign up and start again.'}</Text>
-              <Button type="primary" className="auth-btn" block onClick={() => navigate('/signup')}>{t.auth.createAccount}</Button>
+              <Title level={1} className="auth-title">{errorTitle}</Title>
+              <Text className="auth-subtitle">{errorDescription}</Text>
+              <div className="auth-state-actions">
+                <Button type="primary" className="auth-btn" block onClick={() => navigate('/signup')}>
+                  {t.authConfirmed.returnToSignUp}
+                </Button>
+                <Button block onClick={() => navigate('/signin')}>
+                  {t.authConfirmed.continueToSignIn}
+                </Button>
+              </div>
             </div>
           )}
         </section>

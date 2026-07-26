@@ -57,11 +57,67 @@ def test_leverage_requires_explicit_high_risk_short_horizon_opt_in():
     assert active["leverageEnabled"] is True
     assert active["maxGrossExposurePct"] == 115.0
     assert active["leveragedSleeveMaxPct"] == 15.0
+    assert active["leveragedMaxSinglePositionPct"] == 5.0
+    assert active["leveragedRiskPerTradePct"] == 0.5
+    assert active["leveragedTimeStopDays"] == 1
+    assert active["leveragedScaleInAllowed"] is False
     assert "no inverse" in active["leveragedProductPolicy"]
     for policy in (wrong_horizon, wrong_profile, not_requested):
         assert policy["leverageEnabled"] is False
         assert policy["leveragedSleeveMaxPct"] == 0.0
         assert policy["optionsAllowed"] is False
+
+
+def test_geared_product_classifier_uses_broker_name_and_fails_closed():
+    approved = backend._classify_geared_equity_product(
+        "TQQQ", "ProShares UltraPro QQQ",
+    )
+    inverse = backend._classify_geared_equity_product(
+        "NEWX", "Example Daily Bear 3X Shares",
+    )
+    unknown_long = backend._classify_geared_equity_product(
+        "NEWL", "Example Daily Bull 2X Shares",
+    )
+    ordinary = backend._classify_geared_equity_product("AAPL", "Apple Inc.")
+
+    assert approved["isLeveraged"] is True
+    assert approved["approvedLongLeveraged"] is True
+    assert inverse["isInverse"] is True
+    assert inverse["approvedLongLeveraged"] is False
+    assert unknown_long["isLeveraged"] is True
+    assert unknown_long["approvedLongLeveraged"] is False
+    assert ordinary["isGeared"] is False
+
+
+def test_geared_product_classifier_detects_inverse_broker_name_variants():
+    for asset_name in (
+        "ProShares UltraPro Short QQQ",
+        "Daily Short S&P 500 3X Shares",
+        "Ultra Short Semiconductor ETF",
+        "Bear 3X Shares",
+    ):
+        profile = backend._classify_geared_equity_product("NEWX", asset_name)
+        assert profile["isGeared"] is True
+        assert profile["isInverse"] is True
+        assert profile["approvedLongLeveraged"] is False
+
+
+def test_geared_product_gate_requires_opt_in_and_never_allows_inverse_or_scale_in():
+    active = backend._strategy_policy("high", "short", "ai", True)
+    inactive = backend._strategy_policy("medium", "short", "ai", True)
+    tqqq = backend._classify_geared_equity_product("TQQQ", "ProShares UltraPro QQQ")
+    sqqq = backend._classify_geared_equity_product("SQQQ", "ProShares UltraPro Short QQQ")
+
+    assert backend._geared_product_policy_blockers(tqqq, active) == []
+    assert "not enabled" in " ".join(
+        backend._geared_product_policy_blockers(tqqq, inactive)
+    )
+    assert "Inverse ETPs" in " ".join(
+        backend._geared_product_policy_blockers(sqqq, active)
+    )
+    assert "Scale-in is disabled" in " ".join(
+        backend._geared_product_policy_blockers(tqqq, active, "SCALE_IN")
+    )
 
 
 @pytest.mark.parametrize(

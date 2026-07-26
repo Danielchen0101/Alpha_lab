@@ -80,6 +80,25 @@ def test_selection_priority_and_direction_are_separate_contracts():
     assert scored[2]["trendLabel"] in {"Bearish", "Strong Bearish"}
 
 
+def test_fine_scan_uses_selection_score_not_legacy_aliases():
+    candidate = {
+        "symbol": "STRICT",
+        "selectionScore": 0,
+        "overallScore": 99,
+        "trendScore": 99,
+        "trendLabel": "Neutral",
+        "eventRisk": "Medium",
+        "volumeStatus": "Normal",
+        "changePct": 0,
+    }
+
+    _regime, _confidence, _strategies, _reason, signals = (
+        backend._pa_detect_fine_scan_regime(candidate)
+    )
+
+    assert not any(signal.startswith("Score:") for signal in signals)
+
+
 def test_liquidity_factor_includes_cost_and_capacity():
     cheap = _row("CHEAP", cost=4, capacity=95, adv=100_000_000)
     expensive = _row("EXPENSIVE", cost=80, capacity=35, adv=100_000_000)
@@ -121,6 +140,105 @@ def test_optional_market_cap_filter_reports_missing_values():
     assert stats["belowThreshold"] == 1
     assert stats["unavailable"] == 1
     assert stats["candidatePoolRefilled"] is False
+
+
+def test_scanner_defaults_follow_risk_horizon_and_leverage_mandate():
+    conservative_long = backend._inst_default_filters({
+        "riskProfile": "low",
+        "timeHorizon": "long",
+    })
+    aggressive_short = backend._inst_default_filters({
+        "riskProfile": "high",
+        "timeHorizon": "short",
+        "leverageEnabled": True,
+    })
+    explicit = backend._inst_default_filters({
+        "riskProfile": "low",
+        "timeHorizon": "long",
+        "filters": {
+            "minDollarVolume": 1_000_000,
+            "maxAtrPercent": 20,
+            "includeETFs": True,
+        },
+    })
+
+    assert conservative_long["minHistoryDays"] == 300
+    assert conservative_long["minDollarVolume"] == 25_000_000
+    assert conservative_long["maxAtrPercent"] == 8
+    assert conservative_long["maxRealizedVol20"] == 75
+    assert conservative_long["includeETFs"] is False
+
+    assert aggressive_short["minHistoryDays"] == 126
+    assert aggressive_short["minDollarVolume"] == 15_000_000
+    assert aggressive_short["maxAtrPercent"] == 18
+    assert aggressive_short["maxRealizedVol20"] == 180
+    assert aggressive_short["includeETFs"] is True
+
+    assert explicit["minDollarVolume"] == 1_000_000
+    assert explicit["maxAtrPercent"] == 20
+    assert explicit["includeETFs"] is True
+
+
+def test_asset_universe_cache_is_scoped_by_etf_filter(monkeypatch):
+    calls = []
+    assets = [
+        {
+            "symbol": "AAPL",
+            "name": "Apple Inc.",
+            "asset_class": "us_equity",
+            "status": "active",
+            "tradable": True,
+            "exchange": "NASDAQ",
+        },
+        {
+            "symbol": "TQQQ",
+            "name": "ProShares UltraPro QQQ ETF",
+            "asset_class": "us_equity",
+            "status": "active",
+            "tradable": True,
+            "exchange": "NASDAQ",
+        },
+    ]
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return assets
+
+    def fake_get(*_args, **_kwargs):
+        calls.append(True)
+        return FakeResponse()
+
+    monkeypatch.setattr(backend, "_INST_SCANNER_UNIVERSE_CACHE", {})
+    monkeypatch.setattr(backend.requests, "get", fake_get)
+    configs = [{
+        "api_key": "key",
+        "api_secret": "secret",
+        "base_url": "https://paper-api.alpaca.markets",
+        "source": "test",
+    }]
+
+    stocks, _stock_meta, _source, error = backend._inst_fetch_alpaca_assets(
+        configs,
+        {"includeOTC": False, "includeETFs": False},
+    )
+    with_etfs, _etf_meta, _source, error_with_etfs = backend._inst_fetch_alpaca_assets(
+        configs,
+        {"includeOTC": False, "includeETFs": True},
+    )
+    cached_with_etfs, *_ = backend._inst_fetch_alpaca_assets(
+        configs,
+        {"includeOTC": False, "includeETFs": True},
+    )
+
+    assert error is None
+    assert error_with_etfs is None
+    assert stocks == ["AAPL"]
+    assert with_etfs == ["AAPL", "TQQQ"]
+    assert cached_with_etfs == with_etfs
+    assert len(calls) == 2
 
 
 def test_daily_snapshot_completion_uses_us_session_cutoff():

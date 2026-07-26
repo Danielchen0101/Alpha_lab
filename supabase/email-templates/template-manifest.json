@@ -1,0 +1,68 @@
+[
+  {
+    "dashboardName": "Confirm sign up",
+    "configKey": "auth.email.template.confirmation",
+    "managementApiSubjectKey": "mailer_subjects_confirmation",
+    "managementApiContentKey": "mailer_templates_confirmation_content",
+    "file": "confirmation.html",
+    "subject": "Confirm your AlphaLab account / 确认 AlphaLab 账户",
+    "allowedVariables": ["ConfirmationURL"],
+    "requiredVariables": ["ConfirmationURL"],
+    "linkTemplate": true
+  },
+  {
+    "dashboardName": "Invite user",
+    "configKey": "auth.email.template.invite",
+    "managementApiSubjectKey": "mailer_subjects_invite",
+    "managementApiContentKey": "mailer_templates_invite_content",
+    "file": "invite.html",
+    "subject": "You're invited to AlphaLab / 邀请加入 AlphaLab",
+    "allowedVariables": ["ConfirmationURL"],
+    "requiredVariables": ["ConfirmationURL"],
+    "linkTemplate": true
+  },
+  {
+    "dashboardName": "Magic link or OTP",
+    "configKey": "auth.email.template.magic_link",
+    "managementApiSubjectKey": "mailer_subjects_magic_link",
+    "managementApiContentKey": "mailer_templates_magic_link_content",
+    "file": "magic-link.html",
+    "subject": "Your AlphaLab sign-in link / AlphaLab 登录链接",
+    "allowedVariables": ["ConfirmationURL"],
+    "requiredVariables": ["ConfirmationURL"],
+    "linkTemplate": true
+  },
+  {
+    "dashboardName": "Change email address",
+    "configKey": "auth.email.template.email_change",
+    "managementApiSubjectKey": "mailer_subjects_email_change",
+    "managementApiContentKey": "mailer_templates_email_change_content",
+    "file": "email-change.html",
+    "subject": "Confirm your new AlphaLab email / 确认新的 AlphaLab 邮箱",
+    "allowedVariables": ["ConfirmationURL", "NewEmail"],
+    "requiredVariables": ["ConfirmationURL", "NewEmail"],
+    "linkTemplate": true
+  },
+  {
+    "dashboardName": "Reset password",
+    "configKey": "auth.email.template.recovery",
+    "managementApiSubjectKey": "mailer_subjects_recovery",
+    "managementApiContentKey": "mailer_templates_recovery_content",
+    "file": "recovery.html",
+    "subject": "Reset your AlphaLab password / 重置 AlphaLab 密码",
+    "allowedVariables": ["ConfirmationURL"],
+    "requiredVariables": ["ConfirmationURL"],
+    "linkTemplate": true
+  },
+  {
+    "dashboardName": "Reauthentication",
+    "configKey": "auth.email.template.reauthentication",
+    "managementApiSubjectKey": "mailer_subjects_reauthentication",
+    "managementApiContentKey": "mailer_templates_reauthentication_content",
+    "file": "reauthentication.html",
+    "subject": "{{ .Token }} — AlphaLab verification code / 验证码",
+    "allowedVariables": ["Token"],
+    "requiredVariables": ["Token"],
+    "linkTemplate": false
+  }
+]

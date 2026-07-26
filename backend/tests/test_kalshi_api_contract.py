@@ -3,6 +3,7 @@ import kalshi_api
 import copy
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from flask import Flask
 
 from kalshi_api import (
@@ -816,11 +817,43 @@ def test_live_order_payload_keeps_symmetric_yes_and_no_order_shapes():
     assert yes_live["count"] == "7.00" and no_live["count"] == "4.00"
 
 
+class _EnabledRealState:
+    def get(self, _user_id, *, environment=None):
+        return {
+            "enabled": True,
+            "config": {"executionMode": environment or "real"},
+        }
+
+
+class _FencedLeaseStore:
+    def __init__(self, *, renews=True):
+        self.renews = renews
+        self.events = []
+
+    def claim_worker_lease_fenced(self, lease_name, owner_id, **_kwargs):
+        self.events.append(("claim", lease_name, owner_id, 73))
+        return {"acquired": True, "fencingToken": 73}
+
+    def renew_worker_lease(
+        self, lease_name, owner_id, fencing_token, **_kwargs,
+    ):
+        self.events.append(("renew", lease_name, owner_id, fencing_token))
+        return self.renews and fencing_token == 73
+
+    def release_worker_lease(
+        self, lease_name, owner_id, fencing_token=None,
+    ):
+        self.events.append(("release", lease_name, owner_id, fencing_token))
+        return fencing_token == 73
+
+
 def test_real_order_submission_uses_current_event_order_endpoint_without_side_rewrite():
     calls = []
 
     def signed_request(config, environment, method, endpoint, **kwargs):
         calls.append((config, environment, method, endpoint, kwargs))
+        if method == "GET":
+            return {"orders": []}
         body = kwargs["json_body"]
         return {"order": {
             "order_id": "order-yes-1",
@@ -835,13 +868,14 @@ def test_real_order_submission_uses_current_event_order_endpoint_without_side_re
 
     controller = _PaperRobotController(
         client=None,
-        state=None,
+        state=_EnabledRealState(),
         paper_accounts=None,
         connection_loader=lambda _uid: {
             "production_api_key_id": "key-id-12345678",
             "production_private_key": "private-key-present",
         },
         signed_request=signed_request,
+        worker_lease_store=_FencedLeaseStore(),
     )
     payload = _paper_order_payload(
         {"action": "BUY_YES", "side": "YES", "edge": {"price": 0.42}, "sizing": {"contracts": 7}},
@@ -849,9 +883,10 @@ def test_real_order_submission_uses_current_event_order_endpoint_without_side_re
     )
     order = controller._submit_live_order("user-1", payload, {"side": "YES", "config": {"executionMode": "real"}})
 
-    assert calls[0][1:4] == ("production", "POST", "/portfolio/events/orders")
-    assert calls[0][4]["json_body"]["side"] == "bid"
-    assert calls[0][4]["json_body"]["price"] == "0.4200"
+    assert calls[0][1:4] == ("production", "GET", "/portfolio/orders")
+    assert calls[1][1:4] == ("production", "POST", "/portfolio/events/orders")
+    assert calls[1][4]["json_body"]["side"] == "bid"
+    assert calls[1][4]["json_body"]["price"] == "0.4200"
     assert order["environment"] == "real"
     assert order["outcome_side"] == "YES"
 
@@ -860,6 +895,8 @@ def test_real_reduce_only_close_is_preserved_and_normalised_as_sell():
     calls = []
 
     def signed_request(config, environment, method, endpoint, **kwargs):
+        if method == "GET":
+            return {"orders": []}
         calls.append(kwargs["json_body"])
         body = kwargs["json_body"]
         return {"order": {
@@ -875,13 +912,14 @@ def test_real_reduce_only_close_is_preserved_and_normalised_as_sell():
 
     controller = _PaperRobotController(
         client=None,
-        state=None,
+        state=_EnabledRealState(),
         paper_accounts=None,
         connection_loader=lambda _uid: {
             "production_api_key_id": "key-id-12345678",
             "production_private_key": "private-key-present",
         },
         signed_request=signed_request,
+        worker_lease_store=_FencedLeaseStore(),
     )
     payload = _paper_order_payload(
         {"action": "SELL_NO", "side": "NO", "edge": {"price": 0.36}, "sizing": {"contracts": 4}},
@@ -898,6 +936,51 @@ def test_real_reduce_only_close_is_preserved_and_normalised_as_sell():
     assert calls[0]["reduce_only"] is True
     assert order["action"] == "SELL"
     assert order["reduce_only"] is True
+
+
+def test_real_order_post_is_blocked_when_fenced_lease_renewal_is_lost():
+    posts = []
+
+    def signed_request(_config, _environment, method, _endpoint, **kwargs):
+        if method == "GET":
+            return {"orders": []}
+        posts.append(kwargs["json_body"])
+        return {"order": {}}
+
+    lease_store = _FencedLeaseStore(renews=False)
+    controller = _PaperRobotController(
+        client=None,
+        state=_EnabledRealState(),
+        paper_accounts=None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        signed_request=signed_request,
+        worker_lease_store=lease_store,
+    )
+    payload = _paper_order_payload(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {"price": 0.42},
+            "sizing": {"contracts": 1},
+        },
+        "KXBTC15M-TEST",
+    )
+
+    with pytest.raises(kalshi_api.KalshiApiError) as lost:
+        controller._submit_live_order(
+            "user-1",
+            payload,
+            {"side": "YES", "config": {"executionMode": "real"}},
+        )
+
+    assert lost.value.code == "kalshi_routing_lease_lost"
+    assert posts == []
+    assert [event[0] for event in lease_store.events] == [
+        "claim", "renew", "release",
+    ]
 
 
 def test_complementary_fills_are_net_not_repeated_close_exposure():

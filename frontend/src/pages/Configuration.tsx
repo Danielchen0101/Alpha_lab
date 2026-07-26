@@ -995,7 +995,7 @@ const DiscordNotificationsSection: React.FC<{ t: any; isZh: boolean }> = ({ t, i
   const [configLoaded, setConfigLoaded] = useState(false);
   const copy = isZh ? {
     title: 'Discord 通知',
-    subtitle: '只发送交易结果、重要风险和精简的周期摘要。',
+    subtitle: '研究、股票、Crypto、Kalshi 与系统事件统一发送到同一个频道。',
     loading: '正在读取通知设置…',
     saved: 'Discord 通知设置已保存。',
     saveError: 'Discord 设置无法保存，请检查后端或 Supabase 配置。',
@@ -1017,6 +1017,19 @@ const DiscordNotificationsSection: React.FC<{ t: any; isZh: boolean }> = ({ t, i
     digestDesc: '立即自动运行结束后发送摘要；定时任务只有发生交易或保护操作时才发送。',
     recommendations: '推荐股票',
     recommendationsDesc: '研究流程产生可买入、待复核或等待入场的候选时发送一份精简清单。',
+    lifecycle: '启停与恢复',
+    lifecycleDesc: '自动化启动、停止、暂停、紧急停止以及故障恢复。',
+    coverage: '模式覆盖',
+    research: '研究',
+    researchDesc: '扫描、筛选、验证、推荐与研究周期。',
+    equity: '股票交易',
+    equityDesc: '股票下单、部分成交、成交、拒单、撤单与持仓保护。',
+    crypto: 'Crypto',
+    cryptoDesc: 'Crypto 自动化、信号、订单、周期、锁定与恢复。',
+    kalshi: 'Kalshi',
+    kalshiDesc: 'Paper/Real 机器人、订单、合约结算与行情故障。',
+    system: '系统与安全',
+    systemDesc: 'Safety Center、登录安全和后台组件状态。',
     test: '发送测试摘要',
     save: '保存通知设置',
     connected: '已连接',
@@ -1025,7 +1038,7 @@ const DiscordNotificationsSection: React.FC<{ t: any; isZh: boolean }> = ({ t, i
     notConfigured: '未配置',
   } : {
     title: 'Discord notifications',
-    subtitle: 'Trade outcomes, material risk alerts, and one concise cycle digest.',
+    subtitle: 'Unified alerts for Research, Equities, Crypto, Kalshi, and system events.',
     loading: 'Loading notification settings…',
     saved: 'Discord notification settings saved.',
     saveError: 'Discord settings could not be saved. Check the backend or Supabase configuration.',
@@ -1047,6 +1060,19 @@ const DiscordNotificationsSection: React.FC<{ t: any; isZh: boolean }> = ({ t, i
     digestDesc: 'One compact summary after Run Now; scheduled cycles stay quiet unless trading or protection changed.',
     recommendations: 'Recommended stocks',
     recommendationsDesc: 'A concise list when research produces buy-ready, review, or wait-for-entry candidates.',
+    lifecycle: 'Start, stop, and recovery',
+    lifecycleDesc: 'Automation starts, stops, pauses, kill switches, and recovery events.',
+    coverage: 'Mode coverage',
+    research: 'Research',
+    researchDesc: 'Scanning, filtering, validation, recommendations, and research cycles.',
+    equity: 'Equity trading',
+    equityDesc: 'Orders, partial fills, fills, rejects, cancels, and position protection.',
+    crypto: 'Crypto',
+    cryptoDesc: 'Crypto automation, signals, orders, cycles, locks, and recovery.',
+    kalshi: 'Kalshi',
+    kalshiDesc: 'Paper/Real robots, orders, contract settlements, and market-data faults.',
+    system: 'System and safety',
+    systemDesc: 'Safety Center, sign-in security, and backend component status.',
     test: 'Send test digest',
     save: 'Save notification settings',
     connected: 'Connected',
@@ -1067,6 +1093,12 @@ const DiscordNotificationsSection: React.FC<{ t: any; isZh: boolean }> = ({ t, i
           notifyRiskAlerts: cfg.notifyRiskAlerts !== false,
           notifyCycleDigest: cfg.notifyCycleDigest !== false,
           notifyRecommendations: cfg.notifyRecommendations !== false,
+          notifyLifecycle: cfg.notifyLifecycle !== false,
+          notifyResearch: cfg.notifyResearch !== false,
+          notifyEquity: cfg.notifyEquity !== false,
+          notifyCrypto: cfg.notifyCrypto !== false,
+          notifyKalshi: cfg.notifyKalshi !== false,
+          notifySystem: cfg.notifySystem !== false,
         });
         setHasSaved(!!cfg.hasWebhookUrl);
         setStatus(cfg.testStatus === 'connected' ? 'connected' : cfg.hasWebhookUrl ? 'saved' : 'not_tested');
@@ -1094,6 +1126,12 @@ const DiscordNotificationsSection: React.FC<{ t: any; isZh: boolean }> = ({ t, i
         notifyRiskAlerts: values.notifyRiskAlerts !== false,
         notifyCycleDigest: values.notifyCycleDigest !== false,
         notifyRecommendations: values.notifyRecommendations !== false,
+        notifyLifecycle: values.notifyLifecycle !== false,
+        notifyResearch: values.notifyResearch !== false,
+        notifyEquity: values.notifyEquity !== false,
+        notifyCrypto: values.notifyCrypto !== false,
+        notifyKalshi: values.notifyKalshi !== false,
+        notifySystem: values.notifySystem !== false,
       };
       if (values.webhookUrl && !values.webhookUrl.includes('****')) {
         payload.webhookUrl = values.webhookUrl.trim();
@@ -1213,6 +1251,27 @@ const DiscordNotificationsSection: React.FC<{ t: any; isZh: boolean }> = ({ t, i
             ['notifyRiskAlerts', copy.risk, copy.riskDesc],
             ['notifyCycleDigest', copy.digest, copy.digestDesc],
             ['notifyRecommendations', copy.recommendations, copy.recommendationsDesc],
+            ['notifyLifecycle', copy.lifecycle, copy.lifecycleDesc],
+          ].map(([name, title, description]) => (
+            <Col xs={24} md={12} key={name}>
+              <div className="config-policy-card">
+                <Form.Item name={name} valuePropName="checked" noStyle>
+                  <Checkbox><Text strong>{title}</Text></Checkbox>
+                </Form.Item>
+                <Text type="secondary">{description}</Text>
+              </div>
+            </Col>
+          ))}
+        </Row>
+
+        <Text strong className="config-policy-title" style={{ display: 'block', marginTop: 18 }}>{copy.coverage}</Text>
+        <Row gutter={[12, 12]}>
+          {[
+            ['notifyResearch', copy.research, copy.researchDesc],
+            ['notifyEquity', copy.equity, copy.equityDesc],
+            ['notifyCrypto', copy.crypto, copy.cryptoDesc],
+            ['notifyKalshi', copy.kalshi, copy.kalshiDesc],
+            ['notifySystem', copy.system, copy.systemDesc],
           ].map(([name, title, description]) => (
             <Col xs={24} md={12} key={name}>
               <div className="config-policy-card">

@@ -165,7 +165,7 @@ The backend currently owns the REST API, scheduler, and managed-position guard. 
 
 | Prefix | Responsibility |
 | --- | --- |
-| <code>/api/health</code>, <code>/api/status</code> | Health and platform status |
+| <code>/api/health</code>, <code>/api/ready</code>, <code>/api/status</code> | Liveness, dependency/scheduler readiness, and platform status |
 | <code>/api/config/*</code>, <code>/api/settings/*</code> | Per-user provider and broker configuration |
 | <code>/api/market/*</code> | Search, quotes, bars, news, user symbols, and scanning |
 | <code>/api/crypto/*</code> | Crypto assets and bars, portfolio state, cost-aware backtests, Paper/Live cycles, automation controls, emergency stop, and audit ledger |
@@ -201,9 +201,10 @@ Create a Supabase project, enable the authentication providers you intend to use
 
 1. <code>backend/supabase_schema.sql</code> for encrypted provider configuration, workspace preferences, pipeline schedules, and run history;
 2. <code>backend/supabase_operations_store.sql</code> for Safety Center state, readiness, append-only operational records, order and notification history, and cross-device artifacts;
-3. <code>backend/supabase_security_hardening.sql</code> to make browser roles read-only and keep all validated mutations behind the backend.
+3. <code>backend/supabase_security_hardening.sql</code> to make browser roles read-only and keep all validated mutations behind the backend;
+4. <code>backend/migrations/20260726010000_worker_lease_runtime_hardening.sql</code> for fenced, exact-owner worker leases used by unattended Kalshi and crypto order routing.
 
-All three SQL files are required in production. Real new-entry paths fail closed when durable operations storage cannot be read, and the Safety Center and artifact APIs return an unavailable response instead of silently switching to process-local files. Local operations fallback is limited to development and test environments.
+All four SQL files are required in production. Real new-entry paths fail closed when durable operations storage or the fenced lease contract cannot be read, and the Safety Center and artifact APIs return an unavailable response instead of silently switching to process-local files. Local operations fallback is limited to development and test environments.
 
 Collect:
 
@@ -250,6 +251,8 @@ The local backend listens on <code>http://127.0.0.1:8889</code>. Verify it from 
 ~~~bash
 curl http://127.0.0.1:8889/api/health
 # {"status":"ok"}
+curl http://127.0.0.1:8889/api/ready
+# {"status":"ready", ...}
 ~~~
 
 ### 4. Configure and start the frontend
@@ -286,6 +289,7 @@ Every <code>REACT_APP_*</code> value is embedded into the browser build and must
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | <code>REACT_APP_API_BASE_URL</code> | Production | Canonical backend API base; use <code>/api</code> for the local proxy or same-origin Docker deployment |
+| <code>REACT_APP_SITE_URL</code> | Production | Canonical public origin used to build confirmation, recovery, and OAuth callback URLs |
 | <code>REACT_APP_SUPABASE_URL</code> | Yes | Supabase project URL used by browser authentication |
 | <code>REACT_APP_SUPABASE_ANON_KEY</code> | Yes | Browser-safe Supabase anonymous key |
 | <code>REACT_APP_TURNSTILE_SITE_KEY</code> | Production auth | Public Cloudflare Turnstile site key |
@@ -326,7 +330,7 @@ AlphaLab supports a split web/API deployment and an all-in-one container.
 | Render | Build command | <code>pip install -r requirements.txt</code> |
 | Render | Start command | <code>MALLOC_ARENA_MAX=2 gunicorn start_quant_backend:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 900</code> |
 
-Apply all three Supabase SQL files before deploying the application. Set the frontend build variables in Cloudflare Pages and the backend runtime variables in Render. Point <code>REACT_APP_API_BASE_URL</code> to the Render service with the <code>/api</code> suffix, and set <code>FRONTEND_ORIGIN</code> to the exact deployed frontend origin.
+Apply all four Supabase SQL files before deploying the application. Set the frontend build variables in Cloudflare Pages and the backend runtime variables in Render. Point <code>REACT_APP_API_BASE_URL</code> to the Render service with the <code>/api</code> suffix, and set <code>FRONTEND_ORIGIN</code> to the exact deployed frontend origin.
 
 Add the deployed frontend origin and its <code>/auth/confirmed</code> and <code>/reset-password</code> callbacks to the Supabase Auth URL configuration. Configure the same production host for Turnstile.
 

@@ -35,14 +35,28 @@ import EvidenceDrawer from '../components/EvidenceDrawer';
 
 type CandidateFilter = 'all' | 'priority' | 'advance' | 'challenge' | 'event';
 type CandidateRecord = Record<string, any> & { symbol: string };
-type ReviewStage = 'fine' | 'validation' | 'admission' | 'entry' | 'execution';
+export type ReviewStage = 'fine' | 'validation' | 'admission' | 'entry' | 'execution' | 'exit';
 type DecisionCategory = 'ready' | 'review' | 'watch' | 'block' | 'needData' | 'other';
+
+export type ReviewMetricKind =
+  | 'fineScore'
+  | 'validationScore'
+  | 'admissionScore'
+  | 'entryConfidence'
+  | 'planConfidence'
+  | 'exitConfidence';
+
+export interface ReviewMetric {
+  value: number | null;
+  kind: ReviewMetricKind;
+  unit: '/100' | '%';
+}
 
 interface ReviewArtifact {
   symbol: string;
   stage: ReviewStage;
   decision: string;
-  score: number | null;
+  metric: ReviewMetric;
   reason: string;
   updatedAt: string | null;
   record: Record<string, any>;
@@ -55,9 +69,9 @@ const copy = {
     candidateSubtitle: 'View the latest saved candidates with ranking, AI review, liquidity, and event-risk fields kept on each record.',
     reviewKicker: '03 / Decision control',
     reviewTitle: 'Review workspace',
-    reviewSubtitle: 'Review validation exceptions, portfolio admission, entry plans, and execution candidates without changing saved research state.',
+    reviewSubtitle: 'Review validation exceptions, portfolio admission, entry plans, execution candidates, and position-exit decisions without changing saved research state.',
     pipeline: 'AI research pipeline',
-    marketScanner: 'Markets scanner',
+    marketScanner: 'Market scanner',
     reviewWorkspace: 'Review workspace',
     candidateUniverse: 'Candidate universe',
     snapshot: 'Latest persisted research snapshot',
@@ -72,13 +86,13 @@ const copy = {
     filters: 'Research views',
     all: 'All',
     scoreDistribution: 'Research score distribution',
-    scoreDistributionNote: 'Latest deterministic ranking score',
+    scoreDistributionNote: 'Latest deterministic Market Scanner selection score',
     sectorParticipation: 'Sector participation',
     sectorParticipationNote: 'Top sectors in the visible research universe',
     ledger: 'Candidate ledger',
     ledgerNote: 'Open a symbol for its full market dossier, or move to the review queue for downstream decisions.',
     candidate: 'Candidate',
-    score: 'Research score',
+    score: 'Selection score',
     signal: 'Signal',
     liquidity: 'Liquidity',
     aiReview: 'AI review',
@@ -100,7 +114,7 @@ const copy = {
     notLoadedBody: 'Run the research pipeline once to create a snapshot. Until then, counts are shown as unavailable rather than zero.',
     retryPipeline: 'Open pipeline to retry',
     noScoresTitle: 'No ranking scores in this view',
-    noScoresBody: 'The matching records do not contain a usable research score.',
+    noScoresBody: 'The matching records do not contain a usable Market Scanner selection score.',
     noSectorsTitle: 'No sector data in this view',
     noSectorsBody: 'The matching records do not contain a sector or industry value.',
     unknownCompany: 'Company name unavailable',
@@ -116,19 +130,26 @@ const copy = {
     blocked: 'Blocked',
     executionQueue: 'Execution queue',
     funnel: 'Research funnel',
-    funnelNote: 'Latest persisted count at each decision stage',
+    funnelNote: 'Latest persisted count at each of the seven pipeline stages',
     decisions: 'Decision distribution',
     decisionsNote: 'Latest downstream decision for each symbol',
     pendingQueue: 'Unified review queue',
     pendingQueueNote: 'Only records with review, wait, hold, missing-data, blocked, draft, or failed states appear here.',
     stage: 'Current stage',
     decision: 'Decision',
-    confidence: 'Evidence score',
+    confidence: 'Stage metric',
+    metricNote: 'Each row shows the metric defined for that stage; scores and confidence percentages are not compared across stages.',
+    fineScore: 'Fine-scan score',
+    validationScore: 'Validation score',
+    admissionScore: 'Admission score',
+    entryConfidence: 'Entry confidence',
+    planConfidence: 'Entry-plan confidence',
+    exitConfidence: 'Exit-review confidence',
     reason: 'Review note',
     updated: 'Updated',
     open: 'Open',
     noReviewTitle: 'No research records require manual attention',
-    noReviewBodyEmpty: 'Run the AI research pipeline to populate validation, admission, and entry-plan decisions.',
+    noReviewBodyEmpty: 'Run the AI research pipeline to populate validation, admission, entry, execution, and position-exit decisions.',
     noReviewBodyClear: 'The latest persisted decisions contain no review, hold, missing-data, or blocked states.',
     noReviewFilteredTitle: 'No review records match this search',
     noReviewFilteredBody: 'Clear the search to return to the full manual-attention queue.',
@@ -136,10 +157,11 @@ const copy = {
     noDecisionSnapshotBody: 'A candidate snapshot exists, but validation, admission, and entry-plan decisions have not been saved yet.',
     pipelineFailed: 'Latest run failed',
     fine: 'Fine scan',
-    validation: 'Validation',
-    admission: 'Admission',
+    validation: 'Deeper validation',
+    admission: 'Portfolio admission',
     entry: 'Entry plan',
     execution: 'Execution',
+    exit: 'Position & exit',
     needData: 'Need data',
     other: 'Other',
     symbols: 'symbols',
@@ -166,7 +188,7 @@ const copy = {
     candidateSubtitle: '集中查看研究流程最近一次保留的候选结果。每个标的的评分、AI 质疑、流动性和事件风险都会随研究记录保留。',
     reviewKicker: '03 / 决策控制',
     reviewTitle: '审核工作区',
-    reviewSubtitle: '统一处理验证异常、组合准入、入场计划和执行候选，同时不修改任何底层研究状态。',
+    reviewSubtitle: '统一处理验证异常、组合准入、入场计划、执行候选和持仓退出决策，同时不修改任何底层研究状态。',
     pipeline: 'AI 研究流程',
     marketScanner: '市场扫描器',
     reviewWorkspace: '审核工作区',
@@ -183,13 +205,13 @@ const copy = {
     filters: '研究视图',
     all: '全部',
     scoreDistribution: '研究评分分布',
-    scoreDistributionNote: '最近一次确定性排名评分',
+    scoreDistributionNote: '最近一次市场扫描确定性筛选评分',
     sectorParticipation: '行业参与度',
     sectorParticipationNote: '当前研究标的池中的主要行业',
     ledger: '候选标的账本',
     ledgerNote: '打开标的查看完整市场档案，或进入审核队列处理后续决策。',
     candidate: '候选标的',
-    score: '研究评分',
+    score: '筛选评分',
     signal: '信号',
     liquidity: '流动性',
     aiReview: 'AI 审核',
@@ -211,7 +233,7 @@ const copy = {
     notLoadedBody: '请先运行一次研究流程。在快照产生前，未知数量会显示为不可用，不会显示成 0。',
     retryPipeline: '打开流程重试',
     noScoresTitle: '当前视图没有可用评分',
-    noScoresBody: '匹配的研究记录中没有可用的排名评分。',
+    noScoresBody: '匹配的研究记录中没有可用的市场扫描筛选评分。',
     noSectorsTitle: '当前视图没有行业数据',
     noSectorsBody: '匹配的研究记录中没有行业或细分行业信息。',
     unknownCompany: '暂无公司名称',
@@ -227,19 +249,26 @@ const copy = {
     blocked: '已阻断',
     executionQueue: '执行队列',
     funnel: '研究漏斗',
-    funnelNote: '各决策阶段最近保留的真实数量',
+    funnelNote: '七个研究流程阶段最近保留的真实数量',
     decisions: '决策分布',
     decisionsNote: '每个标的最近的下游决策',
     pendingQueue: '统一审核队列',
     pendingQueueNote: '仅显示审核、等待、暂缓、缺失数据、阻断、草稿或失败状态。',
     stage: '当前阶段',
     decision: '决策',
-    confidence: '证据评分',
+    confidence: '阶段指标',
+    metricNote: '每行只展示该阶段定义的指标；不同阶段的评分与置信度百分比不会相互比较。',
+    fineScore: '精细扫描评分',
+    validationScore: '深度验证评分',
+    admissionScore: '组合准入评分',
+    entryConfidence: '入场置信度',
+    planConfidence: '入场计划置信度',
+    exitConfidence: '退出审核置信度',
     reason: '审核说明',
     updated: '更新时间',
     open: '打开',
     noReviewTitle: '当前没有需要人工关注的研究记录',
-    noReviewBodyEmpty: '请先运行 AI 研究流程，以生成验证、准入和入场计划决策。',
+    noReviewBodyEmpty: '请先运行 AI 研究流程，以生成验证、准入、入场、执行和持仓退出决策。',
     noReviewBodyClear: '最近保留的决策中没有审核、暂缓、缺失数据或阻断状态。',
     noReviewFilteredTitle: '没有审核记录匹配当前搜索',
     noReviewFilteredBody: '清除搜索即可返回完整的人工关注队列。',
@@ -250,7 +279,8 @@ const copy = {
     validation: '深度验证',
     admission: '组合准入',
     entry: '入场计划',
-    execution: '执行候选',
+    execution: '订单执行',
+    exit: '持仓与退出',
     needData: '缺少数据',
     other: '其他',
     symbols: '个标的',
@@ -281,14 +311,41 @@ const finiteNumber = (value: unknown): number | null => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
-const scoreFor = (record: Record<string, any>): number | null => (
+export const REVIEW_STAGE_ORDER: readonly ReviewStage[] = [
+  'fine',
+  'validation',
+  'admission',
+  'entry',
+  'execution',
+  'exit',
+] as const;
+
+export const RESEARCH_FUNNEL_STAGE_ORDER = ['market', ...REVIEW_STAGE_ORDER] as const;
+
+/** The Market Scanner's canonical deterministic ranking metric. */
+export const marketSelectionScore = (record: Record<string, any>): number | null => (
   finiteNumber(record.selectionScore)
-  ?? finiteNumber(record.overallScore)
-  ?? finiteNumber(record.trendScore)
-  ?? finiteNumber(record.fineScanScore)
-  ?? finiteNumber(record.validationScore)
-  ?? finiteNumber(record.confidence)
 );
+
+/**
+ * Select one metric with one meaning for each downstream stage.
+ * Do not fall through to scores from earlier or later stages: those values are
+ * produced by different models and must not be presented as interchangeable.
+ */
+export const reviewMetricForStage = (record: Record<string, any>, stage: ReviewStage): ReviewMetric => {
+  if (stage === 'fine') return { value: finiteNumber(record.fineScanScore), kind: 'fineScore', unit: '/100' };
+  if (stage === 'validation') return { value: finiteNumber(record.validationScore), kind: 'validationScore', unit: '/100' };
+  if (stage === 'admission') {
+    return { value: finiteNumber(record.admissionScore ?? record.admission?.admissionScore), kind: 'admissionScore', unit: '/100' };
+  }
+  if (stage === 'entry') {
+    return { value: finiteNumber(record.confidence ?? record.entryPlan?.confidence), kind: 'entryConfidence', unit: '%' };
+  }
+  if (stage === 'execution') {
+    return { value: finiteNumber(record.confidence ?? record.entryPlan?.confidence), kind: 'planConfidence', unit: '%' };
+  }
+  return { value: finiteNumber(record.aiExitReview?.confidence), kind: 'exitConfidence', unit: '%' };
+};
 
 const compactNumber = (value: unknown): string => {
   const parsed = finiteNumber(value);
@@ -314,7 +371,7 @@ const signedPercent = (value: unknown): string => {
 
 const isPriorityA = (record: Record<string, any>): boolean => {
   const label = String(record.selectionLabel || '').trim().toLowerCase();
-  const score = scoreFor(record);
+  const score = marketSelectionScore(record);
   return label === 'priority a' || (!label && score !== null && score >= 80);
 };
 
@@ -361,22 +418,23 @@ const localizeKnownToken = (value: unknown, isZh: boolean): string => {
   const normalized = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').toUpperCase();
   const labels: Record<string, string> = {
     'PRIORITY A': 'A 级优先', RESEARCH: '研究候选',
-    ADVANCE: '推进', WATCH: '观察', AVOID: '回避', REVIEW: '复核', DRAFT: '草稿',
+    ADVANCE: '推进', WATCH: '观察', AVOID: '回避', REVIEW: '复核', 'MANUAL REVIEW': '人工复核', DRAFT: '草稿',
     HOLD: '暂缓', WAIT: '等待', PENDING: '待处理', BLOCKED: '已阻断', BLOCK: '阻断',
     REJECT: '拒绝', ADMIT: '准入', PASS: '通过', CONFIRMED: '已确认',
     'BUY READY': '可买入', EXECUTABLE: '可执行', FILLED: '已成交', SUBMITTED: '已提交',
+    'SELL NOW': '立即退出', 'PLACE TARGET LIMIT': '挂出目标限价单',
     'NEED DATA': '缺少数据', 'MISSING DATA': '缺少数据', 'NO DATA': '暂无数据',
     'STRONG BULLISH': '强势看涨', BULLISH: '看涨', NEUTRAL: '中性', BEARISH: '看跌', 'STRONG BEARISH': '强势看跌',
     HIGH: '高', MEDIUM: '中', LOW: '低',
     COMPLETED: '已完成', PERSISTED: '已保留', RUNNING: '运行中', LOADING: '载入中', SCANNING: '扫描中',
-    FAILED: '失败', ERROR: '失败', STOPPED: '已停止', IDLE: '等待中',
+    FAILED: '失败', ERROR: '失败', STOPPED: '已停止', SKIPPED: '已跳过', IDLE: '等待中',
   };
   return labels[normalized] || raw;
 };
 
 const decisionColor = (decisionValue: unknown): string => {
   const decision = String(decisionValue || '').toUpperCase();
-  if (/ADVANCE|ADMIT|PASS|CONFIRMED|BUY_READY|FILLED|SUBMITTED/.test(decision)) return 'success';
+  if (/ADVANCE|ADMIT|PASS|CONFIRMED|BUY_READY|FILLED|SUBMITTED|SELL_NOW|PLACE_TARGET_LIMIT/.test(decision)) return 'success';
   if (/BLOCK|REJECT|AVOID|FAIL|ERROR|SKIP|CANCEL/.test(decision)) return 'error';
   if (/WATCH|WAIT|HOLD|PENDING/.test(decision)) return 'warning';
   if (/REVIEW|DRAFT/.test(decision)) return 'processing';
@@ -385,6 +443,7 @@ const decisionColor = (decisionValue: unknown): string => {
 };
 
 const extractDecision = (record: Record<string, any>, stage: ReviewStage): string => {
+  if (stage === 'exit') return String(record.exitDecision || record.triggerAction || record.action || record.status || '');
   if (stage === 'execution') return String(record.executionStatus || record.status || '');
   if (stage === 'entry') return String(record.effectiveAction || record.action || record.finalAction || record.entryAction || record.decision || '');
   if (stage === 'admission') return String(record.admissionDecision || record.decision || record.status || '');
@@ -409,7 +468,7 @@ const classifyDecision = (value: unknown): DecisionCategory => {
   const decision = String(value || '').toUpperCase();
   if (/NEED|MISSING|NO_DATA/.test(decision)) return 'needData';
   if (/BLOCK|REJECT|AVOID|FAIL|ERROR|SKIP|CANCEL/.test(decision)) return 'block';
-  if (/ADMIT|PASS|CONFIRMED|BUY_READY|EXECUTABLE|FILLED|SUBMITTED|ADVANCE/.test(decision)) return 'ready';
+  if (/ADMIT|PASS|CONFIRMED|BUY_READY|EXECUTABLE|FILLED|SUBMITTED|ADVANCE|SELL_NOW|PLACE_TARGET_LIMIT/.test(decision)) return 'ready';
   if (/REVIEW|DRAFT/.test(decision)) return 'review';
   if (/WATCH|WAIT|HOLD|PENDING/.test(decision)) return 'watch';
   return 'other';
@@ -510,7 +569,7 @@ export const CandidateUniversePage: React.FC = () => {
       { label: '90+', min: 90, max: Infinity, count: 0 },
     ];
     visibleResults.forEach((record) => {
-      const score = scoreFor(record);
+      const score = marketSelectionScore(record);
       if (score === null) return;
       const bucket = buckets.find((item) => score >= item.min && score < item.max);
       if (bucket) bucket.count += 1;
@@ -558,10 +617,10 @@ export const CandidateUniversePage: React.FC = () => {
       key: 'score',
       width: 175,
       align: 'right',
-      sorter: (a, b) => Number(scoreFor(a) || 0) - Number(scoreFor(b) || 0),
+      sorter: (a, b) => Number(marketSelectionScore(a) || 0) - Number(marketSelectionScore(b) || 0),
       defaultSortOrder: 'descend',
       render: (_value, record) => {
-        const score = scoreFor(record);
+        const score = marketSelectionScore(record);
         const reliability = finiteNumber(record.scoreReliability);
         return (
           <div className="rw-score-cell">
@@ -747,9 +806,9 @@ export const CandidateUniversePage: React.FC = () => {
   );
 };
 
-const buildReviewArtifacts = (snapshot: ScannerStoreState): ReviewArtifact[] => {
+export const buildReviewArtifacts = (snapshot: ScannerStoreState): ReviewArtifact[] => {
   const latest = new Map<string, ReviewArtifact>();
-  const addStage = (rows: Record<string, any>[], stage: ReviewStage, rank: number) => {
+  const addStage = (rows: Record<string, any>[], stage: ReviewStage, rank: number, stageUpdatedAt?: string | null) => {
     rows.forEach((record) => {
       const symbol = String(record?.symbol || '').trim().toUpperCase();
       if (!symbol) return;
@@ -759,20 +818,21 @@ const buildReviewArtifacts = (snapshot: ScannerStoreState): ReviewArtifact[] => 
         symbol,
         stage,
         decision: extractDecision(record, stage),
-        score: scoreFor(record),
+        metric: reviewMetricForStage(record, stage),
         reason: extractReason(record),
-        updatedAt: record.updatedAt || record.lastUpdated || record.completedAt || null,
+        updatedAt: record.updatedAt || record.lastUpdated || record.completedAt || record.addedAt || stageUpdatedAt || null,
         record,
         rank,
       } as ReviewArtifact & { rank: number });
     });
   };
 
-  addStage(asArray(snapshot.fineScan.results), 'fine', 1);
-  addStage(asArray(snapshot.deeperValidation.results), 'validation', 2);
-  addStage(asArray(snapshot.admission.results), 'admission', 3);
-  addStage(asArray(snapshot.entryPlan.results), 'entry', 4);
+  addStage(asArray(snapshot.fineScan.results), 'fine', 1, snapshot.fineScan.lastUpdated);
+  addStage(asArray(snapshot.deeperValidation.results), 'validation', 2, snapshot.deeperValidation.lastUpdated);
+  addStage(asArray(snapshot.admission.results), 'admission', 3, snapshot.admission.lastUpdated);
+  addStage(asArray(snapshot.entryPlan.results), 'entry', 4, snapshot.entryPlan.lastUpdated);
   addStage(asArray(snapshot.aiExecutionCandidates), 'execution', 5);
+  addStage(asArray(snapshot.exitScan.results), 'exit', 6, snapshot.exitScan.lastUpdated);
   return Array.from(latest.values());
 };
 
@@ -807,7 +867,10 @@ export const ReviewWorkspacePage: React.FC = () => {
     || snapshot.entryPlan.status === 'completed'
     || Boolean(snapshot.entryPlan.lastUpdated);
   const executionStageKnown = snapshot.aiExecutionCandidates.length > 0 || entryStageKnown;
-  const decisionSnapshotKnown = fineStageKnown || validationStageKnown || admissionStageKnown || entryStageKnown || executionStageKnown;
+  const exitStageKnown = snapshot.exitScan.results.length > 0
+    || ['completed', 'skipped'].includes(snapshot.exitScan.status)
+    || Boolean(snapshot.exitScan.lastUpdated);
+  const decisionSnapshotKnown = fineStageKnown || validationStageKnown || admissionStageKnown || entryStageKnown || executionStageKnown || exitStageKnown;
   const reviewSnapshotKnown = marketStageKnown || decisionSnapshotKnown;
   const failedStageNames = [
     snapshot.marketScanner.status,
@@ -816,9 +879,12 @@ export const ReviewWorkspacePage: React.FC = () => {
     snapshot.deeperValidation.status,
     snapshot.admission.status,
     snapshot.entryPlan.status,
+    snapshot.exitScan.status,
   ].filter((status) => ['failed', 'error'].includes(String(status).toLowerCase()));
   const reviewFailureDetail = snapshot.marketScanner.detailedScanStatus.lastFailureReason
     || snapshot.fineScan.message
+    || snapshot.exitScan.summary?.message
+    || snapshot.exitScan.summary?.error
     || c.failedBody;
   const reviewRows = useMemo(() => artifacts.filter((item) => requiresAttention(item.decision)), [artifacts]);
   const filteredReviewRows = useMemo(() => {
@@ -834,14 +900,18 @@ export const ReviewWorkspacePage: React.FC = () => {
     return value;
   }, [artifacts]);
 
-  const funnel: Array<{ key: string; label: string; count: number | null; status: string }> = [
-    { key: 'market', label: c.total, count: marketStageKnown ? asArray(snapshot.marketScanner.results).length : null, status: snapshot.marketScanner.status },
-    { key: 'fine', label: c.fine, count: fineStageKnown ? asArray(snapshot.fineScan.results).length : null, status: snapshot.fineScan.status },
-    { key: 'validation', label: c.validation, count: validationStageKnown ? asArray(snapshot.deeperValidation.results).length : null, status: snapshot.deeperValidation.status },
-    { key: 'admission', label: c.admission, count: admissionStageKnown ? asArray(snapshot.admission.results).length : null, status: snapshot.admission.status },
-    { key: 'entry', label: c.entry, count: entryStageKnown ? asArray(snapshot.entryPlan.results).length : null, status: snapshot.entryPlan.status },
-    { key: 'execution', label: c.execution, count: executionStageKnown ? asArray(snapshot.aiExecutionCandidates).length : null, status: executionStageKnown ? 'persisted' : 'idle' },
-  ];
+  type FunnelStageKey = (typeof RESEARCH_FUNNEL_STAGE_ORDER)[number];
+  type FunnelItem = { key: FunnelStageKey; label: string; count: number | null; status: string };
+  const funnelByStage: Record<FunnelStageKey, Omit<FunnelItem, 'key'>> = {
+    market: { label: c.marketScanner, count: marketStageKnown ? asArray(snapshot.marketScanner.results).length : null, status: snapshot.marketScanner.status },
+    fine: { label: c.fine, count: fineStageKnown ? asArray(snapshot.fineScan.results).length : null, status: snapshot.fineScan.status },
+    validation: { label: c.validation, count: validationStageKnown ? asArray(snapshot.deeperValidation.results).length : null, status: snapshot.deeperValidation.status },
+    admission: { label: c.admission, count: admissionStageKnown ? asArray(snapshot.admission.results).length : null, status: snapshot.admission.status },
+    entry: { label: c.entry, count: entryStageKnown ? asArray(snapshot.entryPlan.results).length : null, status: snapshot.entryPlan.status },
+    execution: { label: c.execution, count: executionStageKnown ? asArray(snapshot.aiExecutionCandidates).length : null, status: executionStageKnown ? 'persisted' : 'idle' },
+    exit: { label: c.exit, count: exitStageKnown ? asArray(snapshot.exitScan.results).length : null, status: snapshot.exitScan.status },
+  };
+  const funnel: FunnelItem[] = RESEARCH_FUNNEL_STAGE_ORDER.map((key) => ({ key, ...funnelByStage[key] }));
   const funnelMax = Math.max(0, ...funnel.map((item) => item.count ?? 0));
   const decisionItems: Array<{ key: DecisionCategory; label: string; value: number }> = [
     { key: 'ready', label: c.ready, value: decisions.ready },
@@ -858,10 +928,19 @@ export const ReviewWorkspacePage: React.FC = () => {
     snapshot.deeperValidation.status,
     snapshot.admission.status,
     snapshot.entryPlan.status,
+    snapshot.exitScan.status,
   ].some((status) => ['running', 'loading', 'scanning'].includes(String(status)));
   const reviewFailed = failedStageNames.length > 0;
 
   const stageLabel = (stage: ReviewStage) => c[stage];
+  const metricLabels: Record<ReviewMetricKind, string> = {
+    fineScore: c.fineScore,
+    validationScore: c.validationScore,
+    admissionScore: c.admissionScore,
+    entryConfidence: c.entryConfidence,
+    planConfidence: c.planConfidence,
+    exitConfidence: c.exitConfidence,
+  };
   const columns: TableColumnsType<ReviewArtifact> = [
     {
       title: c.candidate,
@@ -876,7 +955,7 @@ export const ReviewWorkspacePage: React.FC = () => {
       dataIndex: 'stage',
       key: 'stage',
       width: 145,
-      filters: (['fine', 'validation', 'admission', 'entry', 'execution'] as ReviewStage[]).map((stage) => ({ text: stageLabel(stage), value: stage })),
+      filters: REVIEW_STAGE_ORDER.map((stage) => ({ text: stageLabel(stage), value: stage })),
       onFilter: (value, item) => item.stage === value,
       render: (stage: ReviewStage) => <span className="rw-stage-label"><i />{stageLabel(stage)}</span>,
     },
@@ -888,13 +967,17 @@ export const ReviewWorkspacePage: React.FC = () => {
       render: (decision: string) => <Tag color={decisionColor(decision)} bordered={false}>{decision ? localizeKnownToken(decision, isZh) : c.noData}</Tag>,
     },
     {
-      title: c.confidence,
-      dataIndex: 'score',
-      key: 'score',
-      width: 140,
+      title: <Tooltip title={c.metricNote}>{c.confidence}</Tooltip>,
+      dataIndex: 'metric',
+      key: 'metric',
+      width: 175,
       align: 'right',
-      sorter: (a, b) => Number(a.score || 0) - Number(b.score || 0),
-      render: (score: number | null) => <div className="rw-evidence-score"><strong>{score === null ? '—' : Math.round(score)}</strong><span>{score === null ? '' : '/100'}</span></div>,
+      render: (metric: ReviewMetric) => (
+        <div className="rw-evidence-score">
+          <div><strong>{metric.value === null ? '—' : Math.round(metric.value)}</strong><span>{metric.value === null ? '' : metric.unit}</span></div>
+          <small>{metricLabels[metric.kind]}</small>
+        </div>
+      ),
     },
     {
       title: c.reason,

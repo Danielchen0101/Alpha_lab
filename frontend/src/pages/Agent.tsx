@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTradeMode } from '../contexts/TradeModeContext';
@@ -35,6 +35,7 @@ import {
   registerDeeperValidationRun, unregisterDeeperValidationRun, isDeeperValidationRunning,
   registerEntryPlanRun, unregisterEntryPlanRun, isEntryPlanRunning,
 } from '../services/scannerRunnerService';
+import { resolveResearchStrategyPolicy } from './researchStrategyPolicy';
 import './AgentEditorial.css';
 
 const { Option } = Select;
@@ -52,7 +53,7 @@ const AI_AGENT_PRIMARY_BTN_STYLE: React.CSSProperties = {
 };
 
 const AUTO_PIPELINE_TRIGGERS = new Set(['market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_run_now']);
-const AUTO_PIPELINE_STAGE_FALLBACK = [
+export const RESEARCH_PIPELINE_STAGES = [
   { key: 'market_scanner', label: 'Market Scanner' },
   { key: 'fine_scan', label: 'Fine Scan' },
   { key: 'deeper_validation', label: 'Deeper Validation' },
@@ -60,7 +61,8 @@ const AUTO_PIPELINE_STAGE_FALLBACK = [
   { key: 'entry_plan', label: 'Entry Plan' },
   { key: 'execution', label: 'Execution' },
   { key: 'exit_scan', label: 'Position & Exit' },
-];
+] as const;
+const AUTO_PIPELINE_STAGE_FALLBACK = RESEARCH_PIPELINE_STAGES;
 
 const accountStorageKey = (base: string, userId?: string): string | null => (
   userId ? `${base}:${userId}` : null
@@ -164,9 +166,12 @@ const CollapsibleStageSection: React.FC<CollapsibleStageSectionProps> = ({
 }) => {
   const statusTagColor = statusColor || (isRunning ? 'processing' : 'default');
   const statusKey = isRunning ? 'running' : statusColor || 'default';
+  const stageId = React.useId();
+  const titleId = `${stageId}-title`;
+  const contentId = `${stageId}-content`;
 
   return (
-    <section className={`agent-stage-section is-${statusKey}${expanded ? ' is-expanded' : ''}`}>
+    <section className={`agent-stage-section is-${statusKey}${expanded ? ' is-expanded' : ''}`} aria-labelledby={titleId}>
       <div
         className="agent-stage-header"
         onClick={onToggle}
@@ -176,6 +181,7 @@ const CollapsibleStageSection: React.FC<CollapsibleStageSectionProps> = ({
           className="agent-stage-toggle"
           aria-label={`${expanded ? collapseLabel : expandLabel} ${title}`}
           aria-expanded={expanded}
+          aria-controls={contentId}
           onClick={(event) => {
             event.stopPropagation();
             onToggle();
@@ -190,7 +196,7 @@ const CollapsibleStageSection: React.FC<CollapsibleStageSectionProps> = ({
           </span>
           <span className="agent-stage-title-block">
             {stageNumber && <small>{stageLabel} {stageNumber}</small>}
-            <strong>{title}</strong>
+            <strong id={titleId}>{title}</strong>
           </span>
         </div>
 
@@ -250,11 +256,9 @@ const CollapsibleStageSection: React.FC<CollapsibleStageSectionProps> = ({
         )}
       </div>
 
-      {expanded && (
-        <div className="agent-stage-content">
-          {children}
-        </div>
-      )}
+      <div className="agent-stage-content" id={contentId} hidden={!expanded}>
+        {expanded ? children : null}
+      </div>
     </section>
   );
 };
@@ -1129,6 +1133,12 @@ const Agent: React.FC = (): React.ReactElement => {
     if (state.deeperValidation.status === 'loading' && !isDeeperValidationRunning()) {
       scannerStateStore.updateDeeperValidation({ status: 'stopped' });
     }
+    // Portfolio Admission has no safe client-side promise recovery after a
+    // refresh. Mark the display artifact interrupted; a backend pipeline run
+    // will repopulate it from authenticated status if it is still active.
+    if (state.admission.status === 'loading') {
+      scannerStateStore.updateAdmission({ status: 'stopped' });
+    }
     // Entry Plan: only reset if status says loading but no module-level loop exists
     if (state.entryPlan.status === 'loading' && !isEntryPlanRunning()) {
       scannerStateStore.updateEntryPlan({ status: 'stopped' });
@@ -1321,6 +1331,7 @@ const Agent: React.FC = (): React.ReactElement => {
 
   // AI Auto Pipeline state
   const [pipelineRunning, setPipelineRunning] = useState(false);
+  const [activePipelineRunId, setActivePipelineRunId] = useState('');
   const pipelineRunningRef = useRef(false);
   const [pipelineStage, setPipelineStage] = useState<string>('idle');
   const [pipelineError, setPipelineError] = useState<string | null>(null);
@@ -1330,21 +1341,10 @@ const Agent: React.FC = (): React.ReactElement => {
   // Keep ref in sync with state for timer callbacks
   useEffect(() => { pipelineRunningRef.current = pipelineRunning; }, [pipelineRunning]);
 
-  const [aiExecutionList, setAiExecutionList] = useState<any[]>(() => {
-    try {
-      const restored = scannerStateStore.getAiExecutionCandidates();
-      const removedSet = new Set(scannerStateStore.getRemovedExecutionSymbols());
-      return restored
-        .filter((item: any) => !removedSet.has(String(item.symbol || '').toUpperCase()))
-        .map((item: any) => {
-          // Convert stale auto_executing to failed — the promise is gone after refresh
-          if (item.executionStatus === 'auto_executing') {
-            return { ...item, executionStatus: 'failed', executionError: 'Execution interrupted by page refresh' };
-          }
-          return item;
-        });
-    } catch { return []; }
-  });
+  // Order-capable candidates are reconstructed only from the authenticated
+  // backend run in this mounted session. The legacy scanner cache is not scoped
+  // by account, run and strategy fingerprint, so it is display-only.
+  const [aiExecutionList, setAiExecutionList] = useState<any[]>([]);
   const [pipelineMode, setPipelineMode] = useState<'ai' | 'hybrid' | 'manual'>(() => {
     const saved = readAccountStorage('pipelineMode', accountUserId);
     return saved === 'ai' || saved === 'hybrid' || saved === 'manual' ? saved : 'hybrid';
@@ -1356,30 +1356,6 @@ const Agent: React.FC = (): React.ReactElement => {
     void workspacePreferencesAPI.update({ pipelineMode: nextMode }).catch(() => {
       message.error(agentText('Pipeline mode could not be saved.', '流程模式保存失败。'));
     });
-  };
-
-  const riskMandate = {
-    low: { deploymentPct: 30, grossPct: 35, singlePct: 8, riskPerTradePct: 0.5, dailyStopPct: 1.5, positions: 8 },
-    medium: { deploymentPct: 50, grossPct: 60, singlePct: 15, riskPerTradePct: 1.0, dailyStopPct: 2.5, positions: 10 },
-    high: { deploymentPct: 100, grossPct: leverageEnabled && timeHorizon === 'short' ? 115 : 100, singlePct: 100, riskPerTradePct: 1.5, dailyStopPct: 4.0, positions: 12 },
-  }[riskProfile];
-  const horizonMandate = {
-    short: { holding: agentText('1–5 trading days', '1–5 个交易日'), reviewDays: 3, timeStopDays: 5, maxStopPct: 5, targetR: 1.5, focus: agentText('Momentum, liquidity and fresh catalysts', '动量、流动性与最新催化因素') },
-    mid: { holding: agentText('2–8 weeks', '2–8 周'), reviewDays: 20, timeStopDays: 40, maxStopPct: 9, targetR: 1.8, focus: agentText('Trend quality, relative strength and catalysts', '趋势质量、相对强度与催化因素') },
-    long: { holding: agentText('3–12 months', '3–12 个月'), reviewDays: 60, timeStopDays: 180, maxStopPct: 15, targetR: 2.2, focus: agentText('Durable trend, quality and long-term strength', '长期趋势、基本质量与持续强度') },
-  }[timeHorizon];
-  const aiMandate = {
-    manual: { label: agentText('Manual', '手动'), research: false, selection: false, buy: false, scaleIn: false, reduce: false, sell: false, approval: true },
-    hybrid: { label: agentText('AI assisted', 'AI 辅助'), research: true, selection: false, buy: false, scaleIn: false, reduce: false, sell: false, approval: true },
-    ai: { label: agentText('Full AI', '全 AI'), research: true, selection: true, buy: true, scaleIn: true, reduce: true, sell: true, approval: false },
-  }[pipelineMode];
-  const leverageAvailable = riskProfile === 'high' && timeHorizon === 'short';
-  const strategyMandate = {
-    ...riskMandate,
-    ...horizonMandate,
-    ...aiMandate,
-    leverageActive: leverageAvailable && leverageEnabled,
-    optionsAllowed: false,
   };
 
   const [pipelineSchedule, setPipelineSchedule] = useState<'off' | '15m' | '30m' | '1h' | '2h'>(() => {
@@ -1401,6 +1377,38 @@ const Agent: React.FC = (): React.ReactElement => {
   const [pipelineAutoStatus, setPipelineAutoStatus] = useState<any>(null);
   const pipelineAutoStatusRef = useRef<any>(null);
   useEffect(() => { pipelineAutoStatusRef.current = pipelineAutoStatus; }, [pipelineAutoStatus]);
+  const strategyMandate = useMemo(() => resolveResearchStrategyPolicy(pipelineAutoStatus, {
+    riskProfile,
+    timeHorizon,
+    pipelineMode,
+    leverageEnabled,
+  }), [leverageEnabled, pipelineAutoStatus, pipelineMode, riskProfile, timeHorizon]);
+  const leverageAvailable = strategyMandate.leverageEligible;
+  const aiMandate = {
+    label: pipelineMode === 'manual'
+      ? agentText('Manual', '手动')
+      : pipelineMode === 'hybrid'
+        ? agentText('AI assisted', 'AI 辅助')
+        : agentText('Full AI', '全 AI'),
+    research: strategyMandate.research,
+    selection: strategyMandate.selection,
+    buy: strategyMandate.buy,
+    scaleIn: strategyMandate.scaleIn,
+    reduce: strategyMandate.reduce,
+    sell: strategyMandate.sell,
+    approval: strategyMandate.approval,
+  };
+  const strategyFactorSummary = Object.keys(strategyMandate.factorWeights)
+    .map((factor) => `${factor.slice(0, 3).toUpperCase()} ${Math.round(strategyMandate.factorWeights[factor] * 100)}%`)
+    .join(' · ');
+  const executionContextFingerprint = [
+    accountUserId || 'no-account',
+    strategyMandate.version,
+    riskProfile,
+    timeHorizon,
+    pipelineMode,
+    leverageEnabled ? 'leveraged' : 'unleveraged',
+  ].join('|');
   // Auto-run background display state — separate from manual pipeline state
   const [autoRunActive, setAutoRunActive] = useState(false);
   const [autoRunStep, setAutoRunStep] = useState('');
@@ -2908,6 +2916,7 @@ const Agent: React.FC = (): React.ReactElement => {
   const removedSymbolsRef = useRef<Set<string>>(new Set());
   // Ref mirror of aiExecutionList for reading latest state inside callbacks without stale closure
   const aiExecutionListRef = useRef<any[]>([]);
+  const executionContextFingerprintRef = useRef(executionContextFingerprint);
   // Incremented on each new Entry Plan run; compared against the generation when Clear was last pressed
   const entryPlanGenerationRef = useRef<number>(0);
   const clearedAtGenerationRef = useRef<number>(-1);
@@ -2937,10 +2946,31 @@ const Agent: React.FC = (): React.ReactElement => {
 
   // tradeMode is from global context — no stale closure issue
 
-  // Persist aiExecutionList to scannerStateStore on every change
+  // Keep a volatile mirror for same-session display helpers. The store strips
+  // this field before browser persistence, so refresh can never resurrect an
+  // executable candidate.
   useEffect(() => {
     scannerStateStore.setAiExecutionCandidates(aiExecutionList);
   }, [aiExecutionList]);
+  useEffect(() => {
+    setAiExecutionList([]);
+    removedSymbolsRef.current.clear();
+    autoEntryPlanExecuteKeysRef.current.clear();
+    scannerStateStore.clearAiExecutionCandidates();
+    scannerStateStore.clearRemovedExecutionSymbols();
+  }, [accountUserId]);
+  useEffect(() => {
+    if (executionContextFingerprintRef.current === executionContextFingerprint) return;
+    executionContextFingerprintRef.current = executionContextFingerprint;
+    // Keep broker-submitted/final records visible for reconciliation, but
+    // invalidate every still-actionable research draft from the old mandate.
+    setAiExecutionList((previous) => previous.filter((item: any) => (
+      ['pending', 'submitted', 'accepted', 'new', 'partially_filled', 'filled', 'canceled', 'holding', 'order_pending']
+        .includes(String(item?.executionStatus || item?.alpacaOrderStatus || '').toLowerCase())
+    )));
+    removedSymbolsRef.current.clear();
+    autoEntryPlanExecuteKeysRef.current.clear();
+  }, [executionContextFingerprint]);
   // Flush pending saves before page unload to prevent data loss from debounce
   useEffect(() => {
     const handleBeforeUnload = () => { scannerStateStore.flushPendingSave(); };
@@ -2954,12 +2984,35 @@ const Agent: React.FC = (): React.ReactElement => {
   const [scannerExpanded, setScannerExpanded] = useState(false);
   const [fineScanExpanded, setFineScanExpanded] = useState(false);
   const [dvExpanded, setDvExpanded] = useState(false);
+  const [admissionExpanded, setAdmissionExpanded] = useState(false);
+  const [admissionErrorMessage, setAdmissionErrorMessage] = useState<string | null>(null);
   const [dvErrorMessage, setDvErrorMessage] = useState<string | null>(null);
   const [dvErrors, setDvErrors] = useState<any[]>([]);
   const [dvProgress, setDvProgress] = useState(0);
   const [dvProgressStage, setDvProgressStage] = useState(agentText('Ready', '就绪'));
   const [entryPlanExpanded, setEntryPlanExpanded] = useState(false);
+  const [executionExpanded, setExecutionExpanded] = useState(false);
   const [exitScanExpanded, setExitScanExpanded] = useState(false);
+
+  useEffect(() => {
+    if (detailedScanStatus.currentStatus === 'error') setScannerExpanded(true);
+    if (fineScanStatus === 'error' || fineScanStatus === 'failed') setFineScanExpanded(true);
+    if (deeperValidationStatus === 'error') setDvExpanded(true);
+    if (admissionStatus === 'error') setAdmissionExpanded(true);
+    if (entryPlanStatus === 'error') setEntryPlanExpanded(true);
+    if (aiExecutionList.some((item: any) => ['failed', 'blocked'].includes(String(item?.executionStatus || '').toLowerCase()))) {
+      setExecutionExpanded(true);
+    }
+    if (exitScanStatus === 'failed') setExitScanExpanded(true);
+  }, [
+    admissionStatus,
+    aiExecutionList,
+    deeperValidationStatus,
+    detailedScanStatus.currentStatus,
+    entryPlanStatus,
+    exitScanStatus,
+    fineScanStatus,
+  ]);
 
   const handleEntryPlanAction = (plan: any) => {
     const action = getEntryPlanEffectiveAction(plan);
@@ -3848,6 +3901,7 @@ const Agent: React.FC = (): React.ReactElement => {
       // Metadata
       source: 'watchlist',
       addedAt: new Date().toISOString(),
+      strategyFingerprint: executionContextFingerprint,
       entryPlan: ep,
     };
 
@@ -4086,6 +4140,7 @@ const Agent: React.FC = (): React.ReactElement => {
         timeInForce: plan.timeInForce || plan.executionDetails?.orderPreview?.timeInForce || plan.orderPreview?.timeInForce || 'day',
         finalAction: plan.finalAction,
         source: 'entry-plan-auto',
+        strategyFingerprint: executionContextFingerprint,
         entryPlan: plan,
       };
       if (existingIndex >= 0) {
@@ -4093,7 +4148,7 @@ const Agent: React.FC = (): React.ReactElement => {
       }
       return [...prev, { ...baseItem, ...patch }];
     });
-  }, []);
+  }, [executionContextFingerprint]);
 
   const autoExecuteEntryPlan = useCallback(async (plan: any, key: string) => {
     const symbol = String(plan?.symbol || '').toUpperCase();
@@ -4256,14 +4311,11 @@ const Agent: React.FC = (): React.ReactElement => {
       const limit = (cur != null && hi != null) ? Math.min(cur, hi) : (cur ?? hi ?? 0);
       return { orderType: 'limit', limitPrice: limit, timeInForce: 'day', entryZoneLow: lo, entryZoneHigh: hi };
     };
-    // Also check persisted removed symbols (survives page refresh)
-    const persistedRemoved = new Set(scannerStateStore.getRemovedExecutionSymbols());
     for (const plan of entryPlanResults) {
       const symbol = String(plan?.symbol || '').toUpperCase();
       if (plan?.executionHandledByBackend) { console.log('[AutoExecPipeline] skip symbol=%s reason=backend_execution_owner', symbol); continue; }
-      // Skip symbols the user explicitly removed in this run or persisted from before refresh
+      // Skip symbols explicitly removed during this mounted run.
       if (removedSymbolsRef.current.has(symbol)) { console.log('[AutoExecPipeline] skip symbol=%s reason=user_removed', symbol); continue; }
-      if (persistedRemoved.has(symbol)) { console.log('[AutoExecPipeline] skip symbol=%s reason=persisted_removed', symbol); continue; }
       const _rawAction = getEntryPlanEffectiveAction(plan);
       const _effPlan = plan;
       if (!symbol || getEntryPlanEffectiveAction(_effPlan) !== 'BUY_READY') { console.log('[AutoExecPipeline] skip symbol=%s reason=not_BUY_READY action=%s', symbol, _rawAction); continue; }
@@ -4307,6 +4359,14 @@ const Agent: React.FC = (): React.ReactElement => {
   const handleExecuteOrder = async (record: any, confirmed = false) => {
     const automationMode = getAutomationMode();
     const tradingMode = tradeMode;
+
+    if (record?.strategyFingerprint && record.strategyFingerprint !== executionContextFingerprint) {
+      message.error(agentText(
+        'This candidate was created under a different account or strategy mandate. Generate a fresh Entry Plan before executing.',
+        '该候选由不同账户或策略规则生成。执行前请重新生成入场计划。',
+      ));
+      return;
+    }
 
     // Manual mode — should not reach here (button hidden), but guard anyway
     if (automationMode === 'manual') {
@@ -4614,14 +4674,35 @@ const Agent: React.FC = (): React.ReactElement => {
       }));
   }, [deeperValidationResults, holdings, isConfirmedForEntryPlan]);
 
-  const handleRunEntryPlan = async () => {
+  const admittedCandidatesFromRows = (rows: any[] | null | undefined): any[] => (
+    (rows || [])
+      .filter((row: any) => row?.admissionDecision === 'ADMIT')
+      .map((row: any) => ({
+        ...(row.sourceCandidate || {}),
+        admission: row,
+        admissionDecision: row.admissionDecision,
+        admissionScore: row.admissionScore,
+        admissionWarnings: row.warnings || [],
+        admissionAiReview: row.aiAdmissionReview || null,
+        signalSnapshot: row.signalSnapshot,
+      }))
+  );
+
+  const runPortfolioAdmission = async (): Promise<any[]> => {
+    const candidates = getEntryPlanCandidates();
+    if (!candidates.length) return [];
+
+    setAdmissionErrorMessage(null);
     if (pipelineRunning) {
       message.warning(agentText('This action is unavailable while the AI pipeline is running.', 'AI 流水线运行期间无法执行此操作。'));
-      return;
+      return [];
     }
-    const candidates = getEntryPlanCandidates();
-    if (!candidates.length) return;
 
+    scannerStateStore.resetEntryPlan();
+    setAiExecutionList((previous) => previous.filter((item: any) => (
+      ['pending', 'submitted', 'accepted', 'new', 'partially_filled', 'filled', 'canceled', 'holding', 'order_pending']
+        .includes(String(item?.executionStatus || item?.alpacaOrderStatus || '').toLowerCase())
+    )));
     scannerStateStore.updateAdmission({
       status: 'loading',
       results: null,
@@ -4629,7 +4710,6 @@ const Agent: React.FC = (): React.ReactElement => {
       lastUpdated: new Date().toISOString(),
     });
 
-    let admittedCandidates: any[] = [];
     try {
       const holdingSymbols = (holdingsRef.current || holdings || [])
         .map((position: any) => String(position?.symbol || '').toUpperCase())
@@ -4673,39 +4753,73 @@ const Agent: React.FC = (): React.ReactElement => {
         lastUpdated: new Date().toISOString(),
       });
 
-      admittedCandidates = admissionRows
-        .filter((row: any) => row?.admissionDecision === 'ADMIT')
-        .map((row: any) => ({
-          ...(row.sourceCandidate || {}),
-          admission: row,
-          admissionDecision: row.admissionDecision,
-          admissionScore: row.admissionScore,
-          admissionWarnings: row.warnings || [],
-          admissionAiReview: row.aiAdmissionReview || null,
-          signalSnapshot: row.signalSnapshot,
-        }));
+      const admittedCandidates = admittedCandidatesFromRows(admissionRows);
 
       if (!admittedCandidates.length) {
-        setEntryPlanStatus('completed');
-        setEntryPlanResults([]);
         const holdCount = admissionRunSummary?.counts?.HOLD || 0;
         const blockCount = admissionRunSummary?.counts?.BLOCK || 0;
         message.warning(agentText(
           `Portfolio admission held this batch: ${holdCount} on hold and ${blockCount} blocked.`,
           `本批次未通过组合准入：${holdCount} 个暂缓，${blockCount} 个阻断。`,
         ));
-        return;
       }
-
+      return admittedCandidates;
     } catch (error: any) {
+      const errorMessage = agentErrorText(
+        error?.response?.data?.message || error?.message,
+        'Portfolio admission failed.',
+        '组合准入失败，请检查数据连接后重试。',
+      );
       scannerStateStore.updateAdmission({
         status: 'error',
         lastUpdated: new Date().toISOString(),
       });
-      message.error(agentErrorText(
-        error?.response?.data?.message || error?.message,
-        'Portfolio admission failed.',
-        '组合准入失败，请检查数据连接后重试。',
+      setAdmissionErrorMessage(errorMessage);
+      setAdmissionExpanded(true);
+      message.error(errorMessage);
+      throw new Error(errorMessage);
+    }
+  };
+
+  const handleRunAdmission = async () => {
+    if (pipelineRunning) {
+      message.warning(agentText('This action is unavailable while the AI pipeline is running.', 'AI 流水线运行期间无法执行此操作。'));
+      return;
+    }
+    if (!getEntryPlanCandidates().length) {
+      message.warning(agentText(
+        'No confirmed DV candidates are available for portfolio admission.',
+        '暂无可进入组合准入的深度验证候选。',
+      ));
+      return;
+    }
+    setAdmissionExpanded(true);
+    try {
+      await runPortfolioAdmission();
+    } catch {
+      // runPortfolioAdmission records and displays the precise failure.
+    }
+  };
+
+  const handleRunEntryPlan = async () => {
+    if (pipelineRunning) {
+      message.warning(agentText('This action is unavailable while the AI pipeline is running.', 'AI 流水线运行期间无法执行此操作。'));
+      return;
+    }
+    if (admissionStatus !== 'completed') {
+      setAdmissionExpanded(true);
+      message.warning(agentText(
+        'Run Portfolio Admission before generating entry plans.',
+        '生成入场计划前，请先运行组合准入。',
+      ));
+      return;
+    }
+    const admittedCandidates = admittedCandidatesFromRows(admissionResults);
+    if (!admittedCandidates.length) {
+      setAdmissionExpanded(true);
+      message.warning(agentText(
+        'Portfolio Admission did not admit any candidates.',
+        '组合准入没有放行任何候选。',
       ));
       return;
     }
@@ -5658,7 +5772,7 @@ const Agent: React.FC = (): React.ReactElement => {
     );
   };
 
-  const PIPELINE_STAGES = ['Market Scanner', 'Fine Scan', 'Deeper Validation', 'Portfolio Admission', 'Entry Plan', 'Execution', 'Position & Exit'] as const;
+  const PIPELINE_STAGES = RESEARCH_PIPELINE_STAGES.map((stage) => stage.label);
 
   // Translate pipeline stage name for display (internal keys stay English)
   const getPipelineStageLabel = (name: string): string => {
@@ -5828,6 +5942,7 @@ const Agent: React.FC = (): React.ReactElement => {
         throw new Error(startResponse?.data?.message || 'Unable to start the unified pipeline');
       }
       const runId = startResponse.data.runId;
+      setActivePipelineRunId(runId);
       const stageLabels: Record<string, string> = {
         market_scanner: agentText('Market Scanner', '市场扫描'),
         fine_scan: agentText('Fine Scan', '精细扫描'),
@@ -5879,15 +5994,61 @@ const Agent: React.FC = (): React.ReactElement => {
               },
             });
           } else if (key === 'fine_scan') {
-            scannerStateStore.updateFineScan({ status: active.status === 'running' ? 'running' : 'completed', progress: Number(active.progressPct || 0), message: active.message || '' });
+            scannerStateStore.updateFineScan({
+              status: active.status === 'running'
+                ? 'running'
+                : active.status === 'failed'
+                  ? 'error'
+                  : ['stopped', 'interrupted'].includes(active.status)
+                    ? 'stopped'
+                    : 'completed',
+              progress: Number(active.progressPct || 0),
+              message: active.message || '',
+            });
           } else if (key === 'deeper_validation') {
-            scannerStateStore.updateDeeperValidation({ status: active.status === 'running' ? 'loading' : 'completed', runId });
+            scannerStateStore.updateDeeperValidation({
+              status: active.status === 'running'
+                ? 'loading'
+                : active.status === 'failed'
+                  ? 'error'
+                  : ['stopped', 'interrupted'].includes(active.status)
+                    ? 'stopped'
+                    : 'completed',
+              runId,
+            });
           } else if (key === 'admission') {
-            scannerStateStore.updateAdmission({ status: active.status === 'running' ? 'loading' : 'completed', runId });
+            scannerStateStore.updateAdmission({
+              status: active.status === 'running'
+                ? 'loading'
+                : active.status === 'failed'
+                  ? 'error'
+                  : ['stopped', 'interrupted'].includes(active.status)
+                    ? 'stopped'
+                    : 'completed',
+              runId,
+            });
           } else if (key === 'entry_plan') {
-            scannerStateStore.updateEntryPlan({ status: active.status === 'running' ? 'loading' : 'completed', runId });
+            scannerStateStore.updateEntryPlan({
+              status: active.status === 'running'
+                ? 'loading'
+                : active.status === 'failed'
+                  ? 'error'
+                  : ['stopped', 'interrupted'].includes(active.status)
+                    ? 'stopped'
+                    : 'completed',
+              runId,
+            });
           } else if (key === 'exit_scan') {
-            scannerStateStore.updateExitScan({ status: active.status === 'running' ? 'scanning' : 'completed', runId });
+            scannerStateStore.updateExitScan({
+              status: active.status === 'running'
+                ? 'scanning'
+                : active.status === 'failed'
+                  ? 'failed'
+                  : ['stopped', 'interrupted'].includes(active.status)
+                    ? 'stopped'
+                    : 'completed',
+              runId,
+            });
           }
 
           if (['completed', 'failed', 'stopped', 'interrupted'].includes(active.status)) {
@@ -5961,6 +6122,7 @@ const Agent: React.FC = (): React.ReactElement => {
               alpacaOrderId: row?.orderId || row?.order?.id,
               alpacaOrderStatus: row?.orderStatus || row?.order?.status,
               pipelineRunId: runId,
+              strategyFingerprint: executionContextFingerprint,
             });
           }
           return Array.from(bySymbol.values());
@@ -5984,13 +6146,35 @@ const Agent: React.FC = (): React.ReactElement => {
       }
     } finally {
       setPipelineRunning(false);
+      setActivePipelineRunId('');
       fetchPipelineAutoStatus();
     }
   };
 
-  const stopPipeline = () => {
+  const stopPipeline = async () => {
     pipelineStopRequestedRef.current = true;
-    pipelineAutoAPI.stopPipeline().catch(() => {});
+    const runId = (
+      activePipelineRunId
+      || pipelineAutoStatus?.activeRun?.runId
+      || autoRunRequestedId
+      || ''
+    );
+    if (!runId) {
+      message.warning(agentText(
+        'The active run ID is not available yet. Refresh status before stopping.',
+        '当前运行编号尚不可用，请刷新状态后再停止。',
+      ));
+      return;
+    }
+    try {
+      await pipelineAutoAPI.stopPipeline(runId);
+    } catch (error: any) {
+      message.error(agentErrorText(
+        error?.response?.data?.message || error?.message,
+        'The backend could not persist the stop request.',
+        '后端无法持久化停止请求。',
+      ));
+    }
   };
 
   // Keep scanner timing UI in sync. Account-scoped persistence happens only
@@ -6367,6 +6551,22 @@ const Agent: React.FC = (): React.ReactElement => {
   );
   const autoRunDisplayStatus = autoRunActive ? 'running' : (autoRunRecord?.status || 'idle');
   const autoRunStepStates = autoRunRecord?.steps || {};
+  const executionStepState = rawAutoRunRecord?.steps?.execution || autoRunStepStates?.execution || {};
+  const executionRunStatus = String(executionStepState?.status || '').toLowerCase();
+  const executionFailedCount = aiExecutionList.filter((item: any) => String(item?.executionStatus || '').toLowerCase() === 'failed').length;
+  const executionBlockedCount = aiExecutionList.filter((item: any) => String(item?.executionStatus || '').toLowerCase() === 'blocked').length;
+  const executionActiveCount = aiExecutionList.filter((item: any) => (
+    ['auto_executing', 'pending', 'submitted', 'accepted', 'new', 'partially_filled', 'order_pending']
+      .includes(String(item?.executionStatus || item?.alpacaOrderStatus || '').toLowerCase())
+  )).length;
+  const executionFilledCount = aiExecutionList.filter((item: any) => String(item?.executionStatus || '').toLowerCase() === 'filled').length;
+  const executionStageRunning = executionRunStatus === 'running'
+    || (pipelineRunning && [getPipelineStageLabel('Execution'), 'Execution'].includes(pipelineStage));
+  const executionStageFailed = executionRunStatus === 'failed' || executionFailedCount > 0;
+  const executionStageBlocked = !executionStageFailed && executionBlockedCount > 0;
+  useEffect(() => {
+    if (executionStageFailed) setExecutionExpanded(true);
+  }, [executionStageFailed]);
   const autoRunCompletedStages = autoRunStages.filter((stage: any) => (
     ['completed', 'completed_no_candidates'].includes(autoRunStepStates?.[stage.key]?.status)
   )).length;
@@ -7139,6 +7339,11 @@ const Agent: React.FC = (): React.ReactElement => {
             <span>{riskProfile.toUpperCase()} RISK</span>
             <strong>{strategyMandate.deploymentPct}%</strong>
             <small>{agentText('target capital deployed', '目标资金投入')}</small>
+            <small className={strategyMandate.source === 'backend' ? 'is-server' : 'is-fallback'}>
+              {strategyMandate.source === 'backend'
+                ? agentText('SERVER POLICY', '后端策略')
+                : agentText('SAFE FALLBACK', '安全回退')} · {strategyMandate.version}
+            </small>
           </div>
         </header>
 
@@ -7196,14 +7401,49 @@ const Agent: React.FC = (): React.ReactElement => {
           <div><span>{agentText('Gross exposure', '总敞口')}</span><strong>{strategyMandate.grossPct}%</strong><small>{agentText(`${strategyMandate.singlePct}% max per symbol`, `单一标的最高 ${strategyMandate.singlePct}%`)}</small></div>
           <div><span>{agentText('Risk budget', '风险预算')}</span><strong>{strategyMandate.riskPerTradePct}%</strong><small>{agentText(`${strategyMandate.dailyStopPct}% daily stop`, `单日止损 ${strategyMandate.dailyStopPct}%`)}</small></div>
           <div><span>{agentText('Holding mandate', '持有规则')}</span><strong>{strategyMandate.holding}</strong><small>{strategyMandate.focus}</small></div>
-          <div><span>{agentText('Exit geometry', '退出参数')}</span><strong>{strategyMandate.maxStopPct}% / {strategyMandate.targetR}R</strong><small>{agentText(`Review day ${strategyMandate.reviewDays}`, `第 ${strategyMandate.reviewDays} 天复核`)}</small></div>
+          <div><span>{agentText('Exit geometry', '退出参数')}</span><strong>{strategyMandate.maxStopPct}% / {strategyMandate.targetR}R</strong><small>{agentText(`Review day ${strategyMandate.reviewAfterDays}`, `第 ${strategyMandate.reviewAfterDays} 天复核`)}</small></div>
           <div><span>{agentText('AI order authority', 'AI 下单权限')}</span><strong>{strategyMandate.buy && strategyMandate.sell ? agentText('BUY + ADD + REDUCE + EXIT', '买入 + 补仓 + 减仓 + 清仓') : agentText('LOCKED', '已锁定')}</strong><small>{strategyMandate.approval ? agentText('Human approval required', '需要人工确认') : agentText('Hard gates remain final', '硬风控拥有最终权限')}</small></div>
+        </div>
+
+        <div className="agent-mandate-contract-grid" aria-label={agentText('Effective backend strategy contract', '实际生效的后端策略合同')}>
+          <div>
+            <span>{agentText('Policy provenance', '策略来源')}</span>
+            <strong>{strategyMandate.source === 'backend' ? agentText('Backend authoritative', '后端权威值') : agentText('Contract-safe fallback', '合同安全回退')}</strong>
+            <small>{strategyMandate.source === 'backend'
+              ? agentText('Context matches the selected risk, horizon, mode and leverage settings.', '上下文与所选风险、周期、模式及杠杆设置一致。')
+              : agentText('Waiting for a matching backend status snapshot; hard limits remain enforced.', '正在等待匹配的后端状态快照；硬限制仍然生效。')}</small>
+          </div>
+          <div>
+            <span>{agentText('Selection factor weights', '筛选因子权重')}</span>
+            <strong>{strategyFactorSummary || '—'}</strong>
+            <small>{strategyMandate.selectionFocus}</small>
+          </div>
+          <div>
+            <span>{agentText('Scale-in limits', '加仓限制')}</span>
+            <strong>{strategyMandate.scaleInAllowed
+              ? agentText(`${strategyMandate.maxScaleIns} adds · ${strategyMandate.scaleInStepPct}% step`, `${strategyMandate.maxScaleIns} 次 · 每次 ${strategyMandate.scaleInStepPct}%`)
+              : agentText('Disabled', '已禁用')}</strong>
+            <small>{strategyMandate.scaleInRequiresWinner
+              ? agentText(`Winner only after +${strategyMandate.scaleInMinProfitPct}%`, `仅盈利达到 +${strategyMandate.scaleInMinProfitPct}% 后允许`)
+              : agentText('No winner requirement', '无盈利前置条件')}</small>
+          </div>
+          <div>
+            <span>{agentText('Leveraged-product limit', '杠杆产品限制')}</span>
+            <strong>{strategyMandate.leverageEnabled
+              ? agentText(`${strategyMandate.leveragedSleeveMaxPct}% sleeve active`, `${strategyMandate.leveragedSleeveMaxPct}% 杠杆仓已启用`)
+              : strategyMandate.leverageEligible
+                ? agentText('Eligible · inactive', '可用 · 未启用')
+                : agentText('Not eligible', '当前不可用')}</strong>
+            <small>{strategyMandate.leveragedProductPolicy}</small>
+          </div>
         </div>
 
         <div className="agent-mandate-safety-row">
           <div className="agent-mandate-leverage">
             <Switch checked={leverageEnabled} disabled={!leverageAvailable} onChange={handleLeverageEnabledChange} />
-            <div><strong>{agentText('Leveraged equity sleeve', '杠杆股票仓位')}</strong><span>{leverageAvailable ? agentText('Optional, capped at 15% of equity; long-only leveraged ETPs.', '可选，最高为权益的 15%；仅限做多杠杆 ETP。') : agentText('Requires High risk + Short horizon.', '仅在“高风险 + 短周期”时开放。')}</span></div>
+            <div><strong>{agentText('Leveraged equity sleeve', '杠杆股票仓位')}</strong><span>{leverageAvailable
+              ? agentText(`Optional, capped at ${strategyMandate.leveragedSleeveMaxPct || 15}% of equity; ${strategyMandate.leveragedProductPolicy}.`, `可选，最高为权益的 ${strategyMandate.leveragedSleeveMaxPct || 15}%；仅限做多杠杆 ETP，禁止反向产品。`)
+              : agentText('Requires High risk + Short horizon.', '仅在“高风险 + 短周期”时开放。')}</span></div>
           </div>
           <div className="agent-mandate-prohibition"><SafetyCertificateOutlined /><div><strong>{agentText('OPTIONS PROHIBITED', '禁止期权')}</strong><span>{agentText('US equities only. This cannot be overridden by AI mode.', '仅限美股；任何 AI 模式都不能绕过。')}</span></div></div>
         </div>
@@ -8876,13 +9116,13 @@ const Agent: React.FC = (): React.ReactElement => {
           fineScanStatus === 'running' ? t.agent.statusRunning :
           fineScanStatus === 'completed' ? t.agent.statusCompleted :
           fineScanStatus === 'stopped' ? t.agent.statusStopped :
-          fineScanStatus === 'error' ? t.agent.statusError : t.agent.statusIdle
+          fineScanStatus === 'error' || fineScanStatus === 'failed' ? t.agent.statusError : t.agent.statusIdle
         }
         statusColor={
           fineScanStatus === 'running' ? 'processing' :
           fineScanStatus === 'completed' ? 'success' :
           fineScanStatus === 'stopped' ? 'warning' :
-          fineScanStatus === 'error' ? 'error' : 'default'
+          fineScanStatus === 'error' || fineScanStatus === 'failed' ? 'error' : 'default'
         }
         progressValue={(fineScanStatus === 'running' || fineScanStatus === 'stopped') && fineScanProgress > 0 ? fineScanProgress : null}
         summaryChips={fineScanResults.length > 0 ? [
@@ -9015,11 +9255,170 @@ const Agent: React.FC = (): React.ReactElement => {
 
       </CollapsibleStageSection>
 
-      {/* ▲▲▲ Above: Deeper Validation ▲▲▲ */}
-
-      {/* ▲▲▲ Below: Entry Plan ▲▲▲ */}
+      {/* Stage 04: Portfolio Admission */}
       <CollapsibleStageSection
         stageNumber="04"
+        stageLabel={agentText('Stage', '阶段')}
+        expandLabel={agentText('Expand', '展开')}
+        collapseLabel={agentText('Collapse', '收起')}
+        title={agentText('Portfolio Admission', '组合准入')}
+        icon={<SafetyCertificateOutlined />}
+        statusText={
+          admissionStatus === 'loading' ? agentText('CHECKING', '检查中') :
+          admissionStatus === 'completed' ? agentText('COMPLETED', '已完成') :
+          admissionStatus === 'stopped' ? agentText('STOPPED', '已停止') :
+          admissionStatus === 'error' ? agentText('ERROR', '错误') :
+          agentText('IDLE', '空闲')
+        }
+        statusColor={
+          admissionStatus === 'loading' ? 'processing' :
+          admissionStatus === 'completed' ? 'success' :
+          admissionStatus === 'stopped' ? 'warning' :
+          admissionStatus === 'error' ? 'error' : 'default'
+        }
+        summaryChips={admissionResults && admissionResults.length > 0 ? [
+          { label: agentText('Reviewed', '已审核'), value: admissionResults.length },
+          { label: agentText('Admit', '准入'), value: admissionResults.filter((row: any) => row.admissionDecision === 'ADMIT').length, color: 'var(--app-positive)' },
+          { label: agentText('Hold', '暂缓'), value: admissionResults.filter((row: any) => row.admissionDecision === 'HOLD').length, color: '#d97706' },
+          { label: agentText('Block', '阻断'), value: admissionResults.filter((row: any) => row.admissionDecision === 'BLOCK').length, color: '#dc2626' },
+        ] : undefined}
+        actionButton={
+          <Tooltip title={pipelineRunning
+            ? t.agent.pipelineDisabled
+            : !getEntryPlanCandidates().length
+              ? agentText('No confirmed DV candidates are ready.', '暂无已确认的深度验证候选。')
+              : ''}
+          >
+            <span>
+              <Button
+                type="primary"
+                icon={<SafetyCertificateOutlined />}
+                loading={admissionStatus === 'loading'}
+                disabled={admissionStatus === 'loading' || !getEntryPlanCandidates().length || pipelineRunning}
+                onClick={handleRunAdmission}
+                style={AI_AGENT_PRIMARY_BTN_STYLE}
+              >
+                {agentText('Run Admission', '运行组合准入')}
+              </Button>
+            </span>
+          </Tooltip>
+        }
+        isRunning={admissionStatus === 'loading'}
+        expanded={admissionExpanded}
+        onToggle={() => setAdmissionExpanded(!admissionExpanded)}
+      >
+        {admissionStatus === 'error' && (
+          <Alert
+            type="error"
+            showIcon
+            message={agentText('Portfolio Admission failed', '组合准入失败')}
+            description={admissionErrorMessage || agentText(
+              'The backend admission gate did not complete. Review the connection and run details before retrying.',
+              '后端组合准入门控未完成，请检查连接与运行详情后重试。',
+            )}
+          />
+        )}
+
+        {admissionStatus === 'loading' && (
+          <div className="agent-stage-working-state" role="status" aria-live="polite">
+            <Spin indicator={<LoadingOutlined spin />} />
+            <div>
+              <strong>{agentText('Checking portfolio capacity and correlated risk', '正在检查组合容量与相关性风险')}</strong>
+              <span>{agentText('Existing holdings, pending buys, sector caps and risk budget remain binding.', '现有持仓、待成交买单、行业上限与风险预算始终生效。')}</span>
+            </div>
+          </div>
+        )}
+
+        {admissionStatus === 'completed' && (
+          <>
+            <div className="epv2-admission-band">
+              <div className="epv2-admission-title">
+                <SafetyCertificateOutlined />
+                <span>{agentText('Portfolio decision gate', '组合决策门控')}</span>
+                <Tag bordered={false} className="epv2-admission-status epv2-admission-status-completed">
+                  {agentText('COMPLETED', '已完成')}
+                </Tag>
+              </div>
+              <div className="epv2-admission-metrics">
+                <div><span>{agentText('DV Eligible', '深度验证合格')}</span><b>{admissionSummary?.eligibleDvCount ?? admissionResults?.length ?? 0}</b></div>
+                <div><span>{agentText('Admit', '准入')}</span><b className="epv2-tone-ready">{admissionSummary?.counts?.ADMIT ?? admissionResults?.filter((row: any) => row.admissionDecision === 'ADMIT').length ?? 0}</b></div>
+                <div><span>{agentText('Hold', '暂缓')}</span><b className="epv2-tone-wait">{admissionSummary?.counts?.HOLD ?? admissionResults?.filter((row: any) => row.admissionDecision === 'HOLD').length ?? 0}</b></div>
+                <div><span>{agentText('Block', '阻断')}</span><b className="epv2-tone-block">{admissionSummary?.counts?.BLOCK ?? admissionResults?.filter((row: any) => row.admissionDecision === 'BLOCK').length ?? 0}</b></div>
+                <div><span>{agentText('AI Challenge', 'AI 质询')}</span><b>{admissionSummary?.ai?.challengedSymbols ?? 0}</b></div>
+                <div><span>{agentText('Capacity', '剩余容量')}</span><b>{admissionSummary?.availablePortfolioSlots ?? '--'} {agentText('slots', '个名额')}</b></div>
+              </div>
+              <div className="epv2-admission-note">
+                {agentText('Only admitted, fresh, strategy-consistent candidates can advance to Entry Plan.', '只有通过准入、数据新鲜且策略一致的候选，才能进入入场计划。')}
+              </div>
+            </div>
+
+            {admissionResults && admissionResults.length > 0 ? (
+              <Table
+                className="agent-admission-table"
+                dataSource={admissionResults}
+                rowKey={(row: any) => String(row.symbol || row.sourceCandidate?.symbol || '')}
+                size="small"
+                pagination={false}
+                scroll={{ x: 760 }}
+                columns={[
+                  {
+                    title: agentText('Symbol', '标的'),
+                    key: 'symbol',
+                    width: 120,
+                    render: (_: any, row: any) => <strong>{row.symbol || row.sourceCandidate?.symbol || '—'}</strong>,
+                  },
+                  {
+                    title: agentText('Decision', '决策'),
+                    dataIndex: 'admissionDecision',
+                    key: 'decision',
+                    width: 130,
+                    render: (value: string) => (
+                      <Tag color={value === 'ADMIT' ? 'success' : value === 'HOLD' ? 'warning' : 'error'} bordered={false}>
+                        {agentEnumLabel(value || 'UNKNOWN')}
+                      </Tag>
+                    ),
+                  },
+                  {
+                    title: agentText('Admission score', '准入评分'),
+                    dataIndex: 'admissionScore',
+                    key: 'score',
+                    width: 140,
+                    render: (value: any) => Number.isFinite(Number(value)) ? Number(value).toFixed(1) : '—',
+                  },
+                  {
+                    title: agentText('Portfolio evidence', '组合证据'),
+                    key: 'evidence',
+                    render: (_: any, row: any) => {
+                      const reasons = [
+                        ...(Array.isArray(row.reasons) ? row.reasons : []),
+                        ...(Array.isArray(row.warnings) ? row.warnings : []),
+                        ...(Array.isArray(row.blockers) ? row.blockers : []),
+                      ].filter(Boolean);
+                      return reasons.length ? reasons.slice(0, 3).join(' · ') : agentText('No additional constraint', '无额外限制');
+                    },
+                  },
+                ]}
+              />
+            ) : (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={agentText('No candidates were returned by the admission gate.', '组合准入门控未返回候选。')}
+              />
+            )}
+          </>
+        )}
+
+        {admissionStatus === 'idle' && (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={agentText('Run Deeper Validation, then check portfolio admission before entry planning.', '完成深度验证后，先检查组合准入，再生成入场计划。')}
+          />
+        )}
+      </CollapsibleStageSection>
+
+      {/* Stage 05: Entry Plan */}
+      <CollapsibleStageSection
+        stageNumber="05"
         stageLabel={agentText('Stage', '阶段')}
         expandLabel={agentText('Expand', '展开')}
         collapseLabel={agentText('Collapse', '收起')}
@@ -9044,15 +9443,23 @@ const Agent: React.FC = (): React.ReactElement => {
           { label: agentText('Wait', '等待入场'), value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'WAIT_FOR_ENTRY').length, color: '#faad14' },
           { label: agentText('Need Data', '需要数据'), value: entryPlanResults.filter((p: any) => getEntryPlanEffectiveAction(p) === 'NEED_DATA').length, color: '#ff7a45' },
           ...(entryPlanResults.filter((p: any) => ['BLOCKED_BY_RISK', 'SKIP'].includes(getEntryPlanEffectiveAction(p))).length > 0 ? [{ label: agentText('Blocked', '已阻断'), value: entryPlanResults.filter((p: any) => ['BLOCKED_BY_RISK', 'SKIP'].includes(getEntryPlanEffectiveAction(p))).length, color: '#ff4d4f' }] : []),
-        ] : (entryPlanStatus === 'completed' ? [{ label: t.agent.entryPlan, value: 0 }, { label: agentText('Empty', '空'), value: agentText('No candidates passed DV', '没有候选通过深度验证') }] : undefined)}
+        ] : (entryPlanStatus === 'completed' ? [{ label: t.agent.entryPlan, value: 0 }, { label: agentText('Empty', '空'), value: agentText('No candidates passed admission', '没有候选通过组合准入') }] : undefined)}
         actionButton={
-          <Tooltip title={pipelineRunning ? t.agent.pipelineDisabled : !getEntryPlanCandidates().length ? agentText('No confirmed DV candidates. Only PASS_DV / Confirmed candidates advance to Entry Plan.', '没有已确认的深度验证候选。只有“验证通过 / 已确认”的候选会进入入场计划。') : ''}>
+          <Tooltip title={
+            pipelineRunning
+              ? t.agent.pipelineDisabled
+              : admissionStatus !== 'completed'
+                ? agentText('Run Portfolio Admission first.', '请先运行组合准入。')
+                : !admittedCandidatesFromRows(admissionResults).length
+                  ? agentText('Portfolio Admission did not admit any candidates.', '组合准入没有放行任何候选。')
+                  : ''
+          }>
             <span>
               <Button
                 type="primary"
                 icon={<ThunderboltOutlined />}
                 loading={entryPlanStatus === 'loading'}
-                disabled={entryPlanStatus === 'loading' || !getEntryPlanCandidates().length || pipelineRunning}
+                disabled={entryPlanStatus === 'loading' || admissionStatus !== 'completed' || !admittedCandidatesFromRows(admissionResults).length || pipelineRunning}
                 onClick={handleRunEntryPlan}
                 style={AI_AGENT_PRIMARY_BTN_STYLE}
               >
@@ -9065,47 +9472,24 @@ const Agent: React.FC = (): React.ReactElement => {
         expanded={entryPlanExpanded}
         onToggle={() => setEntryPlanExpanded(!entryPlanExpanded)}
       >
-          {admissionStatus !== 'idle' && (
-            <div className="epv2-admission-band">
-              <div className="epv2-admission-title">
-                <SafetyCertificateOutlined />
-                <span>{agentText('Portfolio Admission', '组合准入')}</span>
-                <Tag bordered={false} className={`epv2-admission-status epv2-admission-status-${admissionStatus}`}>
-                  {admissionStatus === 'loading' ? agentText('Checking', '检查中') : agentEnumLabel(admissionStatus)}
-                </Tag>
-              </div>
-              <div className="epv2-admission-metrics">
-                <div><span>{agentText('DV Eligible', '深度验证合格')}</span><b>{admissionSummary?.eligibleDvCount ?? admissionResults?.length ?? 0}</b></div>
-                <div><span>{agentText('Admit', '准入')}</span><b className="epv2-tone-ready">{admissionSummary?.counts?.ADMIT ?? admissionResults?.filter((row: any) => row.admissionDecision === 'ADMIT').length ?? 0}</b></div>
-                <div><span>{agentText('Hold', '暂缓')}</span><b className="epv2-tone-wait">{admissionSummary?.counts?.HOLD ?? admissionResults?.filter((row: any) => row.admissionDecision === 'HOLD').length ?? 0}</b></div>
-                <div><span>{agentText('Block', '阻断')}</span><b className="epv2-tone-block">{admissionSummary?.counts?.BLOCK ?? admissionResults?.filter((row: any) => row.admissionDecision === 'BLOCK').length ?? 0}</b></div>
-                <div><span>{agentText('AI Challenge', 'AI 质询')}</span><b>{admissionSummary?.ai?.challengedSymbols ?? 0}</b></div>
-                <div><span>{agentText('Capacity', '剩余容量')}</span><b>{admissionSummary?.availablePortfolioSlots ?? '--'} {agentText('slots', '个名额')}</b></div>
-              </div>
-              <div className="epv2-admission-note">
-                {agentText('Only admitted, fresh, strategy-consistent candidates can enter sizing and execution planning.', '只有通过准入、数据新鲜且策略一致的候选，才能进入仓位计算与执行计划。')}
-              </div>
-            </div>
-          )}
-
-          {/* No DV candidates yet */}
-          {deeperValidationStatus !== 'completed' && deeperValidationStatus !== 'stopped' && (
+          {/* Admission has not completed yet */}
+          {admissionStatus !== 'completed' && entryPlanStatus === 'idle' && (
             <div style={{ textAlign: 'center', padding: '16px 0', color: '#bbb', fontSize: '12px', fontStyle: 'italic' }}>
-              {t.agent.noValidatedCandidatesYet}
+              {agentText('Complete Portfolio Admission before generating an entry plan.', '请先完成组合准入，再生成入场计划。')}
             </div>
           )}
 
-          {/* DV done but no confirmed/watch candidates */}
-          {(deeperValidationStatus === 'completed' || deeperValidationStatus === 'stopped') && getEntryPlanCandidates().length === 0 && (
+          {/* Admission completed without admitted candidates */}
+          {admissionStatus === 'completed' && admittedCandidatesFromRows(admissionResults).length === 0 && (
             <div style={{ textAlign: 'center', padding: '16px 0', color: '#bbb', fontSize: '12px', fontStyle: 'italic' }}>
-              {agentText('No confirmed DV candidates. Watch names remain in revalidation.', '没有已确认的深度验证候选；观察标的会继续留在复核流程中。')}
+              {agentText('No candidate passed Portfolio Admission. Held names remain in research review.', '没有候选通过组合准入；暂缓标的会继续留在研究复核中。')}
             </div>
           )}
 
-          {/* DV done, candidates available */}
-          {(deeperValidationStatus === 'completed' || deeperValidationStatus === 'stopped') && getEntryPlanCandidates().length > 0 && entryPlanStatus === 'idle' && (
+          {/* Admitted candidates available */}
+          {admissionStatus === 'completed' && admittedCandidatesFromRows(admissionResults).length > 0 && entryPlanStatus === 'idle' && (
             <div style={{ textAlign: 'center', padding: '16px 0', color: '#999', fontSize: '12px' }}>
-              {agentText(`${getEntryPlanCandidates().length} confirmed DV candidates are ready.`, `${getEntryPlanCandidates().length} 个深度验证候选已就绪。`)} <strong>{t.agent.runEntryPlan}</strong>{agentText(' to generate execution plans.', '即可生成执行计划。')}
+              {agentText(`${admittedCandidatesFromRows(admissionResults).length} admitted candidates are ready.`, `${admittedCandidatesFromRows(admissionResults).length} 个组合准入候选已就绪。`)} <strong>{t.agent.runEntryPlan}</strong>{agentText(' to generate execution plans.', '即可生成执行计划。')}
             </div>
           )}
 
@@ -9136,9 +9520,151 @@ const Agent: React.FC = (): React.ReactElement => {
       </CollapsibleStageSection>
       {/* End Entry Plan Section */}
 
-      {/* ── Exit Scan Section ── */}
+      {/* Stage 06: Execution */}
       <CollapsibleStageSection
-        stageNumber="05"
+        stageNumber="06"
+        stageLabel={agentText('Stage', '阶段')}
+        expandLabel={agentText('Expand', '展开')}
+        collapseLabel={agentText('Collapse', '收起')}
+        title={agentText('Execution', '订单执行')}
+        icon={<ThunderboltOutlined />}
+        statusText={
+          executionStageRunning ? agentText('ROUTING', '正在路由') :
+          executionStageFailed ? agentText('FAILED', '失败') :
+          executionStageBlocked ? agentText('BLOCKED', '已阻断') :
+          executionActiveCount > 0 ? agentText('ACTIVE', '执行中') :
+          executionFilledCount > 0 ? agentText('FILLED', '已成交') :
+          aiExecutionList.length > 0 ? agentText('READY', '就绪') :
+          entryPlanStatus === 'completed' ? agentText('NO ELIGIBLE ORDERS', '无合格订单') :
+          agentText('IDLE', '空闲')
+        }
+        statusColor={
+          executionStageRunning || executionActiveCount > 0 ? 'processing' :
+          executionStageFailed ? 'error' :
+          executionStageBlocked ? 'warning' :
+          executionFilledCount > 0 || aiExecutionList.length > 0 ? 'success' :
+          entryPlanStatus === 'completed' ? 'warning' : 'default'
+        }
+        summaryChips={aiExecutionList.length > 0 ? [
+          { label: agentText('Candidates', '候选'), value: aiExecutionList.length },
+          { label: agentText('Active', '执行中'), value: executionActiveCount, color: 'var(--app-accent)' },
+          { label: agentText('Filled', '已成交'), value: executionFilledCount, color: 'var(--app-positive)' },
+          { label: agentText('Blocked / Failed', '阻断 / 失败'), value: executionBlockedCount + executionFailedCount, color: '#dc2626' },
+        ] : undefined}
+        actionButton={
+          <Button
+            type="default"
+            icon={<EyeOutlined />}
+            aria-label={agentText('Open full execution desk', '打开完整执行工作台')}
+            onClick={() => document.getElementById('research-execution')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            style={AI_AGENT_PRIMARY_BTN_STYLE}
+          >
+            {agentText('Execution Desk', '执行工作台')}
+          </Button>
+        }
+        isRunning={executionStageRunning || executionActiveCount > 0}
+        expanded={executionExpanded}
+        onToggle={() => setExecutionExpanded(!executionExpanded)}
+      >
+        {(executionStageFailed || executionStageBlocked) && (
+          <Alert
+            type={executionStageFailed ? 'error' : 'warning'}
+            showIcon
+            message={executionStageFailed
+              ? agentText('Execution failed', '订单执行失败')
+              : agentText('Execution blocked by a safety gate', '订单被安全门控阻断')}
+            description={
+              aiExecutionList.find((item: any) => item.executionError)?.executionError
+              || executionStepState?.error
+              || executionStepState?.message
+              || pipelineError
+              || agentText(
+                'No order was submitted. Review the authenticated run and risk-gate evidence before retrying.',
+                '未提交订单。重试前请检查已认证运行与风险门控证据。',
+              )
+            }
+          />
+        )}
+
+        <div className="agent-execution-authority-note">
+          <SafetyCertificateOutlined />
+          <div>
+            <strong>{agentText('Backend order state is authoritative', '后端订单状态为权威来源')}</strong>
+            <span>{agentText(
+              'Executable candidates are created only by this authenticated mounted run; the browser research cache is never restored as order authority.',
+              '可执行候选仅由本次已认证运行创建；浏览器研究缓存不会被恢复为下单依据。',
+            )}</span>
+          </div>
+        </div>
+
+        {aiExecutionList.length > 0 ? (
+          <Table
+            className="agent-execution-stage-table"
+            dataSource={aiExecutionList}
+            rowKey={(row: any) => `${row.symbol || 'unknown'}:${row.pipelineRunId || row.addedAt || 'session'}`}
+            size="small"
+            pagination={false}
+            scroll={{ x: 820 }}
+            columns={[
+              {
+                title: agentText('Symbol', '标的'),
+                dataIndex: 'symbol',
+                key: 'symbol',
+                width: 120,
+                render: (value: string) => <strong>{value || '—'}</strong>,
+              },
+              {
+                title: agentText('Status', '状态'),
+                key: 'status',
+                width: 150,
+                render: (_: any, row: any) => {
+                  const status = String(row.executionStatus || row.alpacaOrderStatus || 'draft').toLowerCase();
+                  const color = status === 'filled'
+                    ? 'success'
+                    : ['failed', 'canceled'].includes(status)
+                      ? 'error'
+                      : ['blocked', 'zone_wait'].includes(status)
+                        ? 'warning'
+                        : ['pending', 'submitted', 'auto_executing', 'order_pending'].includes(status)
+                          ? 'processing'
+                          : 'default';
+                  return <Tag color={color} bordered={false}>{agentEnumLabel(status)}</Tag>;
+                },
+              },
+              {
+                title: agentText('Order / Run', '订单 / 运行'),
+                key: 'authority',
+                width: 210,
+                render: (_: any, row: any) => (
+                  <div className="agent-execution-stage-authority">
+                    <strong>{row.alpacaOrderId ? String(row.alpacaOrderId).slice(0, 16) : agentText('Not submitted', '未提交')}</strong>
+                    <span>{row.pipelineRunId ? String(row.pipelineRunId).slice(0, 18) : agentText('Mounted session', '当前会话')}</span>
+                  </div>
+                ),
+              },
+              {
+                title: agentText('Evidence / Blocker', '证据 / 阻断原因'),
+                key: 'evidence',
+                render: (_: any, row: any) => row.executionError
+                  || row.protectionMode
+                  || row.source
+                  || agentText('Awaiting execution review', '等待执行审核'),
+              },
+            ]}
+          />
+        ) : (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={entryPlanStatus === 'completed'
+              ? agentText('No order-eligible candidates were created by this run.', '本次运行未创建可下单候选。')
+              : agentText('Entry planning must complete before execution.', '完成入场计划后才能进入订单执行。')}
+          />
+        )}
+      </CollapsibleStageSection>
+
+      {/* Stage 07: Position & Exit */}
+      <CollapsibleStageSection
+        stageNumber="07"
         stageLabel={agentText('Stage', '阶段')}
         expandLabel={agentText('Expand', '展开')}
         collapseLabel={agentText('Collapse', '收起')}
@@ -9168,6 +9694,7 @@ const Agent: React.FC = (): React.ReactElement => {
                 <Button
                   size="middle"
                   icon={<DeleteOutlined />}
+                  aria-label={t.agent.clearResults}
                   onClick={(e) => { e.stopPropagation(); scannerStateStore.resetExitScan(); }}
                   style={{ borderRadius: '8px', height: '32px', display: 'flex', alignItems: 'center' }}
                 />
@@ -9208,6 +9735,18 @@ const Agent: React.FC = (): React.ReactElement => {
           </div>
         }
       >
+        {exitScanStatus === 'failed' && (
+          <Alert
+            type="error"
+            showIcon
+            message={agentText('Position & Exit scan failed', '持仓与退出扫描失败')}
+            description={exitScanSummary?.error || exitScanSummary?.message || agentText(
+              'No exit action was assumed. Review the backend connection and rerun the position guard.',
+              '系统未推定任何退出操作。请检查后端连接后重新运行持仓保护。',
+            )}
+            style={{ marginBottom: 14 }}
+          />
+        )}
         <div className="exit-plan-intro">
           <div>
             <strong>{agentText('Position lifecycle control', '持仓生命周期控制')}</strong>
@@ -9547,7 +10086,7 @@ const Agent: React.FC = (): React.ReactElement => {
         maskClosable={false}
         keyboard={!pipelineAutoLoading}
         width={640}
-        destroyOnClose
+        destroyOnHidden
       >
         <div className="agent-live-auto-content">
           <p className="agent-live-auto-intro">{liveAutoCopy.description}</p>

@@ -112,7 +112,11 @@ const Platform: React.FC = () => {
 
         <section className="public-section is-dark public-topic-section">
           <SectionHeading eyebrow={isZh ? '完整研究能力' : 'COMPLETE RESEARCH CAPABILITY'} title={isZh ? '从市场全貌到一份可审核的计划。' : 'From market field to an auditable plan.'} description={t.platform.beyondBlindDesc} />
-          <div className="public-card-grid">
+          <div
+            className="public-card-grid"
+            tabIndex={0}
+            aria-label={isZh ? '完整研究能力，可横向滚动' : 'Complete research capabilities, horizontally scrollable'}
+          >
             {capabilities.map(([title, desc, stat], index) => (
               <article className="public-card" key={title} style={{ background: 'transparent', borderColor: 'rgba(255,255,255,.13)' }}>
                 <div className="public-card-index" aria-label={`${isZh ? '模块' : 'Module'} ${index + 1}, ${stat}`}>

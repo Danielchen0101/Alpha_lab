@@ -154,6 +154,45 @@ supabase_admin = None
 fernet = None
 _SUPABASE_IO_LOCK = threading.RLock()
 _SUPABASE_HTTP_CLIENT = None
+_SUPABASE_HEALTH_LOCK = threading.RLock()
+_SUPABASE_LAST_SUCCESS_AT = 0.0
+_SUPABASE_LAST_FAILURE_AT = 0.0
+_SUPABASE_CONSECUTIVE_FAILURES = 0
+_SUPABASE_LAST_FAILURE_LABEL = ''
+_SUPABASE_LAST_FAILURE_TYPE = ''
+_SUPABASE_READINESS_LOCK = threading.Lock()
+_SUPABASE_READINESS_CACHE = {
+    'checkedAt': 0.0,
+    'probeOk': None,
+    'migrationOk': None,
+    'leaseRpcOk': None,
+    'migrationContractFailure': False,
+    'consecutiveFailures': 0,
+    'lastSuccessAt': 0.0,
+    'lastFailureAt': 0.0,
+    'lastFailureType': '',
+}
+
+
+def _supabase_note_health(success, label='', exc=None):
+    """Record only bounded dependency metadata; never persist error text/secrets."""
+    global _SUPABASE_LAST_SUCCESS_AT, _SUPABASE_LAST_FAILURE_AT
+    global _SUPABASE_CONSECUTIVE_FAILURES, _SUPABASE_LAST_FAILURE_LABEL
+    global _SUPABASE_LAST_FAILURE_TYPE
+    now_ts = time.time()
+    with _SUPABASE_HEALTH_LOCK:
+        if success:
+            _SUPABASE_LAST_SUCCESS_AT = now_ts
+            _SUPABASE_CONSECUTIVE_FAILURES = 0
+            _SUPABASE_LAST_FAILURE_LABEL = ''
+            _SUPABASE_LAST_FAILURE_TYPE = ''
+        else:
+            _SUPABASE_LAST_FAILURE_AT = now_ts
+            _SUPABASE_CONSECUTIVE_FAILURES += 1
+            _SUPABASE_LAST_FAILURE_LABEL = str(label or 'query')[:80]
+            _SUPABASE_LAST_FAILURE_TYPE = (
+                type(exc).__name__ if exc is not None else 'UnknownError'
+            )[:80]
 
 
 def _bounded_float_env(name, default, minimum, maximum):
@@ -173,7 +212,7 @@ SUPABASE_CONNECT_TIMEOUT_SECONDS = _bounded_float_env(
 )
 
 
-def _supabase_execute(operation, label='query', attempts=3):
+def _supabase_execute(operation, label='query', attempts=3, lock_timeout=None):
     """Serialize the shared sync client and retry transient transport failures."""
     last_error = None
     transient_markers = (
@@ -183,13 +222,27 @@ def _supabase_execute(operation, label='query', attempts=3):
     )
     for attempt in range(max(1, attempts)):
         try:
-            with _SUPABASE_IO_LOCK:
-                return operation()
+            if lock_timeout is None:
+                with _SUPABASE_IO_LOCK:
+                    result = operation()
+            else:
+                acquired = _SUPABASE_IO_LOCK.acquire(
+                    timeout=max(0.0, float(lock_timeout))
+                )
+                if not acquired:
+                    raise TimeoutError('Supabase I/O queue is busy')
+                try:
+                    result = operation()
+                finally:
+                    _SUPABASE_IO_LOCK.release()
+            _supabase_note_health(True, label)
+            return result
         except Exception as exc:
             last_error = exc
             error_text = ('%s %s' % (type(exc).__name__, exc)).lower()
             is_transient = any(marker in error_text for marker in transient_markers)
             if not is_transient or attempt >= attempts - 1:
+                _supabase_note_health(False, label, exc)
                 raise
             safe_print(
                 '[Supabase] transient %s failure (%s); retry %d/%d' % (
@@ -255,6 +308,233 @@ if not os.getenv('FERNET_KEY'):
           "unreadable after backend restart. Set FERNET_KEY in Render environment variables.")
 
 # 导入技术指标模块
+def _supabase_dependency_snapshot(force_probe=False, now_ts=None):
+    """Return a cached, bounded persistence readiness snapshot.
+
+    One failed probe receives a grace interval so a transient packet loss does
+    not restart an otherwise healthy service. Two consecutive readiness-probe
+    failures make production readiness fail closed until a probe succeeds.
+    Ordinary application queries are reported separately and cannot mask a
+    broken probe by resetting its failure streak.
+    """
+    now_ts = time.time() if now_ts is None else float(now_ts)
+    required = _strict_production_runtime()
+    configured = bool(
+        supabase_admin is not None
+        and str(SUPABASE_URL or '').strip()
+        and str(SUPABASE_SERVICE_ROLE_KEY or '').strip()
+    )
+    probe_ok = None
+    checked_at = 0.0
+    probe_failures = 0
+    probe_last_success = 0.0
+    probe_last_failure = 0.0
+    probe_failure_type = ''
+    migration_ok = None
+    lease_rpc_ok = None
+    migration_contract_failure = False
+    if configured:
+        with _SUPABASE_READINESS_LOCK:
+            checked_at = float(_SUPABASE_READINESS_CACHE.get('checkedAt') or 0)
+            probe_ok = _SUPABASE_READINESS_CACHE.get('probeOk')
+            probe_failures = int(
+                _SUPABASE_READINESS_CACHE.get('consecutiveFailures') or 0
+            )
+            probe_last_success = float(
+                _SUPABASE_READINESS_CACHE.get('lastSuccessAt') or 0
+            )
+            probe_last_failure = float(
+                _SUPABASE_READINESS_CACHE.get('lastFailureAt') or 0
+            )
+            probe_failure_type = str(
+                _SUPABASE_READINESS_CACHE.get('lastFailureType') or ''
+            )[:80]
+            migration_ok = _SUPABASE_READINESS_CACHE.get('migrationOk')
+            lease_rpc_ok = _SUPABASE_READINESS_CACHE.get('leaseRpcOk')
+            migration_contract_failure = bool(
+                _SUPABASE_READINESS_CACHE.get('migrationContractFailure')
+            )
+            if force_probe or now_ts - checked_at >= 15:
+                try:
+                    _supabase_execute(
+                        lambda: [
+                            supabase_admin.table(table_name).select(
+                                'user_id'
+                            ).limit(1).execute()
+                            for table_name in (
+                                'user_pipeline_auto_configs',
+                                'user_api_configs',
+                            )
+                        ],
+                        'readiness probe',
+                        attempts=1,
+                        lock_timeout=1.0,
+                    )
+                    # Selecting the new column catches a partially applied
+                    # worker-lease migration. Calling renew against a guaranteed
+                    # nonexistent generation is non-mutating and verifies that
+                    # PostgREST has loaded the new fenced RPC contract.
+                    _supabase_execute(
+                        lambda: supabase_admin.table(
+                            'app_worker_leases'
+                        ).select(
+                            'lease_name,owner_id,fencing_token,lease_expires_at'
+                        ).limit(1).execute(),
+                        'worker lease migration probe',
+                        attempts=1,
+                        lock_timeout=1.0,
+                    )
+                    # False is the expected value because this generation can
+                    # never exist; a clean response proves the RPC is callable.
+                    _supabase_execute(
+                        lambda: supabase_admin.rpc(
+                            'renew_app_worker_lease',
+                            {
+                                'p_lease_name': 'runtime-readiness-contract',
+                                'p_owner_id': 'runtime-readiness-contract',
+                                'p_fencing_token': 1,
+                                'p_ttl_seconds': 5,
+                                'p_metadata': {
+                                    'component': 'runtime_readiness',
+                                },
+                            },
+                        ).execute(),
+                        'worker lease RPC probe',
+                        attempts=1,
+                        lock_timeout=1.0,
+                    )
+                    migration_ok = True
+                    lease_rpc_ok = True
+                    migration_contract_failure = False
+                    probe_ok = True
+                    probe_failures = 0
+                    probe_last_success = time.time()
+                    probe_failure_type = ''
+                except Exception as probe_error:
+                    probe_ok = False
+                    migration_ok = False
+                    lease_rpc_ok = False
+                    probe_error_text = (
+                        '%s %s' % (type(probe_error).__name__, probe_error)
+                    ).lower()
+                    migration_contract_failure = any(
+                        marker in probe_error_text
+                        for marker in (
+                            'pgrst202',
+                            'pgrst204',
+                            'pgrst205',
+                            'could not find the function',
+                            'does not exist',
+                            'schema cache',
+                        )
+                    )
+                    probe_failures += 1
+                    probe_last_failure = time.time()
+                    probe_failure_type = type(probe_error).__name__[:80]
+                checked_at = time.time()
+                _SUPABASE_READINESS_CACHE.update({
+                    'checkedAt': checked_at,
+                    'probeOk': probe_ok,
+                    'migrationOk': migration_ok,
+                    'leaseRpcOk': lease_rpc_ok,
+                    'migrationContractFailure': migration_contract_failure,
+                    'consecutiveFailures': probe_failures,
+                    'lastSuccessAt': probe_last_success,
+                    'lastFailureAt': probe_last_failure,
+                    'lastFailureType': probe_failure_type,
+                })
+
+    with _SUPABASE_HEALTH_LOCK:
+        io_consecutive_failures = int(_SUPABASE_CONSECUTIVE_FAILURES or 0)
+        io_failure_label = _SUPABASE_LAST_FAILURE_LABEL
+        io_failure_type = _SUPABASE_LAST_FAILURE_TYPE
+
+    healthy = bool(
+        configured
+        and (probe_ok is True or probe_failures < 2)
+    )
+    migration_healthy = bool(
+        configured
+        and (
+            migration_ok is True
+            or (
+                not migration_contract_failure
+                and probe_failures < 2
+            )
+        )
+    )
+    lease_healthy = bool(
+        configured
+        and (
+            lease_rpc_ok is True
+            or (
+                not migration_contract_failure
+                and probe_failures < 2
+            )
+        )
+    )
+    return {
+        'required': required,
+        'configured': configured,
+        'clientInitialized': supabase_admin is not None,
+        'healthy': healthy,
+        'status': (
+            'ready' if healthy else
+            'optional_unconfigured' if not required and not configured else
+            'degraded'
+        ),
+        'probeOk': probe_ok,
+        'probeAgeSeconds': (
+            round(max(0.0, time.time() - checked_at), 1)
+            if checked_at else None
+        ),
+        'consecutiveFailures': probe_failures,
+        'lastSuccessAt': (
+            datetime.fromtimestamp(
+                probe_last_success, timezone.utc
+            ).isoformat()
+            if probe_last_success else ''
+        ),
+        'lastFailureAt': (
+            datetime.fromtimestamp(
+                probe_last_failure, timezone.utc
+            ).isoformat()
+            if probe_last_failure else ''
+        ),
+        'lastFailureLabel': 'readiness probe' if probe_last_failure else '',
+        'lastFailureType': probe_failure_type,
+        'ioConsecutiveFailures': io_consecutive_failures,
+        'ioLastFailureLabel': io_failure_label,
+        'ioLastFailureType': io_failure_type,
+        'migrations': {
+            'required': required,
+            'healthy': migration_healthy,
+            'status': (
+                'ready' if migration_healthy else
+                'optional_unconfigured' if not required and not configured else
+                'degraded'
+            ),
+            'workerLeaseTable': bool(migration_ok),
+            'fencingTokenColumn': bool(migration_ok),
+            'renewRpc': bool(lease_rpc_ok),
+            'contractFailure': migration_contract_failure,
+            'expectedMigration': '20260726010000_worker_lease_runtime_hardening',
+        },
+        'leases': {
+            'required': required,
+            'healthy': lease_healthy,
+            'status': (
+                'ready' if lease_healthy else
+                'optional_unconfigured' if not required and not configured else
+                'degraded'
+            ),
+            'fencing': bool(migration_ok),
+            'renewRpc': bool(lease_rpc_ok),
+            'contractFailure': migration_contract_failure,
+        },
+    }
+
+
 try:
     from technical_indicators import calculate_simple_technical_indicators, generate_technical_summary
     print("[导入] 技术指标模块导入成功")
@@ -385,7 +665,7 @@ SENSITIVE_CACHE_PATHS = (
 @app.after_request
 def add_security_headers(response):
     """Apply security headers to all responses."""
-    if response.status_code >= 500:
+    if response.status_code >= 500 and request.path != '/api/ready':
         # Route handlers log their detailed exception server-side. Never return
         # provider responses, stack fragments, SQL details, or secrets to a
         # browser on a 5xx response.
@@ -419,10 +699,17 @@ def add_security_headers(response):
     if _strict_production_runtime():
         response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
 
-    # Stricter cache control for sensitive endpoints
+    # Stricter cache control for sensitive endpoints and process probes. Health
+    # probes must always reflect the current worker/dependency state rather than
+    # a proxy's cached 200 or 503 response.
     path = request.path
-    if any(path.startswith(p) for p in SENSITIVE_CACHE_PATHS):
+    if (
+        path in ('/api/health', '/api/ready')
+        or any(path.startswith(p) for p in SENSITIVE_CACHE_PATHS)
+    ):
         response.headers['Cache-Control'] = 'no-store, max-age=0'
+    if path in ('/api/health', '/api/ready'):
+        response.headers['Pragma'] = 'no-cache'
 
     return response
 
@@ -1005,6 +1292,8 @@ DISCORD_EVENT_FLAGS = {
     'cycle_digest': 'notifyCycleDigest',
     'risk_alert': 'notifyRiskAlerts',
     'recommendation': 'notifyRecommendations',
+    'settlement': 'notifyTradeActivity',
+    'lifecycle': 'notifyLifecycle',
     # Legacy event names remain accepted so older clients/configs keep working.
     'auto_scan_started': 'notifyScanSummary',  # reuses summary toggle
     'scan_summary': 'notifyScanSummary',
@@ -1013,6 +1302,13 @@ DISCORD_EVENT_FLAGS = {
     'exit_scan': 'notifyExitScan',
     'error': 'notifyRiskAlerts',
     'security': 'notifySecurityAlerts',
+}
+DISCORD_SCOPE_FLAGS = {
+    'research': 'notifyResearch',
+    'equity': 'notifyEquity',
+    'crypto': 'notifyCrypto',
+    'kalshi': 'notifyKalshi',
+    'system': 'notifySystem',
 }
 _discord_notify_dedupe = {}
 _discord_last_sent_at = {}
@@ -1065,6 +1361,11 @@ def _discord_status(value, language):
         'SUSPENDED': '已暂停', 'BLOCKED': '已拦截', 'TIMEOUT': '超时',
         'REVIEW': '需要复核', 'REVIEW_REQUIRED': '需要复核',
         'ACTION_SUBMITTED': '已提交处理', 'PARTIALLY_FILLED': '部分成交',
+        'ATTENTION': '需要关注', 'ACTIVE': '运行中', 'ARMED': '已就绪',
+        'STARTED': '已启动', 'STOPPED': '已停止', 'PAUSED': '已暂停',
+        'RESUMED': '已恢复', 'RECOVERED': '已恢复', 'ENABLED': '已启用',
+        'DISABLED': '已停用', 'KILLED': '紧急停止', 'CANCELED': '已取消',
+        'CANCELLED': '已取消', 'EXPIRED': '已过期', 'IDLE': '空闲',
     }.get(text, text)
 
 
@@ -1076,13 +1377,13 @@ def _discord_action(value, language):
         'BUY': 'BUY', 'SELL': 'SELL', 'ADD': 'ADD', 'HOLD': 'HOLD',
         'REDUCE': 'REDUCE', 'EXIT': 'EXIT', 'BUY_READY': 'BUY READY',
         'READY_REVIEW': 'READY REVIEW', 'WAIT_FOR_ENTRY': 'WAIT FOR ENTRY',
-        'WATCH': 'WATCH',
+        'WATCH': 'WATCH', 'CANCEL': 'CANCEL',
     }
     chinese = {
         'BUY': '买入', 'SELL': '卖出', 'ADD': '加仓', 'HOLD': '持有',
         'REDUCE': '减仓', 'EXIT': '退出', 'BUY_READY': '可买入',
         'READY_REVIEW': '建议复核', 'WAIT_FOR_ENTRY': '等待入场',
-        'WATCH': '观察',
+        'WATCH': '观察', 'CANCEL': '取消',
     }
     mapping = chinese if language == 'zh-CN' else english
     return mapping.get(normalized, text)
@@ -1103,8 +1404,52 @@ def _discord_base_event_type(event_type):
     return base_type
 
 
-def _discord_event_enabled(cfg, event_type):
+def _discord_notification_scope(event_type, payload=None):
+    """Resolve one stable website mode for filtering and message vocabulary."""
+    payload = payload or {}
+    explicit = str(
+        payload.get('notificationScope')
+        or payload.get('notification_scope')
+        or payload.get('domain')
+        or ''
+    ).strip().lower()
+    aliases = {
+        'stock': 'equity', 'stocks': 'equity', 'trading': 'equity',
+        'safety': 'system', 'security': 'system',
+    }
+    explicit = aliases.get(explicit, explicit)
+    if explicit in DISCORD_SCOPE_FLAGS:
+        return explicit
+
+    source = str(payload.get('source') or payload.get('step') or '').lower()
+    asset_class = str(
+        payload.get('assetClass')
+        or payload.get('asset_class')
+        or payload.get('assetType')
+        or ''
+    ).strip().lower()
+    base_type = _discord_base_event_type(str(event_type or '').lower())
+    if asset_class == 'kalshi' or 'kalshi' in source:
+        return 'kalshi'
+    if asset_class == 'crypto' or 'crypto' in source:
+        return 'crypto'
+    if base_type == 'security' or any(token in source for token in ('safety', 'security', 'system health')):
+        return 'system'
+    if base_type in {'order', 'exit_scan', 'settlement'} or asset_class in {'equity', 'stock'}:
+        return 'equity'
+    return 'research'
+
+
+def _discord_scope_enabled(cfg, event_type, payload=None):
+    scope = _discord_notification_scope(event_type, payload)
+    flag = DISCORD_SCOPE_FLAGS.get(scope)
+    return bool(not flag or cfg.get(flag, True))
+
+
+def _discord_event_enabled(cfg, event_type, payload=None):
     base_type = _discord_base_event_type(event_type)
+    if not _discord_scope_enabled(cfg, event_type, payload):
+        return False
     if base_type == 'order':
         if 'notifyTradeActivity' in cfg:
             return bool(cfg.get('notifyTradeActivity'))
@@ -1113,6 +1458,10 @@ def _discord_event_enabled(cfg, event_type):
         if 'notifyRiskAlerts' in cfg:
             return bool(cfg.get('notifyRiskAlerts'))
         return bool(cfg.get('notifyErrors', True) or cfg.get('notifyExitScan', True))
+    if base_type == 'settlement':
+        return bool(cfg.get('notifyTradeActivity', cfg.get('notifyOrders', True)))
+    if base_type == 'lifecycle':
+        return bool(cfg.get('notifyLifecycle', True))
     if base_type == 'cycle_digest':
         if 'notifyCycleDigest' in cfg:
             return bool(cfg.get('notifyCycleDigest'))
@@ -1176,11 +1525,15 @@ def _discord_embed(event_type, payload):
     zh = language == 'zh-CN'
     cp = lambda en, cn: _discord_copy(language, en, cn)
     asset_class = str(payload.get('assetClass') or payload.get('asset_class') or '').strip().lower()
+    notification_scope = _discord_notification_scope(event_type, payload)
     is_crypto = asset_class == 'crypto'
+    is_kalshi = notification_scope == 'kalshi'
     color_map = {
         'cycle_digest': 0x1677FF,
         'risk_alert': 0xEF4444,
         'recommendation': 0x2563EB,
+        'settlement': 0x22C55E,
+        'lifecycle': 0x8B5CF6,
         'auto_scan_started': 0x8B5CF6,
         'scan_summary': 0x1677FF,
         'entry_plan': 0x22C55E,
@@ -1193,6 +1546,8 @@ def _discord_embed(event_type, payload):
         'cycle_digest': 'Auto Cycle Digest',
         'risk_alert': 'Risk Alert',
         'recommendation': 'Recommended Stocks',
+        'settlement': 'Settlement Completed',
+        'lifecycle': 'Automation Status',
         'auto_scan_started': 'Auto Scan Started',
         'scan_summary': 'Market Scanner Completed',
         'entry_plan': 'Entry Plan Generated',
@@ -1206,7 +1561,26 @@ def _discord_embed(event_type, payload):
     _fmt = _discord_fmt
     override_title = None
 
-    if base_event_type == 'cycle_digest':
+    if base_event_type == 'cycle_digest' and notification_scope == 'crypto':
+        result = _discord_status(payload.get('result') or payload.get('status') or 'completed', language)
+        duration = payload.get('durationSeconds')
+        duration_display = ('%.1fs' % float(duration)) if duration is not None else '-'
+        decision_counts = payload.get('decisionCounts') or {}
+        decision_summary = ' · '.join(
+            '%s %s' % (_discord_action(action, language), count)
+            for action, count in decision_counts.items()
+            if int(count or 0) > 0
+        ) or cp('No action signals', '无操作信号')
+        override_title = cp('Crypto Cycle Completed', 'Crypto 周期已完成')
+        fields = [
+            {'name': cp('Result', '运行结果'), 'value': result, 'inline': True},
+            {'name': cp('Duration', '运行时间'), 'value': duration_display, 'inline': True},
+            {'name': cp('Mode', '运行模式'), 'value': _fmt(payload.get('mode'), '-').upper(), 'inline': True},
+            {'name': cp('Pairs processed', '已处理交易对'), 'value': _fmt(payload.get('processedSymbols'), 0), 'inline': True},
+            {'name': cp('Orders submitted', '已提交订单'), 'value': _fmt(payload.get('ordersSubmitted'), 0), 'inline': True},
+            {'name': cp('Decision summary', '决策摘要'), 'value': decision_summary[:900], 'inline': False},
+        ]
+    elif base_event_type == 'cycle_digest':
         result = _discord_status(payload.get('result') or payload.get('status') or 'completed', language)
         duration = payload.get('durationSeconds')
         duration_display = ('%.1fs' % float(duration)) if duration is not None else '-'
@@ -1249,7 +1623,12 @@ def _discord_embed(event_type, payload):
             risk_action = cp('The system will retry and continue monitoring.', '系统将自动重试并继续监控。')
         fields = [
             {'name': cp('Area', '风险区域'), 'value': _fmt(payload.get('step') or payload.get('category'), '-'), 'inline': True},
-            {'name': cp('Trading pair', '交易对') if is_crypto else cp('Symbol', '股票代码'), 'value': _fmt(payload.get('symbol'), '-').upper(), 'inline': True},
+            {'name': (
+                cp('Trading pair', '交易对') if is_crypto
+                else cp('Contract', '合约') if is_kalshi
+                else cp('Component', '系统组件') if notification_scope == 'system'
+                else cp('Symbol', '股票代码')
+            ), 'value': _fmt(payload.get('symbol') or payload.get('component'), '-').upper(), 'inline': True},
             {'name': cp('Status', '状态'), 'value': _discord_status(payload.get('status'), language), 'inline': True},
             {'name': cp('Condition', '风险原因'), 'value': _fmt(payload.get('reasonZh') if zh and payload.get('reasonZh') else payload.get('reason'), '-')[:500], 'inline': False},
             {'name': cp('Next Action', '建议操作'), 'value': _fmt(risk_action, '-')[:300], 'inline': False},
@@ -1257,6 +1636,14 @@ def _discord_embed(event_type, payload):
 
     elif base_event_type == 'recommendation':
         recommendations = payload.get('recommendations') or []
+        if is_crypto and not recommendations and payload.get('symbol'):
+            recommendations = [{
+                'symbol': payload.get('symbol'),
+                'action': payload.get('action'),
+                'reason': payload.get('reason'),
+                'confidence': payload.get('confidence'),
+                'regime': payload.get('regime'),
+            }]
         if is_crypto:
             override_title = cp('Crypto Candidates', '虚拟币候选')
         fields = [
@@ -1367,12 +1754,58 @@ def _discord_embed(event_type, payload):
                     ),
                     'inline': False
                 })
+    elif base_event_type == 'settlement':
+        pnl = payload.get('pnl')
+        try:
+            pnl_value = float(pnl)
+        except (TypeError, ValueError):
+            pnl_value = 0.0
+        outcome = str(payload.get('result') or '-').upper()
+        override_title = cp('Kalshi Settlement Completed', 'Kalshi 结算完成') if is_kalshi else cp('Settlement Completed', '结算完成')
+        description = payload.get('descriptionZh') if zh and payload.get('descriptionZh') else payload.get('description') or ''
+        fields = [
+            {'name': cp('Mode', '账户模式'), 'value': _fmt(payload.get('mode'), '-').upper(), 'inline': True},
+            {'name': cp('Contract', '合约'), 'value': _fmt(payload.get('symbol') or payload.get('ticker'), '-').upper(), 'inline': False},
+            {'name': cp('Market result', '市场结果'), 'value': outcome, 'inline': True},
+            {'name': cp('Held outcome', '持有方向'), 'value': _fmt(payload.get('outcome') or payload.get('side'), '-').upper(), 'inline': True},
+            {'name': cp('Contracts', '合约数量'), 'value': _fmt(payload.get('contracts'), 0), 'inline': True},
+            {'name': cp('Cost', '持仓成本'), 'value': '$%.4f' % float(payload.get('cost') or 0), 'inline': True},
+            {'name': cp('Fees', '手续费'), 'value': '$%.4f' % float(payload.get('fees') or 0), 'inline': True},
+            {'name': cp('Payout', '结算收入'), 'value': '$%.4f' % float(payload.get('revenue') or 0), 'inline': True},
+            {'name': cp('Net P/L', '净盈亏'), 'value': '%s$%.4f' % ('+' if pnl_value > 0 else '', pnl_value), 'inline': True},
+            {'name': cp('Settled at', '结算时间'), 'value': _fmt(payload.get('settledAt'), '-'), 'inline': False},
+        ]
+    elif base_event_type == 'lifecycle':
+        state = str(payload.get('state') or payload.get('status') or '-').upper()
+        component = payload.get('component') or payload.get('step') or payload.get('source') or '-'
+        override_title = cp('Automation Status · %s' % state.replace('_', ' ').title(), '自动化状态 · %s' % _discord_status(state, language))
+        description = payload.get('descriptionZh') if zh and payload.get('descriptionZh') else payload.get('description') or ''
+        fields = [
+            {'name': cp('Mode', '运行模式'), 'value': _fmt(payload.get('mode'), '-').upper(), 'inline': True},
+            {'name': cp('State', '状态'), 'value': _discord_status(state, language), 'inline': True},
+            {'name': cp('Component', '组件'), 'value': _fmt(component, '-'), 'inline': True},
+        ]
+        if payload.get('trigger'):
+            fields.append({'name': cp('Trigger', '触发方式'), 'value': _fmt(payload.get('trigger'), '-'), 'inline': True})
+        if payload.get('intervalMinutes') is not None:
+            fields.append({'name': cp('Interval', '运行间隔'), 'value': '%s min' % _fmt(payload.get('intervalMinutes'), 0), 'inline': True})
+        if payload.get('nextRunAt'):
+            fields.append({'name': cp('Next run', '下次运行'), 'value': _fmt(payload.get('nextRunAt'), '-'), 'inline': False})
+        detail = payload.get('detailZh') if zh and payload.get('detailZh') else payload.get('detail')
+        if detail:
+            fields.append({'name': cp('Details', '详细信息'), 'value': _fmt(detail, '-')[:900], 'inline': False})
     elif event_type == 'order' or event_type.startswith('order_'):
         mode = _fmt(payload.get('mode'), '-').upper()
         side = _fmt(payload.get('side'), '-').upper()
         status = _fmt(payload.get('status'), '-').upper()
-        status_title = cp('Filled', '已成交') if status == 'FILLED' else cp('Rejected', '已拒绝') if status in ('REJECTED', 'SUSPENDED') else cp('Submitted', '已提交')
-        if is_crypto:
+        status_title = (
+            cp('Filled', '已成交') if status == 'FILLED'
+            else cp('Partially filled', '部分成交') if status == 'PARTIALLY_FILLED'
+            else cp('Rejected', '已拒绝') if status in ('REJECTED', 'SUSPENDED')
+            else cp('Canceled', '已取消') if status in ('CANCELED', 'CANCELLED', 'EXPIRED')
+            else cp('Submitted', '已提交')
+        )
+        if is_crypto or is_kalshi or payload.get('action'):
             action_value = payload.get('action') or side
             action_display = _discord_action(action_value, language)
         else:
@@ -1381,9 +1814,9 @@ def _discord_embed(event_type, payload):
         description = payload.get('descriptionZh') if zh and payload.get('descriptionZh') else payload.get('description') or (cp('REAL TRADING\n', '实盘交易\n') if mode == 'REAL' else '')
         fields = [
             {'name': cp('Mode', '账户模式'), 'value': mode, 'inline': True},
-            {'name': cp('Action', '操作') if is_crypto else cp('Side', '方向'), 'value': action_display, 'inline': True},
-            {'name': cp('Trading pair', '交易对') if is_crypto else cp('Symbol', '股票代码'), 'value': _fmt(payload.get('symbol'), '-').upper(), 'inline': True},
-            {'name': cp('Qty / Notional', '数量 / 金额'), 'value': _fmt(payload.get('qty') or payload.get('notional'), '-'), 'inline': True},
+            {'name': cp('Action', '操作') if (is_crypto or is_kalshi or payload.get('action')) else cp('Side', '方向'), 'value': action_display, 'inline': True},
+            {'name': cp('Trading pair', '交易对') if is_crypto else cp('Contract', '合约') if is_kalshi else cp('Symbol', '股票代码'), 'value': _fmt(payload.get('symbol'), '-').upper(), 'inline': True},
+            {'name': cp('Contracts', '合约数量') if is_kalshi else cp('Qty / Notional', '数量 / 金额'), 'value': _fmt(payload.get('qty') or payload.get('notional'), '-'), 'inline': True},
             {'name': cp('Order Type', '订单类型'), 'value': _fmt(payload.get('orderType'), '-'), 'inline': True},
             {'name': cp('Price', '价格'), 'value': _fmt(payload.get('price') or payload.get('limitPrice'), cp('N/A', '暂无')), 'inline': True},
             {'name': cp('Status', '订单状态'), 'value': _discord_status(status, language), 'inline': True},
@@ -1435,6 +1868,7 @@ def _discord_embed(event_type, payload):
 
     localized_titles = {
         'cycle_digest': '自动周期摘要', 'risk_alert': '风险提醒', 'recommendation': '推荐股票',
+        'settlement': '结算完成', 'lifecycle': '自动化状态',
         'auto_scan_started': '自动扫描已开始', 'scan_summary': '市场扫描已完成',
         'entry_plan': '入场计划已生成', 'order': '订单通知', 'exit_scan': '退出扫描已完成',
         'error': '流程提醒', 'security': '新的登录环境',
@@ -1452,20 +1886,48 @@ def _discord_embed(event_type, payload):
                 'Manual': '手动运行',
                 'Headless': '后台运行',
                 'Background Position Guard': '后台持仓保护',
+                'Kalshi Robot': 'Kalshi 机器人',
+                'Kalshi Paper Robot': 'Kalshi 模拟盘机器人',
+                'Kalshi Real Robot': 'Kalshi 实盘机器人',
+                'Kalshi Paper Settlement': 'Kalshi 模拟盘结算',
+                'Kalshi Real Settlement': 'Kalshi 实盘结算',
+                'Crypto Automation': 'Crypto 自动化',
+                'Market Automation': '市场自动化',
+                'Safety Center': '安全中心',
             }.get(_source_label, _source_label)
         _embed_title = '%s: %s' % (_source_label, _embed_title)
+    embed_color = color_map.get(base_event_type, 0x1677FF)
+    if base_event_type == 'risk_alert':
+        embed_color = {
+            'CRITICAL': 0xB91C1C, 'HIGH': 0xEF4444,
+            'MEDIUM': 0xF59E0B, 'LOW': 0x3B82F6,
+        }.get(str(payload.get('severity') or 'high').upper(), 0xEF4444)
+    elif base_event_type == 'settlement':
+        try:
+            embed_color = 0x22C55E if float(payload.get('pnl') or 0) >= 0 else 0xEF4444
+        except (TypeError, ValueError):
+            embed_color = 0x64748B
+    elif base_event_type == 'lifecycle':
+        state = str(payload.get('state') or payload.get('status') or '').upper()
+        if state in {'FAILED', 'KILLED', 'BLOCKED'}:
+            embed_color = 0xEF4444
+        elif state in {'STOPPED', 'DISABLED', 'PAUSED', 'CANCELED', 'CANCELLED'}:
+            embed_color = 0xF59E0B
+        elif state in {'STARTED', 'ARMED', 'ACTIVE', 'RECOVERED', 'RESUMED', 'ENABLED'}:
+            embed_color = 0x22C55E
     return {
         'title': _embed_title,
         'description': description[:350] if description else '',
-        'color': color_map.get(base_event_type, 0x1677FF),
+        'color': embed_color,
         'fields': fields[:25],
         'timestamp': datetime.utcnow().isoformat() + 'Z',
     }
 
 
-def _workspace_notification_allows(user_id, event_type):
+def _workspace_notification_allows(user_id, event_type, payload=None):
     """Apply account-level notification preferences before legacy channel rules."""
     try:
+        base_event_type = _discord_base_event_type(str(event_type or '').lower())
         preferences = _pa_workspace_preferences(_pa_get_config(user_id) or {})
         settings = preferences.get('notifications') or {}
         if not settings.get('discord', True):
@@ -1473,6 +1935,8 @@ def _workspace_notification_allows(user_id, event_type):
 
         category = {
             'order': 'tradeActivity',
+            'settlement': 'tradeActivity',
+            'lifecycle': 'pipelineDigest',
             'recommendation': 'recommendations',
             'entry_plan': 'recommendations',
             'risk_alert': 'riskAlerts',
@@ -1482,14 +1946,14 @@ def _workspace_notification_allows(user_id, event_type):
             'scan_summary': 'pipelineDigest',
             'error': 'dataQuality',
             'security': 'securityAlerts',
-        }.get(str(event_type or '').lower())
+        }.get(base_event_type)
         if category and not settings.get(category, True):
             return False, 'workspace_event_disabled'
 
         # Digest mode keeps urgent trade/risk notices immediate and suppresses
         # routine intermediate messages until the cycle digest is emitted.
-        urgent = event_type in ('order', 'risk_alert', 'exit_scan', 'error', 'security')
-        if settings.get('deliveryMode') == 'digest' and not urgent and event_type != 'cycle_digest':
+        urgent = base_event_type in ('order', 'settlement', 'lifecycle', 'risk_alert', 'exit_scan', 'error', 'security')
+        if settings.get('deliveryMode') == 'digest' and not urgent and base_event_type != 'cycle_digest':
             return False, 'workspace_digest_mode'
 
         if settings.get('quietHoursEnabled') and not urgent:
@@ -1516,6 +1980,93 @@ def _workspace_notification_allows(user_id, event_type):
         return True, ''
 
 
+def _discord_webhook_target(webhook_url):
+    """Request a saved-message response without ever logging the secret URL."""
+    if re.search(r'(^|[?&])wait=', str(webhook_url or ''), flags=re.IGNORECASE):
+        return webhook_url
+    return '%s%swait=true' % (webhook_url, '&' if '?' in webhook_url else '?')
+
+
+def _discord_retry_after_seconds(response):
+    retry_after = None
+    try:
+        retry_after = (response.headers or {}).get('Retry-After')
+    except Exception:
+        pass
+    if retry_after in (None, ''):
+        try:
+            body = response.json()
+            retry_after = body.get('retry_after') if isinstance(body, dict) else None
+        except Exception:
+            retry_after = None
+    try:
+        return max(0.0, float(retry_after))
+    except (TypeError, ValueError):
+        return None
+
+
+def _discord_post_with_retry(webhook_url, body, *, max_attempts=3):
+    """Bounded Discord delivery with rate-limit and transient-error handling."""
+    target = _discord_webhook_target(webhook_url)
+    last_status = None
+    last_reason = 'discord_error'
+    for attempt in range(1, max(1, int(max_attempts)) + 1):
+        try:
+            response = requests.post(target, json=body, timeout=5)
+        except requests.RequestException:
+            last_reason = 'network_error'
+            if attempt < max_attempts:
+                time.sleep(0.2 * attempt)
+                continue
+            return {'sent': False, 'reason': last_reason, 'attempts': attempt}
+
+        last_status = int(getattr(response, 'status_code', 0) or 0)
+        if 200 <= last_status < 300:
+            message_id = ''
+            try:
+                response_body = response.json()
+                if isinstance(response_body, dict):
+                    message_id = str(response_body.get('id') or '')
+            except Exception:
+                pass
+            return {
+                'sent': True,
+                'attempts': attempt,
+                'status': last_status,
+                'messageId': message_id,
+            }
+
+        if last_status == 429:
+            retry_after = _discord_retry_after_seconds(response)
+            last_reason = 'rate_limited'
+            # Never retry before Discord's requested delay. Keep the business
+            # thread bounded; longer delays remain visible in delivery history.
+            if attempt < max_attempts and retry_after is not None and retry_after <= 5.0:
+                time.sleep(max(0.05, retry_after))
+                continue
+            return {
+                'sent': False,
+                'reason': last_reason,
+                'status': last_status,
+                'attempts': attempt,
+                'retryAfterSeconds': retry_after,
+            }
+
+        if 500 <= last_status < 600 and attempt < max_attempts:
+            last_reason = 'discord_server_error'
+            time.sleep(0.2 * attempt)
+            continue
+        last_reason = 'discord_server_error' if last_status >= 500 else 'discord_client_error'
+        break
+
+    return {
+        'sent': False,
+        'reason': last_reason,
+        'status': last_status,
+        'attempts': attempt,
+    }
+
+
 def send_discord_notification(user_id, event_type, payload):
     """Best-effort Discord webhook notification. Never raises into trading/pipeline flows."""
     original_payload = dict(payload or {})
@@ -1533,7 +2084,7 @@ def send_discord_notification(user_id, event_type, payload):
         cfg = get_discord_config(user_id)
         payload = dict(payload or {})
         payload['_language'] = _discord_notification_language(user_id, payload)
-        allowed, preference_reason = _workspace_notification_allows(user_id, event_type)
+        allowed, preference_reason = _workspace_notification_allows(user_id, event_type, payload)
         if not allowed:
             safe_print(f'[DiscordNotify] skipped event={event_type} user={_discord_user_label(user_id)} reason={preference_reason}')
             return finish({'sent': False, 'reason': preference_reason})
@@ -1541,7 +2092,7 @@ def send_discord_notification(user_id, event_type, payload):
         if not cfg.get('enabled') or not webhook_url:
             safe_print(f'[DiscordNotify] skipped event={event_type} user={_discord_user_label(user_id)} reason=disabled_or_missing')
             return finish({'sent': False, 'reason': 'disabled_or_missing'})
-        if not _discord_event_enabled(cfg, event_type):
+        if not _discord_event_enabled(cfg, event_type, payload):
             safe_print(f'[DiscordNotify] skipped event={event_type} user={_discord_user_label(user_id)} reason=disabled_type')
             return finish({'sent': False, 'reason': 'event_disabled'})
         if not _discord_should_send(user_id, event_type, payload):
@@ -1551,15 +2102,23 @@ def send_discord_notification(user_id, event_type, payload):
         body = {
             'username': 'AlphaLab',
             'embeds': [_discord_embed(event_type, payload)],
+            'allowed_mentions': {'parse': []},
         }
-        resp = requests.post(webhook_url, json=body, timeout=5)
-        if resp.status_code not in (200, 204):
+        result = _discord_post_with_retry(webhook_url, body)
+        if not result.get('sent'):
             _discord_forget_dedupe(user_id, event_type, payload or {})
-            safe_print(f'[DiscordNotify] failed user={_discord_user_label(user_id)} event={event_type} status={resp.status_code}')
-            return finish({'sent': False, 'reason': 'discord_error', 'status': resp.status_code})
+            safe_print(
+                f'[DiscordNotify] failed user={_discord_user_label(user_id)} '
+                f'event={event_type} status={result.get("status")} '
+                f'reason={result.get("reason")} attempts={result.get("attempts")}'
+            )
+            return finish(result)
         _discord_last_sent_at[user_id] = datetime.utcnow().isoformat() + 'Z'
-        safe_print(f'[DiscordNotify] sent event={event_type} user={_discord_user_label(user_id)}')
-        return finish({'sent': True})
+        safe_print(
+            f'[DiscordNotify] sent event={event_type} '
+            f'user={_discord_user_label(user_id)} attempts={result.get("attempts")}'
+        )
+        return finish(result)
     except Exception as e:
         _discord_forget_dedupe(user_id, event_type, payload or {})
         safe_print(f'[DiscordNotify] failed user={_discord_user_label(user_id)} event={event_type} status=exception {type(e).__name__}')
@@ -6392,6 +6951,85 @@ def get_mock_response(message):
 
 
 
+def _background_thread_readiness_snapshot():
+    scheduler_reader = globals().get('_pa_scheduler_health_snapshot')
+    scheduler = (
+        scheduler_reader()
+        if callable(scheduler_reader)
+        else {'running': False, 'threadAlive': False, 'lastError': 'scheduler_not_initialized'}
+    )
+
+    crypto_required = str(
+        os.getenv('ALPHALAB_DISABLE_CRYPTO_SCHEDULER', '')
+    ).strip().lower() not in {'1', 'true', 'yes', 'on'}
+    crypto = {}
+    crypto_controls = globals().get('_CRYPTO_API_CONTROLS')
+    crypto_reader = (
+        crypto_controls.get('runtime')
+        if isinstance(crypto_controls, dict)
+        else None
+    )
+    if callable(crypto_reader):
+        try:
+            crypto = dict(crypto_reader() or {})
+        except Exception as exc:
+            crypto = {'lastError': type(exc).__name__}
+    crypto_thread_healthy = bool(
+        not crypto_required
+        or (
+            crypto.get('schedulerAlive')
+            and (
+                crypto.get('heartbeatAgeSeconds') is None
+                or float(crypto.get('heartbeatAgeSeconds')) <= float(
+                    crypto.get('staleAfterSeconds') or 120
+                )
+            )
+        )
+    )
+
+    kalshi = {}
+    kalshi_controls = globals().get('_KALSHI_API_CONTROLS')
+    kalshi_reader = (
+        kalshi_controls.get('runtime')
+        if isinstance(kalshi_controls, dict)
+        else None
+    )
+    if callable(kalshi_reader):
+        try:
+            kalshi = dict(kalshi_reader() or {})
+        except Exception as exc:
+            kalshi = {'required': True, 'healthy': False, 'lastError': type(exc).__name__}
+    kalshi_required = bool(kalshi.get('required'))
+    kalshi_thread_healthy = bool(
+        not kalshi_required or kalshi.get('healthy')
+    )
+
+    equity_thread_healthy = bool(scheduler.get('threadAlive'))
+    return {
+        'required': True,
+        'healthy': bool(
+            equity_thread_healthy
+            and crypto_thread_healthy
+            and kalshi_thread_healthy
+        ),
+        'equityScheduler': {
+            'required': True,
+            'healthy': equity_thread_healthy,
+            **scheduler,
+        },
+        'cryptoScheduler': {
+            'required': crypto_required,
+            'healthy': crypto_thread_healthy,
+            **crypto,
+        },
+        'kalshiScheduler': {
+            'required': kalshi_required,
+            'healthy': kalshi_thread_healthy,
+            **kalshi,
+        },
+    }
+
+
 @app.route("/api/health", methods=["GET"])
 def health_check():
     payload = {"status": "ok"}
@@ -6420,6 +7058,23 @@ def health_check():
         payload['scheduler'] = scheduler
         if not scheduler.get('running'):
             payload['status'] = 'degraded'
+    threads = _background_thread_readiness_snapshot()
+    persistence = _supabase_dependency_snapshot()
+    payload['threads'] = threads
+    payload['leases'] = persistence.get('leases') or {}
+    payload['migrations'] = persistence.get('migrations') or {}
+    if (
+        not threads.get('healthy')
+        or (
+            (persistence.get('migrations') or {}).get('required')
+            and not (persistence.get('migrations') or {}).get('healthy')
+        )
+        or (
+            (persistence.get('leases') or {}).get('required')
+            and not (persistence.get('leases') or {}).get('healthy')
+        )
+    ):
+        payload['status'] = 'degraded'
     guard_lock = globals().get('_PA_POSITION_GUARD_LOCK')
     guard_states = globals().get('_PA_POSITION_GUARD_STATE')
     if guard_lock is not None and isinstance(guard_states, dict):
@@ -6438,6 +7093,65 @@ def health_check():
             'intervalSeconds': globals().get('_PA_POSITION_GUARD_INTERVAL_SECONDS'),
         }
     return payload
+
+
+@app.route("/api/ready", methods=["GET"])
+def readiness_check():
+    """Dependency-aware readiness; `/api/health` remains process liveness."""
+    scheduler_reader = globals().get('_pa_scheduler_health_snapshot')
+    scheduler = (
+        scheduler_reader()
+        if callable(scheduler_reader)
+        else {'running': False, 'lastError': 'scheduler_not_initialized'}
+    )
+    persistence = _supabase_dependency_snapshot()
+    threads = _background_thread_readiness_snapshot()
+    migrations = persistence.get('migrations') or {
+        'required': persistence.get('required'),
+        'healthy': persistence.get('healthy'),
+    }
+    leases = persistence.get('leases') or {
+        'required': persistence.get('required'),
+        'healthy': persistence.get('healthy'),
+    }
+    rss_reader = globals().get('_backend_current_rss_mb')
+    rss_mb = rss_reader() if callable(rss_reader) else None
+    abort_limit_mb = globals().get('_BACKEND_MEMORY_ABORT_LIMIT_MB')
+    memory_ready = bool(
+        rss_mb is None
+        or abort_limit_mb is None
+        or rss_mb < abort_limit_mb
+    )
+    ready = bool(
+        scheduler.get('running')
+        and threads.get('healthy')
+        and memory_ready
+        and (not persistence.get('required') or persistence.get('healthy'))
+        and (not migrations.get('required') or migrations.get('healthy'))
+        and (not leases.get('required') or leases.get('healthy'))
+    )
+    payload = {
+        'success': ready,
+        'status': 'ready' if ready else 'not_ready',
+        'components': {
+            'scheduler': {
+                'required': True,
+                'healthy': bool(scheduler.get('running')),
+                **scheduler,
+            },
+            'persistence': persistence,
+            'threads': threads,
+            'migrations': migrations,
+            'leases': leases,
+            'memory': {
+                'required': True,
+                'healthy': memory_ready,
+                'rssMb': round(rss_mb, 1) if rss_mb is not None else None,
+                'abortLimitMb': abort_limit_mb,
+            },
+        },
+    }
+    return jsonify(payload), (200 if ready else 503)
 
 
 @app.route('/api/ai/provider/config', methods=['GET', 'POST'])
@@ -9484,6 +10198,12 @@ def discord_notification_config():
                 'notifyRiskAlerts': bool(cfg.get('notifyRiskAlerts', cfg.get('notifyErrors', True) or cfg.get('notifyExitScan', True))),
                 'notifyCycleDigest': bool(cfg.get('notifyCycleDigest', cfg.get('notifyScanSummary', True) or cfg.get('notifyEntryPlan', True))),
                 'notifyRecommendations': bool(cfg.get('notifyRecommendations', True)),
+                'notifyLifecycle': bool(cfg.get('notifyLifecycle', True)),
+                'notifyResearch': bool(cfg.get('notifyResearch', True)),
+                'notifyEquity': bool(cfg.get('notifyEquity', True)),
+                'notifyCrypto': bool(cfg.get('notifyCrypto', True)),
+                'notifyKalshi': bool(cfg.get('notifyKalshi', True)),
+                'notifySystem': bool(cfg.get('notifySystem', True)),
                 'notifyScanSummary': bool(cfg.get('notifyScanSummary', True)),
                 'notifyEntryPlan': bool(cfg.get('notifyEntryPlan', True)),
                 'notifyOrders': bool(cfg.get('notifyOrders', True)),
@@ -9514,6 +10234,12 @@ def discord_notification_config():
         'notifyRiskAlerts': bool(data.get('notifyRiskAlerts', existing.get('notifyRiskAlerts', existing.get('notifyErrors', True) or existing.get('notifyExitScan', True)))),
         'notifyCycleDigest': bool(data.get('notifyCycleDigest', existing.get('notifyCycleDigest', existing.get('notifyScanSummary', True) or existing.get('notifyEntryPlan', True)))),
         'notifyRecommendations': bool(data.get('notifyRecommendations', existing.get('notifyRecommendations', True))),
+        'notifyLifecycle': bool(data.get('notifyLifecycle', existing.get('notifyLifecycle', True))),
+        'notifyResearch': bool(data.get('notifyResearch', existing.get('notifyResearch', True))),
+        'notifyEquity': bool(data.get('notifyEquity', existing.get('notifyEquity', True))),
+        'notifyCrypto': bool(data.get('notifyCrypto', existing.get('notifyCrypto', True))),
+        'notifyKalshi': bool(data.get('notifyKalshi', existing.get('notifyKalshi', True))),
+        'notifySystem': bool(data.get('notifySystem', existing.get('notifySystem', True))),
         # Keep the previous keys so older frontend builds remain compatible.
         'notifyScanSummary': bool(data.get('notifyScanSummary', existing.get('notifyScanSummary', True))),
         'notifyEntryPlan': bool(data.get('notifyEntryPlan', existing.get('notifyEntryPlan', True))),
@@ -9711,9 +10437,15 @@ def discord_notification_event():
         return jsonify({'success': False, 'message': 'Authentication required'}), 401
     data = request.get_json() or {}
     event_type = data.get('eventType') or data.get('event_type')
-    if event_type not in DISCORD_EVENT_FLAGS:
+    # This bridge is retained only for two legacy UI summaries. Trading,
+    # settlement, lifecycle, risk and security evidence must originate in the
+    # backend domain that observed the event.
+    if event_type not in {'exit_scan', 'error'}:
         return jsonify({'success': False, 'message': 'Unsupported Discord event type'}), 400
-    payload = data.get('payload') or {}
+    payload = dict(data.get('payload') or {})
+    payload['source'] = 'Browser UI (legacy)'
+    payload['_synthetic'] = True
+    payload.setdefault('event_id', 'legacy-ui:%s:%s' % (event_type, time.time_ns()))
     result = send_discord_notification(user['id'], event_type, payload)
     return jsonify({'success': True, 'notification': result})
 
@@ -12779,6 +13511,58 @@ class _BackendScanCancelled(RuntimeError):
     pass
 
 
+class _BackendStageDeadlineExceeded(RuntimeError):
+    """Raised cooperatively from long-running batch loops at a stage deadline."""
+
+    def __init__(self, stage, elapsed, limit):
+        self.stage = str(stage or 'unknown')
+        self.elapsed = float(elapsed or 0)
+        self.limit = int(limit or 0)
+        super().__init__(
+            'Pipeline timed out at stage=%s elapsed=%.0fs limit=%ds'
+            % (self.stage, self.elapsed, self.limit)
+        )
+
+
+_PIPELINE_RUNTIME_BUDGET = threading.local()
+
+
+def _backend_set_pipeline_runtime_budget(stage, pipeline_started_at, pipeline_limit,
+                                         stage_started_at, stage_limit):
+    """Publish the current cooperative deadline to nested scanner/provider loops."""
+    pipeline_deadline = float(pipeline_started_at) + float(pipeline_limit)
+    stage_deadline = float(stage_started_at) + float(stage_limit)
+    _PIPELINE_RUNTIME_BUDGET.stage = str(stage or 'unknown')
+    _PIPELINE_RUNTIME_BUDGET.stage_started_at = float(stage_started_at)
+    _PIPELINE_RUNTIME_BUDGET.stage_limit = int(stage_limit)
+    _PIPELINE_RUNTIME_BUDGET.deadline = min(pipeline_deadline, stage_deadline)
+
+
+def _backend_clear_pipeline_runtime_budget():
+    for key in ('stage', 'stage_started_at', 'stage_limit', 'deadline'):
+        try:
+            delattr(_PIPELINE_RUNTIME_BUDGET, key)
+        except AttributeError:
+            pass
+
+
+def _backend_enforce_runtime_budget():
+    """Fail inside bounded batch loops instead of waiting for a stage to return."""
+    deadline = getattr(_PIPELINE_RUNTIME_BUDGET, 'deadline', None)
+    if deadline is None or time.time() <= float(deadline):
+        return
+    stage = getattr(_PIPELINE_RUNTIME_BUDGET, 'stage', 'unknown')
+    stage_started_at = float(
+        getattr(_PIPELINE_RUNTIME_BUDGET, 'stage_started_at', time.time())
+    )
+    stage_limit = int(getattr(_PIPELINE_RUNTIME_BUDGET, 'stage_limit', 0) or 0)
+    raise _BackendStageDeadlineExceeded(
+        stage,
+        max(0.0, time.time() - stage_started_at),
+        stage_limit,
+    )
+
+
 class _InstitutionalScanCapacity:
     """Process-local admission control for the one supported Gunicorn worker."""
 
@@ -12868,6 +13652,7 @@ def _backend_release_unused_memory(trim=False):
 
 def _backend_enforce_memory_budget(stage):
     """Collect under pressure and fail cleanly before Render's hard OOM kill."""
+    _backend_enforce_runtime_budget()
     rss_mb = _backend_current_rss_mb()
     if rss_mb is None or rss_mb < _BACKEND_MEMORY_SOFT_LIMIT_MB:
         return rss_mb
@@ -13104,12 +13889,16 @@ def _inst_is_common_stock_asset(asset, include_otc=False, include_etfs=False):
 
 
 def _inst_fetch_alpaca_assets(asset_configs, filters):
-    if _inst_is_cache_fresh('alpaca_assets'):
-        item = _INST_SCANNER_UNIVERSE_CACHE['alpaca_assets']
-        return item['symbols'], item['metadata'], item['source'], None
-
     include_otc = bool(filters.get('includeOTC'))
     include_etfs = bool(filters.get('includeETFs'))
+    cache_key = 'alpaca_assets:otc=%d:etf=%d' % (
+        1 if include_otc else 0,
+        1 if include_etfs else 0,
+    )
+    if _inst_is_cache_fresh(cache_key):
+        item = _INST_SCANNER_UNIVERSE_CACHE[cache_key]
+        return item['symbols'], item['metadata'], item['source'], None
+
     last_error = None
 
     for cfg in asset_configs:
@@ -13160,7 +13949,7 @@ def _inst_fetch_alpaca_assets(asset_configs, filters):
                 symbols.append(symbol)
 
             source = f'Alpaca /v2/assets ({cfg.get("source") or cfg.get("mode") or "trading"})'
-            _INST_SCANNER_UNIVERSE_CACHE['alpaca_assets'] = {
+            _INST_SCANNER_UNIVERSE_CACHE[cache_key] = {
                 'fetched_at': _inst_now_ts(),
                 'symbols': symbols,
                 'metadata': metadata,
@@ -14327,7 +15116,7 @@ def _inst_score_rows(rows, strategy_policy=None):
             'companyInfo': 'Alpaca Trading /v2/assets',
             'news': 'Pending event overlay',
             'aiData': 'Pending AI challenge review',
-            'method': 'Institutional cross-sectional research priority v5',
+            'method': 'Institutional cross-sectional research priority v6',
         })
         row['provenance'] = provenance
         row['timestamp'] = int(time.time())
@@ -14734,7 +15523,10 @@ def _inst_apply_sector_overlays(rows, benchmark_context):
         groups.setdefault(group_key, []).append(row)
 
     for _group_key, group_rows in groups.items():
-        group_rows.sort(key=lambda item: _inst_to_float(item.get('trendScore'), 0) or 0, reverse=True)
+        group_rows.sort(
+            key=lambda item: _inst_to_float(item.get('selectionScore'), 0) or 0,
+            reverse=True,
+        )
         count = len(group_rows)
         for idx, row in enumerate(group_rows, start=1):
             row['sectorRank'] = idx
@@ -15381,7 +16173,7 @@ def _inst_ai_payload_rows(rows, max_symbols):
             'marketCap': row.get('marketCap'),
             'historyDays': row.get('historyDays'),
             'selectionLabel': row.get('selectionLabel'),
-            'selectionScore': row.get('selectionScore') or row.get('overallScore'),
+            'selectionScore': row.get('selectionScore'),
             'trendLabel': row.get('trendLabel'),
             'directionScore': row.get('directionScore') or row.get('trendScoreDetail'),
             'scoreReliability': row.get('scoreReliability'),
@@ -15844,15 +16636,77 @@ def _inst_apply_ai_trader_review(rows, max_symbols=_INST_SCANNER_AI_REVIEW_TOP_N
 
 def _inst_default_filters(data):
     filters = data.get('filters') if isinstance(data.get('filters'), dict) else {}
+    risk_profile = str(
+        data.get('riskProfile') or data.get('risk_profile') or 'medium'
+    ).strip().lower()
+    time_horizon = str(
+        data.get('timeHorizon') or data.get('time_horizon') or 'mid'
+    ).strip().lower()
+    if risk_profile not in ('low', 'medium', 'high'):
+        risk_profile = 'medium'
+    if time_horizon not in ('short', 'mid', 'long'):
+        time_horizon = 'mid'
+
+    profile_defaults = {
+        'low': {
+            'minDollarVolume': 25_000_000,
+            'maxAtrPercent': 8,
+            'maxRealizedVol20': 75,
+        },
+        'medium': {
+            'minDollarVolume': 10_000_000,
+            'maxAtrPercent': 12,
+            'maxRealizedVol20': 120,
+        },
+        'high': {
+            'minDollarVolume': 7_500_000,
+            'maxAtrPercent': 16,
+            'maxRealizedVol20': 160,
+        },
+    }[risk_profile]
+    horizon_defaults = {
+        'short': {
+            'minHistoryDays': 126,
+            'minDollarVolume': max(profile_defaults['minDollarVolume'], 15_000_000),
+            'maxAtrPercent': min(18, profile_defaults['maxAtrPercent'] + 2),
+            'maxRealizedVol20': min(180, profile_defaults['maxRealizedVol20'] + 20),
+        },
+        'mid': {
+            'minHistoryDays': 252,
+            **profile_defaults,
+        },
+        'long': {
+            'minHistoryDays': 300,
+            'minDollarVolume': max(profile_defaults['minDollarVolume'], 15_000_000),
+            'maxAtrPercent': min(profile_defaults['maxAtrPercent'], 10),
+            'maxRealizedVol20': min(profile_defaults['maxRealizedVol20'], 90),
+        },
+    }[time_horizon]
+    leverage_requested = data.get('leverageEnabled') is True
     merged = {
         'minPrice': data.get('minPrice', filters.get('minPrice', 5)),
         'minMarketCap': data.get('minMarketCap', filters.get('minMarketCap', 0)),
-        'minDollarVolume': data.get('minDollarVolume', filters.get('minDollarVolume', 10_000_000)),
-        'minHistoryDays': data.get('minHistoryDays', filters.get('minHistoryDays', 252)),
-        'maxAtrPercent': data.get('maxAtrPercent', filters.get('maxAtrPercent', 12)),
-        'maxRealizedVol20': data.get('maxRealizedVol20', filters.get('maxRealizedVol20', 120)),
+        'minDollarVolume': data.get(
+            'minDollarVolume',
+            filters.get('minDollarVolume', horizon_defaults['minDollarVolume']),
+        ),
+        'minHistoryDays': data.get(
+            'minHistoryDays',
+            filters.get('minHistoryDays', horizon_defaults['minHistoryDays']),
+        ),
+        'maxAtrPercent': data.get(
+            'maxAtrPercent',
+            filters.get('maxAtrPercent', horizon_defaults['maxAtrPercent']),
+        ),
+        'maxRealizedVol20': data.get(
+            'maxRealizedVol20',
+            filters.get('maxRealizedVol20', horizon_defaults['maxRealizedVol20']),
+        ),
         'includeOTC': data.get('includeOTC', filters.get('includeOTC', False)),
-        'includeETFs': data.get('includeETFs', filters.get('includeETFs', False)),
+        'includeETFs': data.get(
+            'includeETFs',
+            filters.get('includeETFs', leverage_requested),
+        ),
     }
     return merged
 
@@ -16179,10 +17033,10 @@ def _institutional_market_scanner_impl():
                 'ai_reviewed_symbols': ai_review_stats.get('reviewedSymbols', 0),
                 'ai_review_status': ai_review_stats.get('status'),
                 'total_time_seconds': round(total_time, 2),
-                'method': 'alpaca_whole_market_scan_v5_risk_adjusted_cross_section',
+                'method': 'alpaca_whole_market_scan_v6_strategy_mandate',
             }
         })
-    except (_BackendMemoryPressure, _BackendScanCancelled):
+    except (_BackendMemoryPressure, _BackendScanCancelled, _BackendStageDeadlineExceeded):
         raise
     except Exception as e:
         import traceback
@@ -18765,6 +19619,20 @@ def cancel_trading_order(order_id):
                     current_user['id'], order_id, 'cancel_requested', 'cancel_requested',
                     payload={'mode': mode, 'source': 'trade_ticket'},
                 )
+                send_discord_notification(current_user['id'], 'order', {
+                    'event_id': 'manual-cancel:%s' % order_id,
+                    'notificationScope': 'equity',
+                    'assetClass': 'equity',
+                    'source': 'Manual',
+                    'mode': mode,
+                    'action': 'CANCEL',
+                    'side': 'cancel',
+                    'symbol': body.get('symbol') or '-',
+                    'status': 'canceled',
+                    'orderId': order_id,
+                    'reason': 'Alpaca accepted the manual cancellation request.',
+                    'reasonZh': 'Alpaca 已接受手动撤单请求。',
+                })
             return jsonify({'success': True, 'orderId': order_id, 'status': 'canceled'})
         elif resp.status_code == 404:
             return jsonify({'success': False, 'error': 'Order not found.', 'errorType': 'order_not_found', 'orderId': order_id})
@@ -24755,6 +25623,610 @@ def run_adx_trend_strategy_for_optimization(data, params, initial_capital, symbo
     return trades, equity_curve
 
 
+def _bt_round_trip_cost_bps(params=None, explicit=None):
+    """Return the all-in round-trip execution cost used by the backtest engine.
+
+    DV supplies the scanner's spread/impact estimate as one round-trip value.  A
+    caller may alternatively provide per-side commission and slippage estimates;
+    those are doubled here so every strategy uses the same cost convention.
+    """
+    params = params if isinstance(params, dict) else {}
+    candidates = (
+        explicit,
+        params.get('_roundTripCostBps'),
+        params.get('roundTripCostBps'),
+        params.get('transactionCostBps'),
+    )
+    for value in candidates:
+        try:
+            if value is not None:
+                return max(0.0, min(1000.0, float(value)))
+        except (TypeError, ValueError):
+            continue
+    try:
+        commission = max(0.0, float(params.get('commissionBps') or 0))
+        slippage = max(0.0, float(params.get('slippageBps') or 0))
+        return min(1000.0, 2.0 * (commission + slippage))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _bt_params_with_round_trip_cost(params, round_trip_cost_bps):
+    """Copy strategy parameters and attach engine-only execution assumptions."""
+    result = dict(params or {})
+    result['_roundTripCostBps'] = _bt_round_trip_cost_bps(
+        result, explicit=round_trip_cost_bps,
+    )
+    return result
+
+
+def _bt_execute_long_signals(data, signal_fn, initial_capital, symbol,
+                             round_trip_cost_bps=0, enter_on_first_open=False):
+    """Execute long-only close signals at the *next* bar's open.
+
+    ``signal_fn`` is called only after a bar is complete.  Its BUY/SELL result is
+    queued for the following bar, so a strategy can never observe a close and
+    fill at that same close.  The all-in round-trip cost is split evenly across
+    entry and exit and applied to cash, trade P&L, and the equity curve.  Any
+    remaining position is liquidated at the final bar's close and becomes a
+    normal closed trade in the statistics.
+    """
+    rows = list(data or [])
+    if not rows:
+        return [], []
+
+    try:
+        cash = float(initial_capital)
+    except (TypeError, ValueError):
+        cash = 0.0
+    round_trip_bps = _bt_round_trip_cost_bps(explicit=round_trip_cost_bps)
+    side_cost_rate = round_trip_bps / 20000.0
+    trades = []
+    equity_curve = []
+    position = 0
+    active_trade = None
+    pending_signal = None
+    cumulative_cost = 0.0
+    high_water = None
+
+    def bar_price(bar, field, fallback=None):
+        try:
+            value = float(bar.get(field))
+            if value > 0:
+                return value
+        except (TypeError, ValueError, AttributeError):
+            pass
+        try:
+            value = float(fallback)
+            return value if value > 0 else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    def normalize_signal(value, signal_index):
+        if isinstance(value, dict):
+            action = str(value.get('action') or '').upper()
+            reason = value.get('reason')
+        else:
+            action = str(value or '').upper()
+            reason = None
+        if action in ('BUY', 'ENTER', 'LONG'):
+            action = 'BUY'
+        elif action in ('SELL', 'EXIT', 'CLOSE'):
+            action = 'SELL'
+        else:
+            return None
+        return {
+            'action': action,
+            'signalIndex': signal_index,
+            'signalDate': rows[signal_index].get('timestamp'),
+            'reason': reason,
+        }
+
+    def open_long(raw_price, date, bar_index, signal):
+        nonlocal cash, position, active_trade, cumulative_cost, high_water
+        if raw_price <= 0 or cash <= 0 or position > 0:
+            return
+        effective_price = raw_price * (1.0 + side_cost_rate)
+        shares = int(cash // effective_price)
+        if shares <= 0:
+            return
+        gross_notional = shares * raw_price
+        cash_outlay = shares * effective_price
+        entry_cost = cash_outlay - gross_notional
+        cash -= cash_outlay
+        position = shares
+        cumulative_cost += entry_cost
+        high_water = raw_price
+        active_trade = {
+            'entryDate': date,
+            'entrySignalDate': (signal or {}).get('signalDate'),
+            'entryBarIndex': bar_index,
+            'exitDate': None,
+            'entryPrice': round(effective_price, 6),
+            'rawEntryPrice': round(raw_price, 6),
+            'exitPrice': None,
+            'rawExitPrice': None,
+            'entryCost': round(entry_cost, 6),
+            'exitCost': 0.0,
+            'transactionCost': round(entry_cost, 6),
+            'pnl': None,
+            'grossPnl': None,
+            'returnPct': None,
+            'grossReturnPct': None,
+            'holdingPeriod': 0,
+            'position': 1,
+            'action': 'BUY',
+            'quantity': shares,
+            'symbol': symbol,
+            'entryReason': (signal or {}).get('reason'),
+        }
+        trades.append(active_trade)
+
+    def close_long(raw_price, date, bar_index, signal=None, forced=False):
+        nonlocal cash, position, active_trade, cumulative_cost, high_water
+        if raw_price <= 0 or position <= 0 or active_trade is None:
+            return
+        effective_price = raw_price * (1.0 - side_cost_rate)
+        gross_notional = position * raw_price
+        proceeds = position * effective_price
+        exit_cost = gross_notional - proceeds
+        cumulative_cost += exit_cost
+        cash += proceeds
+        raw_entry = float(active_trade.get('rawEntryPrice') or 0)
+        effective_entry = float(active_trade.get('entryPrice') or 0)
+        qty = int(active_trade.get('quantity') or position)
+        gross_pnl = (raw_price - raw_entry) * qty
+        net_pnl = (effective_price - effective_entry) * qty
+        total_cost = float(active_trade.get('entryCost') or 0) + exit_cost
+        active_trade.update({
+            'exitDate': date,
+            'exitSignalDate': (signal or {}).get('signalDate'),
+            'exitBarIndex': bar_index,
+            'exitPrice': round(effective_price, 6),
+            'rawExitPrice': round(raw_price, 6),
+            'exitCost': round(exit_cost, 6),
+            'transactionCost': round(total_cost, 6),
+            'pnl': round(net_pnl, 6),
+            'grossPnl': round(gross_pnl, 6),
+            'returnPct': round(
+                ((effective_price / effective_entry) - 1.0) * 100.0,
+                6,
+            ) if effective_entry > 0 else 0.0,
+            'grossReturnPct': round(
+                ((raw_price / raw_entry) - 1.0) * 100.0,
+                6,
+            ) if raw_entry > 0 else 0.0,
+            'holdingPeriod': max(
+                0, bar_index - int(active_trade.get('entryBarIndex') or 0),
+            ),
+            'exitReason': 'END_OF_TEST' if forced else (signal or {}).get('reason'),
+            'forcedExit': bool(forced),
+        })
+        position = 0
+        active_trade = None
+        high_water = None
+
+    for index, bar in enumerate(rows):
+        close_price = bar_price(bar, 'close')
+        open_price = bar_price(bar, 'open', close_price)
+        date = bar.get('timestamp')
+
+        if index == 0 and enter_on_first_open:
+            open_long(open_price, date, index, {
+                'signalDate': date,
+                'reason': 'BUY_AND_HOLD_START',
+            })
+
+        if pending_signal:
+            if pending_signal['action'] == 'SELL' and position > 0:
+                close_long(open_price, date, index, pending_signal)
+            elif pending_signal['action'] == 'BUY' and position == 0:
+                open_long(open_price, date, index, pending_signal)
+            pending_signal = None
+
+        if position > 0:
+            bar_high = bar_price(bar, 'high', close_price)
+            high_water = max(high_water or bar_high, bar_high)
+
+        if index == len(rows) - 1 and position > 0:
+            close_long(close_price, date, index, forced=True)
+
+        net_equity = cash + position * close_price
+        equity_curve.append({
+            'date': date,
+            'equity': round(net_equity, 6),
+            'grossEquity': round(net_equity + cumulative_cost, 6),
+            'price': close_price,
+            'position': position,
+            'cumulativeTransactionCost': round(cumulative_cost, 6),
+        })
+
+        if index >= len(rows) - 1:
+            continue
+        context = {
+            'position': position,
+            'entryRawPrice': (
+                float(active_trade.get('rawEntryPrice'))
+                if active_trade is not None else None
+            ),
+            'entryEffectivePrice': (
+                float(active_trade.get('entryPrice'))
+                if active_trade is not None else None
+            ),
+            'highWater': high_water,
+            'barIndex': index,
+            'bar': bar,
+        }
+        pending_signal = normalize_signal(signal_fn(index, context), index)
+
+    return trades, equity_curve
+
+
+def _bt_rsi_values(closes, period):
+    """Simple rolling RSI values using only information through each index."""
+    period = max(2, int(period))
+    values = [None] * len(closes)
+    for index in range(period, len(closes)):
+        changes = [
+            closes[item] - closes[item - 1]
+            for item in range(index - period + 1, index + 1)
+        ]
+        avg_gain = sum(max(change, 0.0) for change in changes) / period
+        avg_loss = sum(max(-change, 0.0) for change in changes) / period
+        values[index] = (
+            100.0 if avg_loss == 0
+            else 100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
+        )
+    return values
+
+
+def _bt_build_causal_signal_fn(strategy_name, data, params):
+    """Build a close-only signal callback for the shared next-open executor."""
+    name = str(strategy_name or '').lower()
+    params = params if isinstance(params, dict) else {}
+    closes = [float(point.get('close') or 0) for point in data]
+
+    if name == 'buy_hold':
+        return (lambda _index, _context: None), True
+
+    if name == 'moving_average':
+        short_period = max(2, int(params.get('shortMaPeriod', 20)))
+        long_period = max(short_period + 1, int(params.get('longMaPeriod', 50)))
+        short_ma = _bt_sma(closes, short_period)
+        long_ma = _bt_sma(closes, long_period)
+
+        def signal(index, context):
+            if index < long_period or index < 1:
+                return None
+            if context['position'] == 0 and short_ma[index] > long_ma[index] and short_ma[index - 1] <= long_ma[index - 1]:
+                return {'action': 'BUY', 'reason': 'MA_BULLISH_CROSS'}
+            if context['position'] > 0 and short_ma[index] < long_ma[index] and short_ma[index - 1] >= long_ma[index - 1]:
+                return {'action': 'SELL', 'reason': 'MA_BEARISH_CROSS'}
+            return None
+        return signal, False
+
+    if name == 'rsi':
+        period = max(2, int(params.get('rsiPeriod', 14)))
+        oversold = float(params.get('oversoldLevel', 30))
+        overbought = float(params.get('overboughtLevel', 70))
+        values = _bt_rsi_values(closes, period)
+
+        def signal(index, context):
+            value = values[index]
+            if value is None:
+                return None
+            if context['position'] == 0 and value < oversold:
+                return {'action': 'BUY', 'reason': 'RSI_OVERSOLD'}
+            if context['position'] > 0 and value > overbought:
+                return {'action': 'SELL', 'reason': 'RSI_OVERBOUGHT'}
+            return None
+        return signal, False
+
+    if name == 'macd':
+        fast_period = max(2, int(params.get('macdFast', params.get('fast', 12))))
+        slow_period = max(fast_period + 1, int(params.get('macdSlow', params.get('slow', 26))))
+        signal_period = max(2, int(params.get('macdSignal', params.get('signal', 9))))
+        fast = _bt_ema(closes, fast_period)
+        slow = _bt_ema(closes, slow_period)
+        macd = [fast[i] - slow[i] for i in range(len(closes))]
+        signal_line = _bt_ema(macd, signal_period)
+        histogram = [macd[i] - signal_line[i] for i in range(len(closes))]
+        warmup = slow_period + signal_period
+
+        def signal(index, context):
+            if index < warmup or index < 1:
+                return None
+            if context['position'] == 0 and histogram[index] > 0 and histogram[index - 1] <= 0:
+                return {'action': 'BUY', 'reason': 'MACD_BULLISH_CROSS'}
+            if context['position'] > 0 and histogram[index] < 0 and histogram[index - 1] >= 0:
+                return {'action': 'SELL', 'reason': 'MACD_BEARISH_CROSS'}
+            return None
+        return signal, False
+
+    if name == 'bollinger':
+        period = max(2, int(params.get('bollingerPeriod', params.get('period', 20))))
+        std_multiple = float(params.get('bollingerStdDev', params.get('std_dev', 2)))
+        upper = [None] * len(closes)
+        lower = [None] * len(closes)
+        for index in range(period, len(closes)):
+            window = closes[index - period:index]
+            mean = sum(window) / period
+            std = (sum((value - mean) ** 2 for value in window) / period) ** 0.5
+            upper[index] = mean + std_multiple * std
+            lower[index] = mean - std_multiple * std
+
+        def signal(index, context):
+            if upper[index] is None:
+                return None
+            if context['position'] == 0 and closes[index] < lower[index]:
+                return {'action': 'BUY', 'reason': 'BOLLINGER_LOWER_BREAK'}
+            if context['position'] > 0 and closes[index] > upper[index]:
+                return {'action': 'SELL', 'reason': 'BOLLINGER_UPPER_BREAK'}
+            return None
+        return signal, False
+
+    if name == 'momentum':
+        period = max(1, int(params.get('momentumPeriod', params.get('momentum_period', 10))))
+        threshold = float(params.get('momentumThreshold', params.get('momentum_threshold', 0)))
+
+        def signal(index, context):
+            if index < period:
+                return None
+            momentum = closes[index] - closes[index - period]
+            if context['position'] == 0 and momentum > threshold:
+                return {'action': 'BUY', 'reason': 'POSITIVE_MOMENTUM'}
+            if context['position'] > 0 and momentum < -threshold:
+                return {'action': 'SELL', 'reason': 'NEGATIVE_MOMENTUM'}
+            return None
+        return signal, False
+
+    if name == 'mean_reversion':
+        lookback = max(2, int(params.get('lookbackPeriod', params.get('lookback', 20))))
+        entry_z = float(params.get('entryZScore', params.get('entry_z', -2.0)))
+        exit_z = float(params.get('exitZScore', params.get('exit_z', 0.0)))
+        stop_loss_pct = max(0.0, float(params.get('stopLossPct', 0.06)))
+        take_profit_pct = max(0.0, float(params.get('takeProfitPct', 0.08)))
+        rsi_period = max(2, int(params.get('rsiPeriod', 14)))
+        oversold = float(params.get('oversoldLevel', 30))
+        enable_trend = bool(params.get('enableTrendFilter', True))
+        trend_period = max(2, int(params.get('trendMaPeriod', 100)))
+        rsi_values = _bt_rsi_values(closes, rsi_period)
+
+        def signal(index, context):
+            if index < lookback:
+                return None
+            window = closes[index - lookback:index]
+            mean = sum(window) / lookback
+            std = (sum((value - mean) ** 2 for value in window) / lookback) ** 0.5
+            z_score = (closes[index] - mean) / std if std > 0 else 0.0
+            trend_ok = True
+            if enable_trend and index >= trend_period:
+                trend_ok = closes[index] > (sum(closes[index - trend_period:index]) / trend_period) * 0.92
+            rsi_value = rsi_values[index]
+            if context['position'] == 0:
+                if z_score <= entry_z and (not enable_trend or trend_ok) and rsi_value is not None and rsi_value < oversold:
+                    return {'action': 'BUY', 'reason': 'MEAN_REVERSION_ENTRY'}
+                return None
+            entry_price = float(context.get('entryRawPrice') or 0)
+            if z_score >= exit_z:
+                return {'action': 'SELL', 'reason': 'MEAN_REVERSION_EXIT'}
+            if entry_price > 0 and closes[index] <= entry_price * (1.0 - stop_loss_pct):
+                return {'action': 'SELL', 'reason': 'MEAN_REVERSION_STOP'}
+            if entry_price > 0 and closes[index] >= entry_price * (1.0 + take_profit_pct):
+                return {'action': 'SELL', 'reason': 'MEAN_REVERSION_TARGET'}
+            return None
+        return signal, False
+
+    if name == 'donchian_breakout':
+        entry_period = max(2, int(params.get('entryPeriod', params.get('donchianEntryPeriod', 20))))
+        exit_period = max(2, int(params.get('exitPeriod', params.get('donchianExitPeriod', 10))))
+        atr_period = max(2, int(params.get('atrPeriod', 20)))
+        atr_multiple = max(0.1, float(params.get('atrStopMultiple', 2.0)))
+        atr = _bt_atr(data, atr_period)
+        warmup = max(entry_period, exit_period, atr_period)
+
+        def signal(index, context):
+            if index < warmup:
+                return None
+            prior_high = max(float(point.get('high', point.get('close', 0)) or 0) for point in data[index - entry_period:index])
+            prior_low = min(float(point.get('low', point.get('close', 0)) or 0) for point in data[index - exit_period:index])
+            if context['position'] == 0 and closes[index] > prior_high:
+                return {'action': 'BUY', 'reason': 'DONCHIAN_BREAKOUT'}
+            if context['position'] > 0:
+                trailing_stop = float(context.get('highWater') or closes[index]) - atr_multiple * atr[index]
+                if closes[index] < prior_low or closes[index] <= trailing_stop:
+                    return {'action': 'SELL', 'reason': 'DONCHIAN_EXIT'}
+            return None
+        return signal, False
+
+    if name == 'keltner_breakout':
+        ema_period = max(2, int(params.get('emaPeriod', params.get('keltnerEmaPeriod', 20))))
+        atr_period = max(2, int(params.get('atrPeriod', params.get('keltnerAtrPeriod', 20))))
+        multiple = max(0.1, float(params.get('atrMultiplier', params.get('keltnerMultiplier', 2.0))))
+        ema = _bt_ema(closes, ema_period)
+        atr = _bt_atr(data, atr_period)
+        warmup = max(ema_period, atr_period)
+
+        def signal(index, context):
+            if index < warmup or index < 1:
+                return None
+            upper = ema[index - 1] + multiple * atr[index - 1]
+            middle = ema[index - 1]
+            lower = ema[index - 1] - multiple * atr[index - 1]
+            if context['position'] == 0 and closes[index] > upper:
+                return {'action': 'BUY', 'reason': 'KELTNER_BREAKOUT'}
+            if context['position'] > 0 and (closes[index] < middle or closes[index] < lower):
+                return {'action': 'SELL', 'reason': 'KELTNER_EXIT'}
+            return None
+        return signal, False
+
+    if name == 'supertrend':
+        atr_period = max(2, int(params.get('atrPeriod', params.get('supertrendAtrPeriod', 10))))
+        multiple = max(0.1, float(params.get('multiplier', params.get('supertrendMultiplier', 3.0))))
+        atr = _bt_atr(data, atr_period)
+        final_upper = []
+        final_lower = []
+        trend_up = []
+        for index, point in enumerate(data):
+            high = float(point.get('high', point.get('close', 0)) or 0)
+            low = float(point.get('low', point.get('close', 0)) or 0)
+            close = closes[index]
+            midpoint = (high + low) / 2.0
+            basic_upper = midpoint + multiple * atr[index]
+            basic_lower = midpoint - multiple * atr[index]
+            if index == 0:
+                final_upper.append(basic_upper)
+                final_lower.append(basic_lower)
+                trend_up.append(True)
+                continue
+            previous_close = closes[index - 1]
+            upper = basic_upper if basic_upper < final_upper[-1] or previous_close > final_upper[-1] else final_upper[-1]
+            lower = basic_lower if basic_lower > final_lower[-1] or previous_close < final_lower[-1] else final_lower[-1]
+            if close > final_upper[-1]:
+                is_up = True
+            elif close < final_lower[-1]:
+                is_up = False
+            else:
+                is_up = trend_up[-1]
+            final_upper.append(upper)
+            final_lower.append(lower)
+            trend_up.append(is_up)
+
+        def signal(index, context):
+            if index < atr_period or index < 1:
+                return None
+            if context['position'] == 0 and trend_up[index] and not trend_up[index - 1]:
+                return {'action': 'BUY', 'reason': 'SUPERTREND_UP'}
+            if context['position'] > 0 and not trend_up[index] and trend_up[index - 1]:
+                return {'action': 'SELL', 'reason': 'SUPERTREND_DOWN'}
+            return None
+        return signal, False
+
+    if name == 'stochastic':
+        k_period = max(2, int(params.get('kPeriod', params.get('stochKPeriod', 14))))
+        d_period = max(2, int(params.get('dPeriod', params.get('stochDPeriod', 3))))
+        oversold = float(params.get('oversold', params.get('stochOversold', 20)))
+        overbought = float(params.get('overbought', params.get('stochOverbought', 80)))
+        k_values = []
+        d_values = []
+        for index, point in enumerate(data):
+            if index + 1 >= k_period:
+                window = data[index - k_period + 1:index + 1]
+                high = max(float(item.get('high', item.get('close', 0)) or 0) for item in window)
+                low = min(float(item.get('low', item.get('close', 0)) or 0) for item in window)
+                value = 100.0 * (closes[index] - low) / (high - low) if high > low else 50.0
+            else:
+                value = 50.0
+            k_values.append(value)
+            d_values.append(
+                sum(k_values[-d_period:]) / d_period
+                if len(k_values) >= d_period else value
+            )
+
+        def signal(index, context):
+            if index < k_period + d_period or index < 1:
+                return None
+            previous_k, previous_d = k_values[index - 1], d_values[index - 1]
+            current_k, current_d = k_values[index], d_values[index]
+            if context['position'] == 0 and previous_k <= previous_d and current_k > current_d and current_k <= oversold + 10:
+                return {'action': 'BUY', 'reason': 'STOCHASTIC_BULLISH_CROSS'}
+            if context['position'] > 0 and previous_k >= previous_d and current_k < current_d and current_k >= overbought - 10:
+                return {'action': 'SELL', 'reason': 'STOCHASTIC_BEARISH_CROSS'}
+            return None
+        return signal, False
+
+    if name == 'adx_trend':
+        adx_period = max(2, int(params.get('adxPeriod', 14)))
+        threshold = float(params.get('adxThreshold', 25))
+        fast_period = max(2, int(params.get('fastEmaPeriod', 20)))
+        slow_period = max(fast_period + 1, int(params.get('slowEmaPeriod', 50)))
+        fast = _bt_ema(closes, fast_period)
+        slow = _bt_ema(closes, slow_period)
+        adx, plus_di, minus_di = _bt_adx(data, adx_period)
+        warmup = max(adx_period * 2, slow_period)
+
+        def signal(index, context):
+            if index < warmup:
+                return None
+            trend_long = adx[index] >= threshold and plus_di[index] > minus_di[index] and fast[index] > slow[index]
+            trend_exit = minus_di[index] > plus_di[index] or fast[index] < slow[index] or adx[index] < threshold * 0.75
+            if context['position'] == 0 and trend_long:
+                return {'action': 'BUY', 'reason': 'ADX_TREND_ENTRY'}
+            if context['position'] > 0 and trend_exit:
+                return {'action': 'SELL', 'reason': 'ADX_TREND_EXIT'}
+            return None
+        return signal, False
+
+    raise ValueError('Unknown causal backtest strategy: %s' % strategy_name)
+
+
+def _bt_run_causal_strategy(strategy_name, data, params, initial_capital, symbol):
+    """Shared causal execution path used by every DV strategy wrapper."""
+    signal_fn, enter_on_first_open = _bt_build_causal_signal_fn(
+        strategy_name, data, params,
+    )
+    return _bt_execute_long_signals(
+        data,
+        signal_fn,
+        initial_capital,
+        symbol,
+        round_trip_cost_bps=_bt_round_trip_cost_bps(params),
+        enter_on_first_open=enter_on_first_open,
+    )
+
+
+# Rebind every public strategy runner to the same causal execution engine.  The
+# earlier implementations remain above for historical context, but no endpoint
+# or DV dispatch table constructed below this point can reach their same-close
+# fill paths.
+def run_moving_average_strategy_for_optimization(data, params, initial_capital, symbol):
+    return _bt_run_causal_strategy('moving_average', data, params, initial_capital, symbol)
+
+
+def run_rsi_strategy_for_optimization(data, params, initial_capital, symbol):
+    return _bt_run_causal_strategy('rsi', data, params, initial_capital, symbol)
+
+
+def run_macd_strategy_for_optimization(data, params, initial_capital, symbol):
+    return _bt_run_causal_strategy('macd', data, params, initial_capital, symbol)
+
+
+def run_bollinger_strategy_for_optimization(data, params, initial_capital, symbol):
+    return _bt_run_causal_strategy('bollinger', data, params, initial_capital, symbol)
+
+
+def run_momentum_strategy_for_optimization(data, params, initial_capital, symbol):
+    return _bt_run_causal_strategy('momentum', data, params, initial_capital, symbol)
+
+
+def run_mean_reversion_strategy_for_optimization(data, params, initial_capital, symbol):
+    return _bt_run_causal_strategy('mean_reversion', data, params, initial_capital, symbol)
+
+
+def run_buy_hold_strategy_for_optimization(data, params, initial_capital, symbol):
+    return _bt_run_causal_strategy('buy_hold', data, params, initial_capital, symbol)
+
+
+def run_donchian_breakout_strategy_for_optimization(data, params, initial_capital, symbol):
+    return _bt_run_causal_strategy('donchian_breakout', data, params, initial_capital, symbol)
+
+
+def run_keltner_breakout_strategy_for_optimization(data, params, initial_capital, symbol):
+    return _bt_run_causal_strategy('keltner_breakout', data, params, initial_capital, symbol)
+
+
+def run_supertrend_strategy_for_optimization(data, params, initial_capital, symbol):
+    return _bt_run_causal_strategy('supertrend', data, params, initial_capital, symbol)
+
+
+def run_stochastic_strategy_for_optimization(data, params, initial_capital, symbol):
+    return _bt_run_causal_strategy('stochastic', data, params, initial_capital, symbol)
+
+
+def run_adx_trend_strategy_for_optimization(data, params, initial_capital, symbol):
+    return _bt_run_causal_strategy('adx_trend', data, params, initial_capital, symbol)
+
+
 @app.route('/backtest/optimize', methods=['POST'])
 
 @app.route('/api/backtest/optimize', methods=['POST'])
@@ -28748,18 +30220,19 @@ def _build_entry_limit_preflight(
         caps.append(max_allocation / limit_price)
     executable_shares = max(0.0, min(caps))
 
-    # Whole-share plans can use Alpaca bracket protection. Keep genuinely small
-    # positions fractional instead of inflating them to one share.
-    use_bracket = executable_shares >= 1.0
-    if require_attached_protection and not use_bracket:
+    # Whole-share plans use an Alpaca OTO stop. Profit targets remain owned by
+    # the staged exit engine so target 1 can reduce rather than close the entire
+    # position. Keep genuinely small plans fractional instead of inflating them.
+    use_attached_stop = executable_shares >= 1.0
+    if require_attached_protection and not use_attached_stop:
         return {
             'ok': False,
             'code': 'fractional_protection_unavailable',
             'blockers': [
-                'Automatic entry requires at least one whole share so stop and target can be attached as a bracket order.'
+                'Automatic entry requires at least one whole share so an OTO stop can be attached.'
             ],
         }
-    if use_bracket or not fractionable:
+    if use_attached_stop or not fractionable:
         executable_shares = float(math.floor(executable_shares))
     else:
         executable_shares = round(executable_shares, 4)
@@ -28793,8 +30266,8 @@ def _build_entry_limit_preflight(
         'riskDollars': round(executable_shares * risk_per_share, 2),
         'riskPerShare': round(risk_per_share, 4),
         'marketable': marketable,
-        'orderClass': 'bracket' if use_bracket else 'simple',
-        'protectionMode': 'alpaca_bracket' if use_bracket else 'exit_scan',
+        'orderClass': 'oto' if use_attached_stop else 'simple',
+        'protectionMode': 'alpaca_oto_stop' if use_attached_stop else 'exit_scan',
         'quote': {
             'bid': bid,
             'ask': ask,
@@ -28808,6 +30281,33 @@ def _build_entry_limit_preflight(
         'slippageCapBps': slippage_bps,
         'buyingPowerBufferPct': buying_power_buffer_pct,
     }
+
+
+def _build_entry_order_payload(symbol, shares, limit_price, stop_loss,
+                               client_order_id, order_class):
+    """Build the broker payload without allowing a whole-position target leg."""
+    normalized_class = str(order_class or 'simple').strip().lower()
+    qty_value = (
+        str(int(shares))
+        if normalized_class == 'oto'
+        else ('%.4f' % float(shares)).rstrip('0').rstrip('.')
+    )
+    payload = {
+        'symbol': str(symbol or '').upper().strip(),
+        'side': 'buy',
+        'qty': qty_value,
+        'type': 'limit',
+        'limit_price': str(limit_price),
+        'time_in_force': 'day',
+        'extended_hours': False,
+        'client_order_id': str(client_order_id or '')[:48],
+    }
+    if normalized_class == 'oto':
+        payload.update({
+            'order_class': 'oto',
+            'stop_loss': {'stop_price': str(stop_loss)},
+        })
+    return payload
 
 
 def _alpaca_order_error(response):
@@ -28930,14 +30430,39 @@ def entry_plan_execute():
         # ── 2. Verify all required gates ──
         blockers = []
         submitted_policy = plan_snapshot.get('strategyPolicy') if isinstance(plan_snapshot.get('strategyPolicy'), dict) else {}
+        is_auto_execute = data.get('isAutoExecute', False) is True
+        authoritative_config = _pa_get_config(user['id']) or {}
+        active_risk_profile = (
+            authoritative_config.get('risk_profile')
+            or authoritative_config.get('riskProfile')
+            or plan_snapshot.get('riskProfileUsed')
+            or submitted_policy.get('riskProfile')
+            or 'medium'
+        )
+        active_time_horizon = (
+            authoritative_config.get('time_horizon')
+            or authoritative_config.get('timeHorizon')
+            or plan_snapshot.get('timeHorizonUsed')
+            or submitted_policy.get('timeHorizon')
+            or 'mid'
+        )
+        active_pipeline_mode = (
+            authoritative_config.get('mode')
+            or plan_snapshot.get('pipelineModeUsed')
+            or submitted_policy.get('pipelineMode')
+            or 'hybrid'
+        )
+        # Leverage authority is never accepted from planSnapshot.  It must be
+        # enabled in the user's durable server configuration at submission time.
+        active_leverage_enabled = authoritative_config.get('leverage_enabled') is True
         # Execution never trusts client-supplied percentages. Rebuild the
-        # mandate server-side, where platform hard caps are applied.
+        # mandate server-side, where platform and account caps are applied.
         strategy_policy = _apply_account_hard_risk_limits(
             _strategy_policy(
-                plan_snapshot.get('riskProfileUsed') or submitted_policy.get('riskProfile') or 'medium',
-                plan_snapshot.get('timeHorizonUsed') or submitted_policy.get('timeHorizon') or 'mid',
-                plan_snapshot.get('pipelineModeUsed') or submitted_policy.get('pipelineMode') or 'hybrid',
-                bool(submitted_policy.get('leverageEnabled', False)),
+                active_risk_profile,
+                active_time_horizon,
+                active_pipeline_mode,
+                active_leverage_enabled,
             ),
             user['id'],
         )
@@ -28960,7 +30485,21 @@ def entry_plan_execute():
         risk_gate_status = risk_gate.get('status', 'BLOCK')
         data_quality = plan_snapshot.get('dataQuality', 'POOR')
         trade_readiness = plan_snapshot.get('tradeReadiness', 'BLOCKED')
-        is_auto_execute = data.get('isAutoExecute', False)
+        if is_auto_execute and submitted_policy:
+            policy_identity = (
+                str(submitted_policy.get('riskProfile') or '').lower(),
+                str(submitted_policy.get('timeHorizon') or '').lower(),
+                str(submitted_policy.get('pipelineMode') or '').lower(),
+                bool(submitted_policy.get('leverageEnabled')),
+            )
+            active_identity = (
+                strategy_policy.get('riskProfile'),
+                strategy_policy.get('timeHorizon'),
+                strategy_policy.get('pipelineMode'),
+                bool(strategy_policy.get('leverageEnabled')),
+            )
+            if policy_identity != active_identity:
+                blockers.append('Plan mandate no longer matches the active server strategy policy; rerun Entry Plan')
         try:
             shares = float(plan_snapshot.get('shares', plan_snapshot.get('positionSizeShares', 0)) or 0)
         except (TypeError, ValueError):
@@ -29308,10 +30847,14 @@ def entry_plan_execute():
             blockers.append(f'Cannot verify buying power: {str(acc_e)[:80]}')
             _bp_check_passed = False
 
+        geared_product_profile = _classify_geared_equity_product(symbol, '')
         try:
             asset_resp = _req.get(f'{base_url}/v2/assets/{symbol}', headers=headers, timeout=8)
             if asset_resp.status_code == 200:
                 asset_data = asset_resp.json() or {}
+                geared_product_profile = _classify_geared_equity_product(
+                    symbol, asset_data.get('name') or asset_data.get('description') or '',
+                )
                 fractionable = bool(asset_data.get('fractionable', fractionable))
                 asset_class = str(asset_data.get('class') or asset_data.get('asset_class') or '').strip().lower()
                 if asset_class not in ('us_equity', ''):
@@ -29324,7 +30867,13 @@ def entry_plan_execute():
                 blockers.append(f'Cannot verify asset tradability: HTTP {asset_resp.status_code}')
         except Exception as asset_error:
             blockers.append(f'Cannot verify asset tradability: {str(asset_error)[:80]}')
+        blockers.extend(_geared_product_policy_blockers(
+            geared_product_profile,
+            strategy_policy,
+            plan_snapshot.get('entryIntent') or 'NEW_POSITION',
+        ))
 
+        existing_leveraged_exposure = 0.0
         try:
             pos_resp = _req.get(f'{base_url}/v2/positions', headers=headers, timeout=10)
             if pos_resp.status_code == 200:
@@ -29333,6 +30882,11 @@ def entry_plan_execute():
                 for position in position_rows:
                     position_symbol = str(position.get('symbol', '')).upper()
                     position_market_value = abs(_as_float(position.get('market_value')))
+                    if (
+                        position_symbol in APPROVED_LONG_LEVERAGED_ETPS
+                        or position_symbol in KNOWN_INVERSE_ETPS
+                    ):
+                        existing_leveraged_exposure += position_market_value
                     managed_position = _pa_get_managed_position_plan(
                         user['id'], mode_label, position_symbol,
                     ) or {}
@@ -29458,8 +31012,30 @@ def entry_plan_execute():
         if equity <= 0:
             blockers.append('Account equity is unavailable for platform risk-limit verification')
         else:
-            hard_risk_budget = equity * strategy_policy['riskPerTradePct'] / 100.0
-            hard_position_budget = equity * strategy_policy['maxSinglePositionPct'] / 100.0
+            product_risk_pct = float(strategy_policy['riskPerTradePct'])
+            product_position_pct = float(strategy_policy['maxSinglePositionPct'])
+            hard_position_budget = equity * product_position_pct / 100.0
+            if geared_product_profile.get('isLeveraged'):
+                product_risk_pct = min(
+                    product_risk_pct,
+                    float(strategy_policy.get('leveragedRiskPerTradePct') or 0),
+                )
+                product_position_pct = min(
+                    product_position_pct,
+                    float(strategy_policy.get('leveragedMaxSinglePositionPct') or 0),
+                )
+                leveraged_sleeve_remaining = max(
+                    0.0,
+                    equity * float(strategy_policy.get('leveragedSleeveMaxPct') or 0) / 100.0
+                    - existing_leveraged_exposure,
+                )
+                hard_position_budget = min(
+                    equity * product_position_pct / 100.0,
+                    leveraged_sleeve_remaining,
+                )
+                if hard_position_budget < 1.0:
+                    blockers.append('Leveraged ETP sleeve has no remaining executable capacity')
+            hard_risk_budget = equity * product_risk_pct / 100.0
             plan_snapshot['riskBudget'] = min(
                 max(0.0, _as_float(plan_snapshot.get('riskBudget'), hard_risk_budget)),
                 hard_risk_budget,
@@ -29469,6 +31045,9 @@ def entry_plan_execute():
                 max(0.0, hard_position_budget - existing_symbol_market_value),
             )
             plan_snapshot['maxTotalPositionDollars'] = hard_position_budget
+            plan_snapshot['gearedProductProfile'] = geared_product_profile
+            plan_snapshot['effectiveProductRiskPct'] = product_risk_pct
+            plan_snapshot['effectiveProductMaxPositionPct'] = product_position_pct
 
         if blockers:
             # Build a specific reason with code for frontend status display
@@ -29569,7 +31148,6 @@ def entry_plan_execute():
         take_profit = preflight['takeProfit']
         order_class = preflight['orderClass']
         protection_mode = preflight['protectionMode']
-        qty_value = str(int(shares)) if order_class == 'bracket' else ('%.4f' % shares).rstrip('0').rstrip('.')
         client_order_seed = (
             data.get('clientOrderId')
             or data.get('client_order_id')
@@ -29588,22 +31166,15 @@ def entry_plan_execute():
             client_order_seed,
         )
 
-        order_payload = {
-            'symbol': symbol,
-            'side': 'buy',
-            'qty': qty_value,
-            'type': 'limit',
-            'limit_price': str(limit_price),
-            'time_in_force': 'day',
-            'extended_hours': False,
-            'client_order_id': str(client_order_id)[:48],
-        }
-        if order_class == 'bracket':
-            order_payload.update({
-                'order_class': 'bracket',
-                'take_profit': {'limit_price': str(take_profit)},
-                'stop_loss': {'stop_price': str(stop_loss)},
-            })
+        order_payload = _build_entry_order_payload(
+            symbol,
+            shares,
+            limit_price,
+            stop_loss,
+            client_order_id,
+            order_class,
+        )
+        qty_value = order_payload['qty']
 
         print(
             f'[ENTRY EXECUTE] {symbol}: submitting {mode_label} limit order '
@@ -29648,12 +31219,73 @@ def entry_plan_execute():
                 'message': 'The existing Alpaca order was returned; no duplicate order was submitted.',
             })
 
+        def _ambiguous_submission_response(detail):
+            _record_order_lifecycle(
+                user['id'],
+                client_order_id,
+                'entry_submission_ambiguous',
+                'unknown',
+                payload={
+                    'mode': 'real' if mode_label == 'live' else 'paper',
+                    'side': 'buy',
+                    'symbol': symbol,
+                    'type': 'limit',
+                    'clientOrderId': client_order_id,
+                    'detail': str(detail or '')[:200],
+                },
+            )
+            return jsonify({
+                'success': False,
+                'action': 'ORDER_STATUS_UNKNOWN',
+                'symbol': symbol,
+                'code': 'broker_submission_ambiguous',
+                'reason': (
+                    'The broker submission outcome is not yet visible. '
+                    'No replacement order was sent.'
+                ),
+                'blockers': [
+                    'Order status is unknown; reconcile this same client order ID before retrying.',
+                ],
+                'clientOrderId': client_order_id,
+                'submissionState': 'unknown',
+                'safeToRetryWithSameId': True,
+                'doNotChangeClientOrderId': True,
+                'detail': str(detail or '')[:200],
+            }), 202
+
+        intent_event = _record_order_lifecycle(
+            user['id'],
+            client_order_id,
+            'entry_submission_intent',
+            'pending_submit',
+            payload={
+                'mode': 'real' if mode_label == 'live' else 'paper',
+                'side': 'buy',
+                'symbol': symbol,
+                'type': 'limit',
+                'clientOrderId': client_order_id,
+                'qty': qty_value,
+                'limitPrice': limit_price,
+                'orderClass': order_class,
+            },
+        )
+        if mode_label == 'live' and intent_event is None:
+            return jsonify({
+                'success': False,
+                'action': 'BLOCKED',
+                'symbol': symbol,
+                'code': 'durable_order_intent_unavailable',
+                'reason': 'Live order intent could not be durably recorded; submission was blocked.',
+                'blockers': ['Durable order intent storage is unavailable.'],
+                'clientOrderId': client_order_id,
+            }), 503
+
         existing_order, lookup_error = _alpaca_lookup_order_by_client_id(
             base_url, headers, client_order_id,
         )
         if existing_order:
             return _idempotent_existing_order_response(existing_order)
-        if lookup_error and is_auto_execute:
+        if lookup_error:
             return jsonify({
                 'success': False,
                 'action': 'BLOCKED',
@@ -29664,7 +31296,25 @@ def entry_plan_execute():
                 'detail': lookup_error,
             }), 503
 
-        order_resp = _req.post(f'{base_url}/v2/orders', headers=headers, json=order_payload, timeout=30)
+        try:
+            order_resp = _req.post(
+                f'{base_url}/v2/orders',
+                headers=headers,
+                json=order_payload,
+                timeout=30,
+            )
+        except Exception as submit_exc:
+            existing_order, reconcile_error = _alpaca_reconcile_ambiguous_submission(
+                base_url,
+                headers,
+                client_order_id,
+            )
+            if existing_order:
+                return _idempotent_existing_order_response(existing_order)
+            return _ambiguous_submission_response(
+                '%s:%s'
+                % (type(submit_exc).__name__, reconcile_error or 'not_visible')
+            )
 
         if order_resp.status_code in (200, 201):
             order_data = order_resp.json()
@@ -29700,10 +31350,10 @@ def entry_plan_execute():
                     order=order_data, status='entry_submitted',
                 )
 
-            if order_class == 'bracket':
+            if order_class == 'oto':
                 note = (
-                    f'Protected limit entry: target ${take_profit:.2f} and stop ${stop_loss:.2f} '
-                    'will activate after the entry fills.'
+                    f'Protected limit entry: stop ${stop_loss:.2f} activates after the fill. '
+                    f'Target ${take_profit:.2f} is managed as a staged reduction by Exit Scan.'
                 )
             else:
                 note = (
@@ -29743,17 +31393,14 @@ def entry_plan_execute():
             error_text = broker_error['brokerMessage']
             print(f'[ENTRY EXECUTE] {symbol}: Alpaca API error {order_resp.status_code}: {error_text}')
             if broker_error['code'] == 'duplicate_client_order_id':
-                existing_order, _lookup_error = _alpaca_lookup_order_by_client_id(
+                existing_order, _lookup_error = _alpaca_reconcile_ambiguous_submission(
                     base_url, headers, client_order_id,
                 )
                 if existing_order:
                     return _idempotent_existing_order_response(existing_order)
-                return jsonify({
-                    'success': False, 'action': 'BLOCKED', 'symbol': symbol,
-                    'code': 'duplicate_client_order_id',
-                    'reason': 'client_order_id must be unique — use Retry to submit with a new ID',
-                    'blockers': ['Duplicate client order ID. Retry with a new ID.']
-                })
+                return _ambiguous_submission_response(
+                    _lookup_error or 'duplicate_client_order_id_not_visible'
+                )
             if user and not suppress_discord:
                 send_discord_notification(user['id'], 'error', {
                     'event_id': f'entry-execute-api-{symbol}-{int(time.time())}',
@@ -31811,9 +33458,17 @@ def _fetch_1y_data(symbol, period='1y'):
     return data, f'Alpaca Backtest bars fallback ({period})'
 
 def _compute_metrics(trades, equity_curve, initial_capital):
-    """Compute standard backtest metrics from trades + equity curve."""
+    """Compute net, cost-inclusive metrics from closed trades and equity."""
     final_eq = equity_curve[-1]['equity'] if equity_curve else initial_capital
     total_return = ((final_eq - initial_capital) / initial_capital) * 100
+    final_gross_eq = (
+        equity_curve[-1].get('grossEquity', final_eq)
+        if equity_curve else initial_capital
+    )
+    gross_total_return = (
+        ((final_gross_eq - initial_capital) / initial_capital) * 100
+        if initial_capital else 0.0
+    )
 
     # Sharpe ratio approximation (daily returns)
     daily_returns = []
@@ -31841,34 +33496,49 @@ def _compute_metrics(trades, equity_curve, initial_capital):
         dd = (peak - eq) / peak * 100
         max_dd = max(max_dd, dd)
 
-    # Trade-based metrics
-    # Trade-based metrics (compute pnl from entry/exit price if missing)
+    # Trade-based metrics.  Only genuinely closed trades enter the sample, and
+    # breakeven trades still count toward tradeCount and win-rate denominator.
     for t in trades:
         if t.get('pnl') is None and t.get('entryPrice') is not None and t.get('exitPrice') is not None and t.get('quantity') is not None:
             t['pnl'] = round((t['exitPrice'] - t['entryPrice']) * t['quantity'], 2)
 
-    wins = [t for t in trades if t.get('pnl', 0) > 0.01]
-    losses = [t for t in trades if t.get('pnl', 0) < -0.01]
-    breakeven = [t for t in trades if abs(t.get('pnl', 0)) <= 0.01]
-    total_closed = len(wins) + len(losses)
+    closed = [
+        trade for trade in trades
+        if trade.get('exitDate') is not None and trade.get('pnl') is not None
+    ]
+    wins = [t for t in closed if t.get('pnl', 0) > 0.01]
+    losses = [t for t in closed if t.get('pnl', 0) < -0.01]
+    breakeven = [t for t in closed if abs(t.get('pnl', 0)) <= 0.01]
+    total_closed = len(closed)
     win_rate = (len(wins) / total_closed * 100) if total_closed > 0 else None
     gross_profit = sum(t['pnl'] for t in wins) if wins else 0
     gross_loss = abs(sum(t['pnl'] for t in losses)) if losses else 0
     profit_factor = gross_profit / gross_loss if gross_loss > 0 else (None if gross_profit > 0 else None)
-
-    avg_trade_pnl = round((gross_profit - gross_loss) / total_closed, 2) if total_closed > 0 else None
+    net_trade_pnl = sum(float(t.get('pnl') or 0) for t in closed)
+    transaction_cost = sum(float(t.get('transactionCost') or 0) for t in closed)
+    costs_included = any(
+        'transactionCost' in trade for trade in closed
+    ) or any('grossEquity' in point for point in equity_curve)
+    avg_trade_pnl = round(net_trade_pnl / total_closed, 2) if total_closed > 0 else None
     return {
         'totalReturn': round(total_return, 2),
+        'netTotalReturn': round(total_return, 2),
+        'grossTotalReturn': round(gross_total_return, 2),
         'sharpeRatio': round(sharpe_ratio, 3),
         'maxDrawdown': round(max_dd, 2),
         'winRate': round(win_rate, 1) if win_rate is not None else None,
         'profitFactor': round(profit_factor, 2) if profit_factor is not None else None,
         'tradeCount': total_closed,
+        'breakevenTradeCount': len(breakeven),
         'avgReturnPerTrade': avg_trade_pnl,
         'grossProfit': round(gross_profit, 2),
         'grossLoss': round(gross_loss, 2),
+        'transactionCostDollars': round(transaction_cost, 2),
+        'transactionCostPct': round(
+            transaction_cost / initial_capital * 100.0, 4,
+        ) if initial_capital else 0.0,
+        'costsIncluded': costs_included,
     }
-    print(f'[DV_METRICS] trades={len(trades)} wins={len(wins)} losses={len(losses)} breakeven={len(breakeven)} total_closed={total_closed} winRate={win_rate} grossProfit={gross_profit:.2f} grossLoss={gross_loss:.2f} pf={profit_factor} totalReturn={total_return:.2f}')
 
 def _run_backtest_core(symbol, strategy_name, params, data, initial_capital=100000):
     """Run a single backtest for given symbol + strategy + params on pre-fetched data."""
@@ -31878,13 +33548,19 @@ def _run_backtest_core(symbol, strategy_name, params, data, initial_capital=1000
 
     ic = _dv_num(initial_capital, 100000) or 100000
     try:
-        result = fn(data, params, ic, symbol)
+        result = fn(data, dict(params or {}), ic, symbol)
         if len(result) == 3:
             trades, equity, _ = result
         else:
             trades, equity = result
         metrics = _compute_metrics(trades, equity, ic)
-        return {'metrics': metrics, 'tradeCount': len(trades), 'finalEquity': equity[-1]['equity'] if equity else ic}, None
+        return {
+            'metrics': metrics,
+            'tradeCount': metrics.get('tradeCount', len(trades)),
+            'finalEquity': equity[-1]['equity'] if equity else ic,
+            'trades': trades,
+            'equityCurve': equity,
+        }, None
     except Exception as e:
         return None, str(e)
 
@@ -32122,7 +33798,12 @@ def _build_institutional_dv_packet(cand, metrics, stability, recent_vs_long, ent
     Does the setup have enough historical edge, sample quality, execution capacity,
     and risk control to justify moving into Entry Plan?
     """
-    tr = _dv_num(metrics.get('totalReturn'), 0)
+    costs_included = bool(metrics.get('costsIncluded'))
+    observed_net_return = _dv_num(metrics.get('totalReturn'), 0)
+    tr = (
+        _dv_num(metrics.get('grossTotalReturn'), observed_net_return)
+        if costs_included else observed_net_return
+    )
     sharpe = _dv_num(metrics.get('sharpeRatio'), 0)
     max_dd = abs(_dv_num(metrics.get('maxDrawdown'), 0))
     win_rate = _dv_num(metrics.get('winRate'), None)
@@ -32175,8 +33856,12 @@ def _build_institutional_dv_packet(cand, metrics, stability, recent_vs_long, ent
     execution_parts = [p for p in execution_parts if p is not None]
     execution_score = round(sum(execution_parts) / len(execution_parts), 1) if execution_parts else 50
 
-    estimated_cost_drag = (tc * cost_bps / 100.0) if cost_bps is not None and tc > 0 else 0.0
-    net_return = tr - estimated_cost_drag
+    if costs_included:
+        net_return = observed_net_return
+        estimated_cost_drag = max(0.0, tr - net_return)
+    else:
+        estimated_cost_drag = (tc * cost_bps / 100.0) if cost_bps is not None and tc > 0 else 0.0
+        net_return = tr - estimated_cost_drag
     stressed_net_return = tr - (estimated_cost_drag * 2.0)
     annualized_gross_return = _dv_annualize_return(tr, data_bar_count)
     annualized_net_return = _dv_annualize_return(net_return, data_bar_count)
@@ -33464,7 +35149,13 @@ def _dv_parameter_rank_score(metrics, round_trip_cost_bps=0):
     drawdown = abs(_dv_num(metrics.get('maxDrawdown'), 0) or 0)
     trades = max(0, int(_dv_num(metrics.get('tradeCount'), 0) or 0))
     cost_bps = max(0, _dv_num(round_trip_cost_bps, 0) or 0)
-    net_return = total_return - trades * cost_bps / 100.0
+    # New causal backtests already debit both sides of every fill.  Preserve the
+    # legacy estimate only for old/stored metric packets that predate that engine.
+    net_return = (
+        total_return
+        if metrics.get('costsIncluded')
+        else total_return - trades * cost_bps / 100.0
+    )
     score = net_return + 4.0 * sharpe - 0.25 * drawdown + min(trades, 20) * 0.15
     return round(score, 4), round(net_return, 4)
 
@@ -33527,7 +35218,13 @@ def _dv_walk_forward_validation(symbol, strategy, param_sets, fallback_params, d
 
         ranked = []
         for params in candidate_params:
-            train_bt, _train_error = _run_backtest_core(symbol, strategy, params, train_data, initial_capital)
+            train_bt, _train_error = _run_backtest_core(
+                symbol,
+                strategy,
+                _bt_params_with_round_trip_cost(params, round_trip_cost_bps),
+                train_data,
+                initial_capital,
+            )
             if not train_bt:
                 continue
             rank_score, train_net_return = _dv_parameter_rank_score(
@@ -33544,7 +35241,13 @@ def _dv_walk_forward_validation(symbol, strategy, param_sets, fallback_params, d
 
         best_train = max(ranked, key=lambda item: item['rankScore'])
         test_bt, _test_error = _run_backtest_core(
-            symbol, strategy, best_train['params'], test_data, initial_capital
+            symbol,
+            strategy,
+            _bt_params_with_round_trip_cost(
+                best_train['params'], round_trip_cost_bps,
+            ),
+            test_data,
+            initial_capital,
         )
         if not test_bt:
             continue
@@ -33617,24 +35320,36 @@ def _dv_validate_strategy_for_candidate(symbol, strategy, cand, data_daily, data
     long_data = data_daily
     short_data = data_daily[split_idx:]
     params = _dv_params_for_strategy(cand, strategy)
+    round_trip_cost_bps = _dv_num(_dv_best_from_candidate(
+        cand, ['estimatedRoundTripCostBps', 'roundTripCostBps', 'costBps']
+    ), 0) or 0
 
-    bt_result, bt_err = _run_backtest_core(symbol, strategy, params, data_daily, initial_capital)
+    bt_result, bt_err = _run_backtest_core(
+        symbol,
+        strategy,
+        _bt_params_with_round_trip_cost(params, round_trip_cost_bps),
+        data_daily,
+        initial_capital,
+    )
     if bt_err or not bt_result:
         return None, bt_err or 'No results'
 
     metrics = bt_result['metrics']
     param_sets = STRATEGY_PARAM_GRIDS.get(strategy, {}).get('param_sets', [])
     opt_results = []
-    round_trip_cost_bps = _dv_num(_dv_best_from_candidate(
-        cand, ['estimatedRoundTripCostBps', 'roundTripCostBps', 'costBps']
-    ), 0) or 0
     seen_params = set()
     for ps in param_sets:
         key = str(sorted(ps.items()))
         if key in seen_params:
             continue
         seen_params.add(key)
-        r, _e = _run_backtest_core(symbol, strategy, ps, data_daily, initial_capital)
+        r, _e = _run_backtest_core(
+            symbol,
+            strategy,
+            _bt_params_with_round_trip_cost(ps, round_trip_cost_bps),
+            data_daily,
+            initial_capital,
+        )
         if r:
             rank_score, net_return = _dv_parameter_rank_score(r['metrics'], round_trip_cost_bps)
             opt_results.append({
@@ -33648,6 +35363,7 @@ def _dv_validate_strategy_for_candidate(symbol, strategy, cand, data_daily, data
                 'winRate': r['metrics']['winRate'],
                 'profitFactor': r['metrics']['profitFactor'],
                 'tradeCount': r['metrics']['tradeCount'],
+                'metrics': dict(r['metrics']),
             })
 
     valid_count = len(opt_results)
@@ -33656,14 +35372,14 @@ def _dv_validate_strategy_for_candidate(symbol, strategy, cand, data_daily, data
         # The selected parameter set must own every downstream full-sample metric.
         # Walk-forward folds still reselect independently using train-only data.
         params = best_opt['params']
-        metrics = {
+        metrics = dict(best_opt.get('metrics') or {
             'totalReturn': best_opt.get('totalReturn', 0),
             'sharpeRatio': best_opt.get('sharpeRatio', 0),
             'maxDrawdown': best_opt.get('maxDrawdown', 0),
             'winRate': best_opt.get('winRate'),
             'profitFactor': best_opt.get('profitFactor'),
             'tradeCount': best_opt.get('tradeCount', 0),
-        }
+        })
     stability_score, stability_reason_str = _compute_stability_score(opt_results, valid_count, expected_count=len(param_sets))
     returns = sorted([r.get('netReturn', r.get('totalReturn', 0)) for r in opt_results])
     median_return = round(returns[valid_count // 2], 2) if valid_count > 0 else 0
@@ -33681,8 +35397,15 @@ def _dv_validate_strategy_for_candidate(symbol, strategy, cand, data_daily, data
         'stabilityReason': stability_reason_str,
     }
 
-    long_bt, _ = _run_backtest_core(symbol, strategy, params, long_data, initial_capital)
-    short_bt, _ = _run_backtest_core(symbol, strategy, params, short_data, initial_capital)
+    costed_selected_params = _bt_params_with_round_trip_cost(
+        params, round_trip_cost_bps,
+    )
+    long_bt, _ = _run_backtest_core(
+        symbol, strategy, costed_selected_params, long_data, initial_capital,
+    )
+    short_bt, _ = _run_backtest_core(
+        symbol, strategy, costed_selected_params, short_data, initial_capital,
+    )
     long_metrics = long_bt['metrics'] if long_bt else None
     short_metrics = short_bt['metrics'] if short_bt else None
     recent_vs_long = _compute_recent_vs_long_term(metrics, long_metrics, short_metrics) if long_metrics and short_metrics else 'Consistent'
@@ -33894,6 +35617,81 @@ PLATFORM_HARD_LIMITS = {
 }
 
 
+# The execution service treats geared ETPs as a separate product class.  The
+# approved list is deliberately narrower than a generic ticker/name heuristic:
+# an unknown 2x/3x product is fail-closed until it is explicitly reviewed.
+APPROVED_LONG_LEVERAGED_ETPS = frozenset({
+    'AAPU', 'AMDL', 'AMZU', 'CONL', 'FBL', 'GOOX', 'MSTU', 'MSTX',
+    'MSFU', 'NFXL', 'NVDL', 'NVDU', 'QLD', 'SPXL', 'SSO', 'TNA',
+    'TQQQ', 'TSLL', 'TSLR', 'UPRO', 'UWM',
+})
+KNOWN_INVERSE_ETPS = frozenset({
+    'DOG', 'DRV', 'DXD', 'FAZ', 'LABD', 'PSQ', 'QID', 'RWM', 'SDOW',
+    'SDS', 'SH', 'SOXS', 'SPXU', 'SPXS', 'SQQQ', 'SRTY', 'TECS',
+    'TWM', 'TZA',
+})
+
+
+def _classify_geared_equity_product(symbol, asset_name=''):
+    """Classify leveraged/inverse ETP exposure from broker-owned identity data.
+
+    Symbol catalogs catch products even when callers omit product flags.  Broker
+    names catch newly listed or renamed geared products; those remain unapproved
+    until added to the long-only catalog above.
+    """
+    import re
+
+    normalized_symbol = str(symbol or '').strip().upper()
+    normalized_name = ' '.join(str(asset_name or '').strip().lower().split())
+    inverse_name = bool(re.search(
+        r'\b(?:inverse|ultra\s*short|ultrapro\s+short|daily\s+short|'
+        r'bear(?:\s+[123]x)?|short(?:\s+(?:daily\s+)?[123]x)?|-[123]x)\b',
+        normalized_name,
+    ))
+    leveraged_name = bool(re.search(
+        r'\b(?:leveraged|ultra(?:pro)?|daily\s+(?:bull\s+)?[23]x|'
+        r'[23]x\s+(?:bull|shares|long)|(?:double|triple)\s+(?:long|bull))\b',
+        normalized_name,
+    ))
+    is_inverse = normalized_symbol in KNOWN_INVERSE_ETPS or inverse_name
+    is_leveraged = bool(
+        is_inverse
+        or normalized_symbol in APPROVED_LONG_LEVERAGED_ETPS
+        or leveraged_name
+    )
+    approved_long = bool(
+        is_leveraged
+        and not is_inverse
+        and normalized_symbol in APPROVED_LONG_LEVERAGED_ETPS
+    )
+    return {
+        'symbol': normalized_symbol,
+        'assetName': str(asset_name or '').strip(),
+        'isGeared': is_leveraged,
+        'isLeveraged': is_leveraged and not is_inverse,
+        'isInverse': is_inverse,
+        'approvedLongLeveraged': approved_long,
+        'classificationSource': 'broker_name_and_server_catalog',
+    }
+
+
+def _geared_product_policy_blockers(product_profile, strategy_policy, entry_intent='NEW_POSITION'):
+    """Return fail-closed product blockers shared by research and execution."""
+    profile = product_profile or {}
+    policy = strategy_policy or {}
+    blockers = []
+    if profile.get('isInverse'):
+        blockers.append('Inverse ETPs are prohibited by the long-only strategy mandate')
+    elif profile.get('isLeveraged'):
+        if policy.get('leverageEnabled') is not True:
+            blockers.append('Leveraged ETP exposure is not enabled for the active High-risk Short-horizon mandate')
+        if profile.get('approvedLongLeveraged') is not True:
+            blockers.append('Leveraged ETP is not in the server-approved long-only product catalog')
+        if str(entry_intent or '').upper() == 'SCALE_IN':
+            blockers.append('Scale-in is disabled for leveraged ETP positions')
+    return blockers
+
+
 def _strategy_policy(risk_profile='medium', time_horizon='mid', pipeline_mode='hybrid',
                      leverage_enabled=False):
     """Return the single strategy mandate used by research, entry, exit and execution.
@@ -34062,7 +35860,7 @@ def _strategy_policy(risk_profile='medium', time_horizon='mid', pipeline_mode='h
     }
 
     return {
-        'version': 'strategy_mandate_v1',
+        'version': 'strategy_mandate_v2',
         'riskProfile': profile,
         'timeHorizon': horizon,
         'pipelineMode': mode,
@@ -34087,11 +35885,23 @@ def _strategy_policy(risk_profile='medium', time_horizon='mid', pipeline_mode='h
         'scaleInMinProfitPct': scale_in_min_profit_pct,
         'maxScaleIns': risk['maxScaleIns'],
         'scaleInStepPct': risk['scaleInStepPct'],
+        # Conservative mandates realize more at the first structural target;
+        # aggressive mandates retain more for the second target/trailing stop.
+        # The default medium mandate therefore reduces exactly half.
+        'target1ReducePct': {
+            'low': 60.0,
+            'medium': 50.0,
+            'high': 40.0,
+        }[profile],
         'factorWeights': weights,
         'leverageRequested': leverage_requested,
         'leverageEnabled': leverage_active,
         'leverageUnavailableReason': leverage_reason,
         'leveragedSleeveMaxPct': 15.0 if leverage_active else 0.0,
+        'leveragedMaxSinglePositionPct': 5.0 if leverage_active else 0.0,
+        'leveragedRiskPerTradePct': 0.50 if leverage_active else 0.0,
+        'leveragedTimeStopDays': 1 if leverage_active else 0,
+        'leveragedScaleInAllowed': False,
         'leveragedProductPolicy': 'long-only leveraged equity ETPs; no inverse products',
         'optionsAllowed': False,
         'allowedAssetClasses': ['us_equity'],
@@ -34672,7 +36482,11 @@ def deeper_validation():
 
         print(f'[DV] Request: {len(raw_candidates)} candidates, period={period}, capital={initial_capital}, risk={_dv_risk_profile}, horizon={_dv_time_horizon}')
 
+        headless_uid = getattr(_headless_auth_context, 'user_id', None)
         for idx, cand in enumerate(raw_candidates):
+            if headless_uid and _pa_check_stop_requested(headless_uid):
+                raise _BackendScanCancelled('Deeper Validation stopped by user')
+            _backend_enforce_runtime_budget()
             symbol = cand.get('symbol', '').upper().strip()
             if not symbol:
                 errors.append({'symbol': '(empty)', 'step': 'input', 'message': 'Empty symbol'})
@@ -35107,6 +36921,8 @@ def deeper_validation():
             }
         })
 
+    except _BackendScanCancelled:
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -35613,6 +37429,12 @@ def ai_entry_plan():
         _total_allocated = 0.0
         _open_buy_count = 0
         _leveraged_allocated = 0.0
+        _existing_leveraged_exposure = sum(
+            abs(float((position or {}).get('market_value') or 0))
+            for held_symbol, position in position_rows_by_symbol.items()
+            if held_symbol in APPROVED_LONG_LEVERAGED_ETPS
+            or held_symbol in KNOWN_INVERSE_ETPS
+        )
 
         print(f'\n=== ENTRY PLAN START: {len(candidates)} candidates ===')
         print(f'    Account: portfolio_value=${account_size:.0f}, bp=${live_buying_power:.0f}, safe_bp=${_safe_bp:.0f}')
@@ -35683,6 +37505,9 @@ def ai_entry_plan():
         candidates = sorted(candidates, key=_candidate_sort_key)
 
         for candidate in candidates:
+            if entry_user_id and _pa_check_stop_requested(entry_user_id):
+                raise _BackendScanCancelled('Entry Plan stopped by user')
+            _backend_enforce_runtime_budget()
             symbol = candidate.get('symbol', '').upper().strip()
             if not symbol:
                 continue
@@ -36242,6 +38067,7 @@ def ai_entry_plan():
             is_bollinger = any(s in strategy_lower for s in ['bollinger', 'range', 'bb'])
             symbol_fractionable = bool(candidate.get('fractionable', True))
             symbol_tradable = True
+            asset_data = {}
             if acc_key and acc_secret:
                 try:
                     asset_headers = {'APCA-API-KEY-ID': acc_key, 'APCA-API-SECRET-KEY': acc_secret}
@@ -36252,6 +38078,23 @@ def ai_entry_plan():
                         symbol_tradable = bool(asset_data.get('tradable', True))
                 except Exception as asset_e:
                     print(f'    [{symbol}] Asset lookup warning: {asset_e}')
+            _product_profile = _classify_geared_equity_product(
+                symbol,
+                asset_data.get('name')
+                or candidate.get('companyName')
+                or candidate.get('name'),
+            )
+            # A caller-provided geared flag may only make the gate stricter.  It
+            # can never whitelist a symbol absent from the server catalog.
+            if candidate.get('isInverse') is True:
+                _product_profile['isGeared'] = True
+                _product_profile['isInverse'] = True
+                _product_profile['isLeveraged'] = False
+                _product_profile['approvedLongLeveraged'] = False
+            elif candidate.get('isLeveraged') is True and not _product_profile.get('isGeared'):
+                _product_profile['isGeared'] = True
+                _product_profile['isLeveraged'] = True
+                _product_profile['approvedLongLeveraged'] = symbol in APPROVED_LONG_LEVERAGED_ETPS
 
             geometry_is_validated = False
             geometry_source = 'local_market_structure'
@@ -36537,6 +38380,41 @@ def ai_entry_plan():
             risk_gate_passed = True
             risk_gate_status = 'PASS'  # PASS | REVIEW | BLOCK
             final_action = 'BUY_ALLOWED'
+            _product_blockers = _geared_product_policy_blockers(
+                _product_profile, strategy_policy, _entry_intent,
+            )
+            if _product_blockers:
+                risk_gate_blockers.extend(_product_blockers)
+                risk_gate_passed = False
+
+            _product_max_position_pct = adjusted_max_pos_pct
+            _product_risk_pct = adjusted_risk_pct
+            _product_max_position_dollars = max_pos_dollars
+            _product_risk_dollars = risk_dollars
+            if _product_profile.get('isLeveraged'):
+                _product_max_position_pct = min(
+                    _product_max_position_pct,
+                    float(strategy_policy.get('leveragedMaxSinglePositionPct') or 0),
+                )
+                _product_risk_pct = min(
+                    _product_risk_pct,
+                    float(strategy_policy.get('leveragedRiskPerTradePct') or 0),
+                )
+                _leveraged_sleeve_remaining = max(
+                    0.0,
+                    account_size * float(strategy_policy.get('leveragedSleeveMaxPct') or 0) / 100.0
+                    - _existing_leveraged_exposure
+                    - _leveraged_allocated,
+                )
+                _product_max_position_dollars = min(
+                    _product_max_position_dollars,
+                    account_size * _product_max_position_pct / 100.0,
+                    _leveraged_sleeve_remaining,
+                )
+                _product_risk_dollars = min(
+                    _product_risk_dollars,
+                    account_size * _product_risk_pct / 100.0,
+                )
 
             # 9a. Position size ≤ max_position_pct of capital (portfolio value)
             pos_shares = 0
@@ -36549,27 +38427,27 @@ def ai_entry_plan():
             raw_position_dollars = 0
             existing_position_value = float(_scale_in.get('existingMarketValue') or 0)
             existing_position_qty = float(_scale_in.get('existingQty') or 0)
-            remaining_position_capacity = max(0.0, max_pos_dollars - existing_position_value)
-            scale_in_step_dollars = max_pos_dollars * (
+            remaining_position_capacity = max(0.0, _product_max_position_dollars - existing_position_value)
+            scale_in_step_dollars = _product_max_position_dollars * (
                 float(strategy_policy.get('scaleInStepPct', 100.0)) / 100.0
             )
             max_allocation_dollars = (
                 min(remaining_position_capacity, scale_in_step_dollars)
-                if _entry_intent == 'SCALE_IN' else max_pos_dollars
+                if _entry_intent == 'SCALE_IN' else _product_max_position_dollars
             )
-            max_allocation_pct = adjusted_max_pos_pct
+            max_allocation_pct = _product_max_position_pct
             risk_dollars_actual = 0
             existing_avg_entry = _pa_safe_float(_existing_position_row.get('avg_entry_price'), current_price) or current_price
             existing_position_risk = (
                 existing_position_qty * max(0.0, existing_avg_entry - stop_loss)
                 if _entry_intent == 'SCALE_IN' else 0.0
             )
-            available_risk_dollars = max(0.0, risk_dollars - existing_position_risk)
+            available_risk_dollars = max(0.0, _product_risk_dollars - existing_position_risk)
 
             if _entry_intent == 'SCALE_IN' and max_allocation_dollars < 1.0:
                 risk_gate_blockers.append(
                     'Existing position already uses the %.1f%% per-symbol allocation limit'
-                    % adjusted_max_pos_pct
+                    % _product_max_position_pct
                 )
                 risk_gate_passed = False
             if _entry_intent == 'SCALE_IN' and available_risk_dollars <= 0:
@@ -36599,8 +38477,8 @@ def ai_entry_plan():
                     position_capped = True
                     position_cap_status = (
                         f'capped to {pos_pct:.1f}% max allocation '
-                        f'(raw {raw_position_dollars / account_size * 100:.1f}% > {adjusted_max_pos_pct}%)'
-                    ) if account_size > 0 else f'capped to max allocation ${max_pos_dollars:.0f}'
+                        f'(raw {raw_position_dollars / account_size * 100:.1f}% > {_product_max_position_pct}%)'
+                    ) if account_size > 0 else f'capped to max allocation ${_product_max_position_dollars:.0f}'
                     _min_shares = 0.01 if symbol_fractionable else 1.0
                     if pos_shares < _min_shares:
                         risk_gate_blockers.append(
@@ -36618,8 +38496,8 @@ def ai_entry_plan():
 
                 # 9b. Risk must stay within the selected mandate.
                 risk_as_pct_of_account = round(risk_dollars_actual / account_size * 100, 2) if account_size > 0 else 0
-                if risk_as_pct_of_account > adjusted_risk_pct and account_size > 0:
-                    _risk_msg = f'Risk ${risk_dollars_actual:.0f} is {risk_as_pct_of_account:.2f}% of portfolio value, exceeds {adjusted_risk_pct:.2f}% mandate limit'
+                if risk_as_pct_of_account > _product_risk_pct and account_size > 0:
+                    _risk_msg = f'Risk ${risk_dollars_actual:.0f} is {risk_as_pct_of_account:.2f}% of portfolio value, exceeds {_product_risk_pct:.2f}% mandate limit'
                     if is_manual:
                         risk_gate_warnings.append(_risk_msg + ' (advisory only)')
                     else:
@@ -36837,11 +38715,11 @@ def ai_entry_plan():
                 )
                 risk_gate_passed = False
 
-            # Auto execution only advances when Alpaca can attach both exit legs.
+            # Auto execution only advances when Alpaca can attach an OTO stop.
             # Fractional recommendation sizing remains visible in manual review.
             if not is_manual and 0 < pos_shares < 1:
                 risk_gate_blockers.append(
-                    'Automatic Entry Plan requires at least one whole share for attached bracket protection.'
+                    'Automatic Entry Plan requires at least one whole share for attached OTO stop protection.'
                 )
                 risk_gate_passed = False
             if not is_manual and entry_trigger_met and not auto_limit_marketable:
@@ -36959,6 +38837,8 @@ def ai_entry_plan():
             _bp_after = _bp_before
             if pos_dollars > 0 and final_action == 'BUY_READY':
                 _total_allocated += pos_dollars
+                if _product_profile.get('isLeveraged'):
+                    _leveraged_allocated += pos_dollars
                 _open_buy_count += 1
                 _bp_after = max(0.0, _safe_bp - _total_allocated)
 
@@ -36970,7 +38850,7 @@ def ai_entry_plan():
 
             # ── 11. Compute derived fields ──
             # Risk Used % = actual risk / risk budget * 100
-            total_risk_budget_dollars = round(account_size * (adjusted_risk_pct / 100.0), 2)
+            total_risk_budget_dollars = round(account_size * (_product_risk_pct / 100.0), 2)
             risk_budget_dollars = round(available_risk_dollars, 2)
             risk_used_pct = round(risk_dollars_actual / risk_budget_dollars * 100, 2) if risk_budget_dollars > 0 else 0
 
@@ -37122,7 +39002,7 @@ def ai_entry_plan():
             # Build order preview with B7 logic
             if pos_shares > 0:
                 _preview_protection_mode = (
-                    'alpaca_bracket'
+                    'alpaca_oto_stop'
                     if pos_shares >= 1
                     else ('manual_exit_required' if is_manual else 'unavailable_for_auto_fractional')
                 )
@@ -37204,7 +39084,7 @@ def ai_entry_plan():
                 'cappedByAllocation': position_capped,
                 'maxAllocationPct': max_allocation_pct,
                 'maxAllocationDollars': round(max_allocation_dollars, 2),
-                'maxTotalPositionDollars': round(max_pos_dollars, 2),
+                'maxTotalPositionDollars': round(_product_max_position_dollars, 2),
                 'remainingPositionCapacityDollars': round(remaining_position_capacity, 2),
                 'existingPositionQty': round(existing_position_qty, 4),
                 'existingPositionValue': round(existing_position_value, 2),
@@ -37245,7 +39125,7 @@ def ai_entry_plan():
                 'totalRiskBudget': total_risk_budget_dollars,
                 'existingPositionRiskDollars': round(existing_position_risk, 2),
                 'riskUsedPct': risk_used_pct,
-                'riskPct': adjusted_risk_pct,
+                'riskPct': _product_risk_pct,
                 'maxLossPct': max_loss_pct,
                 'holdingPeriod': _holding_period_label,
                 'timeHorizon': time_horizon,
@@ -37269,8 +39149,18 @@ def ai_entry_plan():
                 'geometrySource': geometry_source,
                 'targetSource': geometry_source,
                 'capacityCapped': _capacity_capped,
-                'isLeveraged': False,
-                'leverageReason': None,
+                'isLeveraged': bool(_product_profile.get('isLeveraged')),
+                'isInverse': bool(_product_profile.get('isInverse')),
+                'gearedProductProfile': _product_profile,
+                'leverageReason': (
+                    'Server-classified approved long leveraged ETP with a 5% single-product, '
+                    '15% sleeve, and 0.50% risk cap.'
+                    if _product_profile.get('isLeveraged') else None
+                ),
+                'productTimeStopDays': (
+                    strategy_policy.get('leveragedTimeStopDays')
+                    if _product_profile.get('isLeveraged') else strategy_policy.get('timeStopDays')
+                ),
                 'aiDecision': ai_decision,
                 'aiDecisionUsed': ai_called,
                 'aiDecisionReason': decision_reason,
@@ -37446,7 +39336,7 @@ def ai_entry_plan():
                     'canExecute': ed.get('canExecute') and state == 'EXECUTE_READY',
                     'limitOnly': True,
                     'extendedHours': False,
-                    'protectionMode': preview.get('protectionMode') or 'whole_share_bracket_required_for_auto',
+                    'protectionMode': preview.get('protectionMode') or 'whole_share_oto_stop_required_for_auto',
                     'reason': ed.get('orderTypeReason') or ed.get('reason'),
                 },
                 'controls': {
@@ -38045,6 +39935,8 @@ def ai_entry_plan():
             'strategyPolicy': strategy_policy,
         })
 
+    except _BackendScanCancelled:
+        raise
     except Exception as e:
         print(f'[ENTRY PLAN] Error: {e}')
         user = get_supabase_user()
@@ -38571,10 +40463,12 @@ _PA_SCHEDULER_LAST_HEARTBEAT = 0
 _PA_SCHEDULER_LAST_HEARTBEAT_LOCK = threading.Lock()
 _PA_SCHEDULER_LAST_COMPLETED_AT = 0
 _PA_SCHEDULER_LAST_ERROR = ''
+_PA_SCHEDULER_CONSECUTIVE_ERRORS = 0
 _PA_SCHEDULER_LOOP_COUNT = 0
 _PA_PER_USER_LAST_CHECK = {}
 _PA_PER_USER_LAST_CHECK_LOCK = threading.Lock()
 _PA_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pipeline_auto_configs.json')
+_PA_CONFIG_MUTATION_LOCK = threading.RLock()
 _PA_FILE_HISTORY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pipeline_auto_history.json')
 _PA_RUNTIME_STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pipeline_runtime_state.json')
 _PA_MANAGED_POSITIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pipeline_managed_positions.json')
@@ -38608,6 +40502,18 @@ _PA_HEAVY_PIPELINE_SOURCES = {
 _PA_ACTIVE_RUNS = {}
 _PA_ACTIVE_RUNS_LOCK = threading.Lock()
 _PA_ACTIVE_RUNS_MAX_ENTRIES = 256
+_PA_RUNNING_USER_TOKENS = {}
+_PA_RUNNING_USER_SOURCES = {}
+_PA_STOP_REQUEST_CACHE = {}
+_PA_STOP_REQUEST_CACHE_LOCK = threading.Lock()
+_PA_STOP_REQUEST_CACHE_TTL_SECONDS = 1.5
+_PA_WATCHDOG_LOCK = threading.Lock()
+_PA_WATCHDOG_STALLED_RUNS = {}
+_PA_WATCHDOG_STALE_SECONDS = 900
+_PA_WATCHDOG_CANCEL_GRACE_SECONDS = 120
+_PA_POSITION_GUARD_STALE_SECONDS = 90
+_PA_USER_RUNTIME_BACKOFF = {}
+_PA_USER_RUNTIME_BACKOFF_LOCK = threading.Lock()
 _PA_RUNTIME_STATE_WRITE_LOCK = threading.Lock()
 # Discord dedup: {(uid, run_id, event_type): sent_at}. Keep recent entries across
 # runs so overlapping pipeline threads cannot erase each other's guards.
@@ -38620,6 +40526,7 @@ _PA_PENDING_RUNS_LOCK = threading.Lock()
 _PA_LAST_PIPELINE_RESULTS = {}
 _PA_LAST_PIPELINE_RESULT_TIMESTAMPS = {}
 _PA_LAST_PIPELINE_RESULTS_LOCK = threading.Lock()
+_PA_PIPELINE_DEBUG_FILE_LOCK = threading.Lock()
 _PA_LAST_PIPELINE_RESULTS_TTL_SECONDS = 6 * 60 * 60
 _PA_LAST_PIPELINE_RESULTS_MAX_ENTRIES = 24
 _PA_LAST_PIPELINE_RESULTS_MAX_RUNS_PER_USER = 2
@@ -38713,6 +40620,7 @@ def _pa_touch_scheduler_heartbeat(completed=False, error=''):
             'heartbeat': _PA_SCHEDULER_LAST_HEARTBEAT,
             'completedAt': _PA_SCHEDULER_LAST_COMPLETED_AT,
             'lastError': _PA_SCHEDULER_LAST_ERROR,
+            'consecutiveErrors': _PA_SCHEDULER_CONSECUTIVE_ERRORS,
             'loopCount': _PA_SCHEDULER_LOOP_COUNT,
             'pid': os.getpid(),
         }
@@ -38750,6 +40658,7 @@ def _pa_scheduler_health_snapshot(now_ts=None):
         heartbeat = _PA_SCHEDULER_LAST_HEARTBEAT
         completed_at = _PA_SCHEDULER_LAST_COMPLETED_AT
         last_error = _PA_SCHEDULER_LAST_ERROR
+        consecutive_errors = _PA_SCHEDULER_CONSECUTIVE_ERRORS
     thread_alive = bool(_PA_SCHEDULER_THREAD and _PA_SCHEDULER_THREAD.is_alive())
     source = 'process_local'
     shared_heartbeat = _pa_read_shared_scheduler_heartbeat()
@@ -38766,19 +40675,66 @@ def _pa_scheduler_health_snapshot(now_ts=None):
             completed_at = 0
         last_error = str(shared_heartbeat.get('lastError') or '')[:160]
         try:
+            consecutive_errors = int(shared_heartbeat.get('consecutiveErrors') or 0)
+        except (TypeError, ValueError):
+            consecutive_errors = 0
+        try:
             loop_count = int(shared_heartbeat.get('loopCount') or 0)
         except (TypeError, ValueError):
             loop_count = 0
     else:
         loop_count = _PA_SCHEDULER_LOOP_COUNT
+    with _PA_WATCHDOG_LOCK:
+        stalled_records = [
+            dict(record or {})
+            for record in _PA_WATCHDOG_STALLED_RUNS.values()
+        ]
+    stalled_count = len(stalled_records)
+    with _PA_USER_RUNTIME_BACKOFF_LOCK:
+        expired_backoffs = [
+            uid
+            for uid, value in _PA_USER_RUNTIME_BACKOFF.items()
+            if float((value or {}).get('until') or 0) <= now_ts
+        ]
+        for uid in expired_backoffs:
+            _PA_USER_RUNTIME_BACKOFF.pop(uid, None)
+        runtime_backoffs = [
+            dict(value or {})
+            for value in _PA_USER_RUNTIME_BACKOFF.values()
+        ]
+    runtime_backoff_count = len(runtime_backoffs)
+    safe_stalled = [
+        {
+            'kind': str(record.get('kind') or 'pipeline')[:40],
+            'stage': str(record.get('stage') or '')[:60],
+            'ageSeconds': record.get('ageSeconds'),
+            'reason': str(record.get('reason') or '')[:80],
+        }
+        for record in stalled_records[:8]
+    ]
     age = max(0.0, now_ts - heartbeat) if heartbeat else None
+    completed_age = (
+        max(0.0, now_ts - completed_at)
+        if completed_at else age
+    )
     heartbeat_alive = bool(age is not None and age < 120)
-    healthy = bool((thread_alive or source == 'shared_heartbeat') and heartbeat_alive)
+    completed_fresh = bool(completed_age is not None and completed_age < 180)
+    healthy = bool(
+        (thread_alive or source == 'shared_heartbeat')
+        and heartbeat_alive
+        and completed_fresh
+        and consecutive_errors < 3
+        and stalled_count == 0
+        and runtime_backoff_count == 0
+    )
     return {
         'running': healthy,
         'threadAlive': bool(thread_alive or (source == 'shared_heartbeat' and heartbeat_alive)),
         'source': source,
         'heartbeatAgeSeconds': round(age, 1) if age is not None else None,
+        'lastCompletedAgeSeconds': (
+            round(completed_age, 1) if completed_age is not None else None
+        ),
         'lastHeartbeatAt': (
             datetime.fromtimestamp(heartbeat, timezone.utc).isoformat()
             if heartbeat else ''
@@ -38788,6 +40744,15 @@ def _pa_scheduler_health_snapshot(now_ts=None):
             if completed_at else ''
         ),
         'lastError': last_error,
+        'consecutiveErrors': consecutive_errors,
+        'stalledRunCount': stalled_count,
+        'stalledRuns': safe_stalled,
+        'runtimePersistenceBackoffCount': runtime_backoff_count,
+        'runtimePersistenceBackoffReasons': sorted({
+            str(value.get('reason') or '')[:80]
+            for value in runtime_backoffs
+            if value.get('reason')
+        })[:8],
         'loopCount': loop_count,
     }
 
@@ -38890,6 +40855,21 @@ def _pa_utc_iso(value=None):
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
     return moment.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def _pa_new_run_id(prefix):
+    """Return a non-reusable run ID for exact cancellation/idempotency."""
+    import uuid as _run_uuid
+    safe_prefix = re.sub(
+        r'[^a-z0-9-]+',
+        '-',
+        str(prefix or 'pipeline').strip().lower(),
+    ).strip('-') or 'pipeline'
+    return '%s-%d-%s' % (
+        safe_prefix,
+        time.time_ns(),
+        _run_uuid.uuid4().hex[:12],
+    )
 
 
 def _pa_initial_steps():
@@ -39073,20 +41053,10 @@ def _pa_persist_managed_position_to_config(uid, trade_mode, symbol, record):
     normalized_mode = 'paper' if str(trade_mode or 'paper').lower() == 'paper' else 'real'
     scoped_key = '%s:%s' % (normalized_mode, str(symbol).upper())
     with _PA_MANAGED_CONFIG_WRITE_LOCK:
-        config = _pa_get_config(uid) or {}
-        managed = config.get('managed_positions') if isinstance(config.get('managed_positions'), dict) else {}
-        managed = dict(managed)
-        managed[scoped_key] = dict(record)
-        if len(managed) > 200:
-            ranked = sorted(
-                managed.items(),
-                key=lambda item: str((item[1] or {}).get('updatedAt') or ''),
-                reverse=True,
-            )[:200]
-            managed = dict(ranked)
-        config['managed_positions'] = managed
-        config['managed_positions_version'] = 1
-        success, _ = _pa_save_config(uid, config)
+        success, _ = _pa_patch_config(uid, {
+            'managed_positions': {scoped_key: dict(record)},
+            'managed_positions_version': 2,
+        })
         return bool(success)
 
 
@@ -39134,7 +41104,7 @@ def _pa_record_managed_position_plan(uid, trade_mode, symbol, plan, order=None, 
         'initialRiskPerShare': initial_risk,
         'highWaterMark': entry_reference,
         'exitState': 'INITIAL_RISK',
-        'exitPolicyVersion': 2,
+        'exitPolicyVersion': 3,
         'planSource': plan.get('exitPlanSource') or 'entry_plan',
         'stopPolicy': 'ratchet_only',
         'targetPolicy': 'fixed_structural',
@@ -39179,6 +41149,20 @@ def _pa_record_managed_position_plan(uid, trade_mode, symbol, plan, order=None, 
                 _pa_safe_float(prior.get('highWaterMark'), 0) or 0,
                 _pa_safe_float(record.get('highWaterMark'), 0) or 0,
             )
+        else:
+            # A new position lifecycle must not inherit a prior trade's
+            # first-target idempotency marker.
+            record.update({
+                'target1Completed': False,
+                'target1ReductionStatus': 'eligible',
+                'target1ReductionAttempt': 0,
+                'target1ReductionOrderId': None,
+                'target1ReductionClientOrderId': None,
+                'target1ReductionQty': None,
+                'target1PositionQtyBefore': None,
+                'target1SubmittedAt': None,
+                'target1FilledAt': None,
+            })
         record['createdAt'] = prior.get('createdAt') or record['updatedAt']
         _PA_MANAGED_POSITIONS[key] = {**prior, **record}
         saved_record = dict(_PA_MANAGED_POSITIONS[key])
@@ -39200,7 +41184,7 @@ def _pa_update_managed_position(uid, trade_mode, symbol, **updates):
     with _PA_MANAGED_POSITIONS_LOCK:
         record = _PA_MANAGED_POSITIONS.get(key)
         if not isinstance(record, dict):
-            return
+            return False
         persist_to_supabase = any(
             field != 'lastReconciledAt' and record.get(field) != value
             for field, value in updates.items()
@@ -39210,7 +41194,10 @@ def _pa_update_managed_position(uid, trade_mode, symbol, **updates):
         saved_record = dict(record)
     _pa_save_managed_positions()
     if persist_to_supabase and saved_record is not None:
-        _pa_persist_managed_position_to_config(uid, trade_mode, symbol, saved_record)
+        return _pa_persist_managed_position_to_config(
+            uid, trade_mode, symbol, saved_record,
+        )
+    return True
 
 
 def _pa_managed_records_for_user(uid, trade_mode):
@@ -39295,8 +41282,12 @@ def _pa_reconcile_order_lifecycle(uid, trade_mode='paper', notify=False):
             by_order_id[str(record['protectionOrderId'])] = (key, record)
         if record.get('exitOrderId'):
             by_order_id[str(record['exitOrderId'])] = (key, record)
+        if record.get('target1ReductionOrderId'):
+            by_order_id[str(record['target1ReductionOrderId'])] = (key, record)
         if record.get('clientOrderId'):
             by_client_id[str(record['clientOrderId'])] = (key, record)
+        if record.get('target1ReductionClientOrderId'):
+            by_client_id[str(record['target1ReductionClientOrderId'])] = (key, record)
         event_map = record.get('notifiedOrderEvents') if isinstance(record.get('notifiedOrderEvents'), dict) else {}
         event_map = dict(event_map)
         legacy_status = str(record.get('lastNotifiedOrderStatus') or '')
@@ -39308,7 +41299,7 @@ def _pa_reconcile_order_lifecycle(uid, trade_mode='paper', notify=False):
     # Only material broker outcomes deserve an immediate alert. Historical
     # terminal orders are reconciled silently on process startup, otherwise a
     # restart can replay months of fills/cancellations into Discord.
-    notifiable_terminal_statuses = {'filled', 'rejected', 'suspended'}
+    notifiable_terminal_statuses = {'filled', 'partially_filled', 'rejected', 'suspended'}
     open_statuses = {'new', 'accepted', 'pending_new', 'accepted_for_bidding', 'partially_filled', 'held', 'pending_replace'}
     filled_sell_parent_ids = {
         str(order.get('_parent_order_id') or '')
@@ -39345,7 +41336,30 @@ def _pa_reconcile_order_lifecycle(uid, trade_mode='paper', notify=False):
             and parent_order_id in filled_sell_parent_ids
         )
         managed_record_key = match[0] if match else None
+        matched_record = match[1] if match and isinstance(match[1], dict) else {}
+        target1_order_id_value = str(
+            matched_record.get('target1ReductionOrderId') or ''
+        )
+        target1_client_id = str(
+            matched_record.get('target1ReductionClientOrderId') or ''
+        )
+        is_target1_reduction = bool(
+            side == 'sell'
+            and matched_record
+            and (
+                (
+                    target1_order_id_value
+                    and target1_order_id_value == order_id
+                )
+                or (
+                    target1_client_id
+                    and target1_client_id in (client_id, parent_client_id)
+                )
+            )
+        )
         notification_event_key = '%s:%s' % (order_id or client_id, status)
+        if status == 'partially_filled':
+            notification_event_key += ':%s' % order.get('filled_qty')
         already_notified = bool(
             managed_record_key
             and notification_event_key in notified_events_by_record.get(managed_record_key, {})
@@ -39386,13 +41400,23 @@ def _pa_reconcile_order_lifecycle(uid, trade_mode='paper', notify=False):
                 event_is_current_session = False
         if status == 'filled':
             summary['filled'] += 1
-            managed_status = 'position_open' if side == 'buy' else 'closed'
+            managed_status = (
+                'position_open' if side == 'buy'
+                else 'position_reduced' if is_target1_reduction
+                else 'closed'
+            )
         elif status == 'partially_filled':
             summary['partial'] += 1
-            managed_status = 'partially_filled'
+            managed_status = (
+                'position_reducing' if is_target1_reduction else 'partially_filled'
+            )
         elif status in open_statuses:
             summary['open'] += 1
-            managed_status = 'protection_open' if side == 'sell' else 'entry_open'
+            managed_status = (
+                'target1_reduce_open' if is_target1_reduction
+                else 'protection_open' if side == 'sell'
+                else 'entry_open'
+            )
         elif is_oco_sibling_cancel:
             managed_status = 'closed'
         else:
@@ -39409,7 +41433,6 @@ def _pa_reconcile_order_lifecycle(uid, trade_mode='paper', notify=False):
                 'lastReconciledAt': datetime.now(timezone.utc).isoformat(),
             }
             if side == 'buy' and status in ('filled', 'partially_filled'):
-                matched_record = match[1] if isinstance(match[1], dict) else {}
                 filled_at = order.get('filled_at') or order.get('updated_at')
                 if filled_at:
                     lifecycle_updates['filledAt'] = filled_at
@@ -39432,6 +41455,23 @@ def _pa_reconcile_order_lifecycle(uid, trade_mode='paper', notify=False):
                     lifecycle_updates['lastCountedScaleInOrderId'] = order_id
                     lifecycle_updates['pendingScaleIn'] = False
                     lifecycle_updates['protectionRefreshRequired'] = True
+            if is_target1_reduction:
+                lifecycle_updates.update({
+                    'target1ReductionStatus': status,
+                    'target1ReductionOrderId': order_id or matched_record.get('target1ReductionOrderId'),
+                    'target1FilledQty': filled_qty,
+                })
+                if status == 'filled':
+                    lifecycle_updates.update({
+                        'target1Completed': True,
+                        'target1FilledAt': order.get('filled_at') or order.get('updated_at'),
+                        'protectionRefreshRequired': True,
+                    })
+                elif status in ('rejected', 'canceled', 'cancelled', 'expired', 'suspended'):
+                    lifecycle_updates.update({
+                        'target1Completed': False,
+                        'protectionRefreshRequired': True,
+                    })
             _pa_update_managed_position(
                 uid, trade_mode, symbol,
                 **lifecycle_updates,
@@ -39440,18 +41480,31 @@ def _pa_reconcile_order_lifecycle(uid, trade_mode='paper', notify=False):
 
         if (
             notify
-            and match
             and status in notifiable_terminal_statuses
             and event_is_current_session
             and not already_notified
             and not is_oco_sibling_cancel
         ):
             event_run_id = 'order-life-%s-%s' % (order_id or client_id, status)
+            if status == 'partially_filled':
+                event_run_id += '-%s' % filled_qty
             event_type = 'order'
+            action_name = (
+                'ADD'
+                if side == 'buy' and str(matched_record.get('entryIntent') or '').upper() == 'SCALE_IN'
+                else 'REDUCE'
+                if is_target1_reduction
+                else 'EXIT'
+                if side == 'sell'
+                else side.upper()
+            )
             notification_result = _pa_discord_send_once(uid, event_run_id, event_type, {
                 'event_id': event_run_id,
+                'notificationScope': 'equity',
+                'assetClass': 'equity',
                 'mode': 'real' if str(trade_mode).lower() != 'paper' else 'paper',
                 'side': side,
+                'action': action_name,
                 'symbol': symbol,
                 'qty': filled_qty or order.get('qty'),
                 'price': filled_price or order.get('limit_price') or order.get('stop_price'),
@@ -39481,7 +41534,12 @@ def _pa_reconcile_order_lifecycle(uid, trade_mode='paper', notify=False):
     return summary
 
 
-def _pa_update_active_run(uid, **kwargs):
+def _pa_update_active_run(
+    uid,
+    expected_run_id=None,
+    expected_statuses=None,
+    **kwargs
+):
     """Update or initialize the active run state for a user. Thread-safe.
 
     Maintains a live view of the current backend pipeline run for frontend polling.
@@ -39490,6 +41548,20 @@ def _pa_update_active_run(uid, **kwargs):
     """
     with _PA_ACTIVE_RUNS_LOCK:
         run = _PA_ACTIVE_RUNS.get(uid)
+        if expected_run_id is not None and (
+            run is None
+            or str(run.get('runId') or '') != str(expected_run_id)
+        ):
+            return False
+        if expected_statuses is not None:
+            if isinstance(expected_statuses, str):
+                expected_statuses = (expected_statuses,)
+            allowed_statuses = {
+                str(value)
+                for value in expected_statuses
+            }
+            if run is None or str(run.get('status') or '') not in allowed_statuses:
+                return False
         if run is None:
             run = {
                 'runId': '',
@@ -39524,6 +41596,7 @@ def _pa_update_active_run(uid, **kwargs):
                 run[k] = v
         run['updatedAt'] = _pa_utc_iso()
     _pa_persist_runtime_state()
+    return True
 
 
 def _pa_get_active_run(uid):
@@ -39538,6 +41611,28 @@ def _pa_clear_active_run(uid):
     with _PA_ACTIVE_RUNS_LOCK:
         _PA_ACTIVE_RUNS.pop(uid, None)
     _pa_persist_runtime_state()
+
+
+def _pa_queue_active_run(uid, run_id, trigger):
+    """Publish a reserved run before its worker thread starts."""
+    _pa_clear_active_run(uid)
+    return _pa_update_active_run(
+        uid,
+        runId=str(run_id),
+        trigger=str(trigger or ''),
+        status='queued',
+        startedAt=_pa_utc_iso(),
+        lastError=None,
+        finishedAt=None,
+        stopRequested=False,
+        stopRequestedAt=None,
+        currentStep='market_scanner',
+        stepIndex=1,
+        progressPct=0,
+        totalSteps=_PA_PIPELINE_TOTAL_STEPS,
+        message='Pipeline worker queued',
+        steps=_pa_initial_steps(),
+    )
 
 
 def _pa_active_run_step(uid, step_key, step_index, total_steps, status='running', message=None, step_data=None):
@@ -39657,21 +41752,119 @@ def _pa_try_reserve_user_run(uid, source):
             )
             return False
         _PA_RUNNING_USERS.add(uid)
+        import uuid as _reservation_uuid
+        _PA_RUNNING_USER_TOKENS[uid] = _reservation_uuid.uuid4().hex
+        _PA_RUNNING_USER_SOURCES[uid] = str(source or '')
         if is_heavy_pipeline:
             _PA_HEAVY_PIPELINE_USERS.add(uid)
         return True
 
 
-def _pa_release_user_run(uid):
+def _pa_current_user_reservation_token(uid):
+    with _PA_RUNNING_USERS_LOCK:
+        return _PA_RUNNING_USER_TOKENS.get(uid)
+
+
+def _pa_release_user_run(uid, expected_token=None):
     release_heavy_capacity = False
     with _PA_RUNNING_USERS_LOCK:
+        if (
+            expected_token is not None
+            and _PA_RUNNING_USER_TOKENS.get(uid) != expected_token
+        ):
+            return False
         _PA_RUNNING_USERS.discard(uid)
+        _PA_RUNNING_USER_TOKENS.pop(uid, None)
+        _PA_RUNNING_USER_SOURCES.pop(uid, None)
         if uid in _PA_HEAVY_PIPELINE_USERS:
             _PA_HEAVY_PIPELINE_USERS.discard(uid)
             release_heavy_capacity = True
     if release_heavy_capacity:
         _INST_SCANNER_CAPACITY.release()
     _pa_release_user_process_lock(uid)
+    return True
+
+
+def _pa_start_reserved_thread(uid, target, args=(), kwargs=None, **thread_options):
+    """Start work under a reservation and clean up only that reservation token.
+
+    The target may hand ownership to ``_pa_execute_and_save``, which releases the
+    token itself. The guarded finalizer is therefore compare-and-release: it
+    closes leaks from thread startup/preflight failures without ever releasing a
+    newer run that acquired the same user's slot.
+    """
+    reservation_token = _pa_current_user_reservation_token(uid)
+
+    def _guarded_target():
+        try:
+            target(*(args or ()), **(kwargs or {}))
+        finally:
+            if reservation_token is not None:
+                _pa_release_user_run(uid, expected_token=reservation_token)
+
+    try:
+        worker = threading.Thread(target=_guarded_target, **thread_options)
+        worker.start()
+        return worker
+    except Exception:
+        if (
+            reservation_token is not None
+            and _pa_current_user_reservation_token(uid) == reservation_token
+        ):
+            _pa_release_user_run(uid, expected_token=reservation_token)
+        elif reservation_token is None:
+            # Test doubles and legacy callers may reserve without the token map.
+            _pa_release_user_run(uid)
+        raise
+
+
+def _pa_set_user_runtime_backoff(uid, reason, seconds=300):
+    with _PA_USER_RUNTIME_BACKOFF_LOCK:
+        _PA_USER_RUNTIME_BACKOFF[uid] = {
+            'until': time.time() + max(30, int(seconds)),
+            'reason': str(reason or 'runtime_persistence_failed')[:120],
+        }
+
+
+def _pa_clear_user_runtime_backoff(uid):
+    with _PA_USER_RUNTIME_BACKOFF_LOCK:
+        _PA_USER_RUNTIME_BACKOFF.pop(uid, None)
+
+
+def _pa_get_user_runtime_backoff(uid, now_ts=None):
+    now_ts = time.time() if now_ts is None else float(now_ts)
+    with _PA_USER_RUNTIME_BACKOFF_LOCK:
+        value = dict(_PA_USER_RUNTIME_BACKOFF.get(uid) or {})
+        if value and float(value.get('until') or 0) <= now_ts:
+            _PA_USER_RUNTIME_BACKOFF.pop(uid, None)
+            return {}
+        return value
+
+
+def _pa_release_reserved_on_exit(func):
+    """Guarantee executor lease cleanup even when its finalizer raises."""
+    from functools import wraps
+
+    @wraps(func)
+    def _wrapped(uid, *args, **kwargs):
+        reservation_token = _pa_current_user_reservation_token(uid)
+        try:
+            return func(uid, *args, **kwargs)
+        except Exception:
+            if reservation_token is not None:
+                _pa_set_user_runtime_backoff(
+                    uid,
+                    'pipeline_executor_finalization_failed',
+                )
+            raise
+        finally:
+            if reservation_token is not None:
+                _pa_release_user_run(
+                    uid,
+                    expected_token=reservation_token,
+                )
+
+    return _wrapped
 
 
 def _pa_user_owns_heavy_capacity(uid):
@@ -39697,10 +41890,59 @@ def _pa_pipeline_capacity_response():
     }), 429, {'Retry-After': '30'}
 
 
-def _pa_check_stop_requested(uid):
-    """Check if stop was requested for this user's active run. Returns True if stopped."""
+def _pa_cache_stop_request(uid, stop_request):
+    with _PA_STOP_REQUEST_CACHE_LOCK:
+        _PA_STOP_REQUEST_CACHE[uid] = {
+            'checkedAt': time.time(),
+            'value': (
+                dict(stop_request)
+                if isinstance(stop_request, dict) else {}
+            ),
+        }
+
+
+def _pa_get_cached_stop_request(uid, force=False):
+    now_ts = time.time()
+    with _PA_STOP_REQUEST_CACHE_LOCK:
+        cached = _PA_STOP_REQUEST_CACHE.get(uid) or {}
+        if (
+            not force
+            and now_ts - float(cached.get('checkedAt') or 0)
+            < _PA_STOP_REQUEST_CACHE_TTL_SECONDS
+        ):
+            return dict(cached.get('value') or {})
+    config = _pa_get_config(uid) or {}
+    value = (
+        config.get('active_stop_request')
+        if isinstance(config.get('active_stop_request'), dict)
+        else {}
+    )
+    _pa_cache_stop_request(uid, value)
+    return dict(value or {})
+
+
+def _pa_check_stop_requested(uid, expected_run_id=None):
+    """Return True only for the exact run targeted by a stop request."""
     run = _pa_get_active_run(uid)
-    if run and run.get('stopRequested'):
+    active_run_id = str((run or {}).get('runId') or '')
+    expected = str(expected_run_id or active_run_id or '')
+    active_match = bool(
+        run
+        and run.get('stopRequested')
+        and (not expected or active_run_id == expected)
+    )
+    durable_request = (
+        _pa_get_cached_stop_request(uid)
+        if expected and not active_match else {}
+    )
+    durable_match = bool(
+        expected
+        and str(durable_request.get('runId') or '') == expected
+    )
+    if not active_match and not durable_match:
+        return False
+
+    if run and (not expected or active_run_id == expected):
         current_step = str(run.get('currentStep') or '')
         current_step_state = ((run.get('steps') or {}).get(current_step) or {})
         step_update = {}
@@ -39713,15 +41955,258 @@ def _pa_check_stop_requested(uid):
             }
         _pa_update_active_run(
             uid,
+            expected_run_id=active_run_id,
+            expected_statuses=('queued', 'running', 'cancelling', 'stopped'),
             status='stopped',
+            stopRequested=True,
             progressPct=int(run.get('progressPct') or 0),
             message='Pipeline stopped by user',
             finishedAt=_pa_utc_iso(),
             steps=step_update,
         )
         _pa_log('[PipelineRun] stop requested user=%s run=%s' % (uid[:8], run.get('runId', '?')[:20]))
-        return True
-    return False
+    return True
+
+
+def _pa_watchdog_active_runs(now_ts=None, only_uid=None):
+    """Request exact-run cancellation and surface workers that ignore it.
+
+    The watchdog runs from the scheduler, not from a browser polling endpoint.
+    It never releases a routing lease for a live worker because that worker may
+    still return from an upstream request and mutate broker state.  Instead it
+    requests cooperative cancellation for the exact run ID and makes readiness
+    fail after a bounded grace period so the process supervisor can recover it.
+    """
+    now_ts = time.time() if now_ts is None else float(now_ts)
+    now_iso = datetime.fromtimestamp(now_ts, timezone.utc).isoformat()
+    only_uid = str(only_uid) if only_uid is not None else None
+    stalled = {}
+    summary = {
+        'checked': 0,
+        'cancellationRequested': 0,
+        'interrupted': 0,
+        'stalled': 0,
+        'positionGuardsChecked': 0,
+    }
+
+    with _PA_WATCHDOG_LOCK:
+        with _PA_ACTIVE_RUNS_LOCK:
+            active_snapshot = {
+                str(uid): _pa_compact_active_run_record(run)
+                for uid, run in _PA_ACTIVE_RUNS.items()
+                if only_uid is None or str(uid) == only_uid
+            }
+
+        for uid, run in active_snapshot.items():
+            status = str((run or {}).get('status') or '').lower()
+            run_id = str((run or {}).get('runId') or '')
+            if status not in ('running', 'queued', 'cancelling') or not run_id:
+                continue
+            summary['checked'] += 1
+            updated = _pa_parse_timestamp(
+                (run or {}).get('updatedAt') or (run or {}).get('startedAt')
+            )
+            updated_ts = updated.timestamp() if updated is not None else now_ts
+            idle_age = max(0.0, now_ts - updated_ts)
+            owns_lease = _pa_user_run_is_reserved(uid)
+
+            if status in ('running', 'queued') and idle_age > _PA_WATCHDOG_STALE_SECONDS:
+                if not owns_lease:
+                    interrupted = _pa_update_active_run(
+                        uid,
+                        expected_run_id=run_id,
+                        expected_statuses=('running', 'queued'),
+                        status='interrupted',
+                        message='The worker lease ended without a completion record',
+                        lastError='stale_run_interrupted',
+                        finishedAt=now_iso,
+                    )
+                    if interrupted:
+                        summary['interrupted'] += 1
+                    continue
+
+                stop_request = {
+                    'runId': run_id,
+                    'requestedAt': now_iso,
+                    'reason': 'stale_run_watchdog',
+                }
+                cancellation_started = _pa_update_active_run(
+                    uid,
+                    expected_run_id=run_id,
+                    expected_statuses=('running', 'queued'),
+                    status='cancelling',
+                    stopRequested=True,
+                    stopRequestedAt=now_iso,
+                    message='No progress heartbeat for 15 minutes; cancellation requested',
+                    lastError='stale_run_cancellation_requested',
+                )
+                if not cancellation_started:
+                    continue
+                _pa_cache_stop_request(uid, stop_request)
+                persisted, persist_error = _pa_patch_config(
+                    uid,
+                    {'active_stop_request': stop_request},
+                )
+                if not persisted:
+                    _pa_update_active_run(
+                        uid,
+                        expected_run_id=run_id,
+                        expected_statuses=('cancelling',),
+                        lastError='stale_run_cancellation_not_durable',
+                    )
+                summary['cancellationRequested'] += 1
+                if not persisted:
+                    key = '%s:%s' % (uid, run_id)
+                    stalled[key] = {
+                        'kind': 'pipeline',
+                        'runId': run_id,
+                        'stage': str((run or {}).get('currentStep') or ''),
+                        'ageSeconds': round(idle_age, 1),
+                        'reason': 'stop_request_persistence_failed',
+                        'error': str(persist_error or '')[:120],
+                    }
+                continue
+
+            if status != 'cancelling':
+                continue
+            requested = _pa_parse_timestamp(
+                (run or {}).get('stopRequestedAt')
+                or (run or {}).get('updatedAt')
+            )
+            requested_ts = requested.timestamp() if requested is not None else updated_ts
+            cancel_age = max(0.0, now_ts - requested_ts)
+            if not owns_lease:
+                interrupted = _pa_update_active_run(
+                    uid,
+                    expected_run_id=run_id,
+                    expected_statuses=('cancelling',),
+                    status='interrupted',
+                    message='Cancellation completed after the worker lease ended',
+                    lastError='stale_run_interrupted',
+                    finishedAt=now_iso,
+                )
+                if interrupted:
+                    summary['interrupted'] += 1
+            elif (
+                (run or {}).get('lastError') == 'stale_run_cancellation_not_durable'
+                or cancel_age > _PA_WATCHDOG_CANCEL_GRACE_SECONDS
+            ):
+                still_same_run = _pa_update_active_run(
+                    uid,
+                    expected_run_id=run_id,
+                    expected_statuses=('cancelling',),
+                    lastError=(
+                        'stale_run_cancellation_not_durable'
+                        if (run or {}).get('lastError') == 'stale_run_cancellation_not_durable'
+                        else 'cancellation_stalled'
+                    ),
+                    message=(
+                        'Cancellation could not be persisted; process recovery required'
+                        if (run or {}).get('lastError') == 'stale_run_cancellation_not_durable'
+                        else 'Cancellation grace period exceeded; process recovery required'
+                    ),
+                )
+                if not still_same_run:
+                    continue
+                key = '%s:%s' % (uid, run_id)
+                stalled[key] = {
+                    'kind': 'pipeline',
+                    'runId': run_id,
+                    'stage': str((run or {}).get('currentStep') or ''),
+                    'ageSeconds': round(cancel_age, 1),
+                    'reason': (
+                        'stop_request_persistence_failed'
+                        if (run or {}).get('lastError') == 'stale_run_cancellation_not_durable'
+                        else 'cancellation_stalled'
+                    ),
+                }
+
+        with _PA_POSITION_GUARD_LOCK:
+            guard_snapshot = {
+                str(uid): dict(state or {})
+                for uid, state in _PA_POSITION_GUARD_STATE.items()
+                if (state or {}).get('running')
+                and (only_uid is None or str(uid) == only_uid)
+            }
+
+        for uid, state in guard_snapshot.items():
+            summary['positionGuardsChecked'] += 1
+            run_id = str(state.get('runId') or '')
+            try:
+                started_ts = float(state.get('lastStartedTs') or now_ts)
+            except (TypeError, ValueError):
+                started_ts = now_ts
+            guard_age = max(0.0, now_ts - started_ts)
+            owns_lease = _pa_user_run_is_reserved(uid)
+            requested = _pa_parse_timestamp(state.get('stopRequestedAt'))
+            requested_ts = requested.timestamp() if requested is not None else None
+
+            if guard_age <= _PA_POSITION_GUARD_STALE_SECONDS:
+                continue
+            if not owns_lease:
+                with _PA_POSITION_GUARD_LOCK:
+                    live_state = _PA_POSITION_GUARD_STATE.get(uid) or {}
+                    if live_state.get('runId') == run_id:
+                        live_state.update({
+                            'running': False,
+                            'lastCompletedAt': now_iso,
+                            'lastError': 'position_guard_lease_lost',
+                        })
+                summary['interrupted'] += 1
+                continue
+            if run_id and requested_ts is None:
+                stop_request = {
+                    'runId': run_id,
+                    'requestedAt': now_iso,
+                    'reason': 'position_guard_watchdog',
+                }
+                _pa_cache_stop_request(uid, stop_request)
+                persisted, persist_error = _pa_patch_config(
+                    uid,
+                    {'active_stop_request': stop_request},
+                )
+                with _PA_POSITION_GUARD_LOCK:
+                    live_state = _PA_POSITION_GUARD_STATE.get(uid) or {}
+                    if live_state.get('runId') == run_id:
+                        live_state['stopRequestedAt'] = now_iso
+                        live_state['lastError'] = (
+                            'position_guard_cancellation_requested'
+                            if persisted
+                            else 'position_guard_cancellation_not_durable'
+                        )
+                summary['cancellationRequested'] += 1
+                if not persisted:
+                    stalled['%s:%s' % (uid, run_id)] = {
+                        'kind': 'position_guard',
+                        'runId': run_id,
+                        'stage': 'exit_scan',
+                        'ageSeconds': round(guard_age, 1),
+                        'reason': 'stop_request_persistence_failed',
+                        'error': str(persist_error or '')[:120],
+                    }
+                continue
+            if requested_ts is not None:
+                cancel_age = max(0.0, now_ts - requested_ts)
+                if (
+                    state.get('lastError') == 'position_guard_cancellation_not_durable'
+                    or cancel_age > _PA_WATCHDOG_CANCEL_GRACE_SECONDS
+                ):
+                    stalled['%s:%s' % (uid, run_id)] = {
+                        'kind': 'position_guard',
+                        'runId': run_id,
+                        'stage': 'exit_scan',
+                        'ageSeconds': round(cancel_age, 1),
+                        'reason': (
+                            'stop_request_persistence_failed'
+                            if state.get('lastError') == 'position_guard_cancellation_not_durable'
+                            else 'cancellation_stalled'
+                        ),
+                    }
+
+        _PA_WATCHDOG_STALLED_RUNS.clear()
+        _PA_WATCHDOG_STALLED_RUNS.update(stalled)
+        summary['stalled'] = len(stalled)
+    return summary
 
 
 def _pa_get_pending_run_key(uid, now_et=None):
@@ -40125,6 +42610,40 @@ def _pa_admission_ai_challenge(uid, rows, enabled=True):
     return stats
 
 
+def _pa_admission_correlation_proxy(left, right):
+    """Estimate pairwise correlation from the scanner's market-factor packet.
+
+    The scanner does not retain a large return matrix between stages.  Its
+    benchmark correlations provide a transparent one-factor approximation:
+    corr(i, j) ~= corr(i, m) * corr(j, m).  A same-sector floor prevents two
+    highly similar businesses from looking diversified merely because one
+    benchmark observation is noisy or missing.
+    """
+    left = left if isinstance(left, dict) else {}
+    right = right if isinstance(right, dict) else {}
+
+    def bounded_correlation(row):
+        value = _pa_safe_float(row.get('marketCorrelation'), None)
+        if value is None:
+            value = _pa_safe_float(row.get('benchmarkCorrelation'), None)
+        if value is None:
+            return None
+        return max(-1.0, min(1.0, value))
+
+    left_corr = bounded_correlation(left)
+    right_corr = bounded_correlation(right)
+    factor_proxy = (
+        max(-1.0, min(1.0, left_corr * right_corr))
+        if left_corr is not None and right_corr is not None
+        else 0.0
+    )
+    left_sector = str(left.get('sector') or '').strip().lower()
+    right_sector = str(right.get('sector') or '').strip().lower()
+    if left_sector and left_sector != 'unknown' and left_sector == right_sector:
+        factor_proxy = max(factor_proxy, 0.70)
+    return round(factor_proxy, 4)
+
+
 def _pa_run_admission(uid, dv_results, fine_results=None, market_results=None,
                       account_state=None, risk_profile='medium', time_horizon='mid',
                       pipeline_mode='hybrid', ai_enabled=True):
@@ -40159,6 +42678,41 @@ def _pa_run_admission(uid, dv_results, fine_results=None, market_results=None,
     max_daily_filled_orders = int(mandate['maxDailyFilledOrders'])
     max_positions = mandate['maxPositions']
     max_new_positions = mandate['maxOpenBuys']
+    portfolio_value = _pa_safe_float(
+        account.get('portfolioValue'),
+        _pa_safe_float(account.get('equity'), None),
+    )
+    current_gross_exposure = sum(
+        abs(_pa_safe_float(position.get('market_value'), 0) or 0)
+        for position in position_by_symbol.values()
+    )
+    gross_exposure_cap = (
+        portfolio_value * mandate['maxGrossExposurePct'] / 100.0
+        if portfolio_value is not None and portfolio_value > 0 else None
+    )
+    available_gross_exposure = (
+        max(0.0, gross_exposure_cap - current_gross_exposure)
+        if gross_exposure_cap is not None else None
+    )
+    sector_exposure = {}
+    for position in position_by_symbol.values():
+        sector = str(position.get('sector') or '').strip()
+        if not sector or sector.lower() == 'unknown':
+            continue
+        sector_key = sector.lower()
+        sector_exposure[sector_key] = (
+            sector_exposure.get(sector_key, 0.0)
+            + abs(_pa_safe_float(position.get('market_value'), 0) or 0)
+        )
+    sector_exposure_cap = (
+        portfolio_value * mandate['sectorCapPct'] / 100.0
+        if portfolio_value is not None and portfolio_value > 0 else None
+    )
+    correlation_soft_cap = {
+        'low': 0.65,
+        'medium': 0.75,
+        'high': 0.85,
+    }.get(profile, 0.75)
     max_per_sector = max(
         1,
         math.ceil(max_positions * mandate['sectorCapPct'] / 100.0),
@@ -40204,6 +42758,14 @@ def _pa_run_admission(uid, dv_results, fine_results=None, market_results=None,
             )
         if buying_power is not None and buying_power <= 0:
             blockers.append('Available buying power is zero')
+        if (
+            available_gross_exposure is not None
+            and available_gross_exposure <= max(1.0, (portfolio_value or 0) * 0.0001)
+        ):
+            blockers.append(
+                'Gross exposure limit leaves no capacity for another entry '
+                '(%.1f%% policy cap)' % mandate['maxGrossExposurePct']
+            )
 
         dv_strategies = _pa_strategy_set(dv)
         fine_strategies = _pa_strategy_set(fine)
@@ -40242,6 +42804,22 @@ def _pa_run_admission(uid, dv_results, fine_results=None, market_results=None,
         event_risk = str(dv.get('eventRisk') or fine.get('eventRisk') or market.get('eventRisk') or 'Unknown')
         if event_risk.lower() == 'high':
             warnings.append('High event risk requires a fresh event review')
+        sector = dv.get('sector') or fine.get('sector') or market.get('sector') or 'Unknown'
+        sector_key = str(sector).strip().lower()
+        current_sector_exposure = sector_exposure.get(sector_key, 0.0)
+        available_sector_exposure = (
+            max(0.0, sector_exposure_cap - current_sector_exposure)
+            if sector_exposure_cap is not None and sector_key != 'unknown'
+            else None
+        )
+        if (
+            available_sector_exposure is not None
+            and available_sector_exposure <= max(1.0, (portfolio_value or 0) * 0.0001)
+        ):
+            warnings.append(
+                'Existing %s exposure has reached the %.1f%% sector cap'
+                % (sector, mandate['sectorCapPct'])
+            )
 
         validation_score = _pa_safe_float(dv.get('validationScore'), _pa_safe_float(dv.get('score'), 50)) or 50
         execution_score = _pa_safe_float(dv.get('executionScore'), _pa_safe_float(fine.get('executionReadinessScore'), 50)) or 50
@@ -40284,7 +42862,22 @@ def _pa_run_admission(uid, dv_results, fine_results=None, market_results=None,
             'signalAgeSeconds': round(signal_age, 1) if signal_age is not None else None,
             'priceDriftAtr': round(drift_atr, 3) if drift_atr is not None else None,
             'eventRisk': event_risk,
-            'sector': dv.get('sector') or fine.get('sector') or market.get('sector') or 'Unknown',
+            'sector': sector,
+            'marketBeta': _pa_safe_float(
+                dv.get('marketBeta'),
+                _pa_safe_float(market.get('marketBeta'), _pa_safe_float(fine.get('marketBeta'), None)),
+            ),
+            'marketCorrelation': _pa_safe_float(
+                dv.get('marketCorrelation'),
+                _pa_safe_float(
+                    market.get('marketCorrelation'),
+                    _pa_safe_float(fine.get('marketCorrelation'), None),
+                ),
+            ),
+            'realizedVol20': _pa_safe_float(
+                dv.get('realizedVol20'),
+                _pa_safe_float(market.get('realizedVol20'), _pa_safe_float(fine.get('realizedVol20'), None)),
+            ),
             'validationScore': validation_score,
             'executionScore': execution_score,
             'stabilityScore': stability_score,
@@ -40307,6 +42900,13 @@ def _pa_run_admission(uid, dv_results, fine_results=None, market_results=None,
                 'openBuyOrder': symbol in open_buy_orders,
                 'dailyFilledOrderCount': daily_filled_order_count,
                 'maxDailyFilledOrders': max_daily_filled_orders,
+                'portfolioValue': portfolio_value,
+                'currentGrossExposure': round(current_gross_exposure, 2),
+                'grossExposureCap': round(gross_exposure_cap, 2) if gross_exposure_cap is not None else None,
+                'availableGrossExposure': round(available_gross_exposure, 2) if available_gross_exposure is not None else None,
+                'currentSectorExposure': round(current_sector_exposure, 2),
+                'sectorExposureCap': round(sector_exposure_cap, 2) if sector_exposure_cap is not None else None,
+                'availableSectorExposure': round(available_sector_exposure, 2) if available_sector_exposure is not None else None,
             },
             'entryIntent': entry_intent,
             'scaleInAssessment': scale_in,
@@ -40327,6 +42927,7 @@ def _pa_run_admission(uid, dv_results, fine_results=None, market_results=None,
     ))
     admitted_count = 0
     sector_counts = {}
+    admitted_risk_packets = []
     available_slots = max(0, min(max_new_positions, max_positions - position_count))
     for row in rows:
         if row['admissionDecision'] != 'ADMIT':
@@ -40345,8 +42946,28 @@ def _pa_run_admission(uid, dv_results, fine_results=None, market_results=None,
             row['warnings'].append('Sector concentration limit reached for this admission batch')
             row['decisionReason'] = 'Held by sector concentration arbitration'
             continue
+        correlations = [
+            _pa_admission_correlation_proxy(row, admitted)
+            for admitted in admitted_risk_packets
+        ]
+        average_correlation = (
+            sum(correlations) / len(correlations) if correlations else 0.0
+        )
+        maximum_correlation = max(correlations) if correlations else 0.0
+        row['portfolioContext']['averageCandidateCorrelation'] = round(average_correlation, 4)
+        row['portfolioContext']['maximumCandidateCorrelation'] = round(maximum_correlation, 4)
+        row['portfolioContext']['correlationSoftCap'] = correlation_soft_cap
+        if correlations and average_correlation > correlation_soft_cap:
+            row['admissionDecision'] = 'HOLD'
+            row['warnings'].append(
+                'Candidate correlation proxy %.2f exceeds the %.2f portfolio diversification cap'
+                % (average_correlation, correlation_soft_cap)
+            )
+            row['decisionReason'] = 'Held by marginal portfolio-correlation arbitration'
+            continue
         admitted_count += 1
         sector_counts[sector_key] = sector_counts.get(sector_key, 0) + 1
+        admitted_risk_packets.append(row)
 
     ai_stats = _pa_admission_ai_challenge(
         uid,
@@ -40362,6 +42983,11 @@ def _pa_run_admission(uid, dv_results, fine_results=None, market_results=None,
         'eligibleDvCount': len(rows),
         'counts': counts,
         'availablePortfolioSlots': available_slots,
+        'portfolioValue': portfolio_value,
+        'currentGrossExposure': round(current_gross_exposure, 2),
+        'grossExposureCap': round(gross_exposure_cap, 2) if gross_exposure_cap is not None else None,
+        'availableGrossExposure': round(available_gross_exposure, 2) if available_gross_exposure is not None else None,
+        'correlationSoftCap': correlation_soft_cap,
         'maxNewPositions': max_new_positions,
         'maxPerSector': max_per_sector,
         'dailyFilledOrderCount': daily_filled_order_count,
@@ -40889,6 +43515,86 @@ def _pa_save_config(uid, config):
     except Exception as e:
         _pa_log_error('[PipelineAutoConfig] File fallback write failed: %s' % e)
     return False, reason or 'save_failed'
+
+
+def _pa_patch_config(uid, patch, remove_keys=None):
+    """Atomically merge runtime fields into the durable per-user JSON config.
+
+    Production prefers the database function installed by ``supabase_schema``;
+    it takes a row lock and performs the JSONB merge in one transaction.  The
+    read/merge/write fallback remains serialized for development and for a
+    rolling deploy where application code may briefly precede the SQL function.
+    """
+    if not uid or not isinstance(patch, dict):
+        return False, 'invalid_config_patch'
+    clean_patch = {
+        str(key): value for key, value in patch.items()
+        if str(key or '').strip()
+    }
+    clean_remove_keys = [
+        str(key) for key in (remove_keys or [])
+        if str(key or '').strip()
+    ]
+    client = _pa_supabase_client()
+    if client:
+        try:
+            response = _supabase_execute(
+                lambda: client.rpc(
+                    'merge_user_pipeline_auto_config',
+                    {
+                        'p_user_id': uid,
+                        'p_patch': clean_patch,
+                        'p_remove_keys': clean_remove_keys,
+                    },
+                ).execute(),
+                'pipeline config atomic merge',
+            )
+            if getattr(response, 'data', None) is not None:
+                return True, ''
+        except Exception as exc:
+            # Rolling deploy compatibility only. The serialized fallback still
+            # preserves unrelated fields within this process; production SQL
+            # should be applied so multiple workers also merge atomically.
+            _pa_log_error(
+                '[PipelineAutoConfig] atomic merge unavailable (%s); using serialized fallback'
+                % type(exc).__name__
+            )
+
+    with _PA_CONFIG_MUTATION_LOCK:
+        current = _pa_get_config(uid) or {}
+        merged = dict(current)
+        for key in clean_remove_keys:
+            merged.pop(key, None)
+        if isinstance(clean_patch.get('managed_positions'), dict):
+            managed = (
+                dict(current.get('managed_positions') or {})
+                if isinstance(current.get('managed_positions'), dict)
+                else {}
+            )
+            managed.update(clean_patch['managed_positions'])
+            clean_patch = dict(clean_patch)
+            clean_patch['managed_positions'] = managed
+        if isinstance(clean_patch.get('user_preferences'), dict):
+            preferences = (
+                dict(current.get('user_preferences') or {})
+                if isinstance(current.get('user_preferences'), dict)
+                else {}
+            )
+            for section, values in clean_patch['user_preferences'].items():
+                if isinstance(values, dict):
+                    existing_section = (
+                        dict(preferences.get(section) or {})
+                        if isinstance(preferences.get(section), dict)
+                        else {}
+                    )
+                    existing_section.update(values)
+                    preferences[section] = existing_section
+                else:
+                    preferences[section] = values
+            clean_patch = dict(clean_patch)
+            clean_patch['user_preferences'] = preferences
+        merged.update(clean_patch)
+        return _pa_save_config(uid, merged)
 
 _PA_HISTORY_RETENTION_DAYS = max(
     7, int(os.getenv('PIPELINE_HISTORY_RETENTION_DAYS', '90'))
@@ -41473,7 +44179,7 @@ def _pa_detect_fine_scan_regime(cand):
     """Regime detection + strategy matching — mirrors frontend _runFineScanLoop logic.
     Returns (regime, match_confidence, matched_strategies, match_reason, signals)."""
     trend = str(cand.get('trendLabel') or cand.get('trend') or 'Neutral')
-    score = float(cand.get('overallScore') or cand.get('trendScore') or cand.get('priorityScore') or 0)
+    score = _pa_safe_float(cand.get('selectionScore'), 0) or 0
     risk = str(cand.get('eventRisk') or cand.get('risk') or 'Medium')
     vol_status = str(cand.get('volumeStatus') or 'Normal')
     news = str(cand.get('newsSentiment') or 'Neutral')
@@ -42081,7 +44787,10 @@ def _pa_fine_scan_headless(uid, candidates,
     max_candidates = max(5, min(100, max_candidates))
 
     raw_candidates = [c for c in (candidates or []) if isinstance(c, dict) and (c.get('symbol') or '').strip()]
-    raw_candidates.sort(key=lambda c: _num(c.get('selectionScore') or c.get('overallScore') or c.get('trendScore') or c.get('priorityScore'), 0) or 0, reverse=True)
+    raw_candidates.sort(
+        key=lambda c: _num(c.get('selectionScore'), 0) or 0,
+        reverse=True,
+    )
     raw_candidates = raw_candidates[:max_candidates]
 
     results = []
@@ -42105,6 +44814,9 @@ def _pa_fine_scan_headless(uid, candidates,
         snapshot_errors = {sym: 'Alpaca market-data config unavailable for Fine Scan snapshot refresh' for sym in symbols}
 
     for idx, cand in enumerate(raw_candidates):
+        if uid and _pa_check_stop_requested(uid):
+            raise _BackendScanCancelled('Fine Scan stopped by user')
+        _backend_enforce_runtime_budget()
         symbol = (cand.get('symbol') or '').upper().strip()
         try:
             rec = dict(cand)
@@ -42112,7 +44824,9 @@ def _pa_fine_scan_headless(uid, candidates,
             rec['scanStatus'] = 'running'
 
             factor_scores = rec.get('factorScores') if isinstance(rec.get('factorScores'), dict) else {}
-            market_score = _num(rec.get('selectionScore') or rec.get('overallScore') or rec.get('trendScore') or rec.get('priorityScore'), 50) or 50
+            market_score = _num(rec.get('selectionScore'), 50)
+            if market_score is None:
+                market_score = 50
             dq = str(rec.get('dataQuality') or 'ok').lower()
             source_data_quality_bad = dq in ('need_data', 'failed', 'unavailable')
 
@@ -42935,7 +45649,7 @@ def _pa_fine_scan_headless(uid, candidates,
 
             data_sources = rec.get('dataSources') if isinstance(rec.get('dataSources'), dict) else {}
             data_sources.update({
-                'fineScan': 'Institutional Fine Scan v4: Alpaca snapshot refresh plus Market Scanner v5 evidence',
+                'fineScan': 'Institutional Fine Scan v4: Alpaca snapshot refresh plus Market Scanner v6 evidence',
                 'microstructure': 'Alpaca /v2/stocks/snapshots latestQuote/latestTrade/dailyBar proxy',
                 'entryGeometry': 'VWAP, day range, ATR, and reward/risk geometry',
                 'ai': rec.get('aiSource') or ('AI not used' if not rec.get('aiUsed') else 'Configured AI'),
@@ -43053,7 +45767,10 @@ def _pa_classify_sell_protection(orders):
         _pa_safe_float(order.get('limit_price'), None) for order in target_orders
         if _pa_safe_float(order.get('limit_price'), None) is not None
     ]
-    advanced = any(str(order.get('order_class') or '').lower() in ('oco', 'bracket') for order in flattened)
+    advanced = any(
+        str(order.get('order_class') or '').lower() in ('oco', 'bracket', 'oto')
+        for order in flattened
+    )
     managed_flags = [
         effective_client_id(order).startswith(('alphalab-', 'alpha-lab-'))
         for order in sell_orders
@@ -43139,10 +45856,34 @@ def _pa_exit_policy(risk_profile='medium', time_horizon='mid'):
         'timeStopDays': mandate['timeStopDays'],
         'reviewAfterDays': mandate['reviewAfterDays'],
         'maxPositionReviewPct': mandate['maxSinglePositionPct'],
+        'target1ReducePct': mandate['target1ReducePct'],
+        'target2ClosePct': 100.0,
+        # Existing leveraged positions remain subject to the platform's strict
+        # one-day time limit even if the user later disables leverage.
+        'leveragedTimeStopDays': 1,
         'holdingPeriod': mandate['holdingPeriod'],
         'optionsAllowed': False,
         'strategyPolicyVersion': mandate['version'],
     }
+
+
+def _pa_target1_reduction_quantity(position_qty, reduce_pct):
+    """Return a bounded first-target quantity that can never close the position."""
+    qty = abs(_pa_safe_float(position_qty, 0) or 0)
+    pct = _pa_safe_float(reduce_pct, 50.0)
+    pct = max(1.0, min(99.0, pct if pct is not None else 50.0))
+    if qty <= 0:
+        return 0
+
+    reduced = round(qty * pct / 100.0, 6)
+    # Alpaca supports fractional equity quantities; retaining at least one
+    # micro-share keeps target one semantically distinct from a terminal close.
+    reduced = min(reduced, round(max(0.0, qty - 0.000001), 6))
+    if reduced <= 0:
+        return 0
+    if abs(reduced - round(reduced)) < 1e-9:
+        return int(round(reduced))
+    return reduced
 
 
 def _pa_exit_ema(values, period):
@@ -43318,11 +46059,39 @@ def _pa_build_dynamic_exit_plan(position, persisted_plan, initial_stop, target_1
         indicators.get('trendState') == 'downtrend'
         and _pa_safe_float(indicators.get('rsi14'), 50) < 45
     )
+    product_profile = _classify_geared_equity_product(
+        position.get('symbol'),
+        position.get('asset_name') or position.get('assetName') or persisted_plan.get('assetName'),
+    )
+    is_leveraged = bool(
+        persisted_plan.get('isLeveraged')
+        or persisted_plan.get('leveragedProduct')
+        or product_profile.get('isLeveraged')
+    )
+    effective_time_stop_days = (
+        policy['leveragedTimeStopDays'] if is_leveraged else policy['timeStopDays']
+    )
     time_stop = bool(
         days_held is not None
-        and days_held >= policy['timeStopDays']
-        and current_price <= avg_entry
-        and indicators.get('trendState') != 'uptrend'
+        and days_held >= effective_time_stop_days
+        and (
+            is_leveraged
+            or (
+                current_price <= avg_entry
+                and indicators.get('trendState') != 'uptrend'
+            )
+        )
+    )
+    target1_status = str(
+        persisted_plan.get('target1ReductionStatus') or ''
+    ).strip().lower()
+    target1_completed = bool(
+        persisted_plan.get('target1Completed')
+        or target1_status in ('filled', 'completed')
+    )
+    target1_pending = target1_status in (
+        'intent_recorded', 'pending_submission', 'pending_reconciliation',
+        'submitted', 'new', 'accepted', 'partially_filled',
     )
     event_context = event_context if isinstance(event_context, dict) else {}
     event_risk = str(event_context.get('eventRisk') or 'Unknown').upper()
@@ -43339,14 +46108,26 @@ def _pa_build_dynamic_exit_plan(position, persisted_plan, initial_stop, target_1
         action = 'emergency_exit'
         reason = 'Current price %.2f is at/below ratcheted stop %.2f' % (current_price, current_stop)
         thesis_status = 'invalid'
-    elif target_1 and current_price >= target_1:
-        action = 'target_reached'
-        reason = 'Current price %.2f reached fixed structural target %.2f' % (current_price, target_1)
+    elif target_2 and current_price >= target_2:
+        action = 'target2_reached'
+        reason = 'Current price %.2f reached terminal structural target %.2f' % (current_price, target_2)
         thesis_status = 'target_met'
+    elif target_1 and current_price >= target_1 and not target1_completed and not target1_pending:
+        action = 'target_reached'
+        reason = 'Current price %.2f reached first structural target %.2f' % (current_price, target_1)
+        thesis_status = 'target_met'
+    elif target_1 and current_price >= target_1 and target1_pending:
+        action = 'target1_pending'
+        reason = 'First-target reduction is awaiting broker reconciliation; no duplicate order is allowed'
+        thesis_status = 'target_pending'
     elif time_stop:
-        action = 'time_exit_review'
-        reason = 'Time stop reached after %d days without positive trend confirmation' % days_held
-        thesis_status = 'review'
+        action = 'time_exit'
+        reason = (
+            'Leveraged-product one-day time limit reached'
+            if is_leveraged
+            else 'Time stop reached after %d days without positive trend confirmation' % days_held
+        )
+        thesis_status = 'invalid'
     elif trend_invalid:
         action = 'thesis_review'
         reason = 'Price trend and RSI jointly indicate thesis deterioration'
@@ -43380,7 +46161,7 @@ def _pa_build_dynamic_exit_plan(position, persisted_plan, initial_stop, target_1
     else:
         data_quality = 'GOOD'
     return {
-        'version': 2,
+        'version': 3,
         'state': state,
         'action': action,
         'reason': reason,
@@ -43389,6 +46170,9 @@ def _pa_build_dynamic_exit_plan(position, persisted_plan, initial_stop, target_1
         'currentStop': current_stop,
         'target1': _entry_round_price(target_1, 'down') if target_1 else None,
         'target2': _entry_round_price(target_2, 'down') if target_2 else None,
+        'target1ReducePct': policy['target1ReducePct'],
+        'target1Completed': target1_completed,
+        'target1ReductionStatus': target1_status or 'eligible',
         'targetPolicy': 'fixed_structural',
         'stopPolicy': 'ratchet_only',
         'initialRiskPerShare': round(initial_risk, 4) if initial_risk else None,
@@ -43401,7 +46185,8 @@ def _pa_build_dynamic_exit_plan(position, persisted_plan, initial_stop, target_1
         'marketValue': round(market_value, 2),
         'allocationPct': round(allocation_pct, 2) if allocation_pct is not None else None,
         'daysHeld': days_held,
-        'timeStopDays': policy['timeStopDays'],
+        'timeStopDays': effective_time_stop_days,
+        'isLeveraged': is_leveraged,
         'breakEvenAtR': policy['breakEvenAtR'],
         'trailStartsAtR': policy['trailStartsAtR'],
         'atrStopMultiple': policy['atrStopMultiple'],
@@ -43894,7 +46679,8 @@ def _pa_exit_scan_headless_legacy(uid, entry_plans, mode, dry_run=False, risk_pr
 
 def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='medium',
                            time_horizon='mid', trade_mode='paper', run_id='',
-                           ai_review=True, suppress_discord=False):
+                           ai_review=True, suppress_discord=False,
+                           deadline_seconds=None):
     """Unified position lifecycle and exit engine.
 
     The broker owns order state, the persisted entry packet owns initial risk,
@@ -43903,8 +46689,35 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
     geometry, cancel protection, or delay a hard stop.
     """
     exit_started_at = time.monotonic()
+    scan_id = str(run_id or _pa_new_run_id('exit'))
+    runtime_limit = (
+        max(10.0, float(deadline_seconds))
+        if deadline_seconds is not None
+        else (50.0 if scan_id.startswith('position-guard-') else 175.0)
+    )
+    stop_seen = False
+    deadline_seen = False
     phase_started_at = exit_started_at
     phase_timings = {}
+
+    def discretionary_pause_reason():
+        """Pause optional mutations while allowing hard exits/protection upkeep."""
+        nonlocal stop_seen, deadline_seen
+        if run_id and _pa_check_stop_requested(
+            uid,
+            expected_run_id=scan_id,
+        ):
+            stop_seen = True
+            return 'run_stop_requested'
+        if time.monotonic() - exit_started_at >= runtime_limit:
+            deadline_seen = True
+            return 'exit_deadline_exceeded'
+        try:
+            _backend_enforce_runtime_budget()
+        except _BackendStageDeadlineExceeded:
+            deadline_seen = True
+            return 'pipeline_stage_deadline_exceeded'
+        return ''
 
     def record_phase_timing(phase):
         nonlocal phase_started_at
@@ -44014,7 +46827,6 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
     policy = _pa_exit_policy(risk_profile, time_horizon)
     results = []
     submitted = []
-    scan_id = str(run_id or 'exit-%d' % int(time.time()))
 
     def fallback_geometry(avg_entry, current_price, indicators):
         baseline = avg_entry if avg_entry > 0 else current_price
@@ -44053,11 +46865,15 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
                 time.sleep(0.35)
         return False
 
-    def cancel_managed_orders(symbol, protection):
+    def cancel_managed_orders(symbol, protection, discretionary=False):
         if protection.get('hasExternalOrders'):
             return False, 'External sell order ownership prevents automatic cancellation'
         failed = []
         for order_id in protection.get('orderIds') or []:
+            if discretionary:
+                pause_reason = discretionary_pause_reason()
+                if pause_reason:
+                    return False, 'Discretionary cancellation paused: %s' % pause_reason
             try:
                 response = requests.delete(f'{base_url}/v2/orders/{order_id}', headers=headers, timeout=10)
                 if response.status_code not in (200, 204, 404):
@@ -44081,7 +46897,16 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
             return False, 'Broker has not confirmed cancellation of prior sell orders'
         return True, None
 
-    def submit_exit_order(symbol, qty, payload):
+    def submit_exit_order(symbol, qty, payload, discretionary=False):
+        if discretionary:
+            pause_reason = discretionary_pause_reason()
+            if pause_reason:
+                return {
+                    'success': False,
+                    'status': 'stopped',
+                    'code': pause_reason,
+                    'message': 'Discretionary order submission paused.',
+                }
         body = {
             'symbol': symbol,
             'side': 'sell',
@@ -44093,8 +46918,23 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
             'confirmed': True,
             **payload,
         }
-        response, _ = _pa_call_endpoint(uid, '/api/ai/execution/order', ai_execution_order, body)
-        return response if isinstance(response, dict) else {'success': False, 'status': 'api_error'}
+        try:
+            response, _ = _pa_call_endpoint(
+                uid, '/api/ai/execution/order', ai_execution_order, body,
+            )
+            return (
+                response if isinstance(response, dict)
+                else {'success': False, 'status': 'api_error'}
+            )
+        except Exception as exc:
+            # The intent and client id are already durable. A transport failure
+            # after submission must be reconciled, never retried under a new id.
+            return {
+                'success': False,
+                'status': 'submission_unknown',
+                'code': 'order_status_unknown',
+                'message': 'Broker submission outcome is unknown: %s' % str(exc)[:140],
+            }
 
     for position in positions or []:
         symbol = str(position.get('symbol') or '').upper()
@@ -44211,6 +47051,84 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
             if broker_stop and (not prior_stop or broker_stop > prior_stop):
                 persisted_plan = {**persisted_plan, 'currentStop': broker_stop}
 
+        # Reconcile a first-target reduction from durable intent plus the broker
+        # position quantity. This is deliberately independent of an in-memory
+        # run id so a restart cannot submit the same reduction twice.
+        target1_reduction_status = str(
+            persisted_plan.get('target1ReductionStatus') or ''
+        ).strip().lower()
+        target1_order_id = str(persisted_plan.get('target1ReductionOrderId') or '')
+        prior_position_qty = _pa_safe_float(
+            persisted_plan.get('target1PositionQtyBefore'), None,
+        )
+        submitted_reduction_qty = _pa_safe_float(
+            persisted_plan.get('target1ReductionQty'), None,
+        )
+        qty_confirms_target1_fill = bool(
+            prior_position_qty is not None
+            and submitted_reduction_qty is not None
+            and submitted_reduction_qty > 0
+            and qty <= max(
+                0.0,
+                prior_position_qty - submitted_reduction_qty,
+            ) + max(1e-6, prior_position_qty * 1e-6)
+        )
+        last_order_matches_target1 = bool(
+            target1_order_id
+            and str(persisted_plan.get('lastOrderId') or '') == target1_order_id
+        )
+        last_target1_order_status = (
+            str(persisted_plan.get('lastOrderStatus') or '').strip().lower()
+            if last_order_matches_target1 else ''
+        )
+        if (
+            target1_reduction_status in (
+                'intent_recorded', 'pending_submission', 'pending_reconciliation',
+                'submitted', 'new', 'accepted', 'partially_filled',
+            )
+            and (
+                qty_confirms_target1_fill
+                or last_target1_order_status == 'filled'
+            )
+        ):
+            target1_reduction_status = 'filled'
+            persisted_plan = {
+                **persisted_plan,
+                'target1Completed': True,
+                'target1ReductionStatus': 'filled',
+                'target1FilledAt': (
+                    persisted_plan.get('target1FilledAt') or _pa_utc_iso()
+                ),
+            }
+            _pa_update_managed_position(
+                uid, normalized_trade_mode, symbol,
+                target1Completed=True,
+                target1ReductionStatus='filled',
+                target1FilledAt=persisted_plan.get('target1FilledAt'),
+                protectionRefreshRequired=True,
+            )
+        elif (
+            target1_reduction_status in (
+                'intent_recorded', 'pending_submission', 'pending_reconciliation',
+                'submitted', 'new', 'accepted', 'partially_filled',
+            )
+            and last_target1_order_status in (
+                'rejected', 'canceled', 'cancelled', 'expired', 'suspended',
+            )
+        ):
+            target1_reduction_status = last_target1_order_status
+            persisted_plan = {
+                **persisted_plan,
+                'target1Completed': False,
+                'target1ReductionStatus': last_target1_order_status,
+            }
+            _pa_update_managed_position(
+                uid, normalized_trade_mode, symbol,
+                target1Completed=False,
+                target1ReductionStatus=last_target1_order_status,
+                protectionRefreshRequired=True,
+            )
+
         if side not in ('long', ''):
             signal = {
                 'symbol': symbol,
@@ -44258,9 +47176,10 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
             'triggerAction': trigger_action,
             'action': trigger_action,
             'exitDecision': (
-                'sell_now' if trigger_action == 'emergency_exit'
-                else 'place_target_limit' if trigger_action == 'target_reached'
-                else 'manual_review' if trigger_action in ('time_exit_review', 'thesis_review', 'event_review', 'concentration_review')
+                'sell_now' if trigger_action in ('emergency_exit', 'target2_reached', 'time_exit')
+                else 'reduce_position' if trigger_action == 'target_reached'
+                else 'reconcile_order' if trigger_action == 'target1_pending'
+                else 'manual_review' if trigger_action in ('thesis_review', 'event_review', 'concentration_review')
                 else 'hold'
             ),
             'reason': dynamic_plan.get('reason'),
@@ -44285,6 +47204,10 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
             'status': 'dry_run' if dry_run else 'monitoring',
             'aiAuthority': 'challenge_soft_exit_only',
         }
+        discretionary_pause = discretionary_pause_reason()
+        if discretionary_pause:
+            signal['discretionaryMutationsPaused'] = True
+            signal['pauseReason'] = discretionary_pause
 
         _pa_update_managed_position(
             uid, normalized_trade_mode, symbol,
@@ -44296,7 +47219,7 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
             initialRiskPerShare=dynamic_plan.get('initialRiskPerShare'),
             highWaterMark=dynamic_plan.get('highWaterMark'),
             exitState=dynamic_plan.get('state'),
-            exitPolicyVersion=2,
+            exitPolicyVersion=3,
             planSource=source,
             lastExitAction=trigger_action,
             lastExitReason=dynamic_plan.get('reason'),
@@ -44312,28 +47235,76 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
             eventObservedAt=event_context.get('observedAt'),
         )
 
-        if trigger_action == 'emergency_exit':
-            if protection.get('hasExternalOrders'):
+        if trigger_action in ('emergency_exit', 'target2_reached', 'time_exit'):
+            terminal_is_mandatory = bool(
+                trigger_action == 'emergency_exit'
+                or (
+                    trigger_action == 'time_exit'
+                    and dynamic_plan.get('isLeveraged')
+                )
+            )
+            terminal_is_discretionary = not terminal_is_mandatory
+            terminal_exit = {
+                'emergency_exit': {
+                    'source': 'exit_scan_hard_stop',
+                    'suffix': 'risk-exit',
+                    'submittedAction': 'emergency_exit_submitted',
+                },
+                'target2_reached': {
+                    'source': 'exit_scan_target2',
+                    'suffix': 'target2-exit',
+                    'submittedAction': 'target2_exit_submitted',
+                },
+                'time_exit': {
+                    'source': 'exit_scan_time_stop',
+                    'suffix': 'time-exit',
+                    'submittedAction': 'time_exit_submitted',
+                },
+            }[trigger_action]
+            if discretionary_pause and terminal_is_discretionary:
+                signal['action'] = 'stopped_before_terminal_exit'
+                signal['status'] = 'stopped'
+                signal['reason'] += (
+                    '; discretionary terminal exit paused: %s'
+                    % discretionary_pause
+                )
+            elif protection.get('hasExternalOrders'):
                 signal['action'] = 'manual_intervention'
                 signal['status'] = 'blocked_external_order'
-                signal['reason'] += '; external sell order must be reconciled before automatic liquidation'
+                signal['reason'] += '; external sell order must be reconciled manually and will not be canceled by AlphaLab'
             elif can_submit:
-                cleared, cancel_error = cancel_managed_orders(symbol, protection)
+                cleared, cancel_error = cancel_managed_orders(
+                    symbol,
+                    protection,
+                    discretionary=terminal_is_discretionary,
+                )
                 if not cleared:
                     signal['status'] = 'blocked'
                     signal['reason'] += '; ' + str(cancel_error)
                 else:
-                    order_response = submit_exit_order(symbol, qty, {
-                        'type': 'market',
-                        'time_in_force': 'day',
-                        'executionSource': 'exit_scan_hard_stop',
-                        'client_order_id': ('alphalab-%s-%s-risk-exit' % (scan_id[:16], symbol))[:48],
-                    })
+                    order_response = submit_exit_order(
+                        symbol,
+                        qty,
+                        {
+                            'type': 'market',
+                            'time_in_force': 'day',
+                            'executionSource': terminal_exit['source'],
+                            'client_order_id': (
+                                'alphalab-%s-%s-%s'
+                                % (
+                                    scan_id[:14],
+                                    symbol,
+                                    terminal_exit['suffix'],
+                                )
+                            )[:48],
+                        },
+                        discretionary=terminal_is_discretionary,
+                    )
                     signal['status'] = order_response.get('status') or 'unknown'
                     signal['orderId'] = (order_response.get('order') or {}).get('id')
                     signal['exitOrderType'] = 'market'
                     if order_response.get('success'):
-                        signal['action'] = 'emergency_exit_submitted'
+                        signal['action'] = terminal_exit['submittedAction']
                         submitted.append(dict(signal))
                         _pa_update_managed_position(
                             uid, normalized_trade_mode, symbol,
@@ -44346,50 +47317,192 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
                 signal['reason'] += '; automatic order submission is not authorized'
 
         elif trigger_action == 'target_reached':
-            if protection.get('hasTarget'):
-                signal['action'] = 'target_managed'
-                signal['status'] = 'protected' if protection.get('hasStop') else 'target_order_active'
-                signal['exitOrderType'] = 'limit'
-                signal['exitPrice'] = protection.get('targetPrice') or dynamic_plan.get('target1')
-                signal['reason'] = 'Broker target order is already active; no duplicate order submitted'
+            discretionary_pause = (
+                discretionary_pause_reason() or discretionary_pause
+            )
+            reduction_pct = _pa_safe_float(
+                dynamic_plan.get('target1ReducePct'),
+                policy.get('target1ReducePct'),
+            ) or 50.0
+            reduction_qty = _pa_target1_reduction_quantity(qty, reduction_pct)
+            signal['target1ReducePct'] = reduction_pct
+            signal['target1ReductionQty'] = reduction_qty
+            signal['remainingQtyAfterTarget1'] = round(max(0.0, qty - reduction_qty), 6)
+            if discretionary_pause:
+                signal['action'] = 'stopped_before_target1_reduce'
+                signal['status'] = 'stopped'
+                signal['reason'] += (
+                    '; discretionary first-target reduction paused: %s'
+                    % discretionary_pause
+                )
             elif protection.get('hasExternalOrders'):
                 signal['action'] = 'review_open_orders'
                 signal['status'] = 'review'
-                signal['reason'] += '; external sell order prevents automatic target submission'
+                signal['reason'] += '; external sell order prevents automatic reduction and will not be canceled by AlphaLab'
+            elif reduction_qty <= 0 or reduction_qty >= qty:
+                signal['action'] = 'manual_intervention'
+                signal['status'] = 'blocked'
+                signal['reason'] += '; a non-terminal first-target quantity could not be computed'
             elif can_submit:
-                cleared, cancel_error = cancel_managed_orders(symbol, protection)
+                cleared, cancel_error = cancel_managed_orders(
+                    symbol, protection, discretionary=True,
+                )
                 if not cleared:
                     signal['status'] = 'blocked'
                     signal['reason'] += '; ' + str(cancel_error)
                 else:
-                    target_price = dynamic_plan.get('target1')
-                    order_response = submit_exit_order(symbol, qty, {
-                        'type': 'limit',
-                        'limit_price': target_price,
-                        'time_in_force': 'day',
-                        'executionSource': 'exit_scan_target',
-                        'client_order_id': ('alphalab-%s-%s-target' % (scan_id[:18], symbol))[:48],
-                    })
-                    signal['status'] = order_response.get('status') or 'unknown'
-                    signal['orderId'] = (order_response.get('order') or {}).get('id')
-                    signal['exitOrderType'] = 'limit'
-                    signal['exitPrice'] = target_price
-                    if order_response.get('success'):
-                        signal['action'] = 'target_exit_submitted'
-                        submitted.append(dict(signal))
-                        _pa_update_managed_position(
-                            uid, normalized_trade_mode, symbol,
-                            status='exit_submitted', exitOrderId=signal.get('orderId'),
+                    attempt = int(_pa_safe_float(
+                        persisted_plan.get('target1ReductionAttempt'), 0,
+                    ) or 0) + 1
+                    client_order_id = (
+                        'alphalab-%s-%s-t1-reduce-%d'
+                        % (scan_id[:12], symbol, attempt)
+                    )[:48]
+                    intent_at = _pa_utc_iso()
+                    intent_persisted = _pa_update_managed_position(
+                        uid, normalized_trade_mode, symbol,
+                        target1Completed=False,
+                        target1ReductionStatus='intent_recorded',
+                        target1ReductionAttempt=attempt,
+                        target1ReductionClientOrderId=client_order_id,
+                        target1ReductionQty=reduction_qty,
+                        target1PositionQtyBefore=qty,
+                        target1SubmittedAt=intent_at,
+                    )
+                    if intent_persisted is False:
+                        signal['action'] = 'target1_persistence_blocked'
+                        signal['status'] = 'blocked'
+                        signal['reason'] += (
+                            '; first-target intent could not be persisted, '
+                            'so no broker order was submitted'
                         )
                     else:
-                        signal['reason'] += '; broker submission failed: %s' % str(order_response.get('message') or 'unknown')[:160]
+                        order_response = submit_exit_order(symbol, reduction_qty, {
+                            'type': 'market',
+                            'time_in_force': 'day',
+                            'executionSource': 'exit_scan_target1_reduce',
+                            'client_order_id': client_order_id,
+                        }, discretionary=True)
+                        signal['status'] = order_response.get('status') or 'unknown'
+                        signal['orderId'] = (order_response.get('order') or {}).get('id')
+                        signal['exitOrderType'] = 'market'
+                        signal['exitPrice'] = dynamic_plan.get('target1')
+                        if order_response.get('success'):
+                            signal['action'] = 'target1_reduce_submitted'
+                            submitted.append(dict(signal))
+                            _pa_update_managed_position(
+                                uid, normalized_trade_mode, symbol,
+                                status='target1_reduce_submitted',
+                                exitOrderId=signal.get('orderId'),
+                                target1ReductionOrderId=signal.get('orderId'),
+                                target1ReductionStatus='submitted',
+                            )
+                        else:
+                            ambiguous = str(
+                                order_response.get('code') or order_response.get('status') or ''
+                            ).lower() in (
+                                'order_status_unknown', 'submission_unknown',
+                                'pending_reconciliation',
+                            )
+                            ambiguous = bool(
+                                ambiguous
+                                or order_response.get('retryable') is True
+                                or (
+                                    str(order_response.get('status') or '').lower() == 'api_error'
+                                    and not order_response.get('httpStatus')
+                                )
+                            )
+                            _pa_update_managed_position(
+                                uid, normalized_trade_mode, symbol,
+                                target1ReductionStatus=(
+                                    'pending_reconciliation' if ambiguous else 'submission_failed'
+                                ),
+                            )
+                            signal['reason'] += '; broker submission failed: %s' % str(order_response.get('message') or 'unknown')[:160]
             else:
-                signal['status'] = 'target_ready'
+                signal['status'] = 'target1_reduce_ready'
+
+        elif trigger_action == 'target1_pending':
+            signal['action'] = (
+                'target1_reduce_active'
+                if protection.get('hasTarget') and protection.get('managedByAlphaLab')
+                else 'target1_pending_reconciliation'
+            )
+            signal['status'] = (
+                'target_order_active'
+                if protection.get('hasTarget') and protection.get('managedByAlphaLab')
+                else 'pending_reconciliation'
+            )
+            signal['reason'] = (
+                'First-target reduction is active at the broker; no duplicate order submitted'
+                if protection.get('hasTarget') and protection.get('managedByAlphaLab')
+                else 'First-target reduction intent is durable but broker outcome is not confirmed; no duplicate order submitted'
+            )
 
         else:
             desired_stop = _pa_safe_float(dynamic_plan.get('currentStop'), None)
             broker_stop = _pa_safe_float(protection.get('stopPrice'), None)
-            if protection.get('hasFullStopCoverage'):
+            staged_target1_qty = _pa_target1_reduction_quantity(
+                qty,
+                dynamic_plan.get('target1ReducePct') or policy.get('target1ReducePct'),
+            )
+            oversized_legacy_target = bool(
+                protection.get('hasTarget')
+                and protection.get('managedByAlphaLab')
+                and not protection.get('hasExternalOrders')
+                and not dynamic_plan.get('target1Completed')
+                and (_pa_safe_float(protection.get('targetQty'), 0) or 0)
+                > staged_target1_qty + coverage_tolerance
+            )
+            if oversized_legacy_target:
+                signal['protectionMigrationRequired'] = True
+                if can_submit:
+                    cleared, cancel_error = cancel_managed_orders(symbol, protection)
+                    if not cleared:
+                        signal['action'] = 'staged_exit_migration_required'
+                        signal['status'] = 'blocked'
+                        signal['reason'] = str(cancel_error)
+                    else:
+                        order_response = submit_exit_order(symbol, qty, {
+                            'type': 'stop',
+                            'stop_price': desired_stop,
+                            'time_in_force': 'gtc',
+                            'executionSource': 'exit_scan_staged_migration',
+                            'client_order_id': (
+                                'alphalab-%s-%s-staged-stop'
+                                % (scan_id[:14], symbol)
+                            )[:48],
+                        })
+                        signal['status'] = order_response.get('status') or 'unknown'
+                        signal['orderId'] = (order_response.get('order') or {}).get('id')
+                        signal['exitOrderType'] = 'stop'
+                        if order_response.get('success'):
+                            signal['action'] = 'migrate_staged_protection'
+                            signal['reason'] = (
+                                'Replaced AlphaLab legacy full-quantity target OCO '
+                                'with a full downside stop; staged targets are now monitored'
+                            )
+                            submitted.append(dict(signal))
+                            _pa_update_managed_position(
+                                uid, normalized_trade_mode, symbol,
+                                status='protected',
+                                protectionOrderId=signal.get('orderId'),
+                                protectionType='stop',
+                            )
+                        else:
+                            signal['action'] = 'staged_exit_migration_required'
+                            signal['reason'] = (
+                                'Legacy target was canceled but replacement stop failed: %s'
+                                % str(order_response.get('message') or 'unknown')[:160]
+                            )
+                else:
+                    signal['action'] = 'staged_exit_migration_required'
+                    signal['status'] = 'review'
+                    signal['reason'] = (
+                        'AlphaLab legacy full-quantity target must be migrated to '
+                        'staged exits; automatic submission is not authorized'
+                    )
+            elif protection.get('hasFullStopCoverage'):
                 signal['action'] = 'protected_review' if trigger_action != 'hold' else (
                     'protected_hold' if protection.get('isComplete') else 'protected_stop_only'
                 )
@@ -44442,46 +47555,24 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
                         signal['status'] = 'blocked'
                         signal['reason'] = str(cancel_error)
                     else:
-                        whole_qty = qty >= 1 and abs(qty - round(qty)) < 1e-6
-                        if whole_qty:
-                            order_response = submit_exit_order(symbol, int(round(qty)), {
-                                'type': 'limit',
-                                'order_class': 'oco',
-                                'take_profit': {'limit_price': dynamic_plan.get('target1')},
-                                'stop_loss': {'stop_price': desired_stop},
-                                'time_in_force': 'gtc',
-                                'executionSource': 'exit_scan_protection',
-                                'client_order_id': ('alphalab-%s-%s-oco' % (scan_id[:20], symbol))[:48],
-                            })
-                            order_type = 'oco'
-                            # If linked protection is unavailable, preserve downside first.
-                            if not order_response.get('success'):
-                                order_response = submit_exit_order(symbol, qty, {
-                                    'type': 'stop',
-                                    'stop_price': desired_stop,
-                                    'time_in_force': 'gtc',
-                                    'executionSource': 'exit_scan_stop_fallback',
-                                    'client_order_id': ('alphalab-%s-%s-stop' % (scan_id[:18], symbol))[:48],
-                                })
-                                order_type = 'stop'
-                        else:
-                            order_response = submit_exit_order(symbol, qty, {
-                                'type': 'stop',
-                                'stop_price': desired_stop,
-                                'time_in_force': 'gtc',
-                                'executionSource': 'exit_scan_fractional_stop',
-                                'client_order_id': ('alphalab-%s-%s-frac-stop' % (scan_id[:14], symbol))[:48],
-                            })
-                            order_type = 'stop'
+                        # A full-quantity OCO at target one would liquidate the
+                        # entire position. Keep full downside coverage broker-side
+                        # and let Position Guard route the partial target itself.
+                        order_response = submit_exit_order(symbol, qty, {
+                            'type': 'stop',
+                            'stop_price': desired_stop,
+                            'time_in_force': 'gtc',
+                            'executionSource': 'exit_scan_stop_protection',
+                            'client_order_id': ('alphalab-%s-%s-stop' % (scan_id[:18], symbol))[:48],
+                        })
+                        order_type = 'stop'
                         signal['status'] = order_response.get('status') or 'unknown'
                         signal['orderId'] = (order_response.get('order') or {}).get('id')
                         signal['exitOrderType'] = order_type
                         if order_response.get('success'):
                             signal['action'] = 'attach_protection'
                             signal['reason'] = (
-                                'Submitted linked stop/target protection'
-                                if order_type == 'oco'
-                                else 'Submitted persistent downside-first GTC stop; target remains monitored by Position Guard'
+                                'Submitted persistent downside-first GTC stop; staged targets remain monitored by Position Guard'
                             )
                             submitted.append(dict(signal))
                             _pa_update_managed_position(
@@ -44504,22 +47595,36 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
         results.append(signal)
 
     record_phase_timing('position_reconciliation')
-    ai_stats = _pa_exit_ai_challenge(uid, results, enabled=ai_review and str(mode).lower() in ('ai', 'hybrid'))
+    final_pause = discretionary_pause_reason()
+    ai_stats = _pa_exit_ai_challenge(
+        uid,
+        results,
+        enabled=(
+            ai_review
+            and str(mode).lower() in ('ai', 'hybrid')
+            and not final_pause
+        ),
+    )
     record_phase_timing('ai_challenge')
     return {
         'holdingsScanned': len(results),
         'signals': results,
         'results': results,
         'submitted': submitted,
-        'error': None,
+        'error': 'exit_deadline_exceeded' if deadline_seen else None,
+        'stoppedAfterProtection': stop_seen,
+        'deadlineExceeded': deadline_seen,
+        'discretionaryPauseReason': final_pause or None,
         'brokerErrors': broker_errors,
-        'sellNowCount': sum(1 for signal in results if signal.get('triggerAction') == 'emergency_exit'),
-        'targetLimitCount': sum(1 for signal in results if signal.get('triggerAction') == 'target_reached'),
+        'sellNowCount': sum(1 for signal in results if signal.get('triggerAction') in ('emergency_exit', 'target2_reached', 'time_exit')),
+        'firstTargetReduceCount': sum(1 for signal in results if signal.get('triggerAction') == 'target_reached'),
+        'terminalCloseCount': sum(1 for signal in results if signal.get('triggerAction') in ('emergency_exit', 'target2_reached', 'time_exit')),
+        'targetLimitCount': sum(1 for signal in results if signal.get('triggerAction') in ('target_reached', 'target2_reached')),
         'holdCount': sum(1 for signal in results if signal.get('triggerAction') == 'hold'),
-        'reviewCount': sum(1 for signal in results if signal.get('triggerAction') in ('time_exit_review', 'thesis_review', 'event_review', 'concentration_review', 'unsupported_short_position')),
+        'reviewCount': sum(1 for signal in results if signal.get('triggerAction') in ('thesis_review', 'event_review', 'concentration_review', 'unsupported_short_position')),
         'blockedCount': sum(1 for signal in results if str(signal.get('status') or '').startswith('blocked') or signal.get('status') == 'unprotected'),
         'protectedCount': sum(1 for signal in results if str(signal.get('status') or '').startswith('protected')),
-        'protectionAttachedCount': sum(1 for signal in results if signal.get('action') == 'attach_protection'),
+        'protectionAttachedCount': sum(1 for signal in results if signal.get('action') in ('attach_protection', 'migrate_staged_protection')),
         'ratchetedStopCount': sum(1 for signal in results if signal.get('action') == 'ratchet_stop'),
         'withEntryPlanCount': sum(1 for signal in results if signal.get('exitPlanSource') in ('current_entry_plan', 'managed_plan')),
         'fallbackPlanCount': sum(1 for signal in results if signal.get('exitPlanSource') == 'broker_reconstructed'),
@@ -44527,11 +47632,11 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
         'liveAutoAuthorized': unattended_live_allowed,
         'orderAuthority': order_authority,
         'scanPolicy': {
-            'engine': 'position_lifecycle_v2',
+            'engine': 'position_lifecycle_v3_staged_exits',
             'guardIntervalSeconds': _PA_POSITION_GUARD_INTERVAL_SECONDS,
             'initialStop': 'fixed_at_entry',
             'dynamicStop': 'ratchet_only',
-            'target': 'fixed_structural',
+            'target': 'fixed_structural_staged_reduce_then_close',
             **policy,
         },
         'marketData': market_meta,
@@ -44548,15 +47653,26 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
 
 def _pa_maybe_start_position_guard(uid, config, now_et, mode, risk_profile,
                                    time_horizon, trade_mode, market_open):
-    """Run protection independently from scanner scheduling and its breaker."""
+    """Run protection under the same per-user routing lease as full pipelines.
+
+    A guard and a seven-stage run both reconcile and may route exits.  Sharing
+    the reservation makes the broker read-check-submit sequence single-owner for
+    a user, while this lightweight source intentionally does not consume the
+    global research-scanner capacity slot.
+    """
     if not market_open:
         return False
+    if not _pa_try_reserve_user_run(uid, 'position_guard'):
+        return False
     now_ts = time.time()
+    guard_id = _pa_new_run_id('position-guard-%s' % uid[:8])
     with _PA_POSITION_GUARD_LOCK:
         state = _PA_POSITION_GUARD_STATE.get(uid, {})
         if state.get('running'):
+            _pa_release_user_run(uid)
             return False
         if now_ts - float(state.get('lastStartedTs') or 0) < _PA_POSITION_GUARD_INTERVAL_SECONDS:
+            _pa_release_user_run(uid)
             return False
         _PA_POSITION_GUARD_STATE[uid] = {
             **state,
@@ -44565,9 +47681,10 @@ def _pa_maybe_start_position_guard(uid, config, now_et, mode, risk_profile,
             'lastStartedAt': now_et.isoformat(),
             'tradeMode': trade_mode,
             'mode': mode,
+            'runId': guard_id,
+            'stopRequestedAt': None,
         }
     def _run_guard():
-        guard_id = 'position-guard-%s-%d' % (uid[:8], int(time.time()))
         summary = None
         error = None
         try:
@@ -44585,19 +47702,22 @@ def _pa_maybe_start_position_guard(uid, config, now_et, mode, risk_profile,
                 suppress_discord=True,
             )
             summary['orderLifecycle'] = lifecycle
+            summary_error = str(summary.get('error') or '').strip()
             durable_cfg = _pa_get_config(uid) or dict(config or {})
-            durable_cfg['position_guard_has_open_positions'] = bool(
-                int(summary.get('holdingsScanned') or 0) > 0
-            )
-            durable_cfg['position_guard_last_heartbeat_at'] = _pa_utc_iso()
-            durable_cfg['position_guard_last_error'] = ''
-            _pa_save_config(uid, durable_cfg)
+            _pa_patch_config(uid, {
+                'position_guard_has_open_positions': bool(
+                    int(summary.get('holdingsScanned') or 0) > 0
+                ),
+                'position_guard_last_heartbeat_at': _pa_utc_iso(),
+                'position_guard_last_error': summary_error,
+            })
             material_signals = [
                 signal for signal in (summary.get('signals') or [])
                 if signal.get('triggerAction') == 'emergency_exit'
                 or signal.get('action') in (
                     'attach_protection', 'protection_required', 'review_open_orders',
-                    'manual_intervention'
+                    'manual_intervention', 'target1_reduce_submitted',
+                    'target2_exit_submitted', 'time_exit_submitted',
                 ) or signal.get('status') in (
                     'blocked', 'blocked_external_order', 'unprotected'
                 )
@@ -44638,19 +47758,23 @@ def _pa_maybe_start_position_guard(uid, config, now_et, mode, risk_profile,
                         'description': 'A material position protection condition changed.',
                     })
                     if notification.get('sent'):
-                        durable_cfg['position_guard_alert_fingerprint'] = fingerprint
-                        durable_cfg['position_guard_alerted_at'] = _pa_utc_iso()
-                        _pa_save_config(uid, durable_cfg)
+                        _pa_patch_config(uid, {
+                            'position_guard_alert_fingerprint': fingerprint,
+                            'position_guard_alerted_at': _pa_utc_iso(),
+                        })
                         with _PA_POSITION_GUARD_LOCK:
                             _PA_POSITION_GUARD_STATE.setdefault(uid, {})['lastAlertFingerprint'] = fingerprint
             else:
                 durable_cfg = _pa_get_config(uid) or {}
                 if durable_cfg.get('position_guard_alert_fingerprint'):
-                    durable_cfg['position_guard_alert_fingerprint'] = ''
-                    durable_cfg['position_guard_cleared_at'] = _pa_utc_iso()
-                    _pa_save_config(uid, durable_cfg)
+                    _pa_patch_config(uid, {
+                        'position_guard_alert_fingerprint': '',
+                        'position_guard_cleared_at': _pa_utc_iso(),
+                    })
                 with _PA_POSITION_GUARD_LOCK:
                     _PA_POSITION_GUARD_STATE.setdefault(uid, {})['lastAlertFingerprint'] = ''
+            if summary_error:
+                raise RuntimeError(summary_error)
             _pa_log('[PositionGuard] completed user=%s holdings=%d submitted=%d blocked=%d' % (
                 uid[:8], summary.get('holdingsScanned', 0), len(summary.get('submitted') or []),
                 summary.get('blockedCount', 0)))
@@ -44666,10 +47790,10 @@ def _pa_maybe_start_position_guard(uid, config, now_et, mode, risk_profile,
                 'reason': error,
                 'action': 'Protection monitoring will retry automatically.',
             })
-            durable_cfg = _pa_get_config(uid) or dict(config or {})
-            durable_cfg['position_guard_last_heartbeat_at'] = _pa_utc_iso()
-            durable_cfg['position_guard_last_error'] = error
-            _pa_save_config(uid, durable_cfg)
+            _pa_patch_config(uid, {
+                'position_guard_last_heartbeat_at': _pa_utc_iso(),
+                'position_guard_last_error': error,
+            })
         finally:
             with _PA_POSITION_GUARD_LOCK:
                 previous = _PA_POSITION_GUARD_STATE.get(uid, {})
@@ -44685,12 +47809,14 @@ def _pa_maybe_start_position_guard(uid, config, now_et, mode, risk_profile,
                         'blockedCount': summary.get('blockedCount', 0) if summary else 0,
                     },
                 }
+            _pa_release_user_run(uid)
 
     try:
         threading.Thread(target=_run_guard, daemon=True, name='position-guard-%s' % uid[:8]).start()
     except Exception:
         with _PA_POSITION_GUARD_LOCK:
             _PA_POSITION_GUARD_STATE[uid]['running'] = False
+        _pa_release_user_run(uid)
         raise
     return True
 
@@ -44820,8 +47946,10 @@ def _pa_build_pipeline_debug_dump(uid, run_id, trigger, mode, risk_profile, time
     exit_results = run_context.get('exit_results') or {}
     symbols = run_context.get('symbols') or [r.get('symbol') for r in market_results if r.get('symbol')]
     scanner_passed = [r.get('symbol') for r in market_results if r.get('symbol')]
+    outcome = _pa_pipeline_outcome(summary)
     dump = {
-        'success': (summary or {}).get('errors', 0) == 0,
+        'success': outcome == 'success',
+        'outcome': outcome,
         'runId': run_id,
         'userId': uid,
         'trigger': trigger,
@@ -44850,7 +47978,7 @@ def _pa_build_pipeline_debug_dump(uid, run_id, trigger, mode, risk_profile, time
             'passedCandidates': scanner_passed,
             'topSymbols': [r.get('symbol') for r in sorted(
                 market_results,
-                key=lambda x: (x.get('overallScore') or x.get('trendScore') or 0,
+                key=lambda x: (_pa_safe_float(x.get('selectionScore'), 0) or 0,
                                x.get('trendConfidence') or x.get('confidence') or 0),
                 reverse=True
             )[:5] if r.get('symbol')],
@@ -44965,6 +48093,59 @@ def _pa_cache_pipeline_debug_dump(uid, run_id, trigger, dump):
         _pa_prune_pipeline_results_locked(now)
 
 
+def _pa_reclassify_pipeline_debug_dump(uid, run_id, trigger, summary):
+    """Keep the cached/file debug result aligned with a late finalizer failure."""
+    run_key = (uid, run_id)
+    alias_keys = [
+        (uid, '__last__'),
+        (uid, '__last_manual__' if trigger == 'manual' else '__last_auto__'),
+    ]
+    updated_dump = None
+    with _PA_LAST_PIPELINE_RESULTS_LOCK:
+        source = _PA_LAST_PIPELINE_RESULTS.get(run_key)
+        if not isinstance(source, dict):
+            return None
+        outcome = _pa_pipeline_outcome(summary)
+        updated_dump = deepcopy(source)
+        updated_dump['summary'] = deepcopy(summary or {})
+        updated_dump['outcome'] = outcome
+        updated_dump['success'] = outcome == 'success'
+        _PA_LAST_PIPELINE_RESULTS[run_key] = updated_dump
+        for key in alias_keys:
+            alias = _PA_LAST_PIPELINE_RESULTS.get(key)
+            if (
+                isinstance(alias, dict)
+                and str(alias.get('runId') or '') == str(run_id)
+            ):
+                _PA_LAST_PIPELINE_RESULTS[key] = deepcopy(updated_dump)
+
+    filename = (
+        'debug_manual_pipeline_result.json'
+        if trigger == 'manual'
+        else 'debug_auto_pipeline_result.json'
+    )
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    try:
+        with _PA_PIPELINE_DEBUG_FILE_LOCK:
+            current = {}
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    current = json.load(f) or {}
+            if (
+                isinstance(current, dict)
+                and str(current.get('runId') or '') == str(run_id)
+                and str(current.get('userId') or '') == str(uid)
+            ):
+                with open(path, 'w', encoding='utf-8') as f:
+                    json.dump(updated_dump, f, indent=2, default=str)
+    except Exception as exc:
+        _pa_log_error(
+            '[PipelineCompare] debug dump reclassification failed: %s'
+            % type(exc).__name__
+        )
+    return updated_dump
+
+
 def _pa_save_pipeline_debug_dump(uid, run_id, trigger, mode, risk_profile, time_horizon,
                                  trade_mode, summary, run_context):
     dump = _pa_build_pipeline_debug_dump(uid, run_id, trigger, mode, risk_profile,
@@ -44973,8 +48154,9 @@ def _pa_save_pipeline_debug_dump(uid, run_id, trigger, mode, risk_profile, time_
     try:
         filename = 'debug_manual_pipeline_result.json' if trigger == 'manual' else 'debug_auto_pipeline_result.json'
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(dump, f, indent=2, default=str)
+        with _PA_PIPELINE_DEBUG_FILE_LOCK:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(dump, f, indent=2, default=str)
         _pa_log('[PipelineCompare] wrote %s runId=%s trigger=%s' % (filename, run_id, trigger))
     except Exception as e:
         _pa_log_error('[PipelineCompare] debug dump write failed: %s' % e)
@@ -44999,6 +48181,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         'exit_scan': 180,
     }
     started = time.time()
+    _run_id = run_id or _pa_new_run_id('headless-scan')
     saved_config = _pa_get_config(uid) or {}
     if leverage_enabled is None:
         leverage_enabled = saved_config.get('leverage_enabled', False)
@@ -45043,19 +48226,25 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
             super().__init__('Pipeline timed out at stage=%s elapsed=%.0fs limit=%ds' % (stage, elapsed, limit))
 
     def _check_stopped():
-        if _pa_check_stop_requested(uid):
+        if _pa_check_stop_requested(uid, expected_run_id=_run_id):
             raise _PipelineStop()
 
     def _check_timeout(stage=None):
         """Raise _PipelineTimeout if the pipeline or current stage exceeds its time limit."""
-        if stage:
-            _backend_enforce_memory_budget('pipeline_%s' % stage)
         elapsed = time.time() - started
         if elapsed > PIPELINE_TIMEOUT:
             raise _PipelineTimeout(stage or 'unknown', elapsed, PIPELINE_TIMEOUT)
         if stage and stage in STAGE_TIMEOUTS:
             stage_limit = STAGE_TIMEOUTS[stage]
             stage_start = stage_started_at.setdefault(stage, time.time())
+            _backend_set_pipeline_runtime_budget(
+                stage,
+                started,
+                PIPELINE_TIMEOUT,
+                stage_start,
+                stage_limit,
+            )
+            _backend_enforce_memory_budget('pipeline_%s' % stage)
             stage_elapsed = time.time() - stage_start
             if stage_elapsed > stage_limit:
                 raise _PipelineTimeout(stage, stage_elapsed, stage_limit)
@@ -45064,22 +48253,96 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
 
     if trigger in ('market_auto_run', 'toggle_on'):
         fresh_config = _pa_get_config(uid) or {}
-        if not fresh_config.get('enabled'):
+        if fresh_config and fresh_config.get('enabled') is False:
             summary['skipped'] = True
             summary['lastDecision'] = 'auto_disabled_before_start'
             summary['finishedAt'] = datetime.utcnow().isoformat()
             summary['durationSeconds'] = round(time.time() - started, 2)
+            _pa_update_active_run(
+                uid,
+                expected_run_id=_run_id,
+                expected_statuses=('queued', 'running'),
+                status='stopped',
+                message='Automation was disabled before the worker started',
+                finishedAt=_pa_utc_iso(),
+            )
             _pa_log('stopped because auto disabled user=%s trigger=%s' % (uid[:8], trigger))
             return summary
 
     # Initialize active run state for frontend visibility
-    _run_id = run_id or ('headless-scan-%d' % int(started))
-    _pa_clear_active_run(uid)
-    _pa_update_active_run(uid, runId=_run_id, trigger=trigger, status='running',
-                          startedAt=_pa_utc_iso(),
-                          lastError=None, finishedAt=None, stopRequested=False,
-                          currentStep='market_scanner', stepIndex=1, progressPct=0,
-                          totalSteps=_PA_PIPELINE_TOTAL_STEPS, steps=_pa_initial_steps())
+    existing_run = _pa_get_active_run(uid) or {}
+    existing_run_id = str(existing_run.get('runId') or '')
+    existing_status = str(existing_run.get('status') or '')
+    if existing_run_id == _run_id:
+        if _pa_check_stop_requested(uid, expected_run_id=_run_id):
+            summary['stopped'] = True
+            summary['lastDecision'] = 'stopped_before_worker_start'
+            summary['finishedAt'] = _pa_utc_iso()
+            summary['durationSeconds'] = round(time.time() - started, 2)
+            _pa_save_pipeline_debug_dump(
+                uid, _run_id, trigger, mode, risk_profile, time_horizon,
+                trade_mode, summary, run_context,
+            )
+            _backend_clear_pipeline_runtime_budget()
+            return summary
+        transitioned = _pa_update_active_run(
+            uid,
+            expected_run_id=_run_id,
+            expected_statuses=('queued', 'running'),
+            status='running',
+            trigger=trigger,
+            startedAt=existing_run.get('startedAt') or _pa_utc_iso(),
+            lastError=None,
+            finishedAt=None,
+            stopRequested=False,
+            currentStep='market_scanner',
+            stepIndex=1,
+            progressPct=0,
+            totalSteps=_PA_PIPELINE_TOTAL_STEPS,
+            message='Pipeline worker started',
+            steps=_pa_initial_steps(),
+        )
+        if not transitioned:
+            if _pa_check_stop_requested(uid, expected_run_id=_run_id):
+                summary['stopped'] = True
+                summary['lastDecision'] = 'stopped_during_worker_start'
+            else:
+                summary['errors'] += 1
+                summary['lastError'] = 'Active run changed during worker startup'
+            summary['finishedAt'] = _pa_utc_iso()
+            summary['durationSeconds'] = round(time.time() - started, 2)
+            _pa_save_pipeline_debug_dump(
+                uid, _run_id, trigger, mode, risk_profile, time_horizon,
+                trade_mode, summary, run_context,
+            )
+            _backend_clear_pipeline_runtime_budget()
+            return summary
+    else:
+        if existing_status in ('queued', 'running', 'cancelling'):
+            summary['errors'] += 1
+            summary['lastError'] = 'Another active run owns the pipeline state'
+            summary['finishedAt'] = _pa_utc_iso()
+            summary['durationSeconds'] = round(time.time() - started, 2)
+            _backend_clear_pipeline_runtime_budget()
+            return summary
+        _pa_clear_active_run(uid)
+        _pa_update_active_run(
+            uid,
+            runId=_run_id,
+            trigger=trigger,
+            status='running',
+            startedAt=_pa_utc_iso(),
+            lastError=None,
+            finishedAt=None,
+            stopRequested=False,
+            stopRequestedAt=None,
+            currentStep='market_scanner',
+            stepIndex=1,
+            progressPct=0,
+            totalSteps=_PA_PIPELINE_TOTAL_STEPS,
+            message='Pipeline worker started',
+            steps=_pa_initial_steps(),
+        )
 
     # Manual/test runs never notify. Automatic runs emit at most one cycle digest;
     # broker-confirmed fills and material risk changes remain separate real-time alerts.
@@ -45127,7 +48390,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                 'totalSymbols': requested_symbols,
                 'progressPct': 2,
                 'universe': 'alpaca_market',
-                'method': 'institutional_cross_section_v5',
+                'method': 'institutional_cross_section_v6_strategy_mandate',
             },
         )
         _check_stopped()
@@ -45243,7 +48506,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         _sorted_for_fine = sorted(
             [r for r in (scanner_results or []) if r.get('symbol')],
             key=lambda r: (
-                float(r.get('overallScore') or r.get('trendScore') or 0),
+                _pa_safe_float(r.get('selectionScore'), 0) or 0,
                 float(r.get('trendConfidence') or r.get('confidence') or 0),
             ),
             reverse=True
@@ -45700,6 +48963,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                     _ep_float(plan.get('entryZoneHigh', plan.get('entryHigh', zone.get('high')))),
                 )
             for plan in (entry_plans or []):
+                _check_stopped()
                 _check_timeout('execution')
                 _sym = str(plan.get('symbol') or '').upper()
                 _use_plan = plan
@@ -45730,6 +48994,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                     _seen_order_symbols.add(_sym)
                     continue
                 _exec_mode = 'live' if trade_mode == 'real' else 'paper'
+                _check_stopped()
                 exec_resp, _ = _pa_call_endpoint(uid, '/api/entry-plan/execute', entry_plan_execute, {
                     'symbol': _use_plan.get('symbol'),
                     'planSnapshot': _use_plan,
@@ -45743,6 +49008,10 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                     'isAutoExecute': True,
                     'suppressDiscord': True,
                 })
+                # The endpoint call itself can consume most of the stage budget
+                # (broker connectivity, order preflight, and submission).  Check
+                # again before treating its response as an accepted stage result.
+                _check_timeout('execution')
                 execution_results.append(exec_resp)
                 _seen_order_symbols.add(_sym)
                 if exec_resp.get('action') == 'ORDER_SUBMITTED':
@@ -45766,6 +49035,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                         'reasonZh': '自动入场计划已提交买入订单。',
                         'source': _discord_source,
                     })
+                _check_stopped()
         elif mode == 'ai':
             execution_results.append({
                 'scope': 'pipeline',
@@ -45828,7 +49098,6 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         exit_summary = _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=dry_run,
                                                risk_profile=risk_profile, time_horizon=time_horizon, trade_mode=trade_mode, run_id=_run_id,
                                                suppress_discord=True)
-        _check_timeout('exit_scan')
         run_context['exit_results'] = exit_summary
         for submitted_exit in (exit_summary.get('submitted') or []):
             _exit_symbol = str(submitted_exit.get('symbol') or '').upper()
@@ -45852,17 +49121,33 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                 'source': _discord_source,
             })
         summary['exit_scan_count'] = exit_summary.get('holdingsScanned', 0)
+        _exit_error = str(exit_summary.get('error') or '').strip()
         _exit_signals = exit_summary.get('signals', []) or []
         _sell_count = exit_summary.get('sellNowCount', 0) + exit_summary.get('targetLimitCount', 0)
         _hold_count = exit_summary.get('holdCount', 0)
         _blocked_count = exit_summary.get('blockedCount', 0)
         _with_plan = exit_summary.get('withEntryPlanCount', 0)
         _with_fallback = exit_summary.get('fallbackPlanCount', 0)
-        summary['steps'].append({'step': 'exit_scan', 'status': 'completed' if not exit_summary.get('error') else 'partial', 'count': summary['exit_scan_count']})
+        _exit_step_status = 'failed' if _exit_error else 'completed'
+        if _exit_error:
+            # Position protection is a safety-critical stage.  A provider or
+            # reconciliation failure must not be reported as pipeline success.
+            summary['errors'] += 1
+            summary['lastError'] = 'Exit Scan failed: %s' % _exit_error[:240]
+        summary['steps'].append({
+            'step': 'exit_scan',
+            'status': _exit_step_status,
+            'count': summary['exit_scan_count'],
+            'error': _exit_error or None,
+        })
         _pa_log('[AutoPipeline] stage=exit_scan done sell=%d hold=%d blocked=%d with_plan=%d fallback=%d' % (
             _sell_count, _hold_count, _blocked_count, _with_plan, _with_fallback))
-        _pa_active_run_step(uid, 'exit_scan', 7, _PA_PIPELINE_TOTAL_STEPS, 'completed',
-                            message='Exit Scan: %d holdings scanned' % summary['exit_scan_count'],
+        _pa_active_run_step(uid, 'exit_scan', 7, _PA_PIPELINE_TOTAL_STEPS, _exit_step_status,
+                            message=(
+                                'Exit Scan failed: %s' % _exit_error[:180]
+                                if _exit_error else
+                                'Exit Scan: %d holdings scanned' % summary['exit_scan_count']
+                            ),
                             step_data={
                                 'processed': summary['exit_scan_count'], 'total': summary['exit_scan_count'],
                                 'sellNow': exit_summary.get('sellNowCount', 0),
@@ -45877,19 +49162,25 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                                 'ai': exit_summary.get('ai') or {},
                                 'phaseTimings': exit_summary.get('phaseTimings') or {},
                                 'engineDurationSeconds': exit_summary.get('durationSeconds'),
+                                'error': _exit_error or None,
                                 'results': _exit_signals[:10],
                             })
         summary['order_lifecycle_after'] = _pa_reconcile_order_lifecycle(
             uid, trade_mode, notify=not is_manual
         )
+        # Exit may continue a hard stop or attach missing protection after an
+        # operator requests cancellation. Persist and notify those actual broker
+        # mutations before converting the overall pipeline outcome to stopped.
+        _check_stopped()
+        _check_timeout('exit_scan')
 
-    except _PipelineStop:
+    except (_PipelineStop, _BackendScanCancelled):
         summary['stopped'] = True
         summary['finishedAt'] = datetime.utcnow().isoformat()
         summary['durationSeconds'] = round(time.time() - started, 2)
         _pa_log('[PipelineAuto] pipeline stopped by user user=%s' % uid[:8])
 
-    except _PipelineTimeout as e:
+    except (_PipelineTimeout, _BackendStageDeadlineExceeded) as e:
         summary['errors'] += 1
         summary['lastError'] = 'Pipeline timed out at stage=%s (elapsed=%.0fs, limit=%ds)' % (e.stage, e.elapsed, e.limit)
         summary['timedOut'] = True
@@ -45983,16 +49274,35 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                 'source': _discord_source,
             })
     else:
-        _pa_update_active_run(uid, status='completed', progressPct=100,
-                              message='Pipeline completed',
-                              finishedAt=_pa_utc_iso())
+        completed = _pa_update_active_run(
+            uid,
+            expected_run_id=_run_id,
+            expected_statuses=('running',),
+            status='completed',
+            progressPct=100,
+            message='Pipeline completed',
+            finishedAt=_pa_utc_iso(),
+        )
+        if not completed:
+            final_run = _pa_get_active_run(uid) or {}
+            if (
+                str(final_run.get('runId') or '') == _run_id
+                and final_run.get('status') in ('cancelling', 'stopped')
+            ):
+                summary['stopped'] = True
+                _pa_check_stop_requested(uid, expected_run_id=_run_id)
+            else:
+                summary['errors'] += 1
+                summary['lastError'] = (
+                    'Active run changed before completion could be committed'
+                )
     summary['finishedAt'] = _pa_utc_iso()
     summary['durationSeconds'] = round(time.time() - started, 2)
-    if trigger != 'headless_test' and summary.get('errors', 0) == 0 and not summary.get('stopped'):
+    if trigger != 'headless_test' and _pa_pipeline_outcome(summary) == 'success':
         summary['discordRecommendations'] = _pa_send_recommendations(
             uid, _run_id, trigger, mode, trade_mode, run_context.get('entry_plans') or []
         )
-    if not is_manual and summary.get('errors', 0) == 0 and not summary.get('stopped'):
+    if not is_manual and _pa_pipeline_outcome(summary) == 'success':
         summary['discordDigest'] = _pa_send_cycle_digest(
             uid, _run_id, trigger, mode, trade_mode, summary, run_context
         )
@@ -46006,9 +49316,27 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
             summary.get('exit_scan_count', 0), summary['errors'], summary['durationSeconds']))
     _pa_save_pipeline_debug_dump(uid, _run_id, trigger, mode, risk_profile, time_horizon,
                                  trade_mode, summary, run_context)
+    _backend_clear_pipeline_runtime_budget()
     return summary
 
 
+def _pa_pipeline_outcome(summary):
+    if not isinstance(summary, dict):
+        return 'failed'
+    try:
+        errors = int(summary.get('errors') or 0)
+    except (TypeError, ValueError):
+        errors = 1
+    if errors > 0:
+        return 'failed'
+    if summary.get('stopped'):
+        return 'stopped'
+    if summary.get('skipped'):
+        return 'skipped'
+    return 'success'
+
+
+@_pa_release_reserved_on_exit
 def _pa_execute_and_save(uid, config, interval, mode, trigger,
                          risk_profile='medium', time_horizon='mid', trade_mode='paper',
                          run_id=None, leverage_enabled=None):
@@ -46020,32 +49348,39 @@ def _pa_execute_and_save(uid, config, interval, mode, trigger,
     """
     is_manual = (trigger == 'manual')
     _run_started_at = _pa_now_et()
+    effective_run_id = run_id or _pa_new_run_id(trigger)
     config['last_backend_scan_at'] = _run_started_at.isoformat()
     config['last_run_source'] = 'manual_run' if is_manual else 'backend_scheduler'
     config['last_run_trigger'] = trigger
-    config['current_auto_run_id'] = run_id or ('%s-%s' % (trigger, int(time.time())))
+    config['current_auto_run_id'] = effective_run_id
     summary = None
     with _PA_RUNNING_USERS_LOCK:
         _PA_RUNNING_USERS.add(uid)
     try:
         summary = _pa_run_pipeline(uid, interval, mode, trigger=trigger,
                                    risk_profile=risk_profile, time_horizon=time_horizon,
-                                   trade_mode=trade_mode, run_id=run_id,
+                                   trade_mode=trade_mode, run_id=effective_run_id,
                                    leverage_enabled=leverage_enabled)
     finally:
         _run_completed_at = _pa_now_et()
-        success = summary['errors'] == 0 if summary else False
+        outcome = _pa_pipeline_outcome(summary)
+        success = outcome == 'success'
         latest_config = _pa_get_config(uid) or {}
         disabled_during_run = (
             trigger in ('market_auto_run', 'toggle_on')
-            and (not latest_config or not latest_config.get('enabled', False))
+            and bool(latest_config)
+            and latest_config.get('enabled') is False
         )
         if latest_config:
             config.clear()
             config.update(latest_config)
-        config['last_backend_scan_status'] = 'success' if success else 'failed'
+        config['last_backend_scan_status'] = outcome
         config['last_backend_scan_summary'] = summary or {}
-        config['last_backend_scan_error'] = None if success else ('%d errors' % summary['errors']) if summary else 'unknown error'
+        config['last_backend_scan_error'] = (
+            None
+            if outcome in ('success', 'stopped', 'skipped')
+            else ('%d errors' % summary['errors']) if summary else 'unknown error'
+        )
         config['last_run_at'] = _run_started_at.isoformat()
         config['last_run_source'] = 'manual_run' if is_manual else 'backend_scheduler'
         config['last_run_trigger'] = trigger
@@ -46055,10 +49390,10 @@ def _pa_execute_and_save(uid, config, interval, mode, trigger,
             previous_count = int(config.get('run_count_today') or 0) if previous_date_et == run_date_et else 0
             config['run_count_today'] = previous_count + 1
             config['run_count_date_et'] = run_date_et
-        if success:
+        if outcome == 'success':
             config['consecutive_failures'] = 0
             config['circuit_breaker_until'] = ''
-        else:
+        elif outcome == 'failed':
             failure_count = int(config.get('consecutive_failures') or 0) + 1
             config['consecutive_failures'] = failure_count
             if failure_count >= 3:
@@ -46076,9 +49411,9 @@ def _pa_execute_and_save(uid, config, interval, mode, trigger,
         elif is_manual or trigger == 'auto_run_now':
             # Manual run or one-shot auto run: do NOT update next_run_at, interval, or enabled
             if is_manual:
-                config['last_decision'] = 'manual_pipeline_success' if success else 'manual_pipeline_failed'
+                config['last_decision'] = 'manual_pipeline_%s' % outcome
             else:
-                config['last_decision'] = 'auto_run_now_success' if success else 'auto_run_now_failed'
+                config['last_decision'] = 'auto_run_now_%s' % outcome
         else:
             _next_dt = _run_completed_at + timedelta(minutes=interval)
             # Cap at 16:00 ET for market hours — if next run would be after close,
@@ -46094,11 +49429,15 @@ def _pa_execute_and_save(uid, config, interval, mode, trigger,
                     config['last_decision'] = 'stopped_for_day_no_next'
             else:
                 config['next_run_at'] = _next_dt.isoformat()
-                config['last_decision'] = 'pipeline_success' if success else 'pipeline_failed'
+                config['last_decision'] = 'pipeline_%s' % outcome
         config['current_auto_run_id'] = ''
         config['last_summary'] = summary or {}
-        config['last_error'] = None if success else (('%d errors' % summary['errors']) if summary else 'unknown error')
-        if not success and int(config.get('consecutive_failures') or 0) >= 3 and not disabled_during_run:
+        config['last_error'] = (
+            None
+            if outcome in ('success', 'stopped', 'skipped')
+            else (('%d errors' % summary['errors']) if summary else 'unknown error')
+        )
+        if outcome == 'failed' and int(config.get('consecutive_failures') or 0) >= 3 and not disabled_during_run:
             config['last_decision'] = 'circuit_breaker_open'
             config['next_run_at'] = config.get('circuit_breaker_until') or config.get('next_run_at')
         # This function is the single owner of the reservation lifecycle for
@@ -46107,7 +49446,75 @@ def _pa_execute_and_save(uid, config, interval, mode, trigger,
         # not release again because a later run for the same user may already
         # have acquired a new reservation by the time they unwind.
         try:
-            _pa_save_config(uid, config)
+            runtime_keys = {
+                'last_backend_scan_at',
+                'last_backend_scan_status',
+                'last_backend_scan_summary',
+                'last_backend_scan_error',
+                'last_run_at',
+                'last_run_source',
+                'last_run_trigger',
+                'consecutive_failures',
+                'circuit_breaker_until',
+                'last_decision',
+                'current_auto_run_id',
+                'last_summary',
+                'last_error',
+            }
+            if trigger in ('market_auto_run', 'toggle_on', 'auto_run_now'):
+                runtime_keys.update({'run_count_today', 'run_count_date_et'})
+            if (
+                disabled_during_run
+                or (not is_manual and trigger != 'auto_run_now')
+                or config.get('last_decision') == 'circuit_breaker_open'
+            ):
+                runtime_keys.add('next_run_at')
+            if disabled_during_run:
+                runtime_keys.update({'enabled', 'stopRequested'})
+            persisted, persist_error = _pa_patch_config(
+                uid,
+                {
+                    key: config.get(key)
+                    for key in runtime_keys
+                    if key in config
+                },
+            )
+            if not persisted:
+                _pa_set_user_runtime_backoff(
+                    uid,
+                    'pipeline_result_persistence_failed',
+                )
+                if isinstance(summary, dict):
+                    summary['persistenceError'] = str(
+                        persist_error or 'pipeline result persistence failed'
+                    )[:240]
+                    if not summary.get('stopped') and not summary.get('skipped'):
+                        summary['errors'] = int(summary.get('errors') or 0) + 1
+                        summary['lastError'] = summary['persistenceError']
+                    _pa_reclassify_pipeline_debug_dump(
+                        uid,
+                        effective_run_id,
+                        trigger,
+                        summary,
+                    )
+                active = _pa_get_active_run(uid) or {}
+                active_run_id = str(active.get('runId') or '')
+                if active_run_id:
+                    _pa_update_active_run(
+                        uid,
+                        expected_run_id=active_run_id,
+                        expected_statuses=('completed', 'failed', 'stopped'),
+                        status=(
+                            'stopped'
+                            if (summary or {}).get('stopped')
+                            else 'failed'
+                        ),
+                        lastError='pipeline_result_persistence_failed',
+                        message='Pipeline finished, but durable result persistence failed',
+                        finishedAt=_pa_utc_iso(),
+                    )
+            else:
+                _pa_clear_user_runtime_backoff(uid)
         finally:
             _pa_release_user_run(uid)
     return summary or {'errors': 1}
@@ -46116,6 +49523,7 @@ def _pa_execute_and_save(uid, config, interval, mode, trigger,
 def _pa_scheduler_loop():
     """Main scheduler loop — runs every 30s, checks market open, runs pipelines for all enabled users."""
     global _PA_SCHEDULER_LOOP_COUNT, _PA_SCHEDULER_PROCESS_LOCK
+    global _PA_SCHEDULER_CONSECUTIVE_ERRORS
     scheduler_lock = _pa_acquire_runtime_file_lock('scheduler')
     if scheduler_lock is None:
         _pa_log('Scheduler loop skipped reason=host_lock_busy')
@@ -46126,6 +49534,7 @@ def _pa_scheduler_loop():
     try:
         _pa_log('Scheduler loop started')
         consecutive_errors = 0
+        _PA_SCHEDULER_CONSECUTIVE_ERRORS = 0
         hb_log_counter = 0
 
         while not _PA_SCHEDULER_STOP.is_set():
@@ -46142,6 +49551,28 @@ def _pa_scheduler_loop():
 
                 now_et = _pa_now_et()
                 now_iso = now_et.isoformat()
+                watchdog_failed = False
+                try:
+                    watchdog_summary = _pa_watchdog_active_runs()
+                    if (
+                        watchdog_summary.get('cancellationRequested')
+                        or watchdog_summary.get('interrupted')
+                        or watchdog_summary.get('stalled')
+                    ):
+                        _pa_log(
+                            '[Watchdog] cancellationRequested=%d interrupted=%d stalled=%d'
+                            % (
+                                watchdog_summary.get('cancellationRequested', 0),
+                                watchdog_summary.get('interrupted', 0),
+                                watchdog_summary.get('stalled', 0),
+                            )
+                        )
+                except Exception as watchdog_error:
+                    watchdog_failed = True
+                    _pa_log_error(
+                        'Scheduler watchdog failed: %s'
+                        % type(watchdog_error).__name__
+                    )
 
                 # Global tick uses the calendar fallback only. Each enabled user is
                 # checked again below with that user's selected Alpaca account.
@@ -46153,6 +49584,7 @@ def _pa_scheduler_loop():
                 # either a pipeline row, broker credentials, or a managed
                 # position record; only research scans remain enabled-only.
                 scheduler_users = set()
+                discovery_failed = watchdog_failed
                 try:
                     client = _pa_supabase_client()
                     if client:
@@ -46176,6 +49608,7 @@ def _pa_scheduler_loop():
                             if isinstance(row, dict) and row.get('user_id'):
                                 scheduler_users.add(row['user_id'])
                 except Exception as e:
+                    discovery_failed = True
                     _pa_log_error('Supabase scheduler users query failed: %s' % e)
 
                 with _PA_MANAGED_POSITIONS_LOCK:
@@ -46204,22 +49637,43 @@ def _pa_scheduler_loop():
                     _sched_trade = _ctx['trade_mode']
 
                     # The broker clock is authoritative per user/mode. Position
-                    # protection runs before the research circuit breaker so a
-                    # failed scan cannot disable risk-reducing exits.
+                    # protection and a full pipeline share one per-user routing
+                    # lease; the scheduler decides which one starts below.
                     is_open, mkt_status, mkt_source, next_open, next_close, market_stage_sched = _pa_check_market_open(
                         uid, _sched_trade
                     )
-                    _pa_maybe_start_position_guard(
-                        uid, config, now_et, mode, _sched_risk, _sched_horizon,
-                        _sched_trade, is_open,
-                    )
                     _pa_touch_scheduler_heartbeat()
 
-                    if not config.get('enabled') or not config.get('interval_minutes', 0):
+                    runtime_backoff = _pa_get_user_runtime_backoff(uid)
+                    if runtime_backoff:
+                        guard_started = _pa_maybe_start_position_guard(
+                            uid, config, now_et, mode, _sched_risk,
+                            _sched_horizon, _sched_trade, is_open,
+                        )
                         with _PA_PER_USER_LAST_CHECK_LOCK:
                             _PA_PER_USER_LAST_CHECK[uid] = {
                                 'time': now_iso,
-                                'decision': 'guard_only' if is_open else 'disabled',
+                                'decision': (
+                                    'persistence_backoff_guard'
+                                    if guard_started
+                                    else 'persistence_backoff'
+                                ),
+                            }
+                        _pa_log(
+                            'skipped user=%s reason=persistence_backoff'
+                            % uid[:8]
+                        )
+                        continue
+
+                    if not config.get('enabled') or not config.get('interval_minutes', 0):
+                        guard_started = _pa_maybe_start_position_guard(
+                            uid, config, now_et, mode, _sched_risk, _sched_horizon,
+                            _sched_trade, is_open,
+                        )
+                        with _PA_PER_USER_LAST_CHECK_LOCK:
+                            _PA_PER_USER_LAST_CHECK[uid] = {
+                                'time': now_iso,
+                                'decision': 'guard_only' if guard_started else 'disabled',
                             }
                         continue
 
@@ -46241,7 +49695,10 @@ def _pa_scheduler_loop():
                                 continue
                             config['circuit_breaker_until'] = ''
                             config['consecutive_failures'] = 0
-                            _pa_save_config(uid, config)
+                            _pa_patch_config(uid, {
+                                'circuit_breaker_until': '',
+                                'consecutive_failures': 0,
+                            })
                         except Exception:
                             config['circuit_breaker_until'] = ''
 
@@ -46322,22 +49779,34 @@ def _pa_scheduler_loop():
                             with _PA_PER_USER_LAST_CHECK_LOCK:
                                 _PA_PER_USER_LAST_CHECK[uid] = {'time': now_iso, 'decision': rejection}
                             continue
+                        scheduled_run_id = _pa_new_run_id('market-auto')
+                        _pa_queue_active_run(
+                            uid,
+                            scheduled_run_id,
+                            'market_auto_run',
+                        )
                         decision = 'started_pipeline'
                         with _PA_PER_USER_LAST_CHECK_LOCK:
                             _PA_PER_USER_LAST_CHECK[uid] = {'time': now_iso, 'decision': decision}
                         _pa_log('due user=%s reason=%s interval=%d — executing headless' % (uid[:8], run_reason, interval))
 
-                        def _scheduler_run(_uid, _cfg, _interval, _mode, _mkt_status, _mkt_source, _now_iso, _risk, _horizon, _trade):
+                        def _scheduler_run(_uid, _cfg, _interval, _mode, _mkt_status, _mkt_source, _now_iso, _risk, _horizon, _trade, _run_id):
                             summary = None
                             try:
                                 summary = _pa_execute_and_save(_uid, _cfg, _interval, _mode, trigger='market_auto_run',
-                                                                risk_profile=_risk, time_horizon=_horizon, trade_mode=_trade)
+                                                                risk_profile=_risk, time_horizon=_horizon, trade_mode=_trade,
+                                                                run_id=_run_id)
+                                run_outcome = _pa_pipeline_outcome(summary)
                                 _pa_log('[PipelineAuto] backend scan completed user=%s status=%s' % (
                                     _uid[:8], _cfg.get('last_backend_scan_status', 'unknown')))
                                 _pa_add_run_history(_uid, {
                                     'trigger_type': 'market_auto_run',
-                                    'status': 'success' if summary and summary.get('errors', 0) == 0 else 'failed',
-                                    'reason': 'headless pipeline completed' if summary and summary.get('errors', 0) == 0 else '%d errors' % (summary.get('errors', 0) if summary else 1),
+                                    'status': run_outcome,
+                                    'reason': (
+                                        'headless pipeline %s' % run_outcome
+                                        if run_outcome != 'failed'
+                                        else '%d errors' % (summary.get('errors', 0) if summary else 1)
+                                    ),
                                     'source': 'backend_scheduler',
                                     'market_open': True,
                                     'market_status': _mkt_status,
@@ -46348,37 +49817,82 @@ def _pa_scheduler_loop():
                                     'interval_minutes': _interval,
                                     'mode': _mode,
                                     'summary': summary or {},
-                                    'error': None if summary and summary.get('errors', 0) == 0 else '%d errors' % (summary.get('errors', 0) if summary else 1),
+                                    'run_id': _run_id,
+                                    'error': (
+                                        '%d errors' % (summary.get('errors', 0) if summary else 1)
+                                        if run_outcome == 'failed' else None
+                                    ),
                                 })
                             except Exception:
                                 import traceback
                                 _pa_log_error('[Scheduler] headless run error: %s' % traceback.format_exc())
                             finally:
                                 with _PA_PER_USER_LAST_CHECK_LOCK:
-                                    _PA_PER_USER_LAST_CHECK[_uid]['decision'] = 'pipeline_success' if summary and summary.get('errors', 0) == 0 else 'pipeline_failed'
+                                    _PA_PER_USER_LAST_CHECK[_uid]['decision'] = (
+                                        'pipeline_%s' % _pa_pipeline_outcome(summary)
+                                    )
 
-                        threading.Thread(target=_scheduler_run, args=(
-                            uid, dict(config), interval, mode, mkt_status, mkt_source, now_iso,
-                            _sched_risk, _sched_horizon, _sched_trade
-                        ), daemon=True).start()
+                        try:
+                            _pa_start_reserved_thread(
+                                uid,
+                                _scheduler_run,
+                                args=(
+                                    uid, dict(config), interval, mode, mkt_status,
+                                    mkt_source, now_iso, _sched_risk, _sched_horizon,
+                                    _sched_trade, scheduled_run_id,
+                                ),
+                                daemon=True,
+                                name='pipeline-scheduler-%s' % uid[:8],
+                            )
+                        except Exception:
+                            _pa_update_active_run(
+                                uid,
+                                expected_run_id=scheduled_run_id,
+                                expected_statuses=(
+                                    'queued', 'running', 'cancelling',
+                                ),
+                                status='interrupted',
+                                lastError='worker_start_failed',
+                                message='Scheduled pipeline worker could not start',
+                                finishedAt=_pa_utc_iso(),
+                            )
+                            raise
                     else:
-                        # Skipped this tick — save decision and next_run_at for frontend visibility
+                        # No full pipeline is due. Run the lightweight protection
+                        # guard under the same per-user routing lease, then save
+                        # the scheduling decision for frontend visibility.
                         config['last_decision'] = decision
                         if computed_next_run:
                             config['next_run_at'] = computed_next_run
-                        _pa_save_config(uid, config)
+                        scheduler_patch = {'last_decision': decision}
+                        if computed_next_run:
+                            scheduler_patch['next_run_at'] = computed_next_run
+                        _pa_patch_config(uid, scheduler_patch)
+                        _pa_maybe_start_position_guard(
+                            uid, config, now_et, mode, _sched_risk, _sched_horizon,
+                            _sched_trade, is_open,
+                        )
                         with _PA_PER_USER_LAST_CHECK_LOCK:
                             _PA_PER_USER_LAST_CHECK[uid] = {'time': now_iso, 'decision': decision}
 
-                consecutive_errors = 0
-                _pa_touch_scheduler_heartbeat(completed=True)
+                if discovery_failed:
+                    consecutive_errors += 1
+                    _PA_SCHEDULER_CONSECUTIVE_ERRORS = consecutive_errors
+                    _pa_touch_scheduler_heartbeat(
+                        error='scheduler_user_discovery_failed'
+                    )
+                else:
+                    consecutive_errors = 0
+                    _PA_SCHEDULER_CONSECUTIVE_ERRORS = 0
+                    _pa_touch_scheduler_heartbeat(completed=True)
                 elapsed = time.time() - loop_start
                 sleep_time = max(5, min(60, 30 - elapsed))
                 _PA_SCHEDULER_STOP.wait(sleep_time)
             except Exception:
                 import traceback; _pa_log_error('Scheduler loop error: %s' % traceback.format_exc())
-                _pa_touch_scheduler_heartbeat(error='scheduler_tick_failed')
                 consecutive_errors += 1
+                _PA_SCHEDULER_CONSECUTIVE_ERRORS = consecutive_errors
+                _pa_touch_scheduler_heartbeat(error='scheduler_tick_failed')
                 sleep_time = min(60, 10 * consecutive_errors)
                 _PA_SCHEDULER_STOP.wait(sleep_time)
     except Exception as e:
@@ -46478,7 +49992,23 @@ def pipeline_live_auto_authority():
     else:
         config['live_auto_revoked_at'] = datetime.now(timezone.utc).isoformat()
     config['updated_at'] = datetime.now(timezone.utc).isoformat()
-    saved, reason = _pa_save_config(uid, config)
+    authority_patch = {
+        'live_auto_trading_enabled': config['live_auto_trading_enabled'],
+        'updated_at': config['updated_at'],
+    }
+    if enabled_raw:
+        authority_patch.update({
+            'live_auto_authorized_method': config['live_auto_authorized_method'],
+            'live_auto_authorized_at': config['live_auto_authorized_at'],
+            'live_auto_authorized_by': config['live_auto_authorized_by'],
+        })
+    else:
+        authority_patch['live_auto_revoked_at'] = config['live_auto_revoked_at']
+    saved, reason = _pa_patch_config(
+        uid,
+        authority_patch,
+        remove_keys=['live_auto_authorized_aal'] if enabled_raw else [],
+    )
     if not saved:
         return jsonify({
             'success': False,
@@ -46525,6 +50055,7 @@ def user_workspace_preferences():
             'message': 'One or more preferences are not supported.',
         }), 400
 
+    config_patch = {}
     for public_name, (stored_name, valid_values) in allowed_fields.items():
         if public_name not in data:
             continue
@@ -46537,6 +50068,7 @@ def user_workspace_preferences():
                 'message': '%s is invalid.' % public_name,
             }), 400
         config[stored_name] = value
+        config_patch[stored_name] = value
 
     if 'leverageEnabled' in data:
         if not isinstance(data.get('leverageEnabled'), bool):
@@ -46547,6 +50079,7 @@ def user_workspace_preferences():
                 'message': 'leverageEnabled must be true or false.',
             }), 400
         config['leverage_enabled'] = data['leverageEnabled']
+        config_patch['leverage_enabled'] = data['leverageEnabled']
 
     if 'language' in data:
         language = str(data.get('language') or '').strip()
@@ -46558,6 +50091,7 @@ def user_workspace_preferences():
                 'message': 'language is invalid.',
             }), 400
         config['language'] = language
+        config_patch['language'] = language
 
     nested_patch = {key: data[key] for key in preference_sections if key in data}
     if nested_patch:
@@ -46575,11 +50109,13 @@ def user_workspace_preferences():
         for section, values in normalized_patch.items():
             current_preferences[section].update(values)
         config['user_preferences'] = current_preferences
+        config_patch['user_preferences'] = normalized_patch
 
     # Live authority is durable and changes only through the dedicated authority
     # endpoint. Incompatible modes make it inactive, but do not silently revoke it.
     config['updated_at'] = datetime.now(timezone.utc).isoformat()
-    saved, reason = _pa_save_config(uid, config)
+    config_patch['updated_at'] = config['updated_at']
+    saved, reason = _pa_patch_config(uid, config_patch)
     if not saved:
         return jsonify({
             'success': False,
@@ -46631,7 +50167,10 @@ def register_workspace_device():
     })
     config['known_devices'] = known_devices[:20]
     config['updated_at'] = now_iso
-    saved, reason = _pa_save_config(uid, config)
+    saved, reason = _pa_patch_config(uid, {
+        'known_devices': config['known_devices'],
+        'updated_at': now_iso,
+    })
     if not saved:
         return jsonify({
             'success': False,
@@ -46814,8 +50353,13 @@ def _record_order_lifecycle(user_id, order_id, event_type, status, payload=None,
 
 def _record_notification_delivery(user_id, event_type, result, payload=None):
     result = result or {}
+    skipped_reasons = {
+        'disabled_or_missing', 'event_disabled', 'deduped',
+        'workspace_discord_disabled', 'workspace_event_disabled',
+        'workspace_digest_mode', 'workspace_quiet_hours',
+    }
     status = 'sent' if result.get('sent') else (
-        'skipped' if result.get('reason') in {'disabled_or_missing', 'event_disabled', 'deduped'} else 'failed'
+        'skipped' if result.get('reason') in skipped_reasons else 'failed'
     )
     key_seed = (
         (payload or {}).get('event_id')
@@ -46826,13 +50370,20 @@ def _record_notification_delivery(user_id, event_type, result, payload=None):
         'notification', user_id, event_type, key_seed, status,
     )
     try:
+        recorded_payload = dict(payload or {})
+        recorded_payload['_delivery'] = {
+            'attempts': int(result.get('attempts') or 0),
+            'httpStatus': result.get('status'),
+            'retryAfterSeconds': result.get('retryAfterSeconds'),
+            'scope': _discord_notification_scope(event_type, payload),
+        }
         return operations_store.append_notification(
             user_id,
             channel='discord',
             event_type=event_type,
             status=status,
             message_id=str(result.get('messageId') or ''),
-            payload=dict(payload or {}),
+            payload=recorded_payload,
             error=str(result.get('reason') or ''),
             idempotency_key=event_key,
         )
@@ -46899,6 +50450,33 @@ def _alpaca_lookup_order_by_client_id(base_url, headers, client_order_id):
     if not isinstance(order, dict) or not order.get('id'):
         return None, 'lookup_invalid_order'
     return order, None
+
+
+def _alpaca_reconcile_ambiguous_submission(base_url, headers, client_order_id,
+                                           attempts=3, delays=(0.0, 0.2, 0.8)):
+    """Resolve a POST outcome without ever changing the order identifier.
+
+    A timeout after sending an order is not evidence that Alpaca rejected it.
+    Polling the broker-owned client identifier makes retries idempotent; an
+    unresolved outcome remains explicitly UNKNOWN so callers cannot submit a
+    replacement order and accidentally double the position.
+    """
+    safe_attempts = max(1, min(int(attempts or 1), 5))
+    errors = []
+    for index in range(safe_attempts):
+        delay = delays[index] if index < len(delays) else delays[-1] if delays else 0
+        if delay and delay > 0:
+            time.sleep(min(float(delay), 2.0))
+        order, lookup_error = _alpaca_lookup_order_by_client_id(
+            base_url,
+            headers,
+            client_order_id,
+        )
+        if order:
+            return order, None
+        if lookup_error:
+            errors.append(lookup_error)
+    return None, (errors[-1] if errors else 'order_not_visible_after_submit')
 
 
 def _operations_entry_pause_block(user_id, trade_mode):
@@ -47098,6 +50676,56 @@ def operations_safety_state():
             },
         )
         cancellation_failed = bool(cancellation and cancellation.get('failed'))
+        send_discord_notification(uid, 'lifecycle', {
+            'event_id': 'safety:%s' % key,
+            'notificationScope': 'system',
+            'source': 'Safety Center',
+            'component': 'New Entry Routing',
+            'state': 'paused' if pause_value else 'resumed',
+            'mode': mode,
+            'trigger': 'user',
+            'description': (
+                'New entries are paused; protective exits remain active.'
+                if pause_value else
+                'New entry routing is enabled again; protective exits remain active.'
+            ),
+            'descriptionZh': (
+                '新入场已暂停；保护性退出仍保持运行。'
+                if pause_value else
+                '新入场路由已恢复；保护性退出仍保持运行。'
+            ),
+            'detail': (
+                '%s pending entries canceled; %s failed.'
+                % (
+                    len((cancellation or {}).get('canceledOrderIds') or []),
+                    len((cancellation or {}).get('failed') or []),
+                )
+                if cancellation else None
+            ),
+            'detailZh': (
+                '已撤销 %s 个待入场订单；%s 个撤销失败。'
+                % (
+                    len((cancellation or {}).get('canceledOrderIds') or []),
+                    len((cancellation or {}).get('failed') or []),
+                )
+                if cancellation else None
+            ),
+        })
+        if cancellation_failed:
+            send_discord_notification(uid, 'risk_alert', {
+                'event_id': 'safety-cancel-failed:%s' % key,
+                'fingerprint': 'safety-cancel-pending-partial-failure',
+                'notificationScope': 'system',
+                'source': 'Safety Center',
+                'component': 'Pending Entry Orders',
+                'step': 'Cancel pending entries',
+                'status': 'attention',
+                'severity': 'high',
+                'reason': '%s pending entry cancellation requests failed.' % len(cancellation.get('failed') or []),
+                'reasonZh': '%s 个待入场订单撤销失败。' % len(cancellation.get('failed') or []),
+                'action': 'Review the failed orders in Safety Center; new entries remain paused.',
+                'actionZh': '请在安全中心检查失败订单；新入场会保持暂停。',
+            })
         return jsonify({
             'success': not cancellation_failed,
             'partialSuccess': cancellation_failed,
@@ -47138,6 +50766,42 @@ def operations_cancel_pending_entries():
             actor='user', source='safety_center', resource_type='broker_orders',
             payload={**cancellation, 'keepProtectiveExits': True},
         )
+        send_discord_notification(uid, 'lifecycle', {
+            'event_id': 'safety-cancel:%s' % key,
+            'notificationScope': 'system',
+            'source': 'Safety Center',
+            'component': 'Pending Entry Orders',
+            'state': 'paused',
+            'mode': mode,
+            'trigger': 'cancel_pending_entries',
+            'description': 'Pending AlphaLab entry orders were reviewed for cancellation; protective exits were preserved.',
+            'descriptionZh': '已检查并撤销 AlphaLab 待入场订单；保护性退出已保留。',
+            'detail': '%s canceled · %s skipped · %s failed' % (
+                len(cancellation.get('canceledOrderIds') or []),
+                len(cancellation.get('skippedOrderIds') or []),
+                len(cancellation.get('failed') or []),
+            ),
+            'detailZh': '已撤销 %s 个 · 跳过 %s 个 · 失败 %s 个' % (
+                len(cancellation.get('canceledOrderIds') or []),
+                len(cancellation.get('skippedOrderIds') or []),
+                len(cancellation.get('failed') or []),
+            ),
+        })
+        if cancellation.get('failed'):
+            send_discord_notification(uid, 'risk_alert', {
+                'event_id': 'safety-cancel-failed:%s' % key,
+                'fingerprint': 'safety-cancel-pending-partial-failure',
+                'notificationScope': 'system',
+                'source': 'Safety Center',
+                'component': 'Pending Entry Orders',
+                'step': 'Cancel pending entries',
+                'status': 'attention',
+                'severity': 'high',
+                'reason': '%s pending entry cancellation requests failed.' % len(cancellation.get('failed') or []),
+                'reasonZh': '%s 个待入场订单撤销失败。' % len(cancellation.get('failed') or []),
+                'action': 'Review the failed orders; new entries remain paused.',
+                'actionZh': '请检查失败订单；新入场会保持暂停。',
+            })
         return jsonify({
             'success': not bool(cancellation.get('failed')),
             'state': _operations_safety_public(current),
@@ -47330,7 +50994,7 @@ def pipeline_exit_scan():
             risk_profile=data.get('riskProfile') or 'medium',
             time_horizon=data.get('timeHorizon') or 'mid',
             trade_mode=trade_mode,
-            run_id='manual-exit-%d' % int(time.time()),
+            run_id=_pa_new_run_id('manual-exit'),
             ai_review=data.get('aiReview', True) is not False,
             suppress_discord=bool(data.get('suppressDiscord', False)),
         )
@@ -47346,7 +51010,7 @@ def pipeline_auto_status():
     if not user:
         return jsonify({'success': False, 'message': 'Authentication required'}), 401
     uid = user['id']
-    config = _pa_get_config(uid)
+    config = _pa_get_config(uid) or {}
     enabled = config.get('enabled', False) if config else False
     interval_minutes = config.get('interval_minutes', 0) if config else 0
     mode = config.get('mode', 'hybrid') if config else 'hybrid'
@@ -47361,6 +51025,9 @@ def pipeline_auto_status():
     with _PA_PER_USER_LAST_CHECK_LOCK:
         last_check = _PA_PER_USER_LAST_CHECK.get(uid, {})
     last_decision = last_check.get('decision', config.get('last_decision', ''))
+    persisted_backend_status = str(
+        config.get('last_backend_scan_status') or ''
+    ).lower()
     last_run_at = config.get('last_run_at', '')
     last_summary = config.get('last_summary', {})
     last_error = config.get('last_error', '')
@@ -47569,31 +51236,17 @@ def pipeline_auto_status():
             _run_count_today = max(0, int(config.get('run_count_today') or 0))
         except (TypeError, ValueError):
             _run_count_today = 0
+    # Stale-run mutation is scheduler-owned so recovery does not depend on a
+    # browser polling this endpoint. This endpoint only reports that state.
     active_run = _pa_get_active_run(uid)
-    # Stale detection: if activeRun hasn't been updated in 15+ minutes while "running", mark as stalled.
-    # The institutional 1500-symbol scan can spend several minutes on provider
-    # batches and AI review, so a short generic request threshold is misleading.
-    STALE_THRESHOLD = 900  # 15 minutes
-    stale_detected = False
-    if active_run and active_run.get('status') == 'running' and active_run.get('updatedAt'):
-        try:
-            _updated = dateutil.parser.isoparse(active_run['updatedAt'])
-            _now_utc = datetime.now(timezone.utc)
-            _age = (_now_utc - _updated.astimezone(timezone.utc)).total_seconds() if _updated.tzinfo else (_now_utc.replace(tzinfo=None) - _updated).total_seconds()
-            if _age > STALE_THRESHOLD:
-                stale_detected = True
-                _pa_log_error('[PipelineAuto] stale run detected user=%s age=%.0fs step=%s (threshold=%ds)' % (uid[:8], _age, active_run.get('currentStep', '?'), STALE_THRESHOLD))
-                _pa_update_active_run(
-                    uid,
-                    status='interrupted',
-                    message='No backend progress heartbeat for 15 minutes',
-                    lastError='stale_run_interrupted',
-                    finishedAt=_pa_utc_iso(),
-                )
-                active_run = _pa_get_active_run(uid)
-        except Exception:
-            pass
-    is_auto_run_running = is_running and not stale_detected
+    stale_detected = bool(
+        active_run
+        and (
+            str(active_run.get('lastError') or '').startswith('stale_run_')
+            or active_run.get('lastError') == 'cancellation_stalled'
+        )
+    )
+    is_auto_run_running = is_running
     current_auto_step = active_run.get('currentStep', '') if active_run else ''
     current_auto_progress_pct = active_run.get('progressPct', 0) if active_run else 0
     if stale_detected:
@@ -47708,11 +51361,41 @@ def pipeline_auto_status():
         )['effectiveLimits'],
         'contextSource': _pa_resolve_auto_run_context(uid, config)['contextSource'],
         'lastBackendRunAt': last_run_at,
-        'lastBackendRunStatus': 'success' if last_decision in ('pipeline_success', 'auto_run_now_success', 'manual_pipeline_success') else
-                                'failed' if last_decision in ('pipeline_failed', 'auto_run_now_failed', 'manual_pipeline_failed') else
-                                'blocked' if last_decision in ('blocked_real_order_submit',) else
-                                'running' if is_running or last_decision == 'started_pipeline' else
-                                '',
+        'lastBackendRunStatus': (
+            str((active_run or {}).get('status') or '')
+            if (active_run or {}).get('status') in (
+                'queued', 'running', 'cancelling'
+            )
+            else persisted_backend_status
+            if persisted_backend_status in (
+                'success', 'failed', 'stopped', 'skipped'
+            )
+            else 'success'
+            if last_decision in (
+                'pipeline_success', 'auto_run_now_success',
+                'manual_pipeline_success',
+            )
+            else 'failed'
+            if last_decision in (
+                'pipeline_failed', 'auto_run_now_failed',
+                'manual_pipeline_failed',
+            )
+            else 'stopped'
+            if last_decision in (
+                'pipeline_stopped', 'auto_run_now_stopped',
+                'manual_pipeline_stopped',
+            )
+            else 'skipped'
+            if last_decision in (
+                'pipeline_skipped', 'auto_run_now_skipped',
+                'manual_pipeline_skipped',
+            )
+            else 'blocked'
+            if last_decision in ('blocked_real_order_submit',)
+            else 'running'
+            if is_running or last_decision == 'started_pipeline'
+            else ''
+        ),
         'lastBackendRunReason': config.get('last_error', '') or
                                 ('Backend scheduler runs the headless full pipeline.'
                                  if last_decision == 'started_pipeline' or last_decision == 'pipeline_success'
@@ -47770,7 +51453,7 @@ def pipeline_run():
             'reason': 'invalid_leverage_preference',
             'message': 'leverageEnabled must be true or false.',
         }), 400
-    run_id = 'pipeline-run-%d' % int(time.time())
+    run_id = _pa_new_run_id('pipeline-run')
 
     is_manual_req = (trigger == 'manual')
     if is_manual_req:
@@ -47795,6 +51478,7 @@ def pipeline_run():
         is_auto = active_run and active_run.get('trigger', '') in ('market_auto_run', 'headless_market_auto_run', 'toggle_on', 'auto_run_now')
         msg = 'Background auto-run is active. Please wait for it to complete or stop it first.' if is_auto else 'Pipeline already running'
         return jsonify({'success': False, 'message': msg, 'status': 'already_running'}), 409
+    _pa_queue_active_run(uid, run_id, trigger)
 
     def _background_run():
         try:
@@ -47812,7 +51496,31 @@ def pipeline_run():
             import traceback
             _pa_log_error('[PipelineRun] background error: %s' % traceback.format_exc())
 
-    threading.Thread(target=_background_run, daemon=True).start()
+    try:
+        _pa_start_reserved_thread(
+            uid,
+            _background_run,
+            daemon=True,
+            name='pipeline-request-%s' % uid[:8],
+        )
+    except Exception:
+        _pa_update_active_run(
+            uid,
+            expected_run_id=run_id,
+            expected_statuses=('queued', 'running', 'cancelling'),
+            status='interrupted',
+            lastError='worker_start_failed',
+            message='Pipeline worker could not start',
+            finishedAt=_pa_utc_iso(),
+        )
+        _pa_log_error(
+            '[PipelineRun] worker thread failed to start user=%s' % uid[:8]
+        )
+        return jsonify({
+            'success': False,
+            'status': 'worker_start_failed',
+            'message': 'The backend could not start the pipeline worker. Retry shortly.',
+        }), 503
     return jsonify({'success': True, 'runId': run_id, 'message': 'Pipeline started'})
 
 
@@ -47859,16 +51567,140 @@ def pipeline_result():
 
 @app.route('/api/ai-agent/pipeline/stop', methods=['POST'])
 def pipeline_stop():
-    """Request the active pipeline to stop at the next step boundary."""
+    """Persist a cancellation request for one exact pipeline run."""
     user = require_auth()
     if not user:
         return jsonify({'success': False, 'message': 'Authentication required'}), 401
     uid = user['id']
+    data = request.get_json(silent=True) or {}
+    requested_run_id = str(data.get('runId') or '').strip()
+    if not requested_run_id:
+        return jsonify({
+            'success': False,
+            'code': 'run_id_required',
+            'message': 'runId is required so a stale browser cannot stop a newer run.',
+        }), 400
     active_run = _pa_get_active_run(uid)
-    if active_run and active_run.get('status') == 'running':
-        _pa_update_active_run(uid, stopRequested=True, message='Stop requested by user')
-        return jsonify({'success': True, 'message': 'Stop requested at next step boundary'})
-    return jsonify({'success': False, 'message': 'No active pipeline to stop'}), 404
+    if not active_run:
+        return jsonify({
+            'success': False,
+            'code': 'no_active_run',
+            'message': 'No active pipeline to stop',
+        }), 404
+    active_run_id = str(active_run.get('runId') or '')
+    if active_run_id != requested_run_id:
+        return jsonify({
+            'success': False,
+            'code': 'run_id_mismatch',
+            'message': 'The requested run is no longer active.',
+            'requestedRunId': requested_run_id,
+            'activeRunId': active_run_id,
+        }), 409
+    active_status = str(active_run.get('status') or '')
+    if active_status == 'stopped':
+        return jsonify({
+            'success': True,
+            'runId': active_run_id,
+            'status': 'stopped',
+            'alreadyStopped': True,
+            'message': 'This pipeline is already stopped.',
+        }), 200
+    if active_status == 'cancelling':
+        return jsonify({
+            'success': True,
+            'runId': active_run_id,
+            'status': 'cancelling',
+            'alreadyRequested': True,
+            'requestedAt': active_run.get('stopRequestedAt') or '',
+            'message': 'Cancellation is already in progress.',
+        }), 202
+    if active_status not in ('queued', 'running'):
+        return jsonify({
+            'success': False,
+            'code': 'run_not_stoppable',
+            'message': 'The pipeline is no longer running.',
+            'runId': active_run_id,
+            'status': active_run.get('status'),
+        }), 409
+
+    stop_request = {
+        'runId': active_run_id,
+        'requestedAt': _pa_utc_iso(),
+        'reason': str(data.get('reason') or 'user_requested')[:80],
+    }
+    cancellation_started = _pa_update_active_run(
+        uid,
+        expected_run_id=active_run_id,
+        expected_statuses=('queued', 'running'),
+        stopRequested=True,
+        stopRequestedAt=stop_request['requestedAt'],
+        status='cancelling',
+        message='Stop requested by user',
+    )
+    if not cancellation_started:
+        latest_run = _pa_get_active_run(uid) or {}
+        if (
+            str(latest_run.get('runId') or '') == active_run_id
+            and latest_run.get('status') in ('cancelling', 'stopped')
+        ):
+            latest_status = str(latest_run.get('status'))
+            return jsonify({
+                'success': True,
+                'runId': active_run_id,
+                'status': latest_status,
+                'alreadyRequested': latest_status == 'cancelling',
+                'alreadyStopped': latest_status == 'stopped',
+                'requestedAt': latest_run.get('stopRequestedAt') or '',
+                'message': (
+                    'Cancellation is already in progress.'
+                    if latest_status == 'cancelling'
+                    else 'This pipeline is already stopped.'
+                ),
+            }), 202 if latest_status == 'cancelling' else 200
+        return jsonify({
+            'success': False,
+            'code': 'run_id_mismatch',
+            'message': 'The requested run changed before cancellation was applied.',
+            'requestedRunId': requested_run_id,
+            'activeRunId': latest_run.get('runId') or '',
+        }), 409
+    _pa_cache_stop_request(uid, stop_request)
+    persisted, persist_error = _pa_patch_config(
+        uid,
+        {'active_stop_request': stop_request},
+    )
+    if not persisted:
+        return jsonify({
+            'success': False,
+            'code': 'stop_request_persistence_failed',
+            'message': (
+                'The local worker received the stop request, but durable '
+                'cross-process persistence is unavailable.'
+            ),
+            'runId': active_run_id,
+            'localStopRequested': True,
+            'durable': False,
+            'detail': str(persist_error or '')[:120],
+        }), 503
+    send_discord_notification(uid, 'lifecycle', {
+        'event_id': '%s:stop-requested' % active_run_id,
+        'notificationScope': 'research',
+        'source': 'Market Automation',
+        'component': 'Research Pipeline',
+        'state': 'stopped',
+        'mode': active_run.get('mode') or '-',
+        'trigger': 'user',
+        'description': 'A durable stop request was accepted for the active research pipeline.',
+        'descriptionZh': '当前研究流水线的持久停止请求已被接受。',
+        'detail': 'Run %s is cancelling at the next safe stage boundary.' % active_run_id,
+        'detailZh': '任务 %s 将在下一个安全阶段边界停止。' % active_run_id,
+    })
+    return jsonify({
+        'success': True,
+        'runId': active_run_id,
+        'durable': True,
+        'message': 'Stop requested for this run.',
+    }), 202
 
 
 @app.route('/api/ai-agent/continue-scan', methods=['POST'])
@@ -48114,9 +51946,10 @@ def pipeline_auto_run_headless_test():
         return jsonify({'success': False, 'message': 'Headless pipeline is already running', 'status': 'already_running'}), 409
     try:
         summary = _pa_run_pipeline(uid, interval, mode, trigger='headless_test', dry_run=dry_run)
+        outcome = _pa_pipeline_outcome(summary)
         _pa_add_run_history(uid, {
             'trigger_type': 'headless_test',
-            'status': 'success' if summary.get('errors', 0) == 0 else 'failed',
+            'status': outcome,
             'reason': 'headless dry-run test completed' if dry_run else 'headless test completed',
             'source': 'backend_test_endpoint',
             'market_open': None,
@@ -48130,7 +51963,13 @@ def pipeline_auto_run_headless_test():
             'summary': summary,
             'error': summary.get('lastError'),
         })
-        return jsonify({'success': summary.get('errors', 0) == 0, 'dryRun': dry_run, 'mode': mode, 'summary': summary})
+        return jsonify({
+            'success': outcome == 'success',
+            'status': outcome,
+            'dryRun': dry_run,
+            'mode': mode,
+            'summary': summary,
+        })
     finally:
         _pa_release_user_run(uid)
 
@@ -48178,7 +52017,8 @@ def pipeline_auto_run_now():
     time_horizon = _ctx['time_horizon']
     trade_mode = _ctx['trade_mode']
 
-    run_id = 'auto-now-%d' % int(time.time())
+    run_id = _pa_new_run_id('auto-now')
+    _pa_queue_active_run(uid, run_id, trigger)
     _pa_log('[AutoRunNow] endpoint user=%s mode=%s risk=%s horizon=%s trade=%s context=%s runId=%s' % (
         uid[:8], mode, risk_profile, time_horizon, trade_mode, _ctx['contextSource'], run_id))
 
@@ -48189,9 +52029,10 @@ def pipeline_auto_run_now():
             summary = _pa_execute_and_save(uid, cfg_copy, interval, mode, trigger=trigger,
                                             risk_profile=risk_profile, time_horizon=time_horizon,
                                             trade_mode=trade_mode, run_id=run_id)
+            outcome = _pa_pipeline_outcome(summary)
             _pa_add_run_history(uid, {
                 'trigger_type': trigger,
-                'status': 'success' if (summary and summary.get('errors', 0) == 0) else 'failed',
+                'status': outcome,
                 'reason': 'Manual test of scheduled auto run (user clicked Run Auto Pipeline Now).',
                 'source': 'Market Auto Run',
                 'market_open': None,
@@ -48203,7 +52044,11 @@ def pipeline_auto_run_now():
                 'interval_minutes': interval,
                 'mode': mode,
                 'summary': summary,
-                'error': summary.get('lastError') if summary else 'No summary returned',
+                'error': (
+                    summary.get('lastError')
+                    if outcome == 'failed' and summary
+                    else 'No summary returned' if not summary else None
+                ),
                 'run_id': run_id,
             })
             _pa_log('[ManualPipeline] auto-run-now completed user=%s runId=%s errors=%d' % (
@@ -48212,7 +52057,43 @@ def pipeline_auto_run_now():
             import traceback
             _pa_log_error('[ManualPipeline] auto-run-now failed: %s' % traceback.format_exc())
 
-    threading.Thread(target=_background_auto_now, daemon=True).start()
+    try:
+        _pa_start_reserved_thread(
+            uid,
+            _background_auto_now,
+            daemon=True,
+            name='pipeline-auto-now-%s' % uid[:8],
+        )
+    except Exception:
+        _pa_update_active_run(
+            uid,
+            expected_run_id=run_id,
+            expected_statuses=('queued', 'running', 'cancelling'),
+            status='interrupted',
+            lastError='worker_start_failed',
+            message='Auto pipeline worker could not start',
+            finishedAt=_pa_utc_iso(),
+        )
+        _pa_log_error(
+            '[AutoRunNow] worker thread failed to start user=%s' % uid[:8]
+        )
+        return jsonify({
+            'success': False,
+            'status': 'worker_start_failed',
+            'message': 'The backend could not start the auto pipeline worker. Retry shortly.',
+        }), 503
+    _pa_discord_send_once(uid, run_id, 'auto_scan_started', {
+        'event_id': '%s:auto_scan_started' % run_id,
+        'notificationScope': 'research',
+        'source': 'Auto Run Now',
+        'trigger': 'user',
+        'mode': mode,
+        'intervalMinutes': 0,
+        'nextRunAt': None,
+        'timeEt': _pa_now_et().isoformat(),
+        'description': 'A backend research and market-automation cycle started.',
+        'descriptionZh': '后端研究与市场自动化周期已启动。',
+    })
     order_authority = _pa_order_authority(config, mode=mode, trade_mode=trade_mode)
     return jsonify({
         'success': True,
@@ -48231,6 +52112,7 @@ def pipeline_auto_config():
     uid = user['id']
     data = request.get_json(silent=True) or {}
     existing_config = _pa_get_config(uid) or {}
+    original_config = dict(existing_config)
     enabled_raw = data.get('enabled', False)
     enabled = enabled_raw is True or (isinstance(enabled_raw, str) and enabled_raw.lower() == 'true')
     interval_minutes = data.get('intervalMinutes', None)
@@ -48319,14 +52201,55 @@ def pipeline_auto_config():
         config['next_run_at'] = 'now'
         config['last_decision'] = 'enabled'
 
-    success, reason = _pa_save_config(uid, config)
+    config_patch = {
+        key: value
+        for key, value in config.items()
+        if key not in original_config or original_config.get(key) != value
+    }
+    removed_config_keys = [
+        key for key in original_config
+        if key not in config
+    ]
+    success, reason = _pa_patch_config(
+        uid,
+        config_patch,
+        remove_keys=removed_config_keys,
+    )
     _pa_ensure_scheduler()
+    if success and bool(enabled) != bool(was_enabled):
+        send_discord_notification(uid, 'lifecycle', {
+            'event_id': 'market-automation:%s:%s' % (
+                'enabled' if enabled else 'disabled',
+                config.get('updated_at') or time.time_ns(),
+            ),
+            'notificationScope': 'research',
+            'source': 'Market Automation',
+            'component': 'Research and Equity Automation',
+            'state': 'started' if enabled else 'stopped',
+            'mode': mode,
+            'trigger': 'user',
+            'intervalMinutes': interval_minutes if enabled else None,
+            'nextRunAt': config.get('next_run_at') if enabled else None,
+            'description': (
+                'Scheduled research and market automation is enabled.'
+                if enabled else
+                'Scheduled research and market automation is disabled; position protection remains active.'
+            ),
+            'descriptionZh': (
+                '定时研究与市场自动化已启用。'
+                if enabled else
+                '定时研究与市场自动化已停用；持仓保护仍保持运行。'
+            ),
+        })
     if enabled and not was_enabled and success:
         _pa_log('config enabled user=%s interval=%dm trigger_immediate=true' % (uid[:8], interval_minutes or 0))
         if _pa_is_circuit_breaker_open(config):
             config['last_decision'] = 'circuit_breaker_open'
             config['next_run_at'] = config.get('circuit_breaker_until', '')
-            _pa_save_config(uid, config)
+            _pa_patch_config(uid, {
+                'last_decision': config['last_decision'],
+                'next_run_at': config['next_run_at'],
+            })
             _pa_log('config armed user=%s immediate_run=false reason=circuit_breaker' % uid[:8])
             return jsonify({
                 'success': True,
@@ -48344,23 +52267,62 @@ def pipeline_auto_config():
                 # Execute headless immediately — no claim window, no frontend involvement
                 _pa_log('[PipelineAutoConfig] toggle-on immediate headless run start')
                 _toggle_ctx = _pa_resolve_auto_run_context(uid, config)
-                def _toggle_run(_uid, _cfg, _interval, _mode, _risk, _horizon, _trade):
+                _toggle_run_id = _pa_new_run_id('toggle-on')
+                def _toggle_run(_uid, _cfg, _interval, _mode, _risk, _horizon, _trade, _run_id):
                     try:
                         cfg_copy = _pa_get_config(_uid) or {}
                         _pa_execute_and_save(_uid, cfg_copy, _interval, _mode, trigger='toggle_on',
-                                              risk_profile=_risk, time_horizon=_horizon, trade_mode=_trade)
+                                              risk_profile=_risk, time_horizon=_horizon, trade_mode=_trade,
+                                              run_id=_run_id)
                     except Exception:
                         import traceback
                         _pa_log_error('[ToggleOn] headless run error: %s' % traceback.format_exc())
                 if _pa_try_reserve_user_run(uid, 'toggle_on'):
-                    threading.Thread(target=_toggle_run, args=(
-                        uid, dict(config), _toggle_ctx['interval'], _toggle_ctx['mode'],
-                        _toggle_ctx['risk_profile'], _toggle_ctx['time_horizon'], _toggle_ctx['trade_mode']
-                    ), daemon=True).start()
+                    _pa_queue_active_run(uid, _toggle_run_id, 'toggle_on')
+                    try:
+                        _pa_start_reserved_thread(
+                            uid,
+                            _toggle_run,
+                            args=(
+                                uid, dict(config), _toggle_ctx['interval'],
+                                _toggle_ctx['mode'], _toggle_ctx['risk_profile'],
+                                _toggle_ctx['time_horizon'],
+                                _toggle_ctx['trade_mode'],
+                                _toggle_run_id,
+                            ),
+                            daemon=True,
+                            name='pipeline-toggle-%s' % uid[:8],
+                        )
+                    except Exception:
+                        _pa_update_active_run(
+                            uid,
+                            expected_run_id=_toggle_run_id,
+                            expected_statuses=(
+                                'queued', 'running', 'cancelling',
+                            ),
+                            status='interrupted',
+                            lastError='worker_start_failed',
+                            message='Toggle-on pipeline worker could not start',
+                            finishedAt=_pa_utc_iso(),
+                        )
+                        _pa_log_error(
+                            '[ToggleOn] worker thread failed to start user=%s'
+                            % uid[:8]
+                        )
+                        return jsonify({
+                            'success': False,
+                            'enabled': True,
+                            'status': 'worker_start_failed',
+                            'message': (
+                                'Configuration was saved, but the immediate pipeline '
+                                'worker could not start. The scheduler will retry.'
+                            ),
+                        }), 503
                     return jsonify({
                         'success': True,
                         'message': 'Configuration saved, pipeline started',
                         'enabled': True,
+                        'runId': _toggle_run_id,
                         'orderAuthority': _pa_order_authority(config),
                     })
                 _pa_log('[PipelineAutoConfig] toggle-on immediate run skipped reason=already_running')
@@ -48824,6 +52786,7 @@ _KALSHI_API_CONTROLS = register_kalshi_api(
     observation_saver=_kalshi_save_observation,
     observation_loader=lambda user_id, **kwargs: operations_store.list_kalshi_observations(user_id, **kwargs),
     scheduler_lease_acquirer=_kalshi_claim_scheduler_lease,
+    worker_lease_store=operations_store,
 )
 
 _pa_load_managed_positions()

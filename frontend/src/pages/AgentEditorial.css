@@ -1484,6 +1484,57 @@
 .ai-agent-page-container.agent-workspace .agent-mandate-facts strong { display: block; margin: 8px 0 4px; color: var(--research-ink); font-size: 19px; font-variant-numeric: tabular-nums; line-height: 1.1; }
 .ai-agent-page-container.agent-workspace .agent-mandate-facts small { display: block; color: var(--research-muted); font-size: 10px; line-height: 1.4; }
 
+.ai-agent-page-container.agent-workspace .agent-mandate-summary small.is-server {
+  margin-top: 7px;
+  color: var(--research-green);
+}
+
+.ai-agent-page-container.agent-workspace .agent-mandate-summary small.is-fallback {
+  margin-top: 7px;
+  color: var(--research-amber);
+}
+
+.ai-agent-page-container.agent-workspace .agent-mandate-contract-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  background: color-mix(in srgb, var(--research-blue) 3%, transparent);
+  border-bottom: 1px solid var(--research-rule);
+}
+
+.ai-agent-page-container.agent-workspace .agent-mandate-contract-grid > div {
+  min-width: 0;
+  padding: 16px 20px;
+  border-right: 1px solid var(--research-rule-soft);
+}
+
+.ai-agent-page-container.agent-workspace .agent-mandate-contract-grid > div:last-child { border-right: 0; }
+
+.ai-agent-page-container.agent-workspace .agent-mandate-contract-grid span,
+.ai-agent-page-container.agent-workspace .agent-mandate-contract-grid strong,
+.ai-agent-page-container.agent-workspace .agent-mandate-contract-grid small { display: block; }
+
+.ai-agent-page-container.agent-workspace .agent-mandate-contract-grid span {
+  color: var(--research-muted);
+  font-family: var(--research-mono);
+  font-size: 9px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.ai-agent-page-container.agent-workspace .agent-mandate-contract-grid strong {
+  margin: 7px 0 4px;
+  color: var(--research-ink);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+}
+
+.ai-agent-page-container.agent-workspace .agent-mandate-contract-grid small {
+  color: var(--research-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .ai-agent-page-container.agent-workspace .agent-mandate-safety-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1535,6 +1586,9 @@
   .ai-agent-page-container.agent-workspace .agent-mandate-control { border-right: 0; border-bottom: 1px solid var(--research-rule-soft); }
   .ai-agent-page-container.agent-workspace .agent-mandate-control:last-child { border-bottom: 0; }
   .ai-agent-page-container.agent-workspace .agent-mandate-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .ai-agent-page-container.agent-workspace .agent-mandate-contract-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ai-agent-page-container.agent-workspace .agent-mandate-contract-grid > div:nth-child(2) { border-right: 0; }
+  .ai-agent-page-container.agent-workspace .agent-mandate-contract-grid > div:nth-child(-n + 2) { border-bottom: 1px solid var(--research-rule-soft); }
 }
 
 @media (max-width: 720px) {
@@ -1544,6 +1598,10 @@
   .ai-agent-page-container.agent-workspace .agent-choice-grid { grid-template-columns: 1fr; }
   .ai-agent-page-container.agent-workspace .agent-choice-card { min-height: 78px; }
   .ai-agent-page-container.agent-workspace .agent-mandate-facts { grid-template-columns: 1fr 1fr; }
+  .ai-agent-page-container.agent-workspace .agent-mandate-contract-grid { grid-template-columns: 1fr; }
+  .ai-agent-page-container.agent-workspace .agent-mandate-contract-grid > div,
+  .ai-agent-page-container.agent-workspace .agent-mandate-contract-grid > div:nth-child(2) { border-right: 0; }
+  .ai-agent-page-container.agent-workspace .agent-mandate-contract-grid > div:not(:last-child) { border-bottom: 1px solid var(--research-rule-soft); }
   .ai-agent-page-container.agent-workspace .agent-mandate-safety-row { grid-template-columns: 1fr; }
   .ai-agent-page-container.agent-workspace .agent-mandate-leverage { border-right: 0; border-bottom: 1px solid var(--research-rule-soft); }
   .ai-agent-page-container.agent-workspace .agent-pipeline-authority-strip { grid-template-columns: 1fr 1fr; }
@@ -1720,6 +1778,78 @@
 .ai-agent-page-container.agent-workspace .agent-stage-content {
   padding: 22px;
   background: transparent;
+}
+
+.ai-agent-page-container.agent-workspace .agent-stage-working-state,
+.ai-agent-page-container.agent-workspace .agent-execution-authority-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 15px 16px;
+  color: var(--research-muted);
+  background: color-mix(in srgb, var(--research-blue) 4%, transparent);
+  border: 1px solid var(--research-rule);
+}
+
+.ai-agent-page-container.agent-workspace .agent-stage-working-state strong,
+.ai-agent-page-container.agent-workspace .agent-stage-working-state span,
+.ai-agent-page-container.agent-workspace .agent-execution-authority-note strong,
+.ai-agent-page-container.agent-workspace .agent-execution-authority-note span {
+  display: block;
+}
+
+.ai-agent-page-container.agent-workspace .agent-stage-working-state strong,
+.ai-agent-page-container.agent-workspace .agent-execution-authority-note strong {
+  margin-bottom: 3px;
+  color: var(--research-ink);
+  font-size: 12px;
+}
+
+.ai-agent-page-container.agent-workspace .agent-stage-working-state span,
+.ai-agent-page-container.agent-workspace .agent-execution-authority-note span {
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.ai-agent-page-container.agent-workspace .agent-execution-authority-note {
+  margin-bottom: 14px;
+}
+
+.ai-agent-page-container.agent-workspace .agent-execution-authority-note > .anticon {
+  margin-top: 2px;
+  color: var(--research-green);
+}
+
+.ai-agent-page-container.agent-workspace .agent-admission-table {
+  margin-top: 14px;
+}
+
+.ai-agent-page-container.agent-workspace .agent-admission-table .ant-table,
+.ai-agent-page-container.agent-workspace .agent-execution-stage-table .ant-table {
+  color: var(--research-ink);
+  background: transparent;
+}
+
+.ai-agent-page-container.agent-workspace .agent-admission-table .ant-table-cell,
+.ai-agent-page-container.agent-workspace .agent-execution-stage-table .ant-table-cell {
+  border-color: var(--research-rule-soft);
+}
+
+.ai-agent-page-container.agent-workspace .agent-execution-stage-authority strong,
+.ai-agent-page-container.agent-workspace .agent-execution-stage-authority span {
+  display: block;
+}
+
+.ai-agent-page-container.agent-workspace .agent-execution-stage-authority strong {
+  color: var(--research-ink);
+  font-family: var(--research-mono);
+  font-size: 11px;
+}
+
+.ai-agent-page-container.agent-workspace .agent-execution-stage-authority span {
+  margin-top: 2px;
+  color: var(--research-muted);
+  font-size: 10px;
 }
 
 /* Scanner / validation workbenches -------------------------------------- */
