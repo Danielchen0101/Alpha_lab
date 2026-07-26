@@ -1,26 +1,65 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { shouldAutoDetectAuthSession } from './authCallback';
 
-const supabaseUrl = process.env.REACT_APP_SUPABASE_URL;
-const supabaseAnonKey = process.env.REACT_APP_SUPABASE_ANON_KEY;
-const missingSupabaseEnv = !supabaseUrl || !supabaseAnonKey;
-const resolvedSupabaseUrl = supabaseUrl ?? 'https://placeholder.supabase.co';
-const supabaseProjectRef = new URL(resolvedSupabaseUrl).hostname.split('.')[0];
-export const supabaseAuthStorageKey = `sb-${supabaseProjectRef}-auth-token`;
+const LOCAL_SUPABASE_HOSTS = new Set(['localhost', '127.0.0.1']);
+const DEVELOPMENT_SUPABASE_URL = 'http://127.0.0.1:54321';
+const DEVELOPMENT_SUPABASE_ANON_KEY = 'development-anon-key';
 
-export const supabaseConfigError = missingSupabaseEnv
-  ? 'Supabase auth unavailable: REACT_APP_SUPABASE_URL or REACT_APP_SUPABASE_ANON_KEY is missing'
-  : '';
+export const validateSupabaseBrowserConfig = (
+  urlValue: string | undefined,
+  anonKeyValue: string | undefined,
+  environment = process.env.NODE_ENV,
+): string => {
+  const urlText = urlValue?.trim();
+  const anonKey = anonKeyValue?.trim();
+  if (!urlText || !anonKey) {
+    return 'Supabase auth unavailable: REACT_APP_SUPABASE_URL or REACT_APP_SUPABASE_ANON_KEY is missing';
+  }
 
-if (missingSupabaseEnv) {
+  try {
+    const url = new URL(urlText);
+    if (url.username || url.password) {
+      return 'Supabase auth unavailable: REACT_APP_SUPABASE_URL must not contain credentials';
+    }
+    if (environment === 'production' && url.protocol !== 'https:') {
+      return 'Supabase auth unavailable: production REACT_APP_SUPABASE_URL must use HTTPS';
+    }
+    const localHttp = url.protocol === 'http:' && LOCAL_SUPABASE_HOSTS.has(url.hostname);
+    if (url.protocol !== 'https:' && !localHttp) {
+      return 'Supabase auth unavailable: REACT_APP_SUPABASE_URL must use HTTPS, except for local development';
+    }
+  } catch {
+    return 'Supabase auth unavailable: REACT_APP_SUPABASE_URL is invalid';
+  }
+
+  return '';
+};
+
+const supabaseUrl = process.env.REACT_APP_SUPABASE_URL?.trim();
+const supabaseAnonKey = process.env.REACT_APP_SUPABASE_ANON_KEY?.trim();
+export const supabaseConfigError = validateSupabaseBrowserConfig(
+  supabaseUrl,
+  supabaseAnonKey,
+);
+
+if (supabaseConfigError) {
   console.error(
-    '[Supabase] Missing environment variables. Set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY in frontend/.env'
+    `[Supabase] ${supabaseConfigError}. Set valid browser auth variables in frontend/.env`,
   );
 }
 
+const resolvedSupabaseUrl = supabaseConfigError
+  ? DEVELOPMENT_SUPABASE_URL
+  : supabaseUrl!;
+const resolvedSupabaseAnonKey = supabaseConfigError
+  ? DEVELOPMENT_SUPABASE_ANON_KEY
+  : supabaseAnonKey!;
+const supabaseProjectRef = new URL(resolvedSupabaseUrl).hostname.split('.')[0];
+export const supabaseAuthStorageKey = `sb-${supabaseProjectRef}-auth-token`;
+
 export const supabase: SupabaseClient = createClient(
   resolvedSupabaseUrl,
-  supabaseAnonKey ?? 'placeholder-anon-key',
+  resolvedSupabaseAnonKey,
   {
     auth: {
       persistSession: true,

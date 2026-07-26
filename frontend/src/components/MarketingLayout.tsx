@@ -1,22 +1,30 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { Button } from 'antd';
 import { GlobalOutlined, SafetyOutlined, MenuOutlined, CloseOutlined } from '@ant-design/icons';
 import { useLanguage } from '../contexts/LanguageContext';
 import SystemStatusIndicator from './SystemStatusIndicator';
+import ThemeSwitcher from './ThemeSwitcher';
 
 interface MarketingLayoutProps {
   children: React.ReactNode;
   tone?: 'dark' | 'paper';
 }
 
+const getMarketingThemePopupContainer = (triggerNode: HTMLElement): HTMLElement => (
+  triggerNode.closest<HTMLElement>('#marketing-mobile-menu') || document.body
+);
+
 const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'paper' }) => {
-  const navigate = useNavigate();
   const location = useLocation();
   const [scrolled, setScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const mobileTriggerRef = useRef<HTMLButtonElement | null>(null);
   const progressRef = useRef<HTMLDivElement | null>(null);
+  const skipLinkRef = useRef<HTMLAnchorElement | null>(null);
+  const navigationRef = useRef<HTMLElement | null>(null);
+  const mainContentRef = useRef<HTMLDivElement | null>(null);
+  const footerRef = useRef<HTMLElement | null>(null);
   const { language, t, setLanguage } = useLanguage();
   const isPaper = tone === 'paper';
 
@@ -158,13 +166,15 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'pap
           border: 0;
           padding: 0;
           background: transparent;
+          text-decoration: none;
         }
         .nav-logo span {
           color: #1890ff;
         }
         .nav-logo:focus-visible,
         .mobile-menu-nav-item:focus-visible,
-        .footer-link-button:focus-visible {
+        .footer-link-button:focus-visible,
+        .marketing-action-link:focus-visible {
           outline: 2px solid #1890ff;
           outline-offset: 4px;
         }
@@ -218,6 +228,28 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'pap
           gap: clamp(8px, 1.5vw, 16px);
           align-items: center;
         }
+        .marketing-action-link {
+          box-sizing: border-box;
+          display: inline-flex;
+          min-height: 32px;
+          align-items: center;
+          justify-content: center;
+          border: 1px solid transparent;
+          background: transparent;
+          color: inherit;
+          font-family: inherit;
+          line-height: 1.5715;
+          text-decoration: none;
+          white-space: nowrap;
+          transition: color .2s ease, border-color .2s ease, background .2s ease, filter .2s ease;
+        }
+        .marketing-action-link:hover {
+          text-decoration: none;
+          filter: brightness(1.06);
+        }
+        .marketing-primary-action {
+          padding: 4px 15px;
+        }
         @media (max-width: 768px) {
           .nav-header .btn-get-started { display: none; }
           .nav-links { display: none; }
@@ -256,9 +288,10 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'pap
         .mobile-menu-nav-item {
           color: #94a3b8; font-size: 1.05rem; font-weight: 600;
           padding: 14px 16px; cursor: pointer;
-          width: 100%; border: 0; background: transparent; text-align: left;
+          display: block; width: 100%; border: 0; background: transparent; text-align: left;
           font-family: inherit;
           border-radius: 10px;
+          text-decoration: none;
           transition: background 0.2s ease, color 0.2s ease;
         }
         .mobile-menu-nav-item:hover, .mobile-menu-nav-item.mobile-active {
@@ -491,6 +524,7 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'pap
           --paper-bright: #faf8f2;
           --paper-ink: #171a17;
           --paper-muted: #666b64;
+          --paper-accent: #3569c8;
           --paper-line: rgba(23, 26, 23, 0.18);
           background: var(--paper);
           color: var(--paper-ink);
@@ -502,6 +536,7 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'pap
           --paper-bright: #1d2223;
           --paper-ink: #f3f1e9;
           --paper-muted: #b9c1bb;
+          --paper-accent: #91baff;
           --paper-line: rgba(243, 241, 233, 0.22);
           background: var(--paper);
           color: var(--paper-ink);
@@ -544,7 +579,7 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'pap
           color: var(--paper-ink);
         }
         .marketing-paper .nav-item::after {
-          background: #3569c8;
+          background: var(--paper-accent);
           box-shadow: none;
           height: 1px;
         }
@@ -564,6 +599,42 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'pap
         }
         .marketing-paper .mobile-menu-actions {
           border-top-color: var(--paper-line);
+        }
+        .marketing-paper .marketing-language-action,
+        .marketing-paper .marketing-close-action {
+          color: var(--paper-muted) !important;
+        }
+        .marketing-paper .marketing-sign-in-action,
+        .marketing-paper .marketing-menu-action,
+        .marketing-paper .marketing-mobile-sign-in-action {
+          color: var(--paper-ink) !important;
+        }
+        .marketing-paper .marketing-primary-action,
+        .marketing-paper .marketing-mobile-primary-action {
+          color: var(--paper) !important;
+          border-color: var(--paper-ink) !important;
+          background: var(--paper-ink) !important;
+          box-shadow: none !important;
+        }
+        .marketing-paper .marketing-mobile-sign-in-action {
+          border-color: var(--paper-line) !important;
+          background: transparent !important;
+        }
+        .marketing-theme-switcher {
+          display: inline-flex;
+          flex: 0 0 auto;
+        }
+        .marketing-paper .marketing-theme-switcher .ant-btn {
+          color: var(--paper-ink) !important;
+          border-color: var(--paper-line) !important;
+          border-radius: 0 !important;
+          background: transparent !important;
+          box-shadow: none !important;
+        }
+        .marketing-paper .marketing-theme-switcher .ant-btn:hover,
+        .marketing-paper .marketing-theme-switcher .ant-btn:focus-visible {
+          color: var(--paper-accent) !important;
+          border-color: currentColor !important;
         }
         .marketing-paper .footer {
           background: #e9e5da !important;
@@ -634,8 +705,9 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'pap
         }
         .marketing-paper .nav-logo:focus-visible,
         .marketing-paper .mobile-menu-nav-item:focus-visible,
-        .marketing-paper .footer-link-button:focus-visible {
-          outline-color: #2b5fae;
+        .marketing-paper .footer-link-button:focus-visible,
+        .marketing-paper .marketing-action-link:focus-visible {
+          outline-color: var(--paper-accent);
         }
         @media (max-width: 480px) {
           .mobile-menu-overlay {
@@ -670,6 +742,18 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'pap
     const previousOverflow = document.body.style.overflow;
     const previousFocus = document.activeElement as HTMLElement | null;
     const trigger = mobileTriggerRef.current;
+    const backgroundRegions = [
+      skipLinkRef.current,
+      navigationRef.current,
+      mainContentRef.current,
+      footerRef.current,
+    ].filter((node): node is HTMLElement => Boolean(node));
+    const backgroundRegionState = backgroundRegions.map(node => ({
+      node,
+      hadInert: node.hasAttribute('inert'),
+      inert: node.getAttribute('inert'),
+      ariaHidden: node.getAttribute('aria-hidden'),
+    }));
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setMobileMenuOpen(false);
       if (event.key === 'Tab') {
@@ -683,11 +767,21 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'pap
       }
     };
     document.body.style.overflow = 'hidden';
+    backgroundRegions.forEach(node => {
+      node.setAttribute('inert', '');
+      node.setAttribute('aria-hidden', 'true');
+    });
     window.addEventListener('keydown', handleEscape);
     window.requestAnimationFrame(() => document.querySelector<HTMLElement>('#marketing-mobile-menu [data-mobile-menu-close]')?.focus());
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener('keydown', handleEscape);
+      backgroundRegionState.forEach(({ node, hadInert, inert, ariaHidden }) => {
+        if (hadInert) node.setAttribute('inert', inert ?? '');
+        else node.removeAttribute('inert');
+        if (ariaHidden === null) node.removeAttribute('aria-hidden');
+        else node.setAttribute('aria-hidden', ariaHidden);
+      });
       (previousFocus || trigger)?.focus();
     };
   }, [mobileMenuOpen]);
@@ -696,8 +790,18 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'pap
     setLanguage(language === 'en-US' ? 'zh-CN' : 'en-US');
   };
 
-  const handleNavClick = (path: string) => {
-    navigate(path);
+  const handleInternalLinkClick = (
+    event: React.MouseEvent<HTMLAnchorElement>,
+    closeMobileMenu = false,
+  ) => {
+    const isPlainNavigation = event.button === 0
+      && !event.metaKey
+      && !event.ctrlKey
+      && !event.shiftKey
+      && !event.altKey
+      && event.currentTarget.target !== '_blank';
+    if (!isPlainNavigation || event.defaultPrevented) return;
+    if (closeMobileMenu) setMobileMenuOpen(false);
     window.scrollTo(0, 0);
   };
 
@@ -720,12 +824,12 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'pap
 
   return (
     <div className={`landing-container ${isPaper ? 'marketing-paper' : ''}`}>
-      <a className="public-skip-link" href="#public-main-content">
+      <a ref={skipLinkRef} className="public-skip-link" href="#public-main-content">
         {language === 'zh-CN' ? '跳到主要内容' : 'Skip to main content'}
       </a>
       {/* Navigation Bar */}
-      <nav className={`nav-header ${scrolled ? 'scrolled' : ''}`} aria-label={language === 'zh-CN' ? '主要导航' : 'Primary navigation'}>
-        <button type="button" className="nav-logo" onClick={() => handleNavClick('/')} style={{ display: 'flex', alignItems: 'center', background: 'transparent' }} aria-label={language === 'zh-CN' ? 'AlphaLab 首页' : 'AlphaLab home'}>
+      <nav ref={navigationRef} className={`nav-header ${scrolled ? 'scrolled' : ''}`} aria-label={language === 'zh-CN' ? '主要导航' : 'Primary navigation'}>
+        <Link to="/" className="nav-logo" onClick={handleInternalLinkClick} style={{ display: 'flex', alignItems: 'center', background: 'transparent' }} aria-label={language === 'zh-CN' ? 'AlphaLab 首页' : 'AlphaLab home'}>
           {isPaper ? (
             <span className="paper-wordmark">AlphaLab</span>
           ) : (
@@ -741,26 +845,27 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'pap
               }}
             />
           )}
-        </button>
+        </Link>
         <div className="nav-links">
           {navItems.map(item => (
-            <button
-              type="button"
+            <Link
+              to={item.path}
               key={item.path}
               className={`nav-item ${location.pathname === item.path ? 'active' : ''}`}
-              onClick={() => handleNavClick(item.path)}
+              onClick={handleInternalLinkClick}
               aria-current={location.pathname === item.path ? 'page' : undefined}
               aria-label={item.ariaLabel}
             >
               {item.label}
-            </button>
+            </Link>
           ))}
         </div>
         <div className="nav-actions">
-          <Button type="text" onClick={toggleLanguage} style={{ color: isPaper ? '#555b54' : '#94a3b8', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'clamp(12px, 1vw, 13px)', padding: '4px 8px' }} aria-label={t.landing.ariaLabelSwitchLang}><GlobalOutlined aria-hidden="true" style={{ fontSize: 'clamp(12px, 1vw, 14px)' }} /> <span className="lang-text">{language === 'zh-CN' ? 'EN' : '中文'}</span></Button>
-          <Button type="text" className="btn-sign-in-desktop" style={{ color: isPaper ? '#171a17' : '#fff', fontWeight: 600, fontSize: 'clamp(13px, 1vw, 14px)', padding: '4px 8px' }} onClick={() => navigate('/signin')} aria-label={t.landing.ariaLabelSignIn}>{t.landing.signIn}</Button>
-          <Button type="primary" className="btn-get-started btn-get-started-desktop" style={{ background: isPaper ? '#171a17' : '#1890ff', borderColor: isPaper ? '#171a17' : '#1890ff', fontWeight: 600, boxShadow: isPaper ? 'none' : '0 4px 12px rgba(24,144,255,0.3)', borderRadius: isPaper ? 0 : undefined }} onClick={() => navigate('/signup')} aria-label={t.landing.ariaLabelGetStarted}>{t.landing.getStarted}</Button>
-          <Button ref={mobileTriggerRef} type="text" className="nav-hamburger" onClick={() => setMobileMenuOpen(true)} style={{ color: isPaper ? '#171a17' : '#fff', fontSize: 20, padding: '4px 8px' }} aria-label={language === 'zh-CN' ? '打开导航菜单' : 'Open menu'} aria-expanded={mobileMenuOpen} aria-controls="marketing-mobile-menu"><MenuOutlined /></Button>
+          <span className="marketing-theme-switcher"><ThemeSwitcher getPopupContainer={getMarketingThemePopupContainer} /></span>
+          <Button type="text" className="marketing-language-action" onClick={toggleLanguage} style={{ color: isPaper ? undefined : '#94a3b8', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'clamp(12px, 1vw, 13px)', padding: '4px 8px' }} aria-label={t.landing.ariaLabelSwitchLang}><GlobalOutlined aria-hidden="true" style={{ fontSize: 'clamp(12px, 1vw, 14px)' }} /> <span className="lang-text">{language === 'zh-CN' ? 'EN' : '中文'}</span></Button>
+          <Link to="/signin" className="btn-sign-in-desktop marketing-sign-in-action marketing-action-link" style={{ color: isPaper ? undefined : '#fff', fontWeight: 600, fontSize: 'clamp(13px, 1vw, 14px)', padding: '4px 8px' }} onClick={handleInternalLinkClick} aria-label={t.landing.ariaLabelSignIn}>{t.landing.signIn}</Link>
+          <Link to="/signup" className="btn-get-started btn-get-started-desktop marketing-primary-action marketing-action-link" style={{ background: isPaper ? undefined : '#1890ff', borderColor: isPaper ? undefined : '#1890ff', color: isPaper ? undefined : '#fff', fontWeight: 600, boxShadow: isPaper ? 'none' : '0 4px 12px rgba(24,144,255,0.3)', borderRadius: isPaper ? 0 : undefined }} onClick={handleInternalLinkClick} aria-label={t.landing.ariaLabelGetStarted}>{t.landing.getStarted}</Link>
+          <Button ref={mobileTriggerRef} type="text" className="nav-hamburger marketing-menu-action" onClick={() => setMobileMenuOpen(true)} style={{ color: isPaper ? undefined : '#fff', fontSize: 20, padding: '4px 8px' }} aria-label={language === 'zh-CN' ? '打开导航菜单' : 'Open menu'} aria-expanded={mobileMenuOpen} aria-controls="marketing-mobile-menu"><MenuOutlined /></Button>
         </div>
       </nav>
       {isPaper && <div ref={progressRef} className="public-scroll-progress" aria-hidden="true" />}
@@ -769,44 +874,46 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'pap
       {mobileMenuOpen && (
         <div className="mobile-menu-overlay" id="marketing-mobile-menu" role="dialog" aria-modal="true" aria-label={language === 'zh-CN' ? '导航菜单' : 'Navigation menu'}>
           <div className="mobile-menu-header">
-            <button type="button" className="nav-logo" style={{ cursor: 'pointer', fontSize: 'clamp(1.1rem, 1.8vw, 1.35rem)' }} onClick={() => { handleNavClick('/'); setMobileMenuOpen(false); }} aria-label={language === 'zh-CN' ? '返回 AlphaLab 首页' : 'Return to AlphaLab home'}>
+            <Link to="/" className="nav-logo" style={{ cursor: 'pointer', fontSize: 'clamp(1.1rem, 1.8vw, 1.35rem)' }} onClick={event => handleInternalLinkClick(event, true)} aria-label={language === 'zh-CN' ? '返回 AlphaLab 首页' : 'Return to AlphaLab home'}>
               {isPaper ? <span className="paper-wordmark">AlphaLab</span> : <>Alpha<span>Lab</span></>}
-            </button>
-            <Button data-mobile-menu-close type="text" onClick={() => setMobileMenuOpen(false)} style={{ color: isPaper ? '#171a17' : '#94a3b8', fontSize: 20, padding: '4px 8px' }} aria-label={language === 'zh-CN' ? '关闭导航菜单' : 'Close menu'}><CloseOutlined /></Button>
+            </Link>
+            <Button data-mobile-menu-close type="text" className="marketing-close-action" onClick={() => setMobileMenuOpen(false)} style={{ color: isPaper ? undefined : '#94a3b8', fontSize: 20, padding: '4px 8px' }} aria-label={language === 'zh-CN' ? '关闭导航菜单' : 'Close menu'}><CloseOutlined /></Button>
           </div>
           <div className="mobile-menu-nav">
             {navItems.map(item => (
-              <button
-                type="button"
+              <Link
+                to={item.path}
                 key={item.path}
                 className={`mobile-menu-nav-item ${location.pathname === item.path ? 'mobile-active' : ''}`}
-                onClick={() => { handleNavClick(item.path); setMobileMenuOpen(false); }}
+                onClick={event => handleInternalLinkClick(event, true)}
+                aria-current={location.pathname === item.path ? 'page' : undefined}
               >
                 {item.label}
-              </button>
+              </Link>
             ))}
           </div>
           <div className="mobile-menu-actions">
-            <Button type="text" onClick={toggleLanguage} style={{ color: isPaper ? '#555b54' : '#94a3b8', fontWeight: 600, fontSize: '1rem', padding: '12px 16px', width: '100%', textAlign: 'left' }}>
+            <span className="marketing-theme-switcher"><ThemeSwitcher getPopupContainer={getMarketingThemePopupContainer} /></span>
+            <Button type="text" className="marketing-language-action" onClick={toggleLanguage} style={{ color: isPaper ? undefined : '#94a3b8', fontWeight: 600, fontSize: '1rem', padding: '12px 16px', width: '100%', textAlign: 'left' }}>
               <GlobalOutlined style={{ marginRight: 8 }} /> {language === 'zh-CN' ? 'English' : '中文'} · {t.landing.ariaLabelSwitchLang}
             </Button>
-            <Button onClick={() => { navigate('/signin'); setMobileMenuOpen(false); }} style={{ height: 48, width: '100%', color: isPaper ? '#171a17' : '#f1f5f9', fontWeight: 600, background: isPaper ? 'transparent' : 'rgba(255,255,255,0.05)', border: isPaper ? '1px solid rgba(23,26,23,0.24)' : '1px solid rgba(255,255,255,0.1)', borderRadius: isPaper ? 0 : 10 }}>
+            <Link to="/signin" className="marketing-mobile-sign-in-action marketing-action-link" onClick={event => handleInternalLinkClick(event, true)} style={{ height: 48, width: '100%', color: isPaper ? undefined : '#f1f5f9', fontWeight: 600, background: isPaper ? undefined : 'rgba(255,255,255,0.05)', border: isPaper ? undefined : '1px solid rgba(255,255,255,0.1)', borderRadius: isPaper ? 0 : 10 }}>
               {t.landing.signIn}
-            </Button>
-            <Button type="primary" onClick={() => { navigate('/signup'); setMobileMenuOpen(false); }} style={{ height: 48, width: '100%', fontWeight: 600, background: isPaper ? '#171a17' : '#2563eb', border: 'none', borderRadius: isPaper ? 0 : 10 }}>
+            </Link>
+            <Link to="/signup" className="marketing-mobile-primary-action marketing-action-link" onClick={event => handleInternalLinkClick(event, true)} style={{ height: 48, width: '100%', color: isPaper ? undefined : '#fff', fontWeight: 600, background: isPaper ? undefined : '#2563eb', border: 'none', borderRadius: isPaper ? 0 : 10 }}>
               {t.landing.getStarted}
-            </Button>
+            </Link>
           </div>
         </div>
       )}
 
       {/* Main Content */}
-      <div id="public-main-content" tabIndex={-1} style={{ position: 'relative', zIndex: 1 }}>
+      <div ref={mainContentRef} id="public-main-content" tabIndex={-1} style={{ position: 'relative', zIndex: 1 }}>
         {children}
       </div>
 
       {/* Footer */}
-      <footer className="footer">
+      <footer ref={footerRef} className="footer">
         <div className="footer-grid" style={{
           display: 'grid',
           gap: 'clamp(24px, 4vw, 48px)',
@@ -827,21 +934,21 @@ const MarketingLayout: React.FC<MarketingLayoutProps> = ({ children, tone = 'pap
           {/* Product */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <div className="footer-col-title" style={{ color: '#e2e8f0', fontWeight: 700, marginBottom: 14, fontSize: '0.82rem', letterSpacing: '0.03em', textTransform: 'uppercase' }}>{t.landing.footerProduct}</div>
-            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/platform')}>{t.landing.navPlatform}</button>
-            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/workflow')}>{t.landing.navWorkflow}</button>
-            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/research')}>{t.landing.marketField.navResearch}</button>
-            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/examples')}>{language === 'zh-CN' ? '研究案例' : 'Examples'}</button>
-            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/data')}>{language === 'zh-CN' ? '数据与方法' : 'Data & Method'}</button>
-            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/technology')}>{t.landing.navTechnology}</button>
+            <Link to="/platform" className="footer-link footer-link-button" onClick={handleInternalLinkClick}>{t.landing.navPlatform}</Link>
+            <Link to="/workflow" className="footer-link footer-link-button" onClick={handleInternalLinkClick}>{t.landing.navWorkflow}</Link>
+            <Link to="/research" className="footer-link footer-link-button" onClick={handleInternalLinkClick}>{t.landing.marketField.navResearch}</Link>
+            <Link to="/examples" className="footer-link footer-link-button" onClick={handleInternalLinkClick}>{language === 'zh-CN' ? '研究案例' : 'Examples'}</Link>
+            <Link to="/data" className="footer-link footer-link-button" onClick={handleInternalLinkClick}>{language === 'zh-CN' ? '数据与方法' : 'Data & Method'}</Link>
+            <Link to="/technology" className="footer-link footer-link-button" onClick={handleInternalLinkClick}>{t.landing.navTechnology}</Link>
           </div>
 
           {/* Trust */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <div className="footer-col-title" style={{ color: '#e2e8f0', fontWeight: 700, marginBottom: 14, fontSize: '0.82rem', letterSpacing: '0.03em', textTransform: 'uppercase' }}>{t.landing.footerTrust}</div>
-            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/security')}>{t.landing.navSecurity}</button>
-            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/privacy')}>{t.landing.footerPrivacyPolicy}</button>
-            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/terms')}>{t.landing.footerTermsOfService}</button>
-            <button type="button" className="footer-link footer-link-button" onClick={() => handleNavClick('/about')}>{language === 'zh-CN' ? '关于 AlphaLab' : 'About AlphaLab'}</button>
+            <Link to="/security" className="footer-link footer-link-button" onClick={handleInternalLinkClick}>{t.landing.navSecurity}</Link>
+            <Link to="/privacy" className="footer-link footer-link-button" onClick={handleInternalLinkClick}>{t.landing.footerPrivacyPolicy}</Link>
+            <Link to="/terms" className="footer-link footer-link-button" onClick={handleInternalLinkClick}>{t.landing.footerTermsOfService}</Link>
+            <Link to="/about" className="footer-link footer-link-button" onClick={handleInternalLinkClick}>{language === 'zh-CN' ? '关于 AlphaLab' : 'About AlphaLab'}</Link>
           </div>
 
           {/* Resources */}

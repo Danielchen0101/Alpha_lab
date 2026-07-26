@@ -7,6 +7,7 @@ const port = Number(process.env.PORT || 4173);
 const buildPath = process.env.BUILD_PATH || 'build';
 const buildRoot = resolve(process.cwd(), buildPath);
 const indexFile = join(buildRoot, 'index.html');
+const themeBootstrapFile = join(buildRoot, 'theme-bootstrap.js');
 
 if (!existsSync(indexFile)) {
   throw new Error(`Production build not found at ${buildRoot}. Run \`npm run build\` before starting the smoke-test server.`);
@@ -39,7 +40,9 @@ const server = createServer((request, response) => {
   const extension = extname(file).toLowerCase();
   response.writeHead(200, {
     'Content-Type': contentTypes[extension] || 'application/octet-stream',
-    'Cache-Control': file === indexFile ? 'no-store' : 'public, max-age=31536000, immutable',
+    'Cache-Control': file === indexFile || file === themeBootstrapFile
+      ? 'no-store'
+      : 'public, max-age=31536000, immutable',
     'X-Content-Type-Options': 'nosniff',
   });
   createReadStream(file).pipe(response);

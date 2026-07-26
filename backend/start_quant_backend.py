@@ -12,6 +12,18 @@ from copy import deepcopy
 import re
 import sys
 
+APP_VERSION = '3.0.0'
+_RENDER_GIT_COMMIT_PATTERN = re.compile(r'[0-9a-fA-F]{12,64}')
+
+
+def _render_git_commit_short_sha():
+    """Return only a validated, non-secret deployment identifier."""
+    raw_commit = str(os.getenv('RENDER_GIT_COMMIT') or '').strip()
+    if not _RENDER_GIT_COMMIT_PATTERN.fullmatch(raw_commit):
+        return 'unknown'
+    return raw_commit[:12].lower()
+
+
 try:
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
@@ -20104,7 +20116,15 @@ def get_status():
 
         'timestamp': int(time.time()),
 
-        'version': '3.0.0'
+        'version': APP_VERSION,
+
+        'release': {
+
+            'appVersion': APP_VERSION,
+
+            'commitSha': _render_git_commit_short_sha()
+
+        }
 
     })
 
@@ -52805,16 +52825,12 @@ def _kalshi_save_artifact(user_id, artifact_type, payload):
 
 
 def _kalshi_enabled_users():
-    rows = operations_store.list_scheduler_artifacts(
+    return operations_store.list_scheduler_artifact_user_ids(
         _KALSHI_ROBOT_ARTIFACT_TYPE,
         _KALSHI_ARTIFACT_KEY,
+        payload_contains={'enabled': True},
         limit=500,
     )
-    return [
-        str(row.get('user_id'))
-        for row in rows
-        if isinstance(row.get('payload'), dict) and row['payload'].get('enabled') is True
-    ]
 
 
 def _kalshi_save_observation(user_id, observation):

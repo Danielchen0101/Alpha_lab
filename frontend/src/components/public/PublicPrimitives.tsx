@@ -1,6 +1,16 @@
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useLanguage } from '../../contexts/LanguageContext';
+
+const handlePublicLinkClick = (event: React.MouseEvent<HTMLAnchorElement>) => {
+  const isPlainNavigation = event.button === 0
+    && !event.metaKey
+    && !event.ctrlKey
+    && !event.shiftKey
+    && !event.altKey
+    && event.currentTarget.target !== '_blank';
+  if (isPlainNavigation && !event.defaultPrevented) window.scrollTo(0, 0);
+};
 
 interface PublicHeroProps {
   eyebrow: string;
@@ -23,8 +33,6 @@ export const PublicHero: React.FC<PublicHeroProps> = ({
   onSecondary,
   children,
 }) => {
-  const navigate = useNavigate();
-
   return (
     <section className="public-hero">
       <div className="public-hero-copy">
@@ -33,7 +41,7 @@ export const PublicHero: React.FC<PublicHeroProps> = ({
         <p>{subtitle}</p>
         {(primaryLabel || secondaryLabel) && (
           <div className="public-actions">
-            {primaryLabel && <button type="button" className="public-primary" onClick={() => navigate('/signup')}>{primaryLabel}</button>}
+            {primaryLabel && <Link to="/signup" className="public-primary" onClick={handlePublicLinkClick}>{primaryLabel}</Link>}
             {secondaryLabel && <button type="button" className="public-secondary" onClick={onSecondary}>{secondaryLabel}<span aria-hidden="true">↓</span></button>}
           </div>
         )}
@@ -232,15 +240,14 @@ interface PublicCtaProps {
 }
 
 export const PublicCta: React.FC<PublicCtaProps> = ({ eyebrow, title, description, primary, secondary, secondaryPath = '/workflow' }) => {
-  const navigate = useNavigate();
   return (
     <section className="public-cta">
       <p>{eyebrow}</p>
       <h2>{title}</h2>
       <span>{description}</span>
       <div className="public-actions">
-        <button type="button" className="public-primary" onClick={() => navigate('/signup')}>{primary}</button>
-        <button type="button" className="public-secondary" onClick={() => navigate(secondaryPath)}>{secondary}<span aria-hidden="true">↗</span></button>
+        <Link to="/signup" className="public-primary" onClick={handlePublicLinkClick}>{primary}</Link>
+        <Link to={secondaryPath} className="public-secondary" onClick={handlePublicLinkClick}>{secondary}<span aria-hidden="true">↗</span></Link>
       </div>
     </section>
   );

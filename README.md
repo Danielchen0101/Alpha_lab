@@ -289,9 +289,10 @@ Every <code>REACT_APP_*</code> value is embedded into the browser build and must
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| <code>REACT_APP_API_BASE_URL</code> | Production | Canonical backend API base; use <code>/api</code> for the local proxy or same-origin Docker deployment |
-| <code>REACT_APP_SITE_URL</code> | Production | Canonical public origin used to build confirmation, recovery, and OAuth callback URLs |
-| <code>REACT_APP_SUPABASE_URL</code> | Yes | Supabase project URL used by browser authentication |
+| <code>REACT_APP_ENV</code> | Production Docker | Set to <code>production</code> for Docker builds; Cloudflare Pages builds fail closed automatically when <code>CF_PAGES=1</code> |
+| <code>REACT_APP_API_BASE_URL</code> | Production | Use <code>https://api.alphalabquant.com/api</code> on Cloudflare Pages or <code>/api</code> for the same-origin Docker deployment |
+| <code>REACT_APP_SITE_URL</code> | Production | Must be <code>https://www.alphalabquant.com</code> for authentication callbacks and the canonical public origin |
+| <code>REACT_APP_SUPABASE_URL</code> | Yes | Must be <code>https://nwpxjqgqegxttucsmvmp.supabase.co</code> to match the deployed CSP |
 | <code>REACT_APP_SUPABASE_ANON_KEY</code> | Yes | Browser-safe Supabase anonymous key |
 | <code>REACT_APP_TURNSTILE_SITE_KEY</code> | Production auth | Public Cloudflare Turnstile site key |
 | <code>REACT_APP_ENABLE_ANALYTICS</code> | No | Set to <code>true</code> to emit sanitized <code>alphalab:web-vital</code> browser events for a host telemetry collector |
@@ -331,7 +332,7 @@ AlphaLab supports a split web/API deployment and an all-in-one container.
 | Render | Build command | <code>pip install -r requirements.txt</code> |
 | Render | Start command | <code>MALLOC_ARENA_MAX=2 gunicorn start_quant_backend:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 900</code> |
 
-Apply all four Supabase SQL files before deploying the application. Set the frontend build variables in Cloudflare Pages and the backend runtime variables in Render. Point <code>REACT_APP_API_BASE_URL</code> to the Render service with the <code>/api</code> suffix, and set <code>FRONTEND_ORIGIN</code> to the exact deployed frontend origin.
+Apply all five Supabase SQL files before deploying the application. Set the frontend build variables in Cloudflare Pages and the backend runtime variables in Render. Set <code>REACT_APP_API_BASE_URL</code> to <code>https://api.alphalabquant.com/api</code>, and set <code>FRONTEND_ORIGIN</code> to the exact deployed frontend origin.
 
 Add the deployed frontend origin and its <code>/auth/confirmed</code> and <code>/reset-password</code> callbacks to the Supabase Auth URL configuration. Configure the same production host for Turnstile.
 
@@ -344,7 +345,8 @@ The root Dockerfile builds the React frontend with Node 20, installs the Python 
 ~~~bash
 docker build \
   --build-arg REACT_APP_API_BASE_URL=/api \
-  --build-arg REACT_APP_SUPABASE_URL=https://your-project.supabase.co \
+  --build-arg REACT_APP_SITE_URL=https://www.alphalabquant.com \
+  --build-arg REACT_APP_SUPABASE_URL=https://nwpxjqgqegxttucsmvmp.supabase.co \
   --build-arg REACT_APP_SUPABASE_ANON_KEY=your-browser-safe-anon-key \
   --build-arg REACT_APP_TURNSTILE_SITE_KEY=your-public-site-key \
   -t alphalab:v3.0.0 .
@@ -356,6 +358,8 @@ docker run --rm \
 ~~~
 
 Open <code>http://localhost:8080</code> and check <code>http://localhost:8080/api/health</code>. Frontend build arguments are public; backend secrets belong only in the runtime environment.
+
+The main-branch DockerHub workflow reads <code>REACT_APP_SITE_URL</code> and <code>REACT_APP_SUPABASE_URL</code> from GitHub Actions Variables, and reads <code>REACT_APP_SUPABASE_ANON_KEY</code> and <code>REACT_APP_TURNSTILE_SITE_KEY</code> from GitHub Actions Secrets. Missing or host-mismatched values stop the release before the image build.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for the hosting checklist. Deployment configuration is currently managed in provider dashboards rather than repository-owned Render or Cloudflare configuration files.
 

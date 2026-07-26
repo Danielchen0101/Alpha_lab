@@ -32,10 +32,43 @@ describe('auth redirects', () => {
     expect(getAuthRedirect('dashboard')).toBe('https://www.example.com/dashboard');
   });
 
+  it.each([
+    ['http://localhost:3000/app', 'http://localhost:3000'],
+    ['http://127.0.0.1:4173/app', 'http://127.0.0.1:4173'],
+  ])('allows local HTTP development origin %s', (configured, expected) => {
+    process.env.REACT_APP_SITE_URL = configured;
+
+    expect(getPublicSiteOrigin()).toBe(expected);
+  });
+
   it('falls back safely when the configured site URL is invalid', () => {
-    process.env.REACT_APP_SITE_URL = 'javascript:alert(1)';
+    process.env.REACT_APP_SITE_URL = 'ftp://example.com/callback';
 
     expect(getEmailConfirmationRedirect()).toBe(`${window.location.origin}/auth/confirmed`);
+  });
+
+  it.each([
+    'http://example.com',
+    'http://localhost.example.com',
+    'https://user:password@example.com',
+    ' https://example.com',
+  ])('does not trust an unsafe configured site origin %s', (configured) => {
+    process.env.REACT_APP_SITE_URL = configured;
+
+    expect(getPublicSiteOrigin()).toBe(window.location.origin);
+  });
+
+  it.each([
+    '//attacker.example/callback',
+    '\\\\attacker.example\\callback',
+    '/auth\\confirmed',
+    '/auth/%5cconfirmed',
+    '/auth/\u000aconfirmed',
+    'https://attacker.example/callback',
+  ])('rejects unsafe callback path %s', (path) => {
+    process.env.REACT_APP_SITE_URL = 'https://alphalabquant.com';
+
+    expect(() => getAuthRedirect(path)).toThrow('Unsafe authentication redirect path');
   });
 
   it('encodes the post-OAuth destination as a single query parameter', () => {

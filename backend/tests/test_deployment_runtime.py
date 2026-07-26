@@ -77,6 +77,43 @@ def test_render_start_command_keeps_scheduler_singleton():
     assert "start_background_services()" in gunicorn_config
 
 
+@pytest.mark.parametrize(
+    ("render_commit", "expected_commit"),
+    [
+        ("ABCDEF0123456789ABCDEF0123456789ABCDEF01", "abcdef012345"),
+        ("0123456789ab", "0123456789ab"),
+        (None, "unknown"),
+        ("", "unknown"),
+        ("not-a-git-commit", "unknown"),
+        ("0123456789a", "unknown"),
+        ("a" * 65, "unknown"),
+    ],
+)
+def test_status_exposes_only_validated_short_release_commit(
+    monkeypatch,
+    render_commit,
+    expected_commit,
+):
+    import start_quant_backend as backend
+
+    if render_commit is None:
+        monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    else:
+        monkeypatch.setenv("RENDER_GIT_COMMIT", render_commit)
+
+    response = backend.app.test_client().get("/api/status")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["version"] == "3.0.0"
+    assert payload["release"] == {
+        "appVersion": "3.0.0",
+        "commitSha": expected_commit,
+    }
+    if render_commit and render_commit != expected_commit:
+        assert render_commit not in response.get_data(as_text=True)
+
+
 @pytest.mark.skipif(os.name != "posix", reason="Gunicorn requires a POSIX runtime")
 def test_gunicorn_preload_starts_all_schedulers_inside_worker(tmp_path):
     """Exercise the production master/worker fork that unit tests cannot model."""

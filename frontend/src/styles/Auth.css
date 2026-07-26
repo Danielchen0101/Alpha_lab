@@ -357,6 +357,46 @@ button.auth-brand-logo-text {
 .auth-turnstile {
   width: 100%;
 }
+.auth-turnstile-control {
+  display: grid;
+  width: 100%;
+  gap: 10px;
+  justify-items: center;
+}
+.auth-captcha-feedback {
+  display: grid;
+  width: min(100%, 320px);
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(166,83,68,.42);
+  background: rgba(166,83,68,.07);
+  color: #7d4036;
+  font-size: .78rem;
+  line-height: 1.45;
+  text-align: left;
+}
+.auth-captcha-feedback > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.auth-captcha-feedback button {
+  min-height: 34px;
+  padding: 5px 10px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 650;
+}
+.auth-captcha-feedback button:hover {
+  background: rgba(166,83,68,.1);
+}
+.auth-captcha-feedback button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
 
 .auth-button-tip {
   margin-top: 10px;
@@ -959,6 +999,20 @@ button.auth-brand-logo-text {
   color: #e6bd9d;
   border-color: rgba(223,123,104,.42);
   background: rgba(223,123,104,.08);
+}
+:root[data-theme="dark"] .auth-captcha-feedback {
+  color: #f3b4a8;
+  border-color: rgba(223,123,104,.5);
+  background: rgba(223,123,104,.1);
+}
+:root[data-theme="dark"] .auth-captcha-feedback button:hover {
+  background: rgba(223,123,104,.14);
+}
+:root[data-theme="dark"] .auth-success-title {
+  color: #fffaf0 !important;
+}
+:root[data-theme="dark"] .auth-success-copy {
+  color: #c7c0ca !important;
 }
 :root[data-theme="dark"] .spinner.is-dark {
   border-color: rgba(238,233,223,.2);

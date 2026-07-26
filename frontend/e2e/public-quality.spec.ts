@@ -120,6 +120,88 @@ const assertPageQuality = async (
 };
 
 test.describe('Public route quality matrix', () => {
+  test('email confirmation waits for the real callback result after the slow threshold', async ({ page }) => {
+    await setPublicPreferences(page, 'en-US', 'light');
+    await page.clock.install();
+
+    let releaseVerification: (() => void) | undefined;
+    const verificationGate = new Promise<void>((resolve) => {
+      releaseVerification = resolve;
+    });
+    await page.route('**/auth/v1/verify**', async (route) => {
+      await verificationGate;
+      await route.fulfill({
+        status: 400,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          code: 'otp_expired',
+          msg: 'Token has expired',
+        }),
+      });
+    });
+
+    const verificationStarted = page.waitForRequest((request) => (
+      request.url().includes('/auth/v1/verify')
+    ));
+    await page.goto('/auth/confirmed?token_hash=delayed-test-token&type=signup');
+    await page.clock.fastForward(1);
+    await verificationStarted;
+    await page.clock.fastForward(15000);
+
+    await expect(page.getByText(/Verification is taking longer than expected/)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Cancel and continue to Sign In' })).toBeVisible();
+    await expect(page.locator('.auth-status-mark.is-error')).toHaveCount(0);
+
+    releaseVerification?.();
+    await expect(page.getByRole('heading', { name: 'Confirmation link has expired' })).toBeVisible();
+  });
+
+  test('signup success copy remains readable in dark mode', async ({ page }) => {
+    await setPublicPreferences(page, 'en-US', 'dark');
+    await page.goto('/signup');
+    await waitForPublicPageToSettle(page);
+    await page.locator('.auth-form-content').evaluate((container) => {
+      container.innerHTML = `
+        <section class="auth-success-panel" role="status">
+          <h2 class="auth-success-title">Account created</h2>
+          <p class="auth-success-copy">Check your inbox to confirm your account.</p>
+        </section>
+      `;
+    });
+
+    const result = await new AxeBuilder({ page })
+      .include('.auth-success-panel')
+      .withRules(['color-contrast'])
+      .analyze();
+    expect(result.violations).toEqual([]);
+  });
+
+  test('route-changing public actions expose native link semantics', async ({ page }) => {
+    await setPublicPreferences(page, 'en-US', 'light');
+
+    await page.goto('/');
+    await waitForPublicPageToSettle(page);
+    await expect(page.locator('.market-hero-actions a.market-text-action[href="/platform"]')).toHaveCount(1);
+    await expect(page.locator('.market-examples-footer a.market-text-action[href="/examples"]')).toHaveCount(1);
+    await expect(page.locator('.market-final-cta a.market-primary-action[href="/signup"]')).toHaveCount(1);
+    await expect(page.locator('.market-final-cta a.market-text-action[href="/workflow"]')).toHaveCount(1);
+    await expect(page.locator('.market-hero-actions button.market-text-action')).toHaveCount(0);
+    await expect(page.locator('.market-examples-footer button.market-text-action')).toHaveCount(0);
+    await expect(page.locator('.market-final-cta button')).toHaveCount(0);
+
+    await page.goto('/qa-route-not-found');
+    await waitForPublicPageToSettle(page);
+    await expect(page.locator('main a.public-primary[href="/"]')).toHaveCount(1);
+    await expect(page.locator('main a.public-secondary[href="/signin"]')).toHaveCount(1);
+
+    for (const route of ['/signin', '/signup'] as const) {
+      await page.goto(route);
+      await waitForPublicPageToSettle(page);
+      await expect(page.locator('a.auth-brand-logo-text[href="/"]')).toHaveCount(1);
+      await expect(page.locator('button.auth-brand-logo-text')).toHaveCount(0);
+    }
+  });
+
   for (const route of PUBLIC_ROUTES) {
     test(`${route} renders cleanly in English light mode`, async ({ page }) => {
       const failures = watchRuntimeFailures(page);

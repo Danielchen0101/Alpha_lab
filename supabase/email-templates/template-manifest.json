@@ -60,7 +60,7 @@
     "managementApiSubjectKey": "mailer_subjects_reauthentication",
     "managementApiContentKey": "mailer_templates_reauthentication_content",
     "file": "reauthentication.html",
-    "subject": "{{ .Token }} — AlphaLab verification code / 验证码",
+    "subject": "AlphaLab verification code / AlphaLab 验证码",
     "allowedVariables": ["Token"],
     "requiredVariables": ["Token"],
     "linkTemplate": false

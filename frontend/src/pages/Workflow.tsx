@@ -76,7 +76,7 @@ const Workflow: React.FC = () => {
             <div className="public-data-main">
               <div className="public-instrument-header" style={{ padding: '0 0 20px', borderBottom: 0 }}><strong>{active[0]} / {active[1]}</strong><span>{isZh ? '对应研究产物' : 'STAGE ARTIFACT'}</span></div>
               <MiniSparkline values={curves[activeStep]} color={activeStep === 4 ? 'moss' : activeStep === 5 ? 'copper' : 'blue'} showNodes label={String(active[0])} />
-              <p style={{ margin: '24px 0 0', color: '#626760', lineHeight: 1.65 }}>{active[3]}</p>
+              <p style={{ margin: '24px 0 0', color: 'var(--public-muted)', lineHeight: 1.65 }}>{active[3]}</p>
             </div>
             <aside className="public-data-aside">
               <p>{active[1]}</p><strong>{active[7]}</strong>

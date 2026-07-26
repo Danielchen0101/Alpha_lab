@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
+import os
 import time
 from types import SimpleNamespace
 
@@ -15,6 +16,26 @@ class _BrokerResponse:
     @staticmethod
     def json():
         return {"id": "order-1", "status": "new", "client_order_id": "client-1"}
+
+
+def test_pytest_process_never_loads_external_credentials():
+    assert os.environ["PYTHON_DOTENV_DISABLED"] == "1"
+    assert os.environ["APP_ENV"] == "test"
+    assert os.environ["RENDER"] == ""
+    for name in (
+        "SUPABASE_URL",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "ALPACA_API_KEY",
+        "ALPACA_API_SECRET",
+        "FINNHUB_API_KEY",
+        "TWELVEDATA_API_KEY",
+        "DISCORD_WEBHOOK_URL",
+        "KALSHI_API_KEY_ID",
+        "KALSHI_PRIVATE_KEY",
+    ):
+        assert os.environ[name] == ""
+    assert backend.supabase_admin is None
+    assert backend.operations_store.backend == "local"
 
 
 def test_verified_supabase_claims_are_the_only_source_of_aal(monkeypatch):

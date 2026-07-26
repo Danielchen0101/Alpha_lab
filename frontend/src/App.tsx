@@ -21,6 +21,7 @@ import {
   RESEARCH_CANDIDATES_PATH,
   RESEARCH_REVIEW_PATH,
 } from './routes/researchRoutes';
+import { resolveRouteTitle } from './routes/routeTitles';
 import './App.css';
 
 const Landing = React.lazy(() => import('./pages/Landing'));
@@ -124,44 +125,7 @@ const RouteTitleManager: React.FC = () => {
   const { language } = useLanguage();
 
   React.useEffect(() => {
-    const zh = language === 'zh-CN';
-    const pathname = location.pathname;
-    const title = pathname === '/' ? (zh ? '量化研究平台' : 'Quant Research Platform')
-      : pathname.startsWith('/dashboard') ? (zh ? '市场总览' : 'Market Overview')
-        : pathname.startsWith('/activity') ? (zh ? '活动记录' : 'Activity')
-          : pathname.startsWith('/system-health') ? (zh ? '系统状态' : 'System Health')
-            : pathname.startsWith('/safety') ? (zh ? '交易安全中心' : 'Trading Safety Center')
-            : pathname.startsWith('/watchlist') ? (zh ? '自选列表' : 'Watchlist')
-              : pathname.startsWith('/market') ? (zh ? '市场研究' : 'Markets')
-                : pathname.startsWith('/crypto') ? (zh ? '虚拟币量化' : 'Crypto Quant')
-                  : pathname.startsWith('/kalshi') ? (zh ? 'Kalshi 事件合约' : 'Kalshi Event Contracts')
-                    : pathname.startsWith('/agent/review') ? (zh ? '研究审核' : 'Review Workspace')
-                  : pathname.startsWith('/agent/candidates') ? (zh ? '候选池' : 'Candidate Universe')
-                    : pathname.startsWith('/agent') ? (zh ? 'AI 研究' : 'AI Research')
-                      : pathname.startsWith('/backtest') || pathname.startsWith('/compare') || pathname.startsWith('/optimize') || pathname.startsWith('/ranking')
-                        ? (zh ? '策略研究' : 'Strategy Lab')
-                        : pathname.startsWith('/trade') ? (zh ? '交易台' : 'Trade Desk')
-                          : pathname.startsWith('/portfolio') ? (zh ? '投资组合' : 'Portfolio')
-                            : pathname.startsWith('/settings/configuration') ? (zh ? '连接管理' : 'Connections')
-                              : pathname.startsWith('/settings') ? (zh ? '设置' : 'Settings')
-                              : pathname.startsWith('/signin') ? (zh ? '登录' : 'Sign In')
-                                : pathname.startsWith('/signup') ? (zh ? '注册' : 'Create Account')
-                                  : pathname.startsWith('/mfa') ? (zh ? '双重验证' : 'Two-Factor Verification')
-                                  : pathname.startsWith('/forgot-password') || pathname.startsWith('/reset-password')
-                                    ? (zh ? '账户恢复' : 'Account Recovery')
-                                    : pathname.startsWith('/platform') ? (zh ? '平台' : 'Platform')
-                                      : pathname.startsWith('/workflow') ? (zh ? '工作流程' : 'Workflow')
-                                        : pathname.startsWith('/research') ? (zh ? '研究能力' : 'Research')
-                                          : pathname.startsWith('/examples') ? (zh ? '案例' : 'Examples')
-                                            : pathname.startsWith('/data') ? (zh ? '数据与方法' : 'Data & Method')
-                                              : pathname.startsWith('/technology') ? (zh ? '技术架构' : 'Technology')
-                                              : pathname.startsWith('/security') ? (zh ? '安全' : 'Security')
-                                                : pathname.startsWith('/terms') ? (zh ? '服务条款' : 'Terms of Service')
-                                                  : pathname.startsWith('/privacy') ? (zh ? '隐私政策' : 'Privacy Policy')
-                                                    : pathname.startsWith('/auth/confirmed') ? (zh ? '邮箱已确认' : 'Email Confirmed')
-                                                      : pathname.startsWith('/about') ? (zh ? '关于' : 'About')
-                                                        : (zh ? '页面未找到' : 'Page Not Found');
-
+    const title = resolveRouteTitle(location.pathname, language);
     document.title = `${title} | AlphaLab`;
   }, [language, location.pathname]);
 

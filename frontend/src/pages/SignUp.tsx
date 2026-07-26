@@ -2,16 +2,16 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Form, Input, Button, Typography, Alert, Checkbox } from 'antd';
 import { UserOutlined, LockOutlined, MailOutlined } from '@ant-design/icons';
-import Turnstile, { BoundTurnstileObject } from 'react-turnstile';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTheme } from '../contexts/ThemeContext';
-import { supabase } from '../lib/supabaseClient';
+import { supabase, supabaseConfigError } from '../lib/supabaseClient';
 import {
   getAuthRedirect,
   getEmailConfirmationRedirect,
 } from '../lib/authRedirect';
 import AuthPageNav from '../components/AuthPageNav';
+import AuthTurnstile, { AuthTurnstileHandle } from '../components/AuthTurnstile';
 import type { Provider } from '@supabase/supabase-js';
 import '../styles/Auth.css';
 
@@ -56,25 +56,33 @@ const SignUp: React.FC = () => {
   const [resendMessage, setResendMessage] = useState('');
   const [formValid, setFormValid] = useState(false);
   const [captchaToken, setCaptchaToken] = useState('');
-  const turnstileRef = useRef<BoundTurnstileObject | null>(null);
+  const turnstileRef = useRef<AuthTurnstileHandle | null>(null);
   const compactCaptcha = useCompactCaptcha();
 
   const turnstileSiteKey = process.env.REACT_APP_TURNSTILE_SITE_KEY;
   const isDev = process.env.NODE_ENV === 'development';
   const captchaConfigured = !!turnstileSiteKey;
-  const canSubmit = formValid && (captchaConfigured ? !!captchaToken : isDev);
-  const canResendConfirmation = !resending && (captchaConfigured ? !!captchaToken : isDev);
+  const canSubmit = !supabaseConfigError
+    && formValid
+    && (captchaConfigured ? !!captchaToken : isDev);
+  const canResendConfirmation = !supabaseConfigError
+    && !resending
+    && (captchaConfigured ? !!captchaToken : isDev);
 
   useEffect(() => {
     window.scrollTo(0, 0);
   }, []);
 
-  useEffect(() => {
-    setCaptchaToken('');
-    turnstileRef.current = null;
-  }, [language, resolvedTheme]);
-
   const [termsAccepted, setTermsAccepted] = useState(false);
+  const captchaCopy = {
+    developmentBypass: t.auth.captchaBypassDev,
+    missingConfiguration: t.auth.captchaNotConfigured,
+    loadFailed: t.auth.captchaLoadFailed,
+    timedOut: t.auth.captchaTimedOut,
+    unsupported: t.auth.captchaUnsupported,
+    retry: t.auth.captchaRetry,
+    reload: t.auth.captchaReload,
+  };
 
   const handleFinish = async (values: {
     fullName: string;
@@ -84,6 +92,10 @@ const SignUp: React.FC = () => {
     terms?: boolean;
   }) => {
     setError('');
+    if (supabaseConfigError) {
+      setError(t.auth.authServiceUnavailable);
+      return;
+    }
     if (!values.terms) {
       setError(t.auth.acceptTerms);
       return;
@@ -141,6 +153,10 @@ const SignUp: React.FC = () => {
 
   const handleResendConfirmation = async () => {
     if (!submittedEmail) return;
+    if (supabaseConfigError) {
+      setResendMessage(t.auth.authServiceUnavailable);
+      return;
+    }
     if (!captchaConfigured && !isDev) {
       setResendMessage(t.auth.captchaNotConfigured);
       return;
@@ -181,6 +197,10 @@ const SignUp: React.FC = () => {
 
   const handleOAuthLogin = async (provider: Provider) => {
     if (oauthLoading) return;
+    if (supabaseConfigError) {
+      setError(t.auth.authServiceUnavailable);
+      return;
+    }
     if (!termsAccepted) {
       setError(t.auth.acceptTerms);
       void form.validateFields(['terms']).catch(() => undefined);
@@ -240,9 +260,9 @@ const SignUp: React.FC = () => {
       <div className="auth-card-container">
         <div className="auth-card signup">
           <div className="auth-card-header">
-            <button type="button" className="auth-brand-logo-text" onClick={() => navigate('/')} aria-label={language === 'zh-CN' ? '返回 AlphaLab 首页' : 'Return to AlphaLab home'}>
+            <Link to="/" className="auth-brand-logo-text" aria-label={language === 'zh-CN' ? '返回 AlphaLab 首页' : 'Return to AlphaLab home'}>
               Alpha<span className="accent">Lab</span>
-            </button>
+            </Link>
             <span className="auth-card-eyebrow">{language === 'zh-CN' ? '02 / 研究账户' : '02 / RESEARCH ACCOUNT'}</span>
             <Title level={1} className="auth-title">{t.auth.createAccount}</Title>
             <Text className="auth-subtitle">{t.auth.signUpSubtitle}</Text>
@@ -259,27 +279,16 @@ const SignUp: React.FC = () => {
                   <>
                     {captchaConfigured && <Text className="auth-success-copy">{t.auth.confirmationResendCaptcha}</Text>}
                     <div className="auth-captcha-wrapper" style={{ margin: '4px auto 12px' }}>
-                      {captchaConfigured ? (
-                        <Turnstile
-                          key={`resend-${resolvedTheme}-${language}`}
-                          sitekey={turnstileSiteKey || ''}
-                          className="auth-turnstile"
-                          size={compactCaptcha ? 'compact' : 'flexible'}
-                          fixedSize
-                          onLoad={(_widgetId, bound) => { turnstileRef.current = bound; }}
-                          onVerify={(token) => setCaptchaToken(token)}
-                          onError={() => setCaptchaToken('')}
-                          onExpire={() => setCaptchaToken('')}
-                          theme={resolvedTheme}
-                          language={language === 'zh-CN' ? 'zh-cn' : 'en'}
-                        />
-                      ) : isDev ? (
-                        <div className="auth-captcha-placeholder" role="status">
-                          {t.auth.captchaBypassDev}
-                        </div>
-                      ) : (
-                        <div className="auth-captcha-placeholder error" role="alert">{t.auth.captchaNotConfigured}</div>
-                      )}
+                      <AuthTurnstile
+                        ref={turnstileRef}
+                        siteKey={turnstileSiteKey}
+                        development={isDev}
+                        theme={resolvedTheme}
+                        language={language}
+                        compact={compactCaptcha}
+                        copy={captchaCopy}
+                        onTokenChange={setCaptchaToken}
+                      />
                     </div>
                     <Button loading={resending} disabled={!canResendConfirmation} size="large" onClick={handleResendConfirmation} style={{ width: '100%', maxWidth: 300 }}>
                       {resending ? t.auth.resendingConfirmation : t.auth.resendConfirmation}
@@ -293,6 +302,7 @@ const SignUp: React.FC = () => {
               </div>
             ) : (
               <>
+                {supabaseConfigError && <Alert message={t.auth.authServiceUnavailable} type="error" showIcon style={{ marginBottom: 20, borderRadius: 12 }} />}
                 {error && <Alert message={error} type="error" showIcon closable onClose={() => setError('')} style={{ marginBottom: 20, borderRadius: 12 }} />}
 
                 <Form
@@ -386,27 +396,16 @@ const SignUp: React.FC = () => {
                   </Form.Item>
 
                   <div className="auth-captcha-wrapper" style={{ margin: '12px auto 16px' }}>
-                    {captchaConfigured ? (
-                      <Turnstile
-                        key={`${resolvedTheme}-${language}`}
-                        sitekey={turnstileSiteKey || ''}
-                        className="auth-turnstile"
-                        size={compactCaptcha ? 'compact' : 'flexible'}
-                        fixedSize
-                        onLoad={(_widgetId, bound) => { turnstileRef.current = bound; }}
-                        onVerify={(token) => setCaptchaToken(token)}
-                        onError={() => { setCaptchaToken(''); }}
-                        onExpire={() => setCaptchaToken('')}
-                        theme={resolvedTheme}
-                        language={language === 'zh-CN' ? 'zh-cn' : 'en'}
-                      />
-                    ) : isDev ? (
-                      <div className="auth-captcha-placeholder" role="status">
-                        {t.auth.captchaNotConfigured} · {t.auth.captchaBypassDev}
-                      </div>
-                    ) : (
-                      <div className="auth-captcha-placeholder error" role="alert">{t.auth.captchaNotConfigured}</div>
-                    )}
+                    <AuthTurnstile
+                      ref={turnstileRef}
+                      siteKey={turnstileSiteKey}
+                      development={isDev}
+                      theme={resolvedTheme}
+                      language={language}
+                      compact={compactCaptcha}
+                      copy={captchaCopy}
+                      onTokenChange={setCaptchaToken}
+                    />
                   </div>
 
                   <Form.Item style={{ marginBottom: 12 }}>
@@ -436,7 +435,7 @@ const SignUp: React.FC = () => {
                     ].map((btn) => {
                       const isLoading = oauthLoading === btn.provider;
                       return (
-                        <button key={btn.provider} type="button" onClick={() => handleOAuthLogin(btn.provider)} disabled={!termsAccepted || !!oauthLoading} className="oauth-btn" style={{ height: 42 }}>
+                        <button key={btn.provider} type="button" onClick={() => handleOAuthLogin(btn.provider)} disabled={!termsAccepted || !!oauthLoading || !!supabaseConfigError} className="oauth-btn" style={{ height: 42 }}>
                           {isLoading ? <span className="spinner" /> : btn.icon}
                           {isLoading ? t.auth.oauthRedirecting : btn.label}
                         </button>

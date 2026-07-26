@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import {
   clearPersistedSupabaseAuthSession,
   supabase,
+  supabaseConfigError,
 } from '../lib/supabaseClient';
 import { useLanguage } from '../contexts/LanguageContext';
 import {
@@ -19,6 +20,7 @@ const { Title, Text } = Typography;
 
 type ConfirmationState =
   | { phase: 'checking'; hasSession: false; errorKind: null }
+  | { phase: 'slow'; hasSession: false; errorKind: null }
   | { phase: 'confirmed'; hasSession: boolean; errorKind: null }
   | { phase: 'error'; hasSession: false; errorKind: AuthCallbackErrorKind };
 
@@ -38,12 +40,14 @@ const AuthConfirmed: React.FC = () => {
   useEffect(() => {
     let active = true;
     let settled = false;
+    let cancelRedemption = () => {};
     const callback = initialCallbackRef.current!;
     window.history.replaceState({}, document.title, '/auth/confirmed');
 
     const finishConfirmed = (sessionAvailable: boolean) => {
       if (!active || settled) return;
       settled = true;
+      cancelRedemption();
       setState({
         phase: 'confirmed',
         hasSession: sessionAvailable,
@@ -54,6 +58,7 @@ const AuthConfirmed: React.FC = () => {
     const finishError = (kind: AuthCallbackErrorKind) => {
       if (!active || settled) return;
       settled = true;
+      cancelRedemption();
       setState({
         phase: 'error',
         hasSession: false,
@@ -61,29 +66,33 @@ const AuthConfirmed: React.FC = () => {
       });
     };
 
-    const timeout = window.setTimeout(() => finishError('network'), 15000);
+    const markSlow = () => {
+      if (!active || settled) return;
+      setState({
+        phase: 'slow',
+        hasSession: false,
+        errorKind: null,
+      });
+    };
 
     const discardCancelledSession = async (sessionAvailable: boolean) => {
       if (!sessionAvailable || (active && !settled)) return false;
       try {
         await supabase.auth.signOut({ scope: 'local' });
       } catch {
-        // Persisted storage is cleared below and the timeout path hard reloads.
+        // Persisted storage is cleared below even if the network sign-out fails.
       } finally {
         clearPersistedSupabaseAuthSession();
-      }
-      if (active && settled) {
-        window.location.replace(
-          '/auth/confirmed?error=timeout&error_description=Verification+timed+out',
-        );
-      } else if (!active) {
-        window.location.replace('/signin');
       }
       return true;
     };
 
     const verify = async () => {
       try {
+        if (supabaseConfigError) {
+          finishError('network');
+          return;
+        }
         if (callback.kind === 'provider_error') {
           finishError(classifyAuthCallbackError(`${callback.code} ${callback.description}`));
           return;
@@ -146,19 +155,19 @@ const AuthConfirmed: React.FC = () => {
         finishError(classifyAuthCallbackError(
           error instanceof Error ? error.message : 'invalid confirmation callback',
         ));
-      } finally {
-        window.clearTimeout(timeout);
       }
     };
 
     // Deferring one task makes this effect safe under React 18 development
     // StrictMode: the throwaway first effect is cleaned up before it can redeem
     // a single-use email token.
-    const cancelRedemption = scheduleAuthCallbackRedemption(() => void verify());
+    cancelRedemption = scheduleAuthCallbackRedemption(
+      () => void verify(),
+      { onSlow: markSlow },
+    );
     return () => {
       active = false;
       cancelRedemption();
-      window.clearTimeout(timeout);
     };
   }, []);
 
@@ -180,16 +189,29 @@ const AuthConfirmed: React.FC = () => {
         <section className="auth-card signup auth-card--compact auth-state-card">
           <Link to="/" className="auth-brand-logo-text">Alpha<span className="accent">Lab</span></Link>
           <span className="auth-card-eyebrow">{t.authConfirmed.eyebrow}</span>
-          {state.phase === 'checking' ? (
+          {state.phase === 'checking' || state.phase === 'slow' ? (
             <div className="auth-status-panel" role="status" aria-live="polite">
               <span className="spinner is-dark" aria-hidden="true" />
-              <Text>{t.authConfirmed.verifying}</Text>
+              <Text>
+                {state.phase === 'slow'
+                  ? t.authConfirmed.verificationTakingLong
+                  : t.authConfirmed.verifying}
+              </Text>
+              {state.phase === 'slow' && (
+                <Button block onClick={() => navigate('/signin')}>
+                  {t.authConfirmed.cancelVerification}
+                </Button>
+              )}
             </div>
           ) : state.phase === 'confirmed' ? (
             <div className="auth-status-panel" role="status" aria-live="polite">
               <div className="auth-status-mark is-success" aria-hidden="true">✓</div>
               <Title level={1} className="auth-title">{t.authConfirmed.title}</Title>
-              <Text className="auth-subtitle">{t.authConfirmed.description}</Text>
+              <Text className="auth-subtitle">
+                {state.hasSession
+                  ? t.authConfirmed.descriptionWithSession
+                  : t.authConfirmed.description}
+              </Text>
               <Button type="primary" className="auth-btn" block onClick={() => navigate(state.hasSession ? '/dashboard' : '/signin')}>
                 {state.hasSession ? t.auth.continueToWorkspace : t.authConfirmed.continueToSignIn}
               </Button>

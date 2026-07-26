@@ -119,6 +119,73 @@ def test_durable_version_is_advanced_and_stale_cache_is_invalidated(tmp_path):
     assert "u" not in store._users
 
 
+def test_paper_account_mutations_persist_only_the_target_user(tmp_path):
+    path = tmp_path / "paper.json"
+    durable = {}
+    versions = {}
+    calls = []
+    failing_users = set()
+
+    def save(user_id, payload):
+        calls.append(user_id)
+        if user_id in failing_users:
+            raise RuntimeError("stale durable version")
+        versions[user_id] = versions.get(user_id, 0) + 1
+        durable[user_id] = payload
+        return {"version": versions[user_id]}
+
+    store = KalshiPaperAccountStore(
+        str(path),
+        account_loader=durable.get,
+        account_saver=save,
+    )
+    store.reset("user-a")
+    store.reset("user-b")
+    assert store._users["user-a"]["_operationsVersion"] == 1
+    assert store._users["user-b"]["_operationsVersion"] == 1
+
+    calls.clear()
+    store.submit_taker(
+        "user-a",
+        ticker="KXBTC15M-TARGET",
+        side="YES",
+        price=0.50,
+        contracts=2,
+        available_depth=2,
+    )
+    assert calls == ["user-a"]
+    assert store._users["user-a"]["_operationsVersion"] == 2
+    assert store._users["user-b"]["_operationsVersion"] == 1
+
+    calls.clear()
+    store.settle("user-a", "KXBTC15M-TARGET", "YES")
+    assert calls == ["user-a"]
+    assert store._users["user-a"]["_operationsVersion"] == 3
+    assert store._users["user-b"]["_operationsVersion"] == 1
+
+    calls.clear()
+    store.reset("user-a")
+    assert calls == ["user-a"]
+    assert store._users["user-a"]["_operationsVersion"] == 4
+    assert store._users["user-b"]["_operationsVersion"] == 1
+
+    local_snapshot = json.loads(path.read_text(encoding="utf-8"))
+    assert set(local_snapshot) == {"user-a", "user-b"}
+    assert local_snapshot["user-b"]["_operationsVersion"] == 1
+
+    calls.clear()
+    failing_users.add("user-a")
+    try:
+        store.reset("user-a")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("stale target write must fail")
+    assert calls == ["user-a"]
+    assert "user-a" not in store._users
+    assert store._users["user-b"]["_operationsVersion"] == 1
+
+
 def test_repeated_client_order_id_is_idempotent(tmp_path):
     store = KalshiPaperAccountStore(str(tmp_path / "paper.json"))
     first = store.submit_taker(

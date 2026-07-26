@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom';
 import {
   clearPersistedSupabaseAuthSession,
   supabase,
+  supabaseConfigError,
 } from '../lib/supabaseClient';
 import { useLanguage } from '../contexts/LanguageContext';
 import {
@@ -30,6 +31,7 @@ const ResetPassword: React.FC = () => {
   const { t, language } = useLanguage();
   const [form] = Form.useForm();
   const [checking, setChecking] = useState(true);
+  const [slow, setSlow] = useState(false);
   const [recoveryReady, setRecoveryReady] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [updated, setUpdated] = useState(false);
@@ -45,49 +47,54 @@ const ResetPassword: React.FC = () => {
     window.scrollTo(0, 0);
     let active = true;
     let settled = false;
+    let cancelRedemption = () => {};
     const callback = initialCallbackRef.current!;
     window.history.replaceState({}, document.title, '/reset-password');
 
     const finishReady = () => {
       if (!active || settled) return;
       settled = true;
+      cancelRedemption();
       setError('');
       setRecoveryErrorKind(null);
       setRecoveryReady(true);
       setChecking(false);
+      setSlow(false);
     };
 
     const finishInvalid = (kind: AuthCallbackErrorKind = 'invalid') => {
       if (!active || settled) return;
       settled = true;
+      cancelRedemption();
       setRecoveryErrorKind(kind);
       setRecoveryReady(false);
       setChecking(false);
+      setSlow(false);
     };
 
-    const timeout = window.setTimeout(() => finishInvalid('network'), 15000);
+    const markSlow = () => {
+      if (!active || settled) return;
+      setSlow(true);
+    };
 
     const discardCancelledSession = async (sessionAvailable: boolean) => {
       if (!sessionAvailable || (active && !settled)) return false;
       try {
         await supabase.auth.signOut({ scope: 'local' });
       } catch {
-        // Persisted storage is cleared below and the timeout path hard reloads.
+        // Persisted storage is cleared below even if the network sign-out fails.
       } finally {
         clearPersistedSupabaseAuthSession();
-      }
-      if (active && settled) {
-        window.location.replace(
-          '/reset-password?error=timeout&error_description=Recovery+verification+timed+out',
-        );
-      } else if (!active) {
-        window.location.replace('/signin');
       }
       return true;
     };
 
     const verifyRecovery = async () => {
       try {
+        if (supabaseConfigError) {
+          finishInvalid('network');
+          return;
+        }
         if (callback.kind === 'provider_error') {
           const kind = classifyAuthCallbackError(`${callback.code} ${callback.description}`);
           finishInvalid(kind);
@@ -156,16 +163,16 @@ const ResetPassword: React.FC = () => {
         finishInvalid(classifyAuthCallbackError(
           verifyError instanceof Error ? verifyError.message : 'invalid recovery callback',
         ));
-      } finally {
-        window.clearTimeout(timeout);
       }
     };
 
-    const cancelRedemption = scheduleAuthCallbackRedemption(() => void verifyRecovery());
+    cancelRedemption = scheduleAuthCallbackRedemption(
+      () => void verifyRecovery(),
+      { onSlow: markSlow },
+    );
     return () => {
       active = false;
       cancelRedemption();
-      window.clearTimeout(timeout);
     };
   }, []);
 
@@ -225,7 +232,7 @@ const ResetPassword: React.FC = () => {
     <main className="auth-shell">
       <AuthPageNav backLabel={t.auth.backToHome} />
       <div className="auth-card-container"><section className="auth-card signup auth-card--compact"><header className="auth-card-header"><Link to="/" className="auth-brand-logo-text">Alpha<span className="accent">Lab</span></Link><span className="auth-card-eyebrow">{language === 'zh-CN' ? '账户恢复 / 02' : 'ACCOUNT RECOVERY / 02'}</span><Title level={1} className="auth-title">{updated ? t.auth.passwordUpdatedTitle : t.auth.resetPasswordTitle}</Title><Text className="auth-subtitle">{updated ? t.auth.passwordUpdatedDesc : t.auth.resetPasswordDesc}</Text></header><div className="auth-form-content">
-        {checking ? <div className="auth-status-panel" role="status" aria-live="polite"><span className="spinner is-dark" /><Text>{language === 'zh-CN' ? '正在验证恢复链接…' : 'Verifying recovery link…'}</Text></div> : updated ? <div className="auth-status-panel" role="status" aria-live="polite"><div className="auth-status-mark is-success" aria-hidden="true">✓</div><Link to="/signin" className="auth-link-forgot">{t.auth.backToSignIn}</Link></div> : invalid ? <div className="auth-status-panel" role="alert"><div className="auth-status-mark is-error" aria-hidden="true">!</div><Alert message={recoveryErrorMessage} description={recoveryErrorKind === 'network' ? undefined : t.auth.errorResetLinkExpired} type="error" showIcon /><Link to="/forgot-password" className="auth-link-forgot">{t.auth.requestNewResetLink}</Link></div> : <>
+        {checking ? <div className="auth-status-panel" role="status" aria-live="polite"><span className="spinner is-dark" /><Text>{slow ? t.auth.recoveryTakingLong : language === 'zh-CN' ? '正在验证恢复链接…' : 'Verifying recovery link…'}</Text>{slow && <Link to="/forgot-password" className="auth-link-forgot">{t.auth.cancelRecovery}</Link>}</div> : updated ? <div className="auth-status-panel" role="status" aria-live="polite"><div className="auth-status-mark is-success" aria-hidden="true">✓</div><Link to="/signin" className="auth-link-forgot">{t.auth.backToSignIn}</Link></div> : invalid ? <div className="auth-status-panel" role="alert"><div className="auth-status-mark is-error" aria-hidden="true">!</div><Alert message={recoveryErrorMessage} description={recoveryErrorKind === 'network' ? undefined : t.auth.errorResetLinkExpired} type="error" showIcon /><Link to="/forgot-password" className="auth-link-forgot">{t.auth.requestNewResetLink}</Link></div> : <>
           {error && <Alert message={error} type="error" showIcon closable onClose={() => setError('')} style={{ marginBottom: 18 }} />}
           <Form
             form={form}

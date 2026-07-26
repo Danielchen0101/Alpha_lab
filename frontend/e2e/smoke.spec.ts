@@ -96,6 +96,12 @@ test.describe('Public application smoke tests', () => {
     await assertNoCriticalAccessibilityViolations(page);
   });
 
+  test('the unversioned theme bootstrap is never cached as an immutable asset', async ({ request }) => {
+    const response = await request.get('/theme-bootstrap.js');
+    expect(response.ok()).toBe(true);
+    expect(response.headers()['cache-control'] || '').not.toContain('immutable');
+  });
+
   test('sign-in remains usable on a narrow mobile viewport', async ({ page }) => {
     await page.setViewportSize({ width: 360, height: 780 });
     await page.goto('/signin');

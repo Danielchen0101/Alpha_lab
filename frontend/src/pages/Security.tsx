@@ -30,7 +30,7 @@ const Security: React.FC = () => {
         <section className="public-section security-control-section" id="security-controls">
           <SectionHeading eyebrow={isZh ? '当前安全控制' : 'CURRENT CONTROLS'} title={isZh ? '具体说明边界，不使用空泛的安全口号。' : 'Specific boundaries, not generic security claims.'} description={isZh ? '以下说明基于当前产品设计。部署相关控制仍需要在每次生产发布后验证。' : 'The following describes the current product design. Deployment-level controls still require verification after every production release.'} />
           <div className="security-control-layout">
-            <div className="security-control-map" aria-label={isZh ? '安全控制矩阵' : 'Security control matrix'}>
+            <div className="security-control-map" role="group" aria-label={isZh ? '安全控制矩阵' : 'Security control matrix'}>
               {controls.map(([title, , type], index) => (
                 <button key={title} type="button" className={`security-control-button ${activeControlIndex === index ? 'is-active' : ''}`} aria-pressed={activeControlIndex === index} onClick={() => setActiveControlIndex(index)}>
                   <span>0{index + 1} · {type}</span><b>{title}</b>

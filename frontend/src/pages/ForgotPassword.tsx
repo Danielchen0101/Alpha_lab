@@ -2,10 +2,10 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Form, Input, Typography } from 'antd';
 import { MailOutlined } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
-import Turnstile, { BoundTurnstileObject } from 'react-turnstile';
-import { supabase } from '../lib/supabaseClient';
+import { supabase, supabaseConfigError } from '../lib/supabaseClient';
 import { getPasswordRecoveryRedirect } from '../lib/authRedirect';
 import AuthPageNav from '../components/AuthPageNav';
+import AuthTurnstile, { AuthTurnstileHandle } from '../components/AuthTurnstile';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTheme } from '../contexts/ThemeContext';
 import '../styles/Auth.css';
@@ -36,21 +36,19 @@ const ForgotPassword: React.FC = () => {
   const [error, setError] = useState('');
   const [emailValid, setEmailValid] = useState(false);
   const [captchaToken, setCaptchaToken] = useState('');
-  const turnstileRef = useRef<BoundTurnstileObject | null>(null);
+  const turnstileRef = useRef<AuthTurnstileHandle | null>(null);
   const compactCaptcha = useCompactCaptcha();
   const turnstileSiteKey = process.env.REACT_APP_TURNSTILE_SITE_KEY;
   const isDev = process.env.NODE_ENV === 'development';
   const captchaConfigured = !!turnstileSiteKey;
-  const canSubmit = emailValid && (captchaConfigured ? !!captchaToken : isDev);
+  const canSubmit = !supabaseConfigError
+    && emailValid
+    && (captchaConfigured ? !!captchaToken : isDev);
 
   useEffect(() => { window.scrollTo(0, 0); }, []);
 
-  useEffect(() => {
-    setCaptchaToken('');
-    turnstileRef.current = null;
-  }, [language, resolvedTheme]);
-
   const handleSend = async ({ email }: { email: string }) => {
+    if (supabaseConfigError) { setError(t.auth.authServiceUnavailable); return; }
     if (!EMAIL_RE.test(email)) { setError(t.auth.enterValidEmail); return; }
     if (!captchaConfigured && !isDev) { setError(t.auth.captchaNotConfigured); return; }
     if (captchaConfigured && !captchaToken) { setError(t.auth.captchaRequired); return; }
@@ -78,6 +76,15 @@ const ForgotPassword: React.FC = () => {
       setSubmitting(false);
     }
   };
+  const captchaCopy = {
+    developmentBypass: t.auth.captchaBypassDev,
+    missingConfiguration: t.auth.captchaNotConfigured,
+    loadFailed: t.auth.captchaLoadFailed,
+    timedOut: t.auth.captchaTimedOut,
+    unsupported: t.auth.captchaUnsupported,
+    retry: t.auth.captchaRetry,
+    reload: t.auth.captchaReload,
+  };
 
   return (
     <main className="auth-shell">
@@ -98,13 +105,25 @@ const ForgotPassword: React.FC = () => {
               </div>
             ) : (
               <>
+                {supabaseConfigError && <Alert message={t.auth.authServiceUnavailable} type="error" showIcon style={{ marginBottom: 18 }} />}
                 {error && <Alert message={error} type="error" showIcon closable onClose={() => setError('')} style={{ marginBottom: 18 }} />}
                 <Form form={form} layout="vertical" onFinish={handleSend} autoComplete="on" aria-busy={submitting} onValuesChange={(_, values) => setEmailValid(EMAIL_RE.test(values.email || ''))}>
                   <Form.Item name="email" label={t.auth.emailAddress} rules={[{ required: true, type: 'email', message: t.auth.enterValidEmail }]}>
                     <Input className="auth-input" type="email" autoComplete="email" prefix={<MailOutlined aria-hidden="true" />} placeholder={t.auth.emailPlaceholder} />
                   </Form.Item>
                   <div className="auth-captcha-wrapper">
-                    {captchaConfigured ? <Turnstile key={`${resolvedTheme}-${language}`} sitekey={turnstileSiteKey || ''} className="auth-turnstile" size={compactCaptcha ? 'compact' : 'flexible'} fixedSize onLoad={(_id, bound) => { turnstileRef.current = bound; }} onVerify={setCaptchaToken} onExpire={() => setCaptchaToken('')} onError={() => setCaptchaToken('')} theme={resolvedTheme} language={language === 'zh-CN' ? 'zh-cn' : 'en'} /> : isDev ? <div className="auth-captcha-placeholder">{t.auth.captchaBypassDev}</div> : <div className="auth-captcha-placeholder error" role="alert">{t.auth.captchaNotConfigured}</div>}
+                    {captchaConfigured ? (
+                      <AuthTurnstile
+                        ref={turnstileRef}
+                        siteKey={turnstileSiteKey}
+                        development={isDev}
+                        theme={resolvedTheme}
+                        language={language}
+                        compact={compactCaptcha}
+                        copy={captchaCopy}
+                        onTokenChange={setCaptchaToken}
+                      />
+                    ) : isDev ? <div className="auth-captcha-placeholder">{t.auth.captchaBypassDev}</div> : <div className="auth-captcha-placeholder error" role="alert">{t.auth.captchaNotConfigured}</div>}
                   </div>
                   <Button htmlType="submit" type="primary" block className="auth-btn" loading={submitting} disabled={!canSubmit || submitting}>{submitting ? t.auth.sending : t.auth.sendResetLink}</Button>
                 </Form>

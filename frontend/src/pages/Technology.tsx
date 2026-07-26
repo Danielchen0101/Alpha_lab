@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import MarketingLayout from '../components/MarketingLayout';
+import { scrollPublicTarget } from '../components/public/PublicExperience';
 import { MetricStrip, MiniSparkline, PublicCta, PublicHero, SectionHeading } from '../components/public/PublicPrimitives';
 import { useLanguage } from '../contexts/LanguageContext';
 import './PublicSite.css';
@@ -22,7 +23,7 @@ const Technology: React.FC = () => {
   return (
     <MarketingLayout tone="paper">
       <main className={`public-page ${isZh ? 'is-zh' : 'is-en'}`}>
-        <PublicHero index="T1" eyebrow={isZh ? '技术说明' : 'TECHNICAL NOTE'} title={t.technology.heroTitle} subtitle={t.technology.heroSubtitle} primaryLabel={t.technology.ctaAction} secondaryLabel={isZh ? '查看系统层级' : 'Inspect the system layers'} onSecondary={() => document.querySelector('#architecture')?.scrollIntoView({ behavior: 'smooth' })}>
+        <PublicHero index="T1" eyebrow={isZh ? '技术说明' : 'TECHNICAL NOTE'} title={t.technology.heroTitle} subtitle={t.technology.heroSubtitle} primaryLabel={t.technology.ctaAction} secondaryLabel={isZh ? '查看系统层级' : 'Inspect the system layers'} onSecondary={() => scrollPublicTarget(document.querySelector('#architecture'))}>
           <div className="public-instrument"><div className="public-instrument-header"><strong>{isZh ? '系统运行 / 追踪 0842' : 'SYSTEM RUN / TRACE 0842'}</strong><span>{isZh ? '模块化研究流水线' : 'MODULAR RESEARCH PIPELINE'}</span></div><div className="public-instrument-body"><MiniSparkline values={[33,35,38,37,42,45,48,51,54,58,61,65]} label={isZh ? '系统吞吐样例' : 'Sample system throughput'} /></div><MetricStrip metrics={[{ label: isZh ? '处理层' : 'Layers', value: '5', tone: 'blue' }, { label: isZh ? '硬门槛' : 'Hard gates', value: isZh ? '已启用' : 'ON' }, { label: isZh ? '运行日志' : 'Run log', value: isZh ? '已锁定' : 'PIN' }, { label: isZh ? '执行默认' : 'Default', value: isZh ? '模拟' : 'PAPER', tone: 'moss' }]} /></div>
         </PublicHero>
         <section className="public-section" id="architecture"><SectionHeading eyebrow={isZh ? '系统架构' : 'SYSTEM ARCHITECTURE'} title={isZh ? '每一层只负责一件明确的事。' : 'Each layer has one explicit responsibility.'} description={t.technology.archDesc} /><div className="public-card-grid">{layers.map(([cat, title, desc], index) => <article className="public-card" key={title}><span>0{index + 1} / {cat}</span><h3>{title}</h3><p>{desc}</p></article>)}</div></section>

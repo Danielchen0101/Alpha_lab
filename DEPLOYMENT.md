@@ -158,9 +158,10 @@ Build-time variables:
 
 | Variable | Purpose |
 | --- | --- |
-| `REACT_APP_API_BASE_URL` | Public backend URL ending in `/api` |
+| `REACT_APP_ENV` | Set to `production` for Docker builds; Pages builds fail closed automatically when `CF_PAGES=1` |
+| `REACT_APP_API_BASE_URL` | Must be `https://api.alphalabquant.com/api` on Pages; same-origin Docker builds may use `/api` |
 | `REACT_APP_SITE_URL` | Canonical public origin used for authentication callbacks; set to `https://www.alphalabquant.com` in production |
-| `REACT_APP_SUPABASE_URL` | Supabase project URL |
+| `REACT_APP_SUPABASE_URL` | Must be `https://nwpxjqgqegxttucsmvmp.supabase.co` to match the deployed CSP |
 | `REACT_APP_SUPABASE_ANON_KEY` | Public browser-safe Supabase key |
 | `REACT_APP_TURNSTILE_SITE_KEY` | Public Turnstile site key; required when production account creation, sign-in, resend, or recovery forms are enabled |
 
@@ -180,7 +181,8 @@ Build the all-in-one image with public React configuration as build arguments:
 ```bash
 docker build \
   --build-arg REACT_APP_API_BASE_URL=/api \
-  --build-arg REACT_APP_SUPABASE_URL=https://your-project.supabase.co \
+  --build-arg REACT_APP_SITE_URL=https://www.alphalabquant.com \
+  --build-arg REACT_APP_SUPABASE_URL=https://nwpxjqgqegxttucsmvmp.supabase.co \
   --build-arg REACT_APP_SUPABASE_ANON_KEY=your-public-anon-key \
   --build-arg REACT_APP_TURNSTILE_SITE_KEY=your-public-site-key \
   -t alphalab:3.0.0 .
@@ -199,6 +201,8 @@ docker run --rm -p 8080:8080 \
 ```
 
 Nginx listens on port `8080`, serves the SPA, proxies `/api`, and writes access/error output to the container logs. The image health check calls `http://127.0.0.1:8080/api/health`.
+
+The main-branch DockerHub workflow expects repository Variables named `REACT_APP_SITE_URL` and `REACT_APP_SUPABASE_URL`, plus Secrets named `REACT_APP_SUPABASE_ANON_KEY` and `REACT_APP_TURNSTILE_SITE_KEY`. The release job runs the same production guard before invoking Docker Buildx, so missing or CSP-incompatible values fail before publishing.
 
 Keep `/api/health` as the container liveness probe. Monitor `/api/ready` separately for traffic readiness and alerting: it returns HTTP 503 when the scheduler heartbeat is stale, durable persistence repeatedly fails, a cancelled run remains stalled beyond its grace period, a runtime-persistence backoff is active, or memory reaches the abort threshold. Both endpoints are explicitly non-cacheable. Alert on two consecutive readiness failures and inspect the returned component diagnostics before restarting; do not expose credentials or raw provider exceptions in the alert payload.
 

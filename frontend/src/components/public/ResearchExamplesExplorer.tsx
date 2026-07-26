@@ -91,7 +91,7 @@ const ResearchExamplesExplorer: React.FC<ResearchExamplesExplorerProps> = ({ loc
     <div className={`research-explorer ${compact ? 'is-compact' : ''}`}>
       <div className="research-explorer-toolbar">
         <PublicTabList id="example-strategies" items={(Object.keys(strategies) as StrategyId[]).map(id => ({ id, label: strategies[id].name }))} activeId={strategyId} onChange={id => setStrategyId(id as StrategyId)} ariaLabel={isZh ? '研究案例' : 'Research examples'} />
-        <div aria-label={isZh ? '时间范围' : 'Time range'}>
+        <div role="group" aria-label={isZh ? '时间范围' : 'Time range'}>
           {(['1Y', '3Y', 'MAX'] as RangeId[]).map(id => <button type="button" aria-pressed={range === id} className={range === id ? 'is-active' : ''} key={id} onClick={() => setRange(id)}>{isZh ? ({ '1Y': '1年', '3Y': '3年', MAX: '全部' } as const)[id] : id}</button>)}
         </div>
       </div>
