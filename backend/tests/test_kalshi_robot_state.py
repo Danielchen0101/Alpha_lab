@@ -460,6 +460,81 @@ def test_robot_state_tracks_durable_version_and_invalidates_after_conflict(tmp_p
     assert "u" not in store._users
 
 
+def test_robot_state_mutations_persist_only_the_target_user(tmp_path):
+    path = tmp_path / "state.json"
+    durable = {}
+    versions = {}
+    calls = []
+    failing_users = set()
+
+    def save(user_id, payload):
+        calls.append(user_id)
+        if user_id in failing_users:
+            raise RuntimeError("stale durable version")
+        versions[user_id] = versions.get(user_id, 0) + 1
+        durable[user_id] = payload
+        return {"version": versions[user_id]}
+
+    store = KalshiRobotState(
+        str(path),
+        state_loader=durable.get,
+        state_saver=save,
+    )
+    store.configure("user-a", True, {"executionMode": "paper"})
+    store.configure("user-b", True, {"executionMode": "paper"})
+    assert store._users["user-a"]["_operationsVersion"] == 1
+    assert store._users["user-b"]["_operationsVersion"] == 1
+
+    calls.clear()
+    store.configure("user-a", True, {
+        "executionMode": "paper",
+        "riskPerTradePct": 0.5,
+    })
+    assert calls == ["user-a"]
+    assert store._users["user-a"]["_operationsVersion"] == 2
+    assert store._users["user-b"]["_operationsVersion"] == 1
+
+    calls.clear()
+    store.record("user-a", {
+        "generatedAt": "2026-07-26T12:00:00Z",
+        "action": "BUY_YES",
+        "side": "YES",
+        "blockingReasons": [],
+        "config": {"executionMode": "paper"},
+        "market": {"ticker": "KXBTC15M-TARGET"},
+        "edge": {"fairProbability": 0.70, "price": 0.50, "netEdge": 0.10},
+    })
+    assert calls == ["user-a"]
+    assert store._users["user-a"]["_operationsVersion"] == 3
+    assert store._users["user-b"]["_operationsVersion"] == 1
+
+    calls.clear()
+    store.reconcile_settlements("user-a", [{
+        "ticker": "KXBTC15M-TARGET",
+        "settled_time": "2026-07-26T12:15:00Z",
+        "market_result": "YES",
+    }])
+    assert calls == ["user-a"]
+    assert store._users["user-a"]["_operationsVersion"] == 4
+    assert store._users["user-b"]["_operationsVersion"] == 1
+
+    local_snapshot = json.loads(path.read_text(encoding="utf-8"))
+    assert set(local_snapshot) == {"user-a", "user-b"}
+    assert local_snapshot["user-b"]["_operationsVersion"] == 1
+
+    calls.clear()
+    failing_users.add("user-a")
+    try:
+        store.configure("user-a", False, {"executionMode": "paper"})
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("stale target write must fail")
+    assert calls == ["user-a"]
+    assert "user-a" not in store._users
+    assert store._users["user-b"]["_operationsVersion"] == 1
+
+
 def test_paper_reconciliation_removes_stale_conflict_artifacts_for_same_market(tmp_path):
     store = KalshiRobotState(str(tmp_path / "state.json"))
     state = store._state("u")

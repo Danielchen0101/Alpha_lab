@@ -13,6 +13,9 @@
 /static/*
   Cache-Control: public, max-age=31556952, immutable
 
+/theme-bootstrap.js
+  Cache-Control: public, max-age=0, must-revalidate
+
 /brand/*
   Cache-Control: public, max-age=86400, must-revalidate
 

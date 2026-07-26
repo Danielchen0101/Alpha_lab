@@ -258,7 +258,7 @@ class KalshiRobotState:
                 self._apply_v9_strategy_defaults(self._users[user_id])
                 migrated = True
         if migrated and self._persist_migrations:
-            self._save()
+            self._save_all()
 
     @staticmethod
     def _initial() -> Dict[str, Any]:
@@ -467,22 +467,26 @@ class KalshiRobotState:
             self._mode_bucket(self._users[key], environment)
         self._sync_mode_mirror(self._users[key], active_environment, activate=True)
         if migrated and self._persist_migrations:
-            self._save()
+            self._save_user(key)
         return self._users[key]
 
-    def _save(self) -> None:
-        if callable(self._state_saver):
-            for user_id, state in list(self._users.items()):
-                try:
-                    saved = self._state_saver(str(user_id), copy.deepcopy(state))
-                except Exception:
-                    # A failed compare-and-swap means another runtime owns a
-                    # newer state. Invalidate this cache so the next operation
-                    # reloads that canonical version rather than overwriting it.
-                    self._users.pop(str(user_id), None)
-                    raise
-                if isinstance(saved, Mapping) and saved.get("version") is not None:
-                    state["_operationsVersion"] = int(saved.get("version") or 0)
+    def _persist_user(self, user_id: str) -> None:
+        key = str(user_id)
+        state = self._users.get(key)
+        if not isinstance(state, dict) or not callable(self._state_saver):
+            return
+        try:
+            saved = self._state_saver(key, copy.deepcopy(state))
+        except Exception:
+            # A failed compare-and-swap means another runtime owns a newer
+            # state. Invalidate only this user's cache so the next operation
+            # reloads that canonical version without disturbing other users.
+            self._users.pop(key, None)
+            raise
+        if isinstance(saved, Mapping) and saved.get("version") is not None:
+            state["_operationsVersion"] = int(saved.get("version") or 0)
+
+    def _save_local_snapshot(self) -> None:
         if not self.path:
             return
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -490,6 +494,18 @@ class KalshiRobotState:
         with open(temporary, "w", encoding="utf-8") as handle:
             json.dump(self._users, handle, ensure_ascii=True, separators=(",", ":"))
         os.replace(temporary, self.path)
+
+    def _save_user(self, user_id: str) -> None:
+        """Persist one changed durable user and the complete local snapshot."""
+        self._persist_user(str(user_id))
+        self._save_local_snapshot()
+
+    def _save_all(self) -> None:
+        """Persist every cached user for explicit bulk migrations only."""
+        if callable(self._state_saver):
+            for user_id in list(self._users):
+                self._persist_user(str(user_id))
+        self._save_local_snapshot()
 
     def get(self, user_id: str, *, environment: Optional[str] = None) -> Dict[str, Any]:
         with self._lock:
@@ -515,7 +531,7 @@ class KalshiRobotState:
             replacement["modeState"][active_environment] = self._mode_template(active_environment, {"config": config})
             self._sync_mode_mirror(replacement, active_environment, activate=True)
             self._users[str(user_id)] = replacement
-            self._save()
+            self._save_user(user_id)
             return copy.deepcopy(replacement)
 
     def start_fresh_strategy(
@@ -561,7 +577,7 @@ class KalshiRobotState:
                 selected_environment,
                 activate=state.get("activeEnvironment") == selected_environment,
             )
-            self._save()
+            self._save_user(user_id)
             return copy.deepcopy(state)
 
     def enabled_users(self):
@@ -585,7 +601,7 @@ class KalshiRobotState:
             state["lastError"] = None
             bucket["strategy"].pop("learning", None)
             self._sync_mode_mirror(state, environment, activate=True)
-            self._save()
+            self._save_user(user_id)
             return copy.deepcopy(state)
 
     def record(self, user_id: str, decision: Mapping[str, Any], order: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
@@ -692,7 +708,7 @@ class KalshiRobotState:
             bucket["lastError"] = None
             bucket["runs"] = int(bucket.get("runs") or 0) + 1
             self._sync_mode_mirror(state, environment)
-            self._save()
+            self._save_user(user_id)
             return copy.deepcopy(state)
 
     def record_early_close(
@@ -758,7 +774,7 @@ class KalshiRobotState:
             ) if records else None
             self._sync_realized_analytics(strategy, environment)
             self._sync_mode_mirror(state, environment)
-            self._save()
+            self._save_user(user_id)
             return copy.deepcopy(state)
 
     @staticmethod
@@ -850,7 +866,7 @@ class KalshiRobotState:
             bucket = self._mode_bucket(state, state.get("activeEnvironment") or (state.get("config") or {}).get("executionMode"))
             bucket["lastRunAt"] = state["lastRunAt"]
             bucket["lastError"] = state["lastError"]
-            self._save()
+            self._save_user(user_id)
 
     def reconcile_settlements(
         self,
@@ -1135,7 +1151,7 @@ class KalshiRobotState:
                 bucket["processedSettlements"] = (preserved_processed + list(processed))[-1000:]
                 self._sync_mode_mirror(state, environment)
                 if persist:
-                    self._save()
+                    self._save_user(user_id)
             return copy.deepcopy(state)
 
 __all__ = ["KalshiRobotState"]

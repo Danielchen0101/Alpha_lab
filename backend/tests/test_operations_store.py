@@ -1,7 +1,10 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
+from postgrest.types import CountMethod, ReturnMethod
 
 
 from operations_store import (
@@ -16,6 +19,87 @@ def local_store(tmp_path):
         allow_local_fallback=True,
         fallback_path=tmp_path / "operations-store.json",
     )
+
+
+class RecordingQuery:
+    def __init__(self, client, table):
+        self.client = client
+        self.table = table
+        self.action = ""
+        self.projection = None
+        self.payload = None
+        self.options = {}
+        self.filters = []
+        self.ordering = None
+        self.limit_value = None
+        self.range_value = None
+
+    def select(self, projection):
+        self.action = "select"
+        self.projection = projection
+        return self
+
+    def insert(self, payload, **options):
+        self.action = "insert"
+        self.payload = payload
+        self.options = options
+        return self
+
+    def update(self, payload, **options):
+        self.action = "update"
+        self.payload = payload
+        self.options = options
+        return self
+
+    def upsert(self, payload, **options):
+        self.action = "upsert"
+        self.payload = payload
+        self.options = options
+        return self
+
+    def eq(self, field, value):
+        self.filters.append(("eq", field, value))
+        return self
+
+    def contains(self, field, value):
+        self.filters.append(("contains", field, value))
+        return self
+
+    def order(self, field, **options):
+        self.ordering = (field, options)
+        return self
+
+    def limit(self, value):
+        self.limit_value = value
+        return self
+
+    def range(self, start, end):
+        self.range_value = (start, end)
+        return self
+
+    def execute(self):
+        self.client.queries.append(self)
+        if not self.client.responses:
+            raise AssertionError("No mock Supabase response remains")
+        response = self.client.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+
+class RecordingSupabase:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.queries = []
+
+    def table(self, name):
+        return RecordingQuery(self, name)
+
+
+class FakePostgrestError(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
 
 
 def test_local_safety_is_user_scoped_idempotent_and_preserves_protection(tmp_path):
@@ -164,6 +248,485 @@ def test_artifact_crud_is_versioned_scoped_and_persisted(tmp_path):
     assert restored.get_artifact("user-a", "backtest", "session-1") is None
 
 
+def test_supabase_artifact_insert_reads_only_metadata_and_returns_local_canonical_row():
+    client = RecordingSupabase(
+        SimpleNamespace(data=[], count=None),
+        SimpleNamespace(data=[], count=1),
+    )
+    store = OperationsStore(supabase_client=client)
+
+    created = store.put_artifact(
+        "user-a",
+        "kalshi_robot_state",
+        "current",
+        payload={"enabled": True, "large": "x" * 1000},
+        idempotency_key="insert-1",
+        expected_version=0,
+    )
+
+    metadata_query, insert_query = client.queries
+    assert metadata_query.projection == "id,created_at,version,last_idempotency_key"
+    assert ("eq", "user_id", "user-a") in metadata_query.filters
+    assert insert_query.action == "insert"
+    assert insert_query.options == {
+        "returning": ReturnMethod.minimal,
+        "count": CountMethod.exact,
+    }
+    assert created == insert_query.payload
+    assert str(UUID(created["id"])) == created["id"]
+    assert created["version"] == 1
+    assert created["payload"]["large"] == "x" * 1000
+
+
+def test_supabase_artifact_update_uses_minimal_exact_and_preserves_created_at():
+    client = RecordingSupabase(
+        SimpleNamespace(
+            data=[{
+                "id": "artifact-id-3",
+                "created_at": "2026-07-25T12:00:00+00:00",
+                "version": 3,
+                "last_idempotency_key": "previous",
+            }],
+            count=None,
+        ),
+        SimpleNamespace(data=[], count=1),
+    )
+    store = OperationsStore(supabase_client=client)
+
+    updated = store.put_artifact(
+        "user-a",
+        "crypto_config",
+        "primary",
+        payload={"enabled": True},
+        idempotency_key="update-4",
+        expected_version=3,
+    )
+
+    metadata_query, update_query = client.queries
+    assert metadata_query.projection == "id,created_at,version,last_idempotency_key"
+    assert update_query.options == {
+        "returning": ReturnMethod.minimal,
+        "count": CountMethod.exact,
+    }
+    assert ("eq", "version", 3) in update_query.filters
+    assert updated == update_query.payload
+    assert updated["id"] == "artifact-id-3"
+    assert updated["created_at"] == "2026-07-25T12:00:00+00:00"
+    assert updated["version"] == 4
+
+
+def test_supabase_artifact_update_count_zero_is_a_cas_conflict():
+    client = RecordingSupabase(
+        SimpleNamespace(
+            data=[{
+                "id": "artifact-id-2",
+                "created_at": "2026-07-25T12:00:00+00:00",
+                "version": 2,
+                "last_idempotency_key": "previous",
+            }],
+            count=None,
+        ),
+        SimpleNamespace(data=[], count=0),
+        SimpleNamespace(data=[], count=None),
+    )
+    store = OperationsStore(supabase_client=client)
+
+    with pytest.raises(OperationsVersionConflict, match="changed concurrently"):
+        store.put_artifact(
+            "user-a",
+            "crypto_runtime",
+            "primary",
+            payload={"status": "armed"},
+            idempotency_key="update-3",
+            expected_version=2,
+        )
+
+    assert client.queries[1].options["returning"] is ReturnMethod.minimal
+    assert client.queries[1].options["count"] is CountMethod.exact
+    assert client.queries[2].projection == "*"
+    assert ("eq", "version", 3) in client.queries[2].filters
+    assert ("eq", "last_idempotency_key", "update-3") in client.queries[2].filters
+
+
+def test_supabase_artifact_update_count_zero_recovers_a_committed_retry():
+    canonical = {
+        "id": "artifact-id-4",
+        "user_id": "user-a",
+        "artifact_type": "crypto_runtime",
+        "artifact_key": "primary",
+        "payload": {"status": "armed"},
+        "version": 4,
+        "created_at": "2026-07-25T12:00:00+00:00",
+        "updated_at": "2026-07-25T12:01:00+00:00",
+        "last_idempotency_key": "update-4",
+    }
+    client = RecordingSupabase(
+        SimpleNamespace(data=[{
+            "id": canonical["id"],
+            "created_at": canonical["created_at"],
+            "version": 3,
+            "last_idempotency_key": "previous",
+        }], count=None),
+        SimpleNamespace(data=[], count=0),
+        SimpleNamespace(data=[canonical], count=None),
+    )
+    store = OperationsStore(supabase_client=client)
+
+    recovered = store.put_artifact(
+        "user-a",
+        "crypto_runtime",
+        "primary",
+        payload={"status": "armed"},
+        idempotency_key="update-4",
+        expected_version=3,
+    )
+
+    assert recovered == canonical
+    recovery_query = client.queries[2]
+    assert recovery_query.projection == "*"
+    assert ("eq", "version", 4) in recovery_query.filters
+    assert ("eq", "last_idempotency_key", "update-4") in recovery_query.filters
+
+
+def test_supabase_artifact_update_exception_recovers_committed_write():
+    canonical = {
+        "id": "artifact-id-2",
+        "user_id": "user-a",
+        "artifact_type": "crypto_config",
+        "artifact_key": "primary",
+        "payload": {"enabled": True},
+        "version": 2,
+        "created_at": "2026-07-25T12:00:00+00:00",
+        "updated_at": "2026-07-25T12:01:00+00:00",
+        "last_idempotency_key": "update-2",
+    }
+    client = RecordingSupabase(
+        SimpleNamespace(data=[{
+            "id": canonical["id"],
+            "created_at": canonical["created_at"],
+            "version": 1,
+            "last_idempotency_key": "previous",
+        }], count=None),
+        TimeoutError("response lost after commit"),
+        SimpleNamespace(data=[canonical], count=None),
+    )
+    store = OperationsStore(supabase_client=client)
+
+    assert store.put_artifact(
+        "user-a",
+        "crypto_config",
+        "primary",
+        payload={"enabled": True},
+        idempotency_key="update-2",
+        expected_version=1,
+    ) == canonical
+
+
+def test_supabase_artifact_missing_count_recovers_committed_write():
+    canonical = {
+        "id": "artifact-id-2",
+        "user_id": "user-a",
+        "artifact_type": "backtest",
+        "artifact_key": "session-1",
+        "payload": {"symbol": "AAPL"},
+        "version": 2,
+        "created_at": "2026-07-25T12:00:00+00:00",
+        "updated_at": "2026-07-25T12:01:00+00:00",
+        "last_idempotency_key": "update-2",
+    }
+    client = RecordingSupabase(
+        SimpleNamespace(data=[{
+            "id": canonical["id"],
+            "created_at": canonical["created_at"],
+            "version": 1,
+            "last_idempotency_key": "previous",
+        }], count=None),
+        SimpleNamespace(data=[], count=None),
+        SimpleNamespace(data=[canonical], count=None),
+    )
+    store = OperationsStore(supabase_client=client)
+
+    assert store.put_artifact(
+        "user-a",
+        "backtest",
+        "session-1",
+        payload={"symbol": "AAPL"},
+        idempotency_key="update-2",
+        expected_version=1,
+    ) == canonical
+
+
+def test_supabase_artifact_insert_count_zero_is_a_cas_conflict():
+    client = RecordingSupabase(
+        SimpleNamespace(data=[], count=None),
+        SimpleNamespace(data=[], count=0),
+        SimpleNamespace(data=[], count=None),
+    )
+    store = OperationsStore(supabase_client=client)
+
+    with pytest.raises(OperationsVersionConflict, match="changed concurrently"):
+        store.put_artifact(
+            "user-a",
+            "kalshi_robot_state",
+            "current",
+            payload={"enabled": True},
+            idempotency_key="insert-1",
+            expected_version=0,
+        )
+
+    assert client.queries[1].action == "insert"
+    assert client.queries[1].options == {
+        "returning": ReturnMethod.minimal,
+        "count": CountMethod.exact,
+    }
+    assert ("eq", "version", 1) in client.queries[2].filters
+    assert ("eq", "last_idempotency_key", "insert-1") in client.queries[2].filters
+
+
+def test_supabase_artifact_insert_unique_conflict_recovers_committed_write():
+    canonical = {
+        "id": "artifact-id-1",
+        "user_id": "user-a",
+        "artifact_type": "kalshi_robot_state",
+        "artifact_key": "current",
+        "payload": {"enabled": True},
+        "version": 1,
+        "created_at": "2026-07-25T12:00:00+00:00",
+        "updated_at": "2026-07-25T12:00:00+00:00",
+        "last_idempotency_key": "insert-1",
+    }
+    client = RecordingSupabase(
+        SimpleNamespace(data=[], count=None),
+        FakePostgrestError("23505", "duplicate key after response loss"),
+        SimpleNamespace(data=[canonical], count=None),
+    )
+    store = OperationsStore(supabase_client=client)
+
+    recovered = store.put_artifact(
+        "user-a",
+        "kalshi_robot_state",
+        "current",
+        payload={"enabled": True},
+        idempotency_key="insert-1",
+        expected_version=0,
+    )
+
+    assert recovered == canonical
+    assert ("eq", "version", 1) in client.queries[2].filters
+    assert ("eq", "last_idempotency_key", "insert-1") in client.queries[2].filters
+
+
+def test_supabase_artifact_insert_unique_conflict_with_different_key_is_cas_conflict():
+    client = RecordingSupabase(
+        SimpleNamespace(data=[], count=None),
+        FakePostgrestError("23505", "concurrent artifact insert"),
+        SimpleNamespace(data=[], count=None),
+    )
+    store = OperationsStore(supabase_client=client)
+
+    with pytest.raises(OperationsVersionConflict, match="changed concurrently"):
+        store.put_artifact(
+            "user-a",
+            "kalshi_robot_state",
+            "current",
+            payload={"enabled": True},
+            idempotency_key="our-insert",
+            expected_version=0,
+        )
+
+    recovery_query = client.queries[2]
+    assert ("eq", "version", 1) in recovery_query.filters
+    assert ("eq", "last_idempotency_key", "our-insert") in recovery_query.filters
+
+
+def test_supabase_artifact_write_exception_is_preserved_when_recovery_misses():
+    client = RecordingSupabase(
+        SimpleNamespace(data=[], count=None),
+        TimeoutError("request failed before commit"),
+        SimpleNamespace(data=[], count=None),
+    )
+    store = OperationsStore(supabase_client=client)
+
+    with pytest.raises(OperationsStoreUnavailable, match="artifact insert failed"):
+        store.put_artifact(
+            "user-a",
+            "backtest",
+            "session-1",
+            payload={"symbol": "AAPL"},
+            idempotency_key="insert-1",
+            expected_version=0,
+        )
+
+
+def test_supabase_artifact_write_fails_closed_without_exact_count():
+    client = RecordingSupabase(
+        SimpleNamespace(data=[], count=None),
+        SimpleNamespace(data=[], count=None),
+        SimpleNamespace(data=[], count=None),
+    )
+    store = OperationsStore(supabase_client=client)
+
+    with pytest.raises(OperationsStoreUnavailable, match="exact affected-row count"):
+        store.put_artifact(
+            "user-a",
+            "backtest",
+            "session-1",
+            payload={"symbol": "AAPL"},
+            idempotency_key="insert-1",
+            expected_version=0,
+        )
+
+
+def test_supabase_artifact_idempotent_replay_conditionally_reads_canonical_row():
+    canonical = {
+        "user_id": "user-a",
+        "id": "artifact-id-7",
+        "artifact_type": "backtest",
+        "artifact_key": "session-1",
+        "payload": {"symbol": "AAPL"},
+        "version": 7,
+        "created_at": "2026-07-25T12:00:00+00:00",
+        "updated_at": "2026-07-25T12:01:00+00:00",
+        "last_idempotency_key": "save-7",
+    }
+    client = RecordingSupabase(
+        SimpleNamespace(
+            data=[{
+                "id": canonical["id"],
+                "created_at": canonical["created_at"],
+                "version": canonical["version"],
+                "last_idempotency_key": canonical["last_idempotency_key"],
+            }],
+            count=None,
+        ),
+        SimpleNamespace(data=[canonical], count=None),
+    )
+    store = OperationsStore(supabase_client=client)
+
+    replayed = store.put_artifact(
+        "user-a",
+        "backtest",
+        "session-1",
+        payload={"symbol": "MSFT"},
+        idempotency_key="save-7",
+        expected_version=0,
+    )
+
+    metadata_query, canonical_query = client.queries
+    assert metadata_query.projection == "id,created_at,version,last_idempotency_key"
+    assert canonical_query.projection == "*"
+    assert ("eq", "version", 7) in canonical_query.filters
+    assert ("eq", "last_idempotency_key", "save-7") in canonical_query.filters
+    assert replayed == canonical
+    assert replayed["payload"] == {"symbol": "AAPL"}
+
+
+def test_scheduler_user_scan_filters_json_server_side_and_projects_only_user_id():
+    client = RecordingSupabase(
+        SimpleNamespace(data=[{"user_id": "user-a"}, {"user_id": "user-b"}], count=None),
+    )
+    store = OperationsStore(supabase_client=client)
+
+    users = store.list_scheduler_artifact_user_ids(
+        "kalshi_robot_state",
+        "current",
+        payload_contains={"enabled": True},
+        limit=500,
+    )
+
+    query = client.queries[0]
+    assert users == ["user-a", "user-b"]
+    assert query.projection == "user_id"
+    assert ("contains", "payload", {"enabled": True}) in query.filters
+    assert query.ordering == ("updated_at", {"desc": True})
+    assert query.limit_value == 500
+
+
+def test_local_scheduler_user_scan_preserves_json_boolean_types(tmp_path):
+    store = local_store(tmp_path)
+    store.put_artifact(
+        "numeric-user",
+        "kalshi_robot_state",
+        "current",
+        payload={"enabled": 1},
+        idempotency_key="numeric",
+        expected_version=0,
+    )
+    store.put_artifact(
+        "enabled-user",
+        "kalshi_robot_state",
+        "current",
+        payload={"enabled": True},
+        idempotency_key="boolean",
+        expected_version=0,
+    )
+
+    assert store.list_scheduler_artifact_user_ids(
+        "kalshi_robot_state",
+        "current",
+        payload_contains={"enabled": True},
+        limit=500,
+    ) == ["enabled-user"]
+
+
+def test_kalshi_enabled_user_enumeration_uses_filtered_id_only_store_contract(monkeypatch):
+    import start_quant_backend as backend
+
+    captured = {}
+
+    class Store:
+        def list_scheduler_artifact_user_ids(
+            self,
+            artifact_type,
+            artifact_key,
+            *,
+            payload_contains,
+            limit,
+        ):
+            captured.update({
+                "artifact_type": artifact_type,
+                "artifact_key": artifact_key,
+                "payload_contains": payload_contains,
+                "limit": limit,
+            })
+            return ["user-a", "user-b"]
+
+    monkeypatch.setattr(backend, "operations_store", Store())
+
+    assert backend._kalshi_enabled_users() == ["user-a", "user-b"]
+    assert captured == {
+        "artifact_type": "kalshi_robot_state",
+        "artifact_key": "current",
+        "payload_contains": {"enabled": True},
+        "limit": 500,
+    }
+
+
+def test_supabase_kalshi_observation_upsert_uses_minimal_and_returns_local_row():
+    client = RecordingSupabase(SimpleNamespace(data=[], count=None))
+    store = OperationsStore(supabase_client=client)
+    observation = {
+        "environment": "paper",
+        "ticker": "KXBTC15M-TEST",
+        "observation_key": "KXBTC15M-TEST:123",
+        "observed_at": "2026-07-25T12:00:00Z",
+        "action": "WAIT",
+        "features": {"model": {"distanceBps": 4.2}},
+    }
+
+    saved = store.put_kalshi_observation("user-a", observation)
+
+    query = client.queries[0]
+    assert query.action == "upsert"
+    assert query.options == {
+        "on_conflict": "user_id,environment,observation_key",
+        "returning": ReturnMethod.minimal,
+    }
+    assert saved == query.payload
+    assert saved["user_id"] == "user-a"
+    assert saved["features"] == observation["features"]
+
+
 def test_production_never_silently_falls_back():
     store = OperationsStore(supabase_client=None, allow_local_fallback=False)
     assert store.backend == "unavailable"
@@ -249,6 +812,7 @@ def test_operations_endpoints_are_authenticated_scoped_and_idempotent(monkeypatc
     })
     assert artifact.status_code == 200
     assert artifact.get_json()["artifact"]["version"] == 1
+    assert UUID(artifact.get_json()["artifact"]["id"])
     loaded = client.get(
         "/api/operations/artifacts?artifactType=watchlist&artifactKey=primary"
     )

@@ -17,6 +17,8 @@ from pathlib import Path
 import threading
 import uuid
 
+from postgrest.types import CountMethod, ReturnMethod
+
 
 class OperationsStoreError(RuntimeError):
     """Base error for operational persistence."""
@@ -37,6 +39,28 @@ def utc_now_iso() -> str:
 def deterministic_key(namespace: str, *parts: object) -> str:
     raw = "|".join([str(namespace), *[str(part) for part in parts]])
     return "%s:%s" % (namespace, hashlib.sha256(raw.encode("utf-8")).hexdigest())
+
+
+def _jsonb_contains(value, expected) -> bool:
+    """Mirror the JSON type semantics needed by Postgres ``jsonb @>``."""
+    if isinstance(expected, dict):
+        return isinstance(value, dict) and all(
+            key in value and _jsonb_contains(value[key], child)
+            for key, child in expected.items()
+        )
+    if isinstance(expected, list):
+        return isinstance(value, list) and all(
+            any(_jsonb_contains(candidate, child) for candidate in value)
+            for child in expected
+        )
+    if isinstance(value, bool) or isinstance(expected, bool):
+        return type(value) is type(expected) and value == expected
+    if (
+        isinstance(value, (int, float))
+        and isinstance(expected, (int, float))
+    ):
+        return value == expected
+    return type(value) is type(expected) and value == expected
 
 
 class OperationsStore:
@@ -560,6 +584,139 @@ class OperationsStore:
         )
         return [dict(row) for row in self._data(response)]
 
+    def list_scheduler_artifact_user_ids(
+        self,
+        artifact_type: object,
+        artifact_key: object,
+        *,
+        payload_contains: dict,
+        limit: int = 200,
+    ) -> list[str]:
+        """List matching scheduler users without transferring artifact payloads."""
+        kind = str(artifact_type or "").strip().lower()
+        key = str(artifact_key or "").strip()
+        if not kind or len(kind) > 80:
+            raise ValueError("artifact_type is required and must be at most 80 characters")
+        if not key or len(key) > 200:
+            raise ValueError("artifact_key is required and must be at most 200 characters")
+        if not isinstance(payload_contains, dict) or not payload_contains:
+            raise ValueError("payload_contains must be a non-empty object")
+        safe_limit = max(1, min(int(limit or 200), 500))
+        if self._client is None:
+            if not self._allow_local_fallback:
+                raise OperationsStoreUnavailable("Durable operations store is not configured")
+            with self._lock:
+                rows = [
+                    deepcopy(row)
+                    for row in self._local["artifacts"].values()
+                    if row.get("artifact_type") == kind
+                    and row.get("artifact_key") == key
+                    and isinstance(row.get("payload"), dict)
+                    and _jsonb_contains(row["payload"], payload_contains)
+                ]
+            rows.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
+            return [str(row.get("user_id") or "") for row in rows[:safe_limit]]
+
+        response = self._execute(
+            lambda: self._client.table(self.ARTIFACT_TABLE).select(
+                "user_id"
+            ).eq("artifact_type", kind).eq("artifact_key", key).contains(
+                "payload", payload_contains
+            ).order("updated_at", desc=True).limit(safe_limit).execute(),
+            "scheduler artifact user list",
+        )
+        return [
+            uid
+            for row in self._data(response)
+            if (uid := str(row.get("user_id") or "").strip())
+        ]
+
+    def _get_artifact_write_metadata(
+        self,
+        user_id: str,
+        artifact_type: str,
+        artifact_key: str,
+    ) -> dict | None:
+        response = self._execute(
+            lambda: self._client.table(self.ARTIFACT_TABLE).select(
+                "id,created_at,version,last_idempotency_key"
+            ).eq("user_id", user_id).eq(
+                "artifact_type", artifact_type
+            ).eq("artifact_key", artifact_key).limit(1).execute(),
+            "artifact write metadata read",
+        )
+        rows = self._data(response)
+        return dict(rows[0]) if rows else None
+
+    def _get_idempotent_artifact(
+        self,
+        user_id: str,
+        artifact_type: str,
+        artifact_key: str,
+        *,
+        version: int,
+        idempotency_key: str,
+    ) -> dict | None:
+        """Read the canonical row only for a confirmed idempotent replay."""
+        response = self._execute(
+            lambda: self._client.table(self.ARTIFACT_TABLE).select("*").eq(
+                "user_id", user_id
+            ).eq("artifact_type", artifact_type).eq(
+                "artifact_key", artifact_key
+            ).eq("version", version).eq(
+                "last_idempotency_key", idempotency_key
+            ).limit(1).execute(),
+            "idempotent artifact read",
+        )
+        rows = self._data(response)
+        return dict(rows[0]) if rows else None
+
+    @staticmethod
+    def _is_unique_violation(exc: BaseException) -> bool:
+        """Return whether an exception chain carries PostgreSQL SQLSTATE 23505."""
+        pending = [exc]
+        seen = set()
+        while pending:
+            current = pending.pop()
+            marker = id(current)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            for attribute in ("code", "sqlstate", "pgcode"):
+                if str(getattr(current, attribute, "") or "") == "23505":
+                    return True
+            raw_error = getattr(current, "_raw_error", None)
+            if (
+                isinstance(raw_error, dict)
+                and str(raw_error.get("code") or "") == "23505"
+            ):
+                return True
+            for linked in (current.__cause__, current.__context__):
+                if isinstance(linked, BaseException):
+                    pending.append(linked)
+        return False
+
+    def _recover_artifact_write(
+        self,
+        user_id: str,
+        artifact_type: str,
+        artifact_key: str,
+        *,
+        target_version: int,
+        idempotency_key: str,
+    ) -> dict | None:
+        """Resolve an uncertain write outcome without masking its original error."""
+        try:
+            return self._get_idempotent_artifact(
+                user_id,
+                artifact_type,
+                artifact_key,
+                version=target_version,
+                idempotency_key=idempotency_key,
+            )
+        except OperationsStoreError:
+            return None
+
     def put_artifact(
         self,
         user_id: object,
@@ -578,19 +735,43 @@ class OperationsStore:
         if not request_key:
             raise ValueError("idempotency_key is required")
         with self._lock:
-            current = self.get_artifact(uid, kind, key)
+            current = (
+                self.get_artifact(uid, kind, key)
+                if self._client is None
+                else self._get_artifact_write_metadata(uid, kind, key)
+            )
             if current and current.get("last_idempotency_key") == request_key:
-                return current
+                if self._client is None:
+                    return current
+                canonical = self._get_idempotent_artifact(
+                    uid,
+                    kind,
+                    key,
+                    version=int(current.get("version") or 0),
+                    idempotency_key=request_key,
+                )
+                if canonical is None:
+                    raise OperationsVersionConflict("Artifact changed concurrently")
+                return canonical
             current_version = int((current or {}).get("version") or 0)
             if expected_version is not None and int(expected_version) != current_version:
                 raise OperationsVersionConflict("Artifact changed concurrently")
             now = utc_now_iso()
+            artifact_id = str((current or {}).get("id") or "").strip()
+            if not artifact_id:
+                if current and self._client is not None:
+                    raise OperationsStoreUnavailable(
+                        "Artifact metadata did not include its canonical id"
+                    )
+                artifact_id = str(uuid.uuid4())
+            target_version = current_version + 1
             row = {
+                "id": artifact_id,
                 "user_id": uid,
                 "artifact_type": kind,
                 "artifact_key": key,
                 "payload": deepcopy(payload),
-                "version": current_version + 1,
+                "version": target_version,
                 "created_at": (current or {}).get("created_at") or now,
                 "updated_at": now,
                 "last_idempotency_key": request_key,
@@ -599,24 +780,62 @@ class OperationsStore:
                 self._local["artifacts"][local_key] = row
                 self._save_local()
                 return deepcopy(row)
-            if current_version == 0:
-                response = self._execute(
-                    lambda: self._client.table(self.ARTIFACT_TABLE).insert(row).execute(),
-                    "artifact insert",
+            try:
+                if current_version == 0:
+                    response = self._execute(
+                        lambda: self._client.table(self.ARTIFACT_TABLE).insert(
+                            row,
+                            returning=ReturnMethod.minimal,
+                            count=CountMethod.exact,
+                        ).execute(),
+                        "artifact insert",
+                    )
+                else:
+                    response = self._execute(
+                        lambda: self._client.table(self.ARTIFACT_TABLE).update(
+                            row,
+                            returning=ReturnMethod.minimal,
+                            count=CountMethod.exact,
+                        ).eq("user_id", uid).eq(
+                            "artifact_type", kind
+                        ).eq("artifact_key", key).eq(
+                            "version", current_version
+                        ).execute(),
+                        "artifact update",
+                    )
+            except OperationsStoreError as exc:
+                recovered = self._recover_artifact_write(
+                    uid,
+                    kind,
+                    key,
+                    target_version=target_version,
+                    idempotency_key=request_key,
                 )
-            else:
-                response = self._execute(
-                    lambda: self._client.table(self.ARTIFACT_TABLE).update(row).eq(
-                        "user_id", uid
-                    ).eq("artifact_type", kind).eq("artifact_key", key).eq(
-                        "version", current_version
-                    ).execute(),
-                    "artifact update",
+                if recovered is not None:
+                    return recovered
+                if current_version == 0 and self._is_unique_violation(exc):
+                    raise OperationsVersionConflict(
+                        "Artifact changed concurrently"
+                    ) from exc
+                raise
+            affected = getattr(response, "count", None)
+            if affected != 1:
+                recovered = self._recover_artifact_write(
+                    uid,
+                    kind,
+                    key,
+                    target_version=target_version,
+                    idempotency_key=request_key,
                 )
-            rows = self._data(response)
-            if not rows:
+                if recovered is not None:
+                    return recovered
+            if affected == 0:
                 raise OperationsVersionConflict("Artifact changed concurrently")
-            return dict(rows[0])
+            if affected != 1:
+                raise OperationsStoreUnavailable(
+                    "Artifact write did not return an exact affected-row count"
+                )
+            return deepcopy(row)
 
     def put_kalshi_observation(self, user_id: object, observation: dict) -> dict:
         """Upsert one deterministic 15-second Kalshi decision sample."""
@@ -655,15 +874,15 @@ class OperationsStore:
                         self._local["kalshi_observations"].pop(key, None)
                 self._save_local()
                 return deepcopy(row)
-        response = self._execute(
+        self._execute(
             lambda: self._client.table(self.KALSHI_OBSERVATION_TABLE).upsert(
                 row,
                 on_conflict="user_id,environment,observation_key",
+                returning=ReturnMethod.minimal,
             ).execute(),
             "Kalshi observation upsert",
         )
-        rows = self._data(response)
-        return dict(rows[0]) if rows else row
+        return deepcopy(row)
 
     def list_kalshi_observations(
         self,

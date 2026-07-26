@@ -376,8 +376,9 @@ def test_scheduler_enumeration_is_capped_and_only_selects_enabled_crypto_configs
             self.range_value = None
             self.required_payload = {}
             self.order_value = None
+            self.selected_columns = None
 
-        def select(self, *_args): return self
+        def select(self, columns): self.selected_columns = columns; return self
         def eq(self, *_args): return self
         def contains(self, _field, value): self.required_payload = dict(value); return self
         def order(self, field, **_kwargs): self.order_value = field; return self
@@ -389,7 +390,10 @@ def test_scheduler_enumeration_is_capped_and_only_selects_enabled_crypto_configs
             ]
             filtered.sort(key=lambda row: row["user_id"])
             start, end = self.range_value
-            return SimpleNamespace(data=filtered[start:end + 1])
+            page = filtered[start:end + 1]
+            return SimpleNamespace(data=[
+                {"user_id": row["user_id"]} for row in page
+            ])
 
     query = Query()
     admin = SimpleNamespace(table=lambda _name: query)
@@ -406,6 +410,7 @@ def test_scheduler_enumeration_is_capped_and_only_selects_enabled_crypto_configs
         enabled = controls["service"]._enumerate_enabled()
         assert query.range_value == (0, crypto_api.MAX_SCHEDULER_USERS - 1)
         assert query.order_value == "user_id"
+        assert query.selected_columns == "user_id"
         assert query.required_payload == {"enabled": True, "killSwitch": False}
         assert len(enabled) == crypto_api.MAX_SCHEDULER_USERS
         assert all(int(uid.split("-")[1]) % 2 == 0 for uid in enabled)

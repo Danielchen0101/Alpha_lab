@@ -27,6 +27,11 @@ export type AuthCallback =
 
 export type AuthCallbackErrorKind = 'expired' | 'network' | 'invalid';
 
+interface AuthCallbackRedemptionOptions {
+  onSlow?: () => void;
+  slowAfterMs?: number;
+}
+
 const MANUALLY_HANDLED_AUTH_PATHS = new Set([
   '/auth/confirmed',
   '/reset-password',
@@ -115,9 +120,16 @@ export const parseAuthCallback = (search: string, hash: string): AuthCallback =>
  */
 export const scheduleAuthCallbackRedemption = (
   redeem: () => void,
+  options: AuthCallbackRedemptionOptions = {},
 ): (() => void) => {
   const timer = window.setTimeout(redeem, 0);
-  return () => window.clearTimeout(timer);
+  const slowTimer = options.onSlow
+    ? window.setTimeout(options.onSlow, options.slowAfterMs ?? 15000)
+    : null;
+  return () => {
+    window.clearTimeout(timer);
+    if (slowTimer !== null) window.clearTimeout(slowTimer);
+  };
 };
 
 export const classifyAuthCallbackError = (

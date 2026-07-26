@@ -29,7 +29,7 @@
 .legal-document-warning > strong,
 .legal-document-end > span {
   margin: 0;
-  color: #536a58;
+  color: var(--public-moss);
   font: 700 .69rem ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   letter-spacing: .14em;
   text-transform: uppercase;
@@ -70,7 +70,7 @@
   margin: 0;
   border-top: 1px solid var(--public-rule);
   border-left: 1px solid var(--public-rule);
-  background: rgba(250, 248, 242, .56);
+  background: var(--public-paper-bright);
 }
 
 .legal-public-meta > div {
@@ -120,7 +120,7 @@
   max-height: calc(100vh - 142px);
   overflow: hidden auto;
   border: 1px solid var(--public-rule);
-  background: rgba(250, 248, 242, .7);
+  background: var(--public-paper-bright);
   scrollbar-color: rgba(43, 95, 174, .45) transparent;
   scrollbar-width: thin;
 }
@@ -257,7 +257,7 @@
 .legal-document-section p {
   max-width: 790px;
   margin: 0 0 15px;
-  color: #555b55;
+  color: var(--public-muted);
   font-size: .98rem;
   line-height: 1.82;
   overflow-wrap: anywhere;
@@ -277,7 +277,7 @@
 .legal-document-section li {
   position: relative;
   padding-left: 22px;
-  color: #555b55;
+  color: var(--public-muted);
   font-size: .96rem;
   line-height: 1.7;
   overflow-wrap: anywhere;
@@ -299,11 +299,13 @@
   gap: clamp(18px, 4vw, 48px);
   margin-top: 42px;
   padding: 24px;
-  border: 1px solid rgba(184, 111, 75, .36);
-  background: rgba(184, 111, 75, .055);
+  border: 1px solid var(--public-copper);
+  border: 1px solid color-mix(in srgb, var(--public-copper) 42%, transparent);
+  background: transparent;
+  background: color-mix(in srgb, var(--public-copper) 8%, transparent);
 }
 
-.legal-document-warning > strong { color: #8c573d; line-height: 1.55; }
+.legal-document-warning > strong { color: var(--public-copper); line-height: 1.55; }
 
 .legal-document-end {
   display: flex;
@@ -399,6 +401,19 @@
   .legal-document-section li,
   .legal-document-note p,
   .legal-document-warning p { color: #333833; }
+
+  html[data-theme='dark'] .legal-public-page {
+    --public-muted: #e1e5df;
+    --public-rule: rgba(243, 241, 233, .55);
+    --public-rule-soft: rgba(243, 241, 233, .34);
+  }
+  html[data-theme='dark'] .legal-public-meta,
+  html[data-theme='dark'] .legal-document-rail,
+  html[data-theme='dark'] .legal-document-warning { border-color: #d7ddd6; }
+  html[data-theme='dark'] .legal-document-section p,
+  html[data-theme='dark'] .legal-document-section li,
+  html[data-theme='dark'] .legal-document-note p,
+  html[data-theme='dark'] .legal-document-warning p { color: #f3f1e9; }
 }
 
 @media (forced-colors: active) {

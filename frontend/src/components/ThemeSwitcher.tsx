@@ -9,7 +9,11 @@ import type { MenuProps } from 'antd';
 import { useLanguage } from '../contexts/LanguageContext';
 import { ThemeMode, useTheme } from '../contexts/ThemeContext';
 
-const ThemeSwitcher: React.FC = () => {
+interface ThemeSwitcherProps {
+  getPopupContainer?: (triggerNode: HTMLElement) => HTMLElement;
+}
+
+const ThemeSwitcher: React.FC<ThemeSwitcherProps> = ({ getPopupContainer }) => {
   const { t } = useLanguage();
   const { themeMode, setThemeMode, resolvedTheme } = useTheme();
 
@@ -24,11 +28,12 @@ const ThemeSwitcher: React.FC = () => {
   };
 
   return (
-    <Tooltip title={t.common.switchTheme}>
+    <Tooltip title={t.common.switchTheme} getPopupContainer={getPopupContainer}>
       <Dropdown
         menu={{ items, selectedKeys: [themeMode], onClick: handleClick }}
         placement="bottomRight"
         trigger={['click']}
+        getPopupContainer={getPopupContainer}
       >
         <Button
           aria-label={t.common.switchTheme}

@@ -5,7 +5,12 @@ import {
   LANGUAGE_STORAGE_KEY,
 } from './LanguageContext';
 import {
+  applyResolvedTheme,
+  getInitialResolvedTheme,
   getInitialThemeMode,
+  persistThemeMode,
+  resolveThemeMode,
+  THEME_COLOR,
   THEME_PREFERENCE_VERSION,
   THEME_PREFERENCE_VERSION_KEY,
   THEME_STORAGE_KEY,
@@ -14,6 +19,11 @@ import {
 describe('workspace preference defaults', () => {
   beforeEach(() => {
     window.localStorage.clear();
+    document.documentElement.removeAttribute('data-theme');
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   it('starts new visitors in English', () => {
@@ -56,5 +66,53 @@ describe('workspace preference defaults', () => {
     window.localStorage.setItem(THEME_PREFERENCE_VERSION_KEY, THEME_PREFERENCE_VERSION);
     window.localStorage.setItem(THEME_STORAGE_KEY, 'sepia');
     expect(getInitialThemeMode()).toBe('light');
+  });
+
+  it('falls back to light instead of throwing when storage reads are disabled', () => {
+    jest.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('storage disabled');
+    });
+    expect(() => getInitialThemeMode()).not.toThrow();
+    expect(getInitialThemeMode()).toBe('light');
+  });
+
+  it('keeps the selected in-memory mode when storage writes are disabled', () => {
+    jest.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('storage disabled');
+    });
+    expect(() => persistThemeMode('system')).not.toThrow();
+    expect(persistThemeMode('system')).toBe(false);
+    expect(resolveThemeMode('system', true)).toBe('dark');
+  });
+
+  it('initializes the provider from the theme already applied by the bootstrap', () => {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    expect(getInitialResolvedTheme('light')).toBe('dark');
+  });
+});
+
+describe('resolved theme document state', () => {
+  afterEach(() => {
+    document.documentElement.removeAttribute('data-theme');
+    document.querySelector('meta[name="theme-color"]')?.remove();
+  });
+
+  it('keeps the browser chrome color synchronized with the resolved theme', () => {
+    const themeColorMeta = document.createElement('meta');
+    themeColorMeta.name = 'theme-color';
+    document.head.appendChild(themeColorMeta);
+
+    applyResolvedTheme('dark');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
+    expect(themeColorMeta.content).toBe(THEME_COLOR.dark);
+
+    applyResolvedTheme('light');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light');
+    expect(themeColorMeta.content).toBe(THEME_COLOR.light);
+  });
+
+  it('creates the theme-color metadata when the host document omits it', () => {
+    applyResolvedTheme('dark');
+    expect(document.querySelector('meta[name="theme-color"]')?.getAttribute('content')).toBe(THEME_COLOR.dark);
   });
 });

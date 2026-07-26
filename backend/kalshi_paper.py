@@ -295,7 +295,7 @@ class KalshiPaperAccountStore:
                 self._users[user_id] = self._initial()
                 migrated = True
         if migrated:
-            self._save()
+            self._save_all()
 
     def _initial(self, starting_balance_cents: Optional[int] = None) -> Dict[str, Any]:
         initial_balance = (
@@ -335,19 +335,23 @@ class KalshiPaperAccountStore:
             self._users[key] = account
         return account
 
-    def _save(self) -> None:
-        if callable(self._account_saver):
-            for user_id, account in list(self._users.items()):
-                try:
-                    saved = self._account_saver(str(user_id), copy.deepcopy(account))
-                except Exception:
-                    # The cached ledger no longer has write authority. Drop it
-                    # so the next request reloads the canonical Supabase copy
-                    # instead of repeatedly retrying a stale financial state.
-                    self._users.pop(str(user_id), None)
-                    raise
-                if isinstance(saved, Mapping) and saved.get("version") is not None:
-                    account["_operationsVersion"] = int(saved.get("version") or 0)
+    def _persist_user(self, user_id: str) -> None:
+        key = str(user_id)
+        account = self._users.get(key)
+        if not isinstance(account, dict) or not callable(self._account_saver):
+            return
+        try:
+            saved = self._account_saver(key, copy.deepcopy(account))
+        except Exception:
+            # The cached ledger no longer has write authority. Drop only this
+            # user's cache so the next request reloads its canonical Supabase
+            # copy without disturbing unrelated accounts.
+            self._users.pop(key, None)
+            raise
+        if isinstance(saved, Mapping) and saved.get("version") is not None:
+            account["_operationsVersion"] = int(saved.get("version") or 0)
+
+    def _save_local_snapshot(self) -> None:
         if not self.path:
             return
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
@@ -355,6 +359,18 @@ class KalshiPaperAccountStore:
         with open(temporary, "w", encoding="utf-8") as handle:
             json.dump(self._users, handle, ensure_ascii=False, indent=2)
         os.replace(temporary, self.path)
+
+    def _save_user(self, user_id: str) -> None:
+        """Persist one changed durable account and the complete local snapshot."""
+        self._persist_user(str(user_id))
+        self._save_local_snapshot()
+
+    def _save_all(self) -> None:
+        """Persist every cached account for explicit bulk migrations only."""
+        if callable(self._account_saver):
+            for user_id in list(self._users):
+                self._persist_user(str(user_id))
+        self._save_local_snapshot()
 
     def reset(
         self,
@@ -367,7 +383,7 @@ class KalshiPaperAccountStore:
             if starting_balance_dollars is not None:
                 starting_balance_cents = round(float(starting_balance_dollars) * 100)
             self._users[str(user_id)] = self._initial(starting_balance_cents)
-            self._save()
+            self._save_user(user_id)
             return self.portfolio(user_id)
 
     @staticmethod
@@ -492,7 +508,7 @@ class KalshiPaperAccountStore:
             account["orders"] = account["orders"][:MAX_LEDGER_ROWS]
             if fill_count <= 0:
                 account["updatedAt"] = created
-                self._save()
+                self._save_user(user_id)
                 return copy.deepcopy(order)
 
             debit_cents = int(execution["debit_cents"])
@@ -549,7 +565,7 @@ class KalshiPaperAccountStore:
             position["noMark"] = avg_price if side == "NO" else max(0.0, 1.0 - avg_price)
             position["lastTradeAt"] = created
             account["updatedAt"] = created
-            self._save()
+            self._save_user(user_id)
             return copy.deepcopy(order)
 
     def submit_close(
@@ -665,7 +681,7 @@ class KalshiPaperAccountStore:
             account["orders"] = account["orders"][:MAX_LEDGER_ROWS]
             if fill_count <= 0 or not isinstance(position, dict):
                 account["updatedAt"] = created
-                self._save()
+                self._save_user(user_id)
                 return copy.deepcopy(order)
 
             account["cashCents"] = int(account.get("cashCents") or 0) + int(execution["credit_cents"])
@@ -688,7 +704,7 @@ class KalshiPaperAccountStore:
             if int(position.get("yesCount") or 0) <= 0 and int(position.get("noCount") or 0) <= 0:
                 account["positions"].pop(ticker, None)
             account["updatedAt"] = created
-            self._save()
+            self._save_user(user_id)
             return copy.deepcopy(order)
 
     def settle(
@@ -730,7 +746,7 @@ class KalshiPaperAccountStore:
             account["settlements"] = account["settlements"][:MAX_LEDGER_ROWS]
             account["updatedAt"] = _now()
             if persist:
-                self._save()
+                self._save_user(user_id)
             return copy.deepcopy(row)
 
     def open_tickers(self, user_id: str):

@@ -23,11 +23,13 @@ COPY frontend/ ./
 # React environment values are public build-time configuration. Pass them with
 # --build-arg; never copy backend secrets or local .env files into the image.
 ARG REACT_APP_API_BASE_URL=/api
+ARG REACT_APP_SITE_URL
 ARG REACT_APP_SUPABASE_URL
 ARG REACT_APP_SUPABASE_ANON_KEY
 ARG REACT_APP_TURNSTILE_SITE_KEY
 ARG REACT_APP_ENV=production
 ENV REACT_APP_API_BASE_URL=$REACT_APP_API_BASE_URL
+ENV REACT_APP_SITE_URL=$REACT_APP_SITE_URL
 ENV REACT_APP_SUPABASE_URL=$REACT_APP_SUPABASE_URL
 ENV REACT_APP_SUPABASE_ANON_KEY=$REACT_APP_SUPABASE_ANON_KEY
 ENV REACT_APP_TURNSTILE_SITE_KEY=$REACT_APP_TURNSTILE_SITE_KEY
@@ -79,6 +81,7 @@ COPY --from=backend-builder /usr/local/bin /usr/local/bin
 
 # Copy nginx configuration
 COPY docker/nginx.conf /etc/nginx/nginx.conf
+RUN nginx -t
 
 # Copy startup script
 COPY docker/start.sh ./start.sh

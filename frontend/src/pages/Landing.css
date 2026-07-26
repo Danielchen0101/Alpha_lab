@@ -337,10 +337,14 @@ html[data-theme='dark'] .market-field-page .market-stage-rail li.is-active .mark
   min-height: 46px;
   border: 0;
   cursor: pointer;
+  text-decoration: none;
   transition: transform 180ms ease, color 180ms ease, background 180ms ease;
 }
 
 .market-primary-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 0 24px;
   color: #fff;
   border: 1px solid #1d2420;

@@ -106,6 +106,8 @@ for (const template of manifest) {
   assert.match(html, /AlphaLab/, `${template.file}: missing AlphaLab wordmark`);
   assert.match(html, /#f2efe7/i, `${template.file}: missing cream canvas color`);
   assert.match(html, /#(?:245ca4|2b5fae)/i, `${template.file}: missing AlphaLab blue`);
+  assert.match(html, /#d6a45f/i, `${template.file}: missing AlphaLab dark-mode gold`);
+  assert.match(html, /#e4bd82/i, `${template.file}: missing AlphaLab dark-mode gold highlight`);
   assert.doesNotMatch(html, /<script\b/i, `${template.file}: JavaScript is not allowed`);
   assert.doesNotMatch(html, /javascript\s*:/i, `${template.file}: javascript URLs are not allowed`);
   assert.doesNotMatch(html, /<link\b/i, `${template.file}: external stylesheets are not allowed`);
@@ -159,6 +161,17 @@ for (const template of manifest) {
   } else {
     assert.deepEqual(hrefs, [], `${template.file}: reauthentication should be code-only`);
     assert.match(html, /aria-label="AlphaLab verification code {{ \.Token }}"/, `${template.file}: OTP needs an accessible label`);
+    assert.doesNotMatch(
+      template.subject,
+      /{{\s*\.Token\s*}}/,
+      `${template.file}: subject must not disclose the one-time code`,
+    );
+    const preheader = html.match(/<div class="preheader">([\s\S]*?)<\/div>/i)?.[1] ?? "";
+    assert.doesNotMatch(
+      preheader,
+      /{{\s*\.Token\s*}}/,
+      `${template.file}: preheader must not disclose the one-time code`,
+    );
   }
 
   checkBalancedTags(html, template.file);

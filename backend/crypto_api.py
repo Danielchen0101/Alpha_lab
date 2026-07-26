@@ -5132,7 +5132,7 @@ class _CryptoService:
 
         def operation():
             return self.supabase_admin.table("user_operation_artifacts").select(
-                "user_id,payload,updated_at"
+                "user_id"
             ).eq("artifact_type", CONFIG_TYPE).eq("artifact_key", PRIMARY_KEY).contains(
                 "payload", {"enabled": True, "killSwitch": False},
             ).order("user_id", desc=False).range(
@@ -5142,9 +5142,8 @@ class _CryptoService:
         response = self.supabase_execute(operation, "crypto scheduler config scan") if self.supabase_execute else operation()
         result = []
         for row in _response_data(response):
-            payload = dict(row.get("payload") or {}) if isinstance(row, Mapping) else {}
             uid = str(row.get("user_id") or "").strip() if isinstance(row, Mapping) else ""
-            if uid and payload.get("enabled") is True and payload.get("killSwitch") is not True:
+            if uid:
                 result.append(uid)
         return result[:MAX_SCHEDULER_USERS]
 

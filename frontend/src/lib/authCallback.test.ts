@@ -83,6 +83,41 @@ describe('scheduleAuthCallbackRedemption', () => {
     expect(redeem).toHaveBeenCalledTimes(1);
     cleanupCommittedEffect();
   });
+
+  it('reports a slow redemption without cancelling or marking it failed', () => {
+    jest.useFakeTimers();
+    const redeem = jest.fn();
+    const onSlow = jest.fn();
+    const cleanup = scheduleAuthCallbackRedemption(redeem, {
+      onSlow,
+      slowAfterMs: 15000,
+    });
+
+    jest.advanceTimersByTime(0);
+    expect(redeem).toHaveBeenCalledTimes(1);
+    expect(onSlow).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(15000);
+    expect(onSlow).toHaveBeenCalledTimes(1);
+    expect(redeem).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
+  it('cancels both redemption and the slow-state notification on cleanup', () => {
+    jest.useFakeTimers();
+    const redeem = jest.fn();
+    const onSlow = jest.fn();
+    const cleanup = scheduleAuthCallbackRedemption(redeem, {
+      onSlow,
+      slowAfterMs: 15000,
+    });
+
+    cleanup();
+    jest.runOnlyPendingTimers();
+
+    expect(redeem).not.toHaveBeenCalled();
+    expect(onSlow).not.toHaveBeenCalled();
+  });
 });
 
 describe('classifyAuthCallbackError', () => {

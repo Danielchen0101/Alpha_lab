@@ -94,7 +94,7 @@ const Features: React.FC = () => {
             <div className="public-data-main">
               <div className="public-instrument-header" style={{ padding: '0 0 22px', borderBottom: 0 }}><strong>{active.heading}</strong><span>{isZh ? '模拟研究样本' : 'SIMULATED RESEARCH SAMPLE'}</span></div>
               <MiniSparkline values={active.line} color={activeView === 'limits' ? 'copper' : 'blue'} bands={activeView === 'validation' ? 5 : 0} showNodes={activeView === 'limits'} label={active.heading} />
-              <p style={{ margin: '24px 0 0', color: '#626760', lineHeight: 1.65 }}>{active.note}</p>
+              <p style={{ margin: '24px 0 0', color: 'var(--public-muted)', lineHeight: 1.65 }}>{active.note}</p>
             </div>
             <aside className="public-data-aside"><p>{active.label}</p><strong>{activeView === 'validation' ? '5 / 5' : activeView === 'limits' ? (isZh ? '7 项标记' : '7 flags') : (isZh ? '20 至 60 天' : '20–60D')}</strong><dl>{active.stats.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></aside>
           </div>

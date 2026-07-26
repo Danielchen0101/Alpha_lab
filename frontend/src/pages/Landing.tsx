@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import {
   AnimatePresence,
   motion,
@@ -321,7 +321,6 @@ const ResearchSpecimen: React.FC<ResearchSpecimenProps> = ({ stage, copy, isZh, 
 };
 
 const Landing: React.FC = () => {
-  const navigate = useNavigate();
   const { language, t } = useLanguage();
   const isZh = language === 'zh-CN';
   const copy = t.landing.marketField;
@@ -408,9 +407,9 @@ const Landing: React.FC = () => {
                 <button type="button" className="market-primary-action" onClick={() => scrollToStage(0)}>
                   {copy.exploreWorkflow}
                 </button>
-                <button type="button" className="market-text-action" onClick={() => navigate('/platform')}>
+                <Link to="/platform" className="market-text-action">
                   {copy.openPlatform}<span aria-hidden="true">↗</span>
-                </button>
+                </Link>
               </div>
             </div>
             <div className="market-hero-estuary">
@@ -537,9 +536,9 @@ const Landing: React.FC = () => {
           <ResearchExamplesExplorer locale={language} />
           <div className="market-examples-footer">
             <span>{language === 'zh-CN' ? '3 份公开研究样本 · 15 个样本外窗口' : '3 PUBLIC RESEARCH NOTES · 15 OUT-OF-SAMPLE FOLDS'}</span>
-            <button type="button" className="market-text-action" onClick={() => navigate('/examples')}>
+            <Link to="/examples" className="market-text-action">
               {language === 'zh-CN' ? '浏览全部案例' : 'Browse all examples'}<span aria-hidden="true">↗</span>
-            </button>
+            </Link>
           </div>
         </section>
 
@@ -562,12 +561,12 @@ const Landing: React.FC = () => {
           <h2>{copy.ctaTitle}</h2>
           <p>{copy.ctaDesc}</p>
           <div>
-            <button type="button" className="market-primary-action" onClick={() => navigate('/signup')}>
+            <Link to="/signup" className="market-primary-action">
               {copy.ctaPrimary}
-            </button>
-            <button type="button" className="market-text-action" onClick={() => navigate('/workflow')}>
+            </Link>
+            <Link to="/workflow" className="market-text-action">
               {copy.ctaSecondary}<span aria-hidden="true">↗</span>
-            </button>
+            </Link>
           </div>
         </section>
       </main>

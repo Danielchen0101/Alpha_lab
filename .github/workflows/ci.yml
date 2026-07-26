@@ -42,8 +42,14 @@ jobs:
       working-directory: frontend
       run: npm run test:functions
 
+    - name: Verify production frontend environment guard
+      working-directory: frontend
+      run: npm run test:build-env
+
     - name: Verify branded authentication email templates
-      run: node supabase/email-templates/verify-templates.mjs
+      run: |
+        node supabase/email-templates/verify-templates.mjs
+        node --test supabase/email-templates/sync-templates.test.mjs
     
     - name: Build frontend
       run: |
@@ -187,7 +193,9 @@ jobs:
         tags: alphalab:ci
         build-args: |
           REACT_APP_API_BASE_URL=/api
-          REACT_APP_SUPABASE_URL=https://example.supabase.co
+          REACT_APP_ENV=production
+          REACT_APP_SITE_URL=https://www.alphalabquant.com
+          REACT_APP_SUPABASE_URL=https://nwpxjqgqegxttucsmvmp.supabase.co
           REACT_APP_SUPABASE_ANON_KEY=ci-public-placeholder
           REACT_APP_TURNSTILE_SITE_KEY=ci-public-placeholder
 
@@ -198,9 +206,27 @@ jobs:
     env:
       DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+      REACT_APP_SITE_URL: ${{ vars.REACT_APP_SITE_URL }}
+      REACT_APP_SUPABASE_URL: ${{ vars.REACT_APP_SUPABASE_URL }}
+      REACT_APP_SUPABASE_ANON_KEY: ${{ secrets.REACT_APP_SUPABASE_ANON_KEY }}
+      REACT_APP_TURNSTILE_SITE_KEY: ${{ secrets.REACT_APP_TURNSTILE_SITE_KEY }}
     
     steps:
     - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+    - name: Setup Node.js for release validation
+      if: env.DOCKER_USERNAME != '' && env.DOCKER_PASSWORD != ''
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      with:
+        node-version: '20'
+
+    - name: Validate production frontend build arguments
+      if: env.DOCKER_USERNAME != '' && env.DOCKER_PASSWORD != ''
+      working-directory: frontend
+      env:
+        REACT_APP_ENV: production
+        REACT_APP_API_BASE_URL: /api
+      run: node scripts/validate-build-env.mjs
     
     - name: Set up Docker Buildx
       if: env.DOCKER_USERNAME != '' && env.DOCKER_PASSWORD != ''
@@ -220,6 +246,13 @@ jobs:
         context: .
         file: ./Dockerfile
         push: true
+        build-args: |
+          REACT_APP_API_BASE_URL=/api
+          REACT_APP_ENV=production
+          REACT_APP_SITE_URL=${{ env.REACT_APP_SITE_URL }}
+          REACT_APP_SUPABASE_URL=${{ env.REACT_APP_SUPABASE_URL }}
+          REACT_APP_SUPABASE_ANON_KEY=${{ env.REACT_APP_SUPABASE_ANON_KEY }}
+          REACT_APP_TURNSTILE_SITE_KEY=${{ env.REACT_APP_TURNSTILE_SITE_KEY }}
         tags: |
           ${{ env.DOCKER_USERNAME }}/quant-trading-platform:latest
           ${{ env.DOCKER_USERNAME }}/quant-trading-platform:${{ github.sha }}
