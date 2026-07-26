@@ -4,6 +4,9 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const source = await readFile(new URL('./_middleware.js', import.meta.url), 'utf8');
+const functionsTsconfig = JSON.parse(
+  await readFile(new URL('./tsconfig.json', import.meta.url), 'utf8'),
+);
 const sandbox = vm.createContext({
   URL,
   Response,
@@ -21,6 +24,12 @@ await middlewareModule.link(() => {
 await middlewareModule.evaluate();
 
 const { onRequest } = middlewareModule.namespace;
+
+test('uses a Workers-compatible JavaScript target instead of the React ES5 target', () => {
+  const target = String(functionsTsconfig.compilerOptions?.target || '').toLowerCase();
+  assert.notEqual(target, 'es5');
+  assert.match(target, /^es20(?:2[0-9]|[3-9][0-9])$/);
+});
 
 test('redirects the apex host to the canonical HTTPS host without losing URL state', async () => {
   let nextCalled = false;
