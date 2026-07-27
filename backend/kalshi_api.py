@@ -1843,6 +1843,94 @@ def _optional_dollar_amount(
     return None
 
 
+def _position_market_mark(
+    market: Mapping[str, Any],
+    side: str,
+) -> Dict[str, Any]:
+    """Return an auditable current mark for one binary outcome position."""
+    normalized_side = str(side or "").upper()
+    if normalized_side not in {"YES", "NO"}:
+        return {
+            "mark": None,
+            "bid": None,
+            "ask": None,
+            "source": None,
+            "asOf": None,
+        }
+
+    yes_bid = _optional_dollar_amount(
+        market.get("yes_bid_dollars"),
+        market.get("yes_bid"),
+    )
+    yes_ask = _optional_dollar_amount(
+        market.get("yes_ask_dollars"),
+        market.get("yes_ask"),
+    )
+    no_bid = _optional_dollar_amount(
+        market.get("no_bid_dollars"),
+        market.get("no_bid"),
+    )
+    no_ask = _optional_dollar_amount(
+        market.get("no_ask_dollars"),
+        market.get("no_ask"),
+    )
+    if yes_ask is None and no_bid is not None:
+        yes_ask = 1.0 - no_bid
+    if no_ask is None and yes_bid is not None:
+        no_ask = 1.0 - yes_bid
+    if yes_bid is None and no_ask is not None:
+        yes_bid = 1.0 - no_ask
+    if no_bid is None and yes_ask is not None:
+        no_bid = 1.0 - yes_ask
+
+    result = str(market.get("result") or "").upper()
+    if result in {"YES", "NO"}:
+        mark = 1.0 if normalized_side == result else 0.0
+        source = "settlement"
+        bid = mark
+        ask = mark
+    else:
+        bid = yes_bid if normalized_side == "YES" else no_bid
+        ask = yes_ask if normalized_side == "YES" else no_ask
+        bid = bid if bid is not None and 0.0 <= bid <= 1.0 else None
+        ask = ask if ask is not None and 0.0 <= ask <= 1.0 else None
+        if bid is not None and ask is not None and ask >= bid:
+            mark = (bid + ask) / 2.0
+            source = "midpoint"
+        elif bid is not None:
+            mark = bid
+            source = "best_bid"
+        elif ask is not None:
+            mark = ask
+            source = "best_ask"
+        else:
+            last_yes = _optional_dollar_amount(
+                market.get("last_price_dollars"),
+                market.get("last_price"),
+            )
+            if last_yes is not None and 0.0 <= last_yes <= 1.0:
+                mark = (
+                    last_yes
+                    if normalized_side == "YES"
+                    else 1.0 - last_yes
+                )
+                source = "last_trade"
+            else:
+                mark = None
+                source = None
+    return {
+        "mark": round(mark, 4) if mark is not None else None,
+        "bid": round(bid, 4) if bid is not None else None,
+        "ask": round(ask, 4) if ask is not None else None,
+        "source": source,
+        "asOf": (
+            market.get("updated_time")
+            or market.get("last_trade_time")
+            or market.get("close_time")
+        ),
+    }
+
+
 def _first_present(row: Mapping[str, Any], *keys: str) -> Any:
     for key in keys:
         value = row.get(key)
@@ -4027,6 +4115,45 @@ class _PaperRobotController:
             or positions_payload.get("event_positions")
             or []
         )
+        position_markets: Dict[str, Dict[str, Any]] = {}
+        position_tickers = sorted({
+            str(
+                row.get("ticker")
+                or row.get("market_ticker")
+                or row.get("market")
+                or ""
+            )
+            for row in raw_positions
+            if isinstance(row, Mapping)
+            and _is_supported_kalshi_ticker(
+                row.get("ticker")
+                or row.get("market_ticker")
+                or row.get("market")
+            )
+        })
+        market_loader = getattr(self.client, "market", None)
+        if position_tickers and callable(market_loader):
+            with ThreadPoolExecutor(
+                max_workers=min(8, len(position_tickers)),
+                thread_name_prefix="kalshi-position-marks",
+            ) as pool:
+                market_futures = {
+                    ticker: pool.submit(market_loader, ticker)
+                    for ticker in position_tickers
+                }
+                for ticker, future in market_futures.items():
+                    try:
+                        market = future.result()
+                        if isinstance(market, Mapping) and market:
+                            position_markets[ticker] = dict(market)
+                        else:
+                            warnings.append("kalshi_position_mark_unavailable")
+                    except Exception as exc:
+                        warnings.append("kalshi_position_mark_unavailable")
+                        self.safe_print(
+                            "[KalshiPortfolio] position mark unavailable "
+                            f"ticker={ticker} error={type(exc).__name__}"
+                        )
         positions = []
         for row in raw_positions:
             if not isinstance(row, Mapping):
@@ -4045,6 +4172,10 @@ class _PaperRobotController:
             net_side, net_count = _live_position_direction(position, yes_count, no_count)
             if not net_side or net_count <= 0:
                 continue
+            market_mark = _position_market_mark(
+                position_markets.get(ticker) or {},
+                net_side,
+            )
             exposure_dollars = _dollar_amount(
                 row.get("market_exposure_dollars") or row.get("cost_dollars"),
                 row.get("market_exposure") or row.get("cost") or row.get("realized_cost"),
@@ -4058,9 +4189,25 @@ class _PaperRobotController:
                 ),
                 _first_present(row, "market_value", "value", "settlement_value"),
             )
+            if (
+                value_dollars is None
+                and market_mark.get("mark") is not None
+            ):
+                value_dollars = (
+                    _finite_number(market_mark.get("mark"), 0.0)
+                    * net_count
+                )
             fee_dollars = _dollar_amount(
                 row.get("fees_paid_dollars") or row.get("fee_cost_dollars"),
                 row.get("fees_paid") or row.get("fee_cost") or row.get("fees"),
+            )
+            yes_market_mark = _position_market_mark(
+                position_markets.get(ticker) or {},
+                "YES",
+            )
+            no_market_mark = _position_market_mark(
+                position_markets.get(ticker) or {},
+                "NO",
             )
             positions.append({
                 **dict(row),
@@ -4082,12 +4229,26 @@ class _PaperRobotController:
                 "yes_mark_dollars": _optional_dollar_amount(
                     _first_present(row, "yes_mark_dollars"),
                     _first_present(row, "yes_mark", "yes_price"),
-                ),
+                ) if _first_present(
+                    row,
+                    "yes_mark_dollars",
+                    "yes_mark",
+                    "yes_price",
+                ) is not None else yes_market_mark.get("mark"),
                 "no_mark_dollars": _optional_dollar_amount(
                     _first_present(row, "no_mark_dollars"),
                     _first_present(row, "no_mark", "no_price"),
-                ),
+                ) if _first_present(
+                    row,
+                    "no_mark_dollars",
+                    "no_mark",
+                    "no_price",
+                ) is not None else no_market_mark.get("mark"),
                 "markAvailable": value_dollars is not None,
+                "markSource": market_mark.get("source"),
+                "markBidDollars": market_mark.get("bid"),
+                "markAskDollars": market_mark.get("ask"),
+                "markAsOf": market_mark.get("asOf"),
                 "last_trade_at": row.get("last_trade_at") or row.get("updated_time") or row.get("created_time"),
             })
 
