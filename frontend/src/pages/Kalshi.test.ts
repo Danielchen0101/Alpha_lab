@@ -62,6 +62,10 @@ describe('Kalshi workspace routing', () => {
     );
     expect(DEFAULT_KALSHI_BOT_CONFIG.maxPortfolioExposurePct).toBeLessThanOrEqual(10);
     expect(DEFAULT_KALSHI_BOT_CONFIG.maxSingleMarketExposurePct).toBeLessThanOrEqual(2);
+    expect(DEFAULT_KALSHI_BOT_CONFIG.microPositionMaxLossDollars).toBe(1);
+    expect(DEFAULT_KALSHI_BOT_CONFIG.microPositionMaxLossPct).toBe(5);
+    expect(DEFAULT_KALSHI_BOT_CONFIG.microPositionMinNetEdge).toBeGreaterThanOrEqual(0.02);
+    expect(DEFAULT_KALSHI_BOT_CONFIG.microPositionMinConservativeEdge).toBeGreaterThanOrEqual(0.01);
     expect(DEFAULT_KALSHI_BOT_CONFIG.addSizeFraction).toBeLessThanOrEqual(0.25);
     expect(DEFAULT_KALSHI_BOT_CONFIG.takeProfitScaleOutPct).toBeLessThanOrEqual(0.5);
     expect(DEFAULT_KALSHI_BOT_CONFIG.addMinModelProbability).toBeGreaterThanOrEqual(

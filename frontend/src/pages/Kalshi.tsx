@@ -416,10 +416,15 @@ const EdgeTimelineChart: React.FC<{
   );
 };
 
-const actionLabel = (decision: KalshiDecision | null, chinese: boolean) => {
+const actionLabel = (decision: KalshiDecision | null, chinese: boolean, isRealMode: boolean) => {
   if (!decision || decision.action === 'WAIT') return chinese ? '等待' : 'WAIT';
-  if (decision.action === 'BUY_YES') return chinese ? '买入信号 YES' : 'BUY SIGNAL YES';
-  return chinese ? '买入信号 NO' : 'BUY SIGNAL NO';
+  if (isRealMode) {
+    return decision.action === 'BUY_YES'
+      ? (chinese ? '实盘预筛候选 YES' : 'REAL PREFLIGHT YES')
+      : (chinese ? '实盘预筛候选 NO' : 'REAL PREFLIGHT NO');
+  }
+  if (decision.action === 'BUY_YES') return chinese ? '模拟买入 YES' : 'PAPER BUY YES';
+  return chinese ? '模拟买入 NO' : 'PAPER BUY NO';
 };
 
 const actionSummary = (decision: KalshiDecision | null, chinese: boolean, isRealMode: boolean) => {
@@ -430,6 +435,11 @@ const actionSummary = (decision: KalshiDecision | null, chinese: boolean, isReal
     return chinese
       ? `${count} 道门控尚未通过；本轮不向${accountLabel}提交订单。`
       : `${count} gate${count === 1 ? '' : 's'} remain blocked; no order is routed to the ${accountLabel}.`;
+  }
+  if (isRealMode) {
+    return chinese
+      ? '行情、账户与仓位预筛已通过；这不是成交回报。只有后台机器人最终路由并收到 Kalshi 回报后才算已下单。'
+      : 'Market, account, and sizing preflight passed; this is not a fill report. An order exists only after the background robot routes it and Kalshi responds.';
   }
   return chinese
     ? `扣除费用和模型不确定性后仍有正边际，并通过盘口与账户门控；只有机器人运行时才会提交限价单。`
@@ -1085,11 +1095,11 @@ const Kalshi: React.FC = () => {
 
       <aside className={`kalshi-decision-panel is-${decision?.action === 'WAIT' ? 'wait' : 'advance'}`}>
         <div className="kalshi-section-head">
-          <div><span>02 / {isRealMode ? copy('REAL DECISION', '实盘决策') : copy('PAPER DECISION', '模拟决策')}</span><h2>{copy('Risk-owned output', '风控主导输出')}</h2></div>
+          <div><span>02 / {isRealMode ? copy('REAL READ-ONLY PREFLIGHT', '实盘只读预筛') : copy('PAPER DECISION', '模拟决策')}</span><h2>{copy('Risk-owned output', '风控主导输出')}</h2></div>
           <SafetyCertificateOutlined />
         </div>
         <div className="kalshi-action-line">
-          <span>{actionLabel(decision, chinese)}</span>
+          <span>{actionLabel(decision, chinese, isRealMode)}</span>
           <strong>{decision?.signalQuality ?? 0}<small>/100</small></strong>
         </div>
         <p>{actionSummary(decision, chinese, isRealMode)}</p>
@@ -1102,7 +1112,7 @@ const Kalshi: React.FC = () => {
           <div><dt>{copy('Required conservative edge', '最低保守边际')}</dt><dd>{probability(decision?.edge.minimumConservativeEdge)}</dd></div>
         </dl>
         <div className="kalshi-size-line">
-          <span>{isRealMode ? copy('Real order size', '实盘订单数量') : copy('Paper size', '模拟仓位')}<small>{copy('Fractional Kelly, hard risk, cash, and book participation capped', '受分数凯利、硬风险、现金与盘口参与率共同限制')}</small></span>
+          <span>{isRealMode ? copy('Preflight order size', '预筛订单数量') : copy('Paper size', '模拟仓位')}<small>{decision?.sizing.microSizingApplied ? copy('Bounded one-contract small-account sizing applied', '已应用受限的一份小账户仓位') : copy('Fractional Kelly, hard risk, cash, and book participation capped', '受分数凯利、硬风险、现金与盘口参与率共同限制')}</small></span>
           <strong>{decision?.sizing.contracts || 0} <small>{copy('contracts', '份')}</small></strong>
           <b>{money(decision?.sizing.maximumLoss)}</b>
         </div>
@@ -1175,6 +1185,10 @@ const Kalshi: React.FC = () => {
       { key: 'maxBookParticipation', label: ['Book participation cap', '盘口参与率上限'], unit: ['%', '%'], min: 1, max: 50, step: 1, scale: 100 },
       { key: 'maxPortfolioExposurePct', label: ['Portfolio exposure cap', '组合敞口上限'], unit: ['%', '%'], min: 2, max: 10, step: 1 },
       { key: 'maxSingleMarketExposurePct', label: ['Single-market / event exposure cap', '单一市场 / 事件敞口上限'], unit: ['%', '%'], min: 1, max: 2, step: 0.25 },
+      { key: 'microPositionMaxLossDollars', label: ['Small-account absolute loss cap', '小账户单笔绝对风险上限'], unit: ['USD', '美元'], min: 0.25, max: 1, step: 0.05 },
+      { key: 'microPositionMaxLossPct', label: ['Small-account equity loss cap', '小账户单笔权益风险上限'], unit: ['%', '%'], min: 1, max: 5, step: 0.25 },
+      { key: 'microPositionMinNetEdge', label: ['Small-account minimum net edge', '小账户最低净边际'], unit: ['%', '%'], min: 2, max: 10, step: 0.25, scale: 100 },
+      { key: 'microPositionMinConservativeEdge', label: ['Small-account conservative edge', '小账户最低保守边际'], unit: ['%', '%'], min: 1, max: 8, step: 0.25, scale: 100 },
       { key: 'addMinModelProbability', label: ['Add-on probability floor', '加仓概率下限'], unit: ['%', '%'], min: 50, max: 95, step: 1, scale: 100 },
       { key: 'addMinConservativeEdge', label: ['Add-on edge floor', '加仓边际下限'], unit: ['%', '%'], min: 0, max: 10, step: 0.25, scale: 100 },
       { key: 'addMinProbabilityImprovement', label: ['Add-on probability improvement', '加仓概率改善'], unit: ['percentage points', '百分点'], min: 1, max: 10, step: 0.25, scale: 100 },
@@ -1193,7 +1207,7 @@ const Kalshi: React.FC = () => {
 
     return <section className="kalshi-controls-section">
       <div className="kalshi-section-head">
-        <div><span>{isRealMode ? copy('REAL RISK POLICY', '实盘风控策略') : copy('PAPER RISK POLICY', '模拟风控策略')}</span><h2>{isHourly ? copy('BTC hourly monotone ladder v2', 'BTC 整点单调阶梯策略 v2') : copy('BTC 15-minute settlement-aligned v6', 'BTC 15 分钟结算对齐策略 v6')}</h2></div>
+        <div><span>{isRealMode ? copy('REAL RISK POLICY', '实盘风控策略') : copy('PAPER RISK POLICY', '模拟风控策略')}</span><h2>{isHourly ? copy('BTC hourly monotone ladder v2', 'BTC 整点单调阶梯策略 v2') : copy('BTC 15-minute settlement-aligned v7', 'BTC 15 分钟结算对齐策略 v7')}</h2></div>
         <div className="kalshi-apply-action">
           {applyMessage && <small>{applyMessage}</small>}
           <button type="button" onClick={() => void applyConfig()} disabled={applyBusy}><ThunderboltOutlined className={applyBusy ? 'is-spinning' : ''} />{applyBusy ? copy('Applying…', '正在应用…') : copy('Apply and evaluate', '应用并评估')}</button>

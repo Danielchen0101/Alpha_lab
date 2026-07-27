@@ -22,7 +22,7 @@ def _now() -> str:
 MAX_DECISION_RECORDS = 250
 MAX_SETTLEMENT_RECORDS = 1000
 MAX_TRADED_TICKERS = 2000
-PAPER_STATE_VERSION = 10
+PAPER_STATE_VERSION = 11
 KALSHI_MODES = ("paper", "real")
 
 
@@ -140,6 +140,19 @@ def _safe_strategy_config(
     )
     configured["maxSingleMarketExposurePct"] = min(
         2.0, _number(configured.get("maxSingleMarketExposurePct"), 2.0)
+    )
+    configured["microPositionMaxLossDollars"] = min(
+        1.0, _number(configured.get("microPositionMaxLossDollars"), 1.0)
+    )
+    configured["microPositionMaxLossPct"] = min(
+        5.0, _number(configured.get("microPositionMaxLossPct"), 5.0)
+    )
+    configured["microPositionMinNetEdge"] = max(
+        0.02, _number(configured.get("microPositionMinNetEdge"), 0.02)
+    )
+    configured["microPositionMinConservativeEdge"] = max(
+        0.01,
+        _number(configured.get("microPositionMinConservativeEdge"), 0.01),
     )
     configured["minimumAddIntervalSeconds"] = max(
         90, int(_number(configured.get("minimumAddIntervalSeconds"), 90))
@@ -320,7 +333,7 @@ class KalshiRobotState:
             for environment, bucket in mode_state.items():
                 if isinstance(bucket, dict):
                     update_bucket(bucket, environment)
-        state["storageVersion"] = PAPER_STATE_VERSION
+        state["storageVersion"] = max(9, int(state.get("storageVersion") or 0))
 
     def _apply_v10_mode_safety(self, state: Dict[str, Any]) -> None:
         """Migrate live accounts to explicit arming and conservative sizing.
@@ -373,6 +386,55 @@ class KalshiRobotState:
                 "reason": "mode_safety_migration",
             })
         self._sync_mode_mirror(state, active_environment, activate=True)
+        state["storageVersion"] = max(10, int(state.get("storageVersion") or 0))
+
+    @staticmethod
+    def _apply_v11_micro_account_sizing(state: Dict[str, Any]) -> None:
+        """Add bounded one-contract sizing without changing live arming state."""
+        migrated_at = _now()
+
+        def update_bucket(bucket: Dict[str, Any], environment: Optional[str] = None) -> None:
+            bucket["config"] = _safe_strategy_config(
+                bucket.get("config") or {},
+                environment,
+            )
+            strategy = bucket.setdefault("strategy", {})
+            strategy.update({
+                "name": "BTC15 Settlement-Aligned v7",
+                "version": 7,
+            })
+            components = list(strategy.get("components") or [])
+            micro_component = (
+                "bounded one-contract small-account sizing after all entry gates clear"
+            )
+            if micro_component not in components:
+                components.append(micro_component)
+            strategy["components"] = components
+            changes = list(strategy.get("changes") or [])
+            if not changes or "small-account sizing v7" not in str(
+                changes[0].get("summary") or ""
+            ).lower():
+                changes.insert(0, {
+                    "at": migrated_at,
+                    "version": 7,
+                    "summary": (
+                        "Small-account sizing v7: permit one contract only when "
+                        "freshness, liquidity, model, fee-adjusted edge, stronger "
+                        "micro-edge floors, cash, and bounded absolute loss all pass."
+                    ),
+                })
+            strategy["changes"] = changes[:50]
+
+        active_environment = _execution_environment(
+            state.get("activeEnvironment")
+            or (state.get("config") or {}).get("executionMode")
+        )
+        update_bucket(state, active_environment)
+        mode_state = state.get("modeState")
+        if isinstance(mode_state, dict):
+            for environment, bucket in mode_state.items():
+                if isinstance(bucket, dict):
+                    update_bucket(bucket, environment)
         state["storageVersion"] = PAPER_STATE_VERSION
 
     def __init__(
@@ -439,7 +501,10 @@ class KalshiRobotState:
             if int(self._users[user_id].get("storageVersion") or 0) < PAPER_STATE_VERSION:
                 if int(self._users[user_id].get("storageVersion") or 0) < 9:
                     self._apply_v9_strategy_defaults(self._users[user_id])
-                self._apply_v10_mode_safety(self._users[user_id])
+                if int(self._users[user_id].get("storageVersion") or 0) < 10:
+                    self._apply_v10_mode_safety(self._users[user_id])
+                if int(self._users[user_id].get("storageVersion") or 0) < 11:
+                    self._apply_v11_micro_account_sizing(self._users[user_id])
                 migrated = True
         if migrated and self._persist_migrations:
             self._save_all()
@@ -616,7 +681,10 @@ class KalshiRobotState:
             if int(self._users[key].get("storageVersion") or 0) < PAPER_STATE_VERSION:
                 if int(self._users[key].get("storageVersion") or 0) < 9:
                     self._apply_v9_strategy_defaults(self._users[key])
-                self._apply_v10_mode_safety(self._users[key])
+                if int(self._users[key].get("storageVersion") or 0) < 10:
+                    self._apply_v10_mode_safety(self._users[key])
+                if int(self._users[key].get("storageVersion") or 0) < 11:
+                    self._apply_v11_micro_account_sizing(self._users[key])
                 migrated = True
         else:
             initial = self._initial()
@@ -991,6 +1059,17 @@ class KalshiRobotState:
                 "conservativeEdge": edge.get("conservativeEdge"),
                 "uncertainty": (decision.get("model") or {}).get("uncertainty"),
                 "blockingReasons": list(decision.get("blockingReasons") or []),
+                "sizing": {
+                    key: (decision.get("sizing") or {}).get(key)
+                    for key in (
+                        "contracts",
+                        "maximumLoss",
+                        "riskBudget",
+                        "standardRiskBudget",
+                        "microSizingApplied",
+                        "microPositionLossCap",
+                    )
+                },
                 "gateSummary": {
                     category: sum(
                         1 for gate in decision.get("gates") or []
