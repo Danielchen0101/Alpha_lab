@@ -1835,6 +1835,84 @@ def test_live_portfolio_marks_missing_position_value_as_unknown(monkeypatch):
     assert portfolio["warnings"] == ["kalshi_unmanaged_positions_present"]
 
 
+def test_live_portfolio_paginates_orders_before_marking_account_complete(
+    monkeypatch,
+):
+    class State:
+        def get(self, _user_id, *, environment=None):
+            return {
+                "strategy": {},
+                "filledTrades": [],
+                "decisions": [],
+                "modeState": {"real": {"displayBaseline": {}}},
+            }
+
+    order_calls = []
+
+    def signed_request(_config, _environment, _method, endpoint, **kwargs):
+        params = dict(kwargs.get("params") or {})
+        if endpoint == "/portfolio/balance":
+            return {"balance": 80_000, "portfolio_value": 0}
+        if endpoint == "/portfolio/positions":
+            return {"market_positions": []}
+        if endpoint == "/portfolio/orders":
+            order_calls.append(params)
+            if not params.get("cursor"):
+                return {
+                    "orders": [{
+                        "order_id": "order-1",
+                        "ticker": "KXBTC15M-TEST-00",
+                    }],
+                    "cursor": "page-2",
+                }
+            assert params["cursor"] == "page-2"
+            return {
+                "orders": [{
+                    "order_id": "order-2",
+                    "ticker": "KXBTC15M-TEST-15",
+                }],
+            }
+        if endpoint == "/portfolio/fills":
+            return {"fills": []}
+        if endpoint == "/portfolio/settlements":
+            return {"settlements": []}
+        raise AssertionError(endpoint)
+
+    controller = _PaperRobotController(
+        None,
+        State(),
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        signed_request=signed_request,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_historical_account_rows",
+        lambda *_args: {
+            "orders": [],
+            "fills": [],
+            "complete": True,
+            "warnings": [],
+        },
+    )
+
+    portfolio = controller._live_portfolio("user-1", mutate=False)
+
+    assert [row["order_id"] for row in portfolio["orders"]] == [
+        "order-1",
+        "order-2",
+    ]
+    assert order_calls == [
+        {"limit": 1000, "subaccount": 0},
+        {"limit": 1000, "subaccount": 0, "cursor": "page-2"},
+    ]
+    assert portfolio["completeness"]["orders"] is True
+    assert "kalshi_account_orders_incomplete" not in portfolio["warnings"]
+
+
 def test_live_portfolio_separates_managed_and_manual_contract_counts(monkeypatch):
     class State:
         def get(self, _user_id, *, environment=None):
