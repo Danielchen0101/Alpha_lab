@@ -37,6 +37,10 @@ export interface KalshiBotConfig {
   highPriceRiskStart: number;
   highPriceRiskFloor: number;
   maxPortfolioExposurePct: number;
+  microPositionMaxLossDollars: number;
+  microPositionMaxLossPct: number;
+  microPositionMinNetEdge: number;
+  microPositionMinConservativeEdge: number;
   executionPriceTolerance: number;
   exitProbabilityThreshold: number;
   minimumExitProfit: number;
@@ -86,6 +90,10 @@ export const DEFAULT_KALSHI_BOT_CONFIG: KalshiBotConfig = {
   highPriceRiskStart: 0.75,
   highPriceRiskFloor: 0.50,
   maxPortfolioExposurePct: 10,
+  microPositionMaxLossDollars: 1,
+  microPositionMaxLossPct: 5,
+  microPositionMinNetEdge: 0.020,
+  microPositionMinConservativeEdge: 0.010,
   executionPriceTolerance: 0.01,
   exitProbabilityThreshold: 0.35,
   minimumExitProfit: 0.015,
@@ -208,6 +216,9 @@ export interface KalshiDecision {
     fullKelly?: number;
     fractionalKelly?: number;
     bookParticipationPct?: number;
+    standardRiskBudget?: number;
+    microSizingApplied?: boolean;
+    microPositionLossCap?: number;
     contracts: number;
     estimatedFee: number;
     maximumLoss: number;

@@ -64,6 +64,14 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "highPriceRiskFloor": 0.50,
     "maxPortfolioExposurePct": 10.0,
     "maxSingleMarketExposurePct": 2.0,
+    # Percentage-only sizing can round every valid setup to zero on a small
+    # account.  A one-contract micro position is allowed only after every
+    # signal/data/liquidity gate clears, and only when both an absolute loss
+    # cap and an equity-relative cap can absorb the full contract cost.
+    "microPositionMaxLossDollars": 1.0,
+    "microPositionMaxLossPct": 5.0,
+    "microPositionMinNetEdge": 0.020,
+    "microPositionMinConservativeEdge": 0.010,
     "executionPriceTolerance": 0.01,
     "exitProbabilityThreshold": 0.35,
     # Exit orders are governed by executable value, not by the model
@@ -157,6 +165,10 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
         "highPriceRiskFloor": (0.25, 1.0),
         "maxPortfolioExposurePct": (2.0, 50.0),
         "maxSingleMarketExposurePct": (1.0, 20.0),
+        "microPositionMaxLossDollars": (0.25, 5.0),
+        "microPositionMaxLossPct": (1.0, 10.0),
+        "microPositionMinNetEdge": (0.01, 0.10),
+        "microPositionMinConservativeEdge": (0.005, 0.08),
         "executionPriceTolerance": (0.0, 0.03),
         "exitProbabilityThreshold": (0.10, 0.49),
         "minimumHoldSeconds": (0.0, 300.0),
@@ -190,6 +202,14 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
     value["maxSingleMarketExposurePct"] = min(
         value["maxSingleMarketExposurePct"],
         value["maxPortfolioExposurePct"],
+    )
+    value["microPositionMinNetEdge"] = max(
+        value["microPositionMinNetEdge"],
+        value["minNetEdge"],
+    )
+    value["microPositionMinConservativeEdge"] = max(
+        value["microPositionMinConservativeEdge"],
+        value["minConservativeEdge"],
     )
     value["emergencyStopLossPct"] = min(
         value["emergencyStopLossPct"],
@@ -955,6 +975,12 @@ def evaluate_btc15_contract(
     estimated_fee = 0.0
     max_loss = 0.0
     expected_value = 0.0
+    standard_risk_budget = max_loss_budget
+    micro_sizing_applied = False
+    micro_position_loss_cap = min(
+        settings["microPositionMaxLossDollars"],
+        bankroll * settings["microPositionMaxLossPct"] / 100.0,
+    )
     if not blocking and selected_price is not None and fee_per_contract is not None:
         unit_cost = selected_price + fee_per_contract
         depth_cap = int(edge_eligible_depth * settings["maxBookParticipation"])
@@ -977,9 +1003,48 @@ def evaluate_btc15_contract(
             exposure_cap,
             int(max_loss_budget // max(unit_cost, 0.01)),
         )
+        micro_position_eligible = bool(
+            contracts <= 0
+            and depth_cap >= 1
+            and cash_cap >= 1
+            and portfolio_room >= unit_cost
+            and market_exposure <= 0.0
+            and unit_cost <= micro_position_loss_cap
+            and max_loss_budget > 0.0
+            and net_edge is not None
+            and net_edge >= settings["microPositionMinNetEdge"]
+            and conservative_edge is not None
+            and conservative_edge >= settings["microPositionMinConservativeEdge"]
+        )
+        if micro_position_eligible:
+            contracts = 1
+            micro_sizing_applied = True
+            max_loss_budget = unit_cost
+            gates.append(_gate(
+                "micro_position_size",
+                True,
+                "Small-account executable size",
+                "小账户可执行仓位",
+                (
+                    f"1 contract / loss {unit_cost:.2f} / cap "
+                    f"{micro_position_loss_cap:.2f}"
+                ),
+                severity="review",
+                category="account",
+            ))
         if contracts <= 0:
             blocking.append("position_size")
-            gates.append(_gate("position_size", False, "Executable position size", "可执行仓位", "Kelly/risk/depth caps are below one contract", category="account"))
+            gates.append(_gate(
+                "position_size",
+                False,
+                "Executable position size",
+                "可执行仓位",
+                (
+                    "Kelly/risk/depth caps are below one contract; "
+                    f"small-account loss cap {micro_position_loss_cap:.2f}"
+                ),
+                category="account",
+            ))
         else:
             estimated_fee = kalshi_fee(selected_price, contracts)
             max_loss = selected_price * contracts + estimated_fee
@@ -1007,7 +1072,7 @@ def evaluate_btc15_contract(
     distance_bps = ((spot / strike) - 1.0) * 10_000.0 if spot and strike else None
     is_real_execution = settings.get("executionMode") == "real"
     return {
-        "engine": "btc15_settlement_aligned_v6",
+        "engine": "btc15_settlement_aligned_v7",
         "generatedAt": _iso(now),
         "paperOnly": not is_real_execution,
         "executionEnvironment": "kalshi_real" if is_real_execution else "alphalab_paper",
@@ -1105,6 +1170,7 @@ def evaluate_btc15_contract(
             "dailyRealizedLoss": daily_realized_loss,
             "dailyLossLimit": daily_loss_limit,
             "riskBudget": max_loss_budget,
+            "standardRiskBudget": standard_risk_budget,
             "hardRiskBudget": hard_risk_budget,
             "scaledHardRiskBudget": scaled_hard_risk_budget,
             "kellyRiskBudget": kelly_budget,
@@ -1116,6 +1182,8 @@ def evaluate_btc15_contract(
             "fullKelly": full_kelly,
             "fractionalKelly": settings["fractionalKelly"],
             "bookParticipationPct": settings["maxBookParticipation"] * 100.0,
+            "microSizingApplied": micro_sizing_applied,
+            "microPositionLossCap": micro_position_loss_cap,
             "contracts": contracts,
             "estimatedFee": estimated_fee,
             "maximumLoss": max_loss,

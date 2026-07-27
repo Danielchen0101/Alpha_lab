@@ -6916,7 +6916,50 @@ def register_kalshi_api(
             body = request.get_json(silent=True)
             if body is not None and not isinstance(body, Mapping):
                 raise KalshiApiError("JSON body must be an object", status=400, code="invalid_request")
-            config = normalize_strategy_config((body or {}).get("config") or {})
+            requested_config = normalize_strategy_config((body or {}).get("config") or {})
+            mode = _execution_mode(
+                requested_config.get("executionMode")
+                or (body or {}).get("mode")
+                or "paper"
+            )
+            state = robot_state.get(user["id"], environment=mode)
+            # Real-mode polling is a read-only preflight.  Use the durable
+            # robot policy and its latest scheduler-owned account snapshot
+            # instead of the browser's research bankroll.  This keeps the
+            # screen honest without adding another burst of private Kalshi API
+            # calls every five seconds.
+            config = (
+                normalize_strategy_config({
+                    **dict(state.get("config") or {}),
+                    "executionMode": mode,
+                })
+                if mode == "real"
+                else requested_config
+            )
+            account_context: Dict[str, Any] = {}
+            if mode == "real":
+                latest_rows = list(state.get("decisions") or [])
+                latest_account = dict(
+                    (latest_rows[0].get("account") if latest_rows else {}) or {}
+                )
+                cash_available = _finite_number(
+                    latest_account.get("cashAvailable"),
+                    0.0,
+                )
+                portfolio_exposure = _finite_number(
+                    latest_account.get("portfolioExposure"),
+                    0.0,
+                )
+                account_context = {
+                    **latest_account,
+                    "bankroll": max(0.0, cash_available + portfolio_exposure),
+                    "cashAvailable": cash_available,
+                    "portfolioExposure": portfolio_exposure,
+                    "currentMarketExposure": _finite_number(
+                        latest_account.get("currentMarketExposure"),
+                        0.0,
+                    ),
+                }
             snapshot = client.snapshot(
                 base_url=KALSHI_PUBLIC_BASE,
                 reference_override=reference_stream.snapshot(user["id"]),
@@ -6930,10 +6973,23 @@ def register_kalshi_api(
                 reference_time=snapshot["reference"].get("timestamp"),
                 reference_metadata=snapshot.get("reference") or {},
                 book_time=snapshot.get("orderbookAsOf"),
+                account_context=account_context,
             )
+            decision["marketFamily"] = "btc15m"
+            decision["decisionScope"] = (
+                "real_read_only_preflight"
+                if mode == "real"
+                else "paper_research_preflight"
+            )
+            if account_context:
+                decision["account"] = account_context
             snapshot["reference"].pop("candles", None)
-            mode = _execution_mode(config.get("executionMode") or (body or {}).get("mode") or "paper")
-            return ok({"success": True, "snapshot": snapshot, "decision": decision, "robotState": robot_state.get(user["id"], environment=mode)})
+            return ok({
+                "success": True,
+                "snapshot": snapshot,
+                "decision": decision,
+                "robotState": state,
+            })
         except Exception as exc:
             return fail(exc)
 

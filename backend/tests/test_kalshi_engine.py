@@ -283,6 +283,66 @@ def test_position_size_is_not_capped_by_legacy_max_contracts():
     assert result["sizing"]["contracts"] > 20
 
 
+def test_small_real_account_can_route_one_bounded_contract():
+    now = datetime.now(timezone.utc)
+    candles, spot = _candles()
+
+    result = evaluate_btc15_contract(
+        _market(now, floor_strike=64_650.0),
+        spot_price=spot,
+        candles=candles,
+        now=now,
+        reference_time=now,
+        book_time=now,
+        config={"executionMode": "real"},
+        account_context={
+            "bankroll": 19.87,
+            "cashAvailable": 19.87,
+            "portfolioExposure": 0,
+            "currentMarketExposure": 0,
+        },
+    )
+
+    assert result["action"] == "BUY_YES"
+    assert result["blockingReasons"] == []
+    assert result["sizing"]["contracts"] == 1
+    assert result["sizing"]["microSizingApplied"] is True
+    assert result["sizing"]["standardRiskBudget"] < result["sizing"]["maximumLoss"]
+    assert result["sizing"]["maximumLoss"] <= result["sizing"]["microPositionLossCap"]
+    assert result["edge"]["netEdge"] >= result["config"]["microPositionMinNetEdge"]
+    assert (
+        result["edge"]["conservativeEdge"]
+        >= result["config"]["microPositionMinConservativeEdge"]
+    )
+
+
+def test_small_account_override_still_respects_relative_loss_cap():
+    now = datetime.now(timezone.utc)
+    candles, spot = _candles()
+
+    result = evaluate_btc15_contract(
+        _market(now, floor_strike=64_650.0),
+        spot_price=spot,
+        candles=candles,
+        now=now,
+        reference_time=now,
+        book_time=now,
+        config={"executionMode": "real"},
+        account_context={
+            "bankroll": 10.0,
+            "cashAvailable": 10.0,
+            "portfolioExposure": 0,
+            "currentMarketExposure": 0,
+        },
+    )
+
+    assert result["action"] == "WAIT"
+    assert "position_size" in result["blockingReasons"]
+    assert result["sizing"]["contracts"] == 0
+    assert result["sizing"]["microSizingApplied"] is False
+    assert result["sizing"]["microPositionLossCap"] == pytest.approx(0.50)
+
+
 def test_weak_signal_receives_less_than_full_hard_risk_budget():
     now = datetime.now(timezone.utc)
     strong = _sizing_candidate(now, strike=64_625.0, yes_ask=0.74)
