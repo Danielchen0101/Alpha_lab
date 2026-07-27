@@ -237,6 +237,18 @@ export interface KalshiDecision {
     warnings?: string[];
     candidateCount?: number;
   };
+  accountPreflight?: {
+    snapshotAt?: string | null;
+    snapshotAgeSeconds?: number | null;
+    maximumAgeSeconds?: number;
+    accountSnapshotPresent?: boolean;
+    accountSnapshotFresh?: boolean;
+    schedulerHealthy?: boolean;
+    schedulerRunning?: boolean;
+    schedulerLeaseOwned?: boolean;
+    schedulerLastError?: string;
+    ready?: boolean;
+  };
 }
 
 export interface KalshiSnapshot {
@@ -330,6 +342,7 @@ export interface KalshiEvaluationResponse {
   code?: string;
   message?: string;
   robotState?: KalshiPaperRobotState;
+  robotRuntime?: Record<string, unknown> | null;
 }
 
 export interface KalshiPaperRobotState {

@@ -37,6 +37,8 @@ from kalshi_api import (
     _protective_exit_state,
     _recent_filled_entry_age,
     _recent_filled_exit_age,
+    _real_preflight_account_health,
+    _apply_real_preflight_health_gate,
     _venue_quote,
     _PublicDataClient,
     register_kalshi_api,
@@ -428,6 +430,105 @@ def test_hourly_market_gap_is_loop_standby_not_failure_or_alert():
     assert controller._loop_last_error == ""
     assert controller._market_standby["user-1:btchourly"]["family"] == "btchourly"
     assert "standby" in logs[0]
+
+
+def test_real_read_only_preflight_blocks_stale_scheduler_account_snapshot():
+    now = datetime(2026, 7, 27, 22, 5, tzinfo=timezone.utc)
+    state = {
+        "decisions": [{
+            "generatedAt": "2026-07-27T22:02:00Z",
+            "account": {
+                "cashAvailable": 19.87,
+                "portfolioExposure": 0.0,
+            },
+        }],
+    }
+    runtime = {
+        "healthy": False,
+        "threadAlive": True,
+        "schedulerLeaseOwned": True,
+        "lastError": (
+            "KalshiApiError:kalshi_account_request_failed "
+            "status=502 endpoint=/portfolio/orders"
+        ),
+    }
+    health = _real_preflight_account_health(state, runtime, now=now)
+    decision = {
+        "action": "BUY_NO",
+        "executionIntent": "OPEN_NO",
+        "blockingReasons": [],
+        "gates": [],
+        "sizing": {
+            "contracts": 1,
+            "estimatedFee": 0.01,
+            "maximumLoss": 0.90,
+            "expectedValue": 0.04,
+            "microSizingApplied": True,
+        },
+    }
+
+    _apply_real_preflight_health_gate(decision, health)
+
+    assert health["snapshotAgeSeconds"] == 180
+    assert health["accountSnapshotFresh"] is False
+    assert health["ready"] is False
+    assert decision["action"] == "WAIT"
+    assert decision["executionIntent"] is None
+    assert decision["blockingReasons"] == [
+        "account_snapshot_stale",
+        "robot_scheduler_unhealthy",
+    ]
+    assert decision["sizing"]["contracts"] == 0
+    assert decision["sizing"]["maximumLoss"] == 0
+    assert {gate["key"] for gate in decision["gates"]} == {
+        "account_snapshot_fresh",
+        "robot_scheduler_healthy",
+    }
+
+
+def test_loop_failure_persists_and_alerts_with_kalshi_error_details():
+    errors = []
+    notifications = []
+    controller = object.__new__(_PaperRobotController)
+    controller._runtime_lock = threading.RLock()
+    controller._loop_last_error = ""
+    controller._loop_error_counts = {}
+    controller._loop_alerted = set()
+    controller._market_standby = {}
+    controller.safe_print = lambda *_args, **_kwargs: None
+    controller.state = type(
+        "State",
+        (),
+        {"error": lambda _self, _user_id, message: errors.append(message)},
+    )()
+    controller._notify = (
+        lambda user_id, event_type, payload:
+        notifications.append((user_id, event_type, payload))
+    )
+    failure = KalshiApiError(
+        "upstream timeout",
+        status=502,
+        code="kalshi_account_request_failed",
+        endpoint="/portfolio/orders",
+    )
+
+    for _ in range(3):
+        controller._record_loop_failure(
+            "user-1",
+            "btc15m",
+            "real",
+            failure,
+        )
+
+    assert "kalshi_account_request_failed" in errors[-1]
+    assert "endpoint=/portfolio/orders" in errors[-1]
+    assert "kalshi_account_request_failed" in controller._loop_last_error
+    assert notifications[0][1] == "risk_alert"
+    alert = notifications[0][2]
+    assert alert["errorCode"] == "kalshi_account_request_failed"
+    assert alert["httpStatus"] == 502
+    assert alert["endpoint"] == "/portfolio/orders"
+    assert "HTTP 502" in alert["reason"]
 
 
 def test_venue_quote_rejects_empty_or_crossed_without_last():
@@ -2753,6 +2854,71 @@ def test_connection_test_bypasses_stale_cross_worker_credential_cache(
     assert durable["production_private_key"] == "new-private-material"
     assert durable["production_test_status"] == "connected"
     assert durable["unrelatedSetting"] == "preserve-me"
+
+
+def test_signed_account_get_retries_once_but_never_retries_a_post(
+    tmp_path,
+    monkeypatch,
+):
+    durable = {
+        "production_api_key_id": "key-id-12345678",
+        "production_private_key": "private-material",
+        "production_test_status": "saved",
+    }
+    calls = {}
+
+    def http_request(method, url, **_kwargs):
+        endpoint = str(url).split("/trade-api/v2", 1)[-1]
+        key = (method, endpoint)
+        calls[key] = calls.get(key, 0) + 1
+        if method == "GET" and calls[key] == 1:
+            return _StatusResponse(
+                {"message": "temporary upstream error"},
+                503,
+            )
+        if endpoint == "/portfolio/positions":
+            return _StatusResponse({"market_positions": []}, 200)
+        if endpoint == "/portfolio/orders":
+            return _StatusResponse({"orders": []}, 200)
+        return _StatusResponse({"message": "write unavailable"}, 503)
+
+    monkeypatch.setattr(kalshi_api, "_signed_headers", lambda *_a, **_k: {})
+    monkeypatch.setattr(kalshi_api.time, "sleep", lambda *_a, **_k: None)
+    app = Flask(__name__)
+    controls = register_kalshi_api(
+        app,
+        require_auth=lambda: {"id": "user-1"},
+        http_get=lambda *_a, **_k: _Response({
+            "balance": 100_000,
+            "portfolio_value": 0,
+        }),
+        http_request=http_request,
+        get_user_config=lambda *_args: copy.deepcopy(durable),
+        authoritative_config_loader=lambda *_args: copy.deepcopy(durable),
+        save_user_config=lambda *_args: (True, None),
+        worker_lease_store=_FencedLeaseStore(),
+        robot_state_path=str(tmp_path / "state.json"),
+        paper_account_path=str(tmp_path / "paper.json"),
+    )
+
+    response = app.test_client().post(
+        "/api/kalshi/config/test",
+        json={"environment": "production"},
+    )
+
+    assert response.status_code == 200
+    assert calls[("GET", "/portfolio/positions")] == 2
+    assert calls[("GET", "/portfolio/orders")] == 2
+
+    with pytest.raises(KalshiApiError):
+        controls["paper_robot"].signed_request(
+            durable,
+            "production",
+            "POST",
+            "/portfolio/events/orders",
+            json_body={"ticker": "KXBTC15M-TEST"},
+        )
+    assert calls[("POST", "/portfolio/events/orders")] == 1
 
 
 def test_production_config_bypass_reads_supabase_instead_of_ttl_cache(

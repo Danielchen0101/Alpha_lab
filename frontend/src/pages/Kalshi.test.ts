@@ -1,4 +1,5 @@
 import {
+  actionSummary,
   isAlphaLabManagedLedgerRecord,
   kalshiAccountEquityDollars,
   kalshiPortfolioWarnings,
@@ -244,5 +245,19 @@ describe('Kalshi workspace routing', () => {
       'Kalshi fills are temporarily unavailable.',
       'Incomplete account data: orders, fills, history',
     ]);
+  });
+
+  it('does not present a stale Real account preflight as order-ready', () => {
+    const decision = {
+      action: 'WAIT',
+      blockingReasons: ['account_snapshot_stale', 'robot_scheduler_unhealthy'],
+      accountPreflight: { snapshotAgeSeconds: 183 },
+    } as any;
+
+    expect(actionSummary(decision, true, true)).toContain('后台实盘机器人当前不健康');
+    expect(actionSummary({
+      ...decision,
+      blockingReasons: ['account_snapshot_stale'],
+    }, false, true)).toContain('stale (183s)');
   });
 });

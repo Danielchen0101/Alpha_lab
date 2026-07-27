@@ -427,9 +427,21 @@ const actionLabel = (decision: KalshiDecision | null, chinese: boolean, isRealMo
   return chinese ? '模拟买入 NO' : 'PAPER BUY NO';
 };
 
-const actionSummary = (decision: KalshiDecision | null, chinese: boolean, isRealMode: boolean) => {
+export const actionSummary = (decision: KalshiDecision | null, chinese: boolean, isRealMode: boolean) => {
   if (!decision) return chinese ? '正在等待首个完整快照。' : 'Waiting for the first complete snapshot.';
   if (decision.action === 'WAIT') {
+    if (decision.blockingReasons.includes('robot_scheduler_unhealthy')) {
+      return chinese
+        ? '后台实盘机器人当前不健康；页面只展示行情，不会把预筛候选标记为可下单。'
+        : 'The live background robot is unhealthy; the page shows market evidence but will not mark this preflight as order-ready.';
+    }
+    if (decision.blockingReasons.includes('account_snapshot_stale')) {
+      const age = decision.accountPreflight?.snapshotAgeSeconds;
+      const ageLabel = Number.isFinite(Number(age)) ? `${Math.round(Number(age))}s` : '—';
+      return chinese
+        ? `后台账户快照已过期（${ageLabel}）；必须等机器人取得新的余额、持仓和订单数据后才能下单。`
+        : `The scheduler-owned account snapshot is stale (${ageLabel}); fresh balance, position, and order data are required before routing.`;
+    }
     const count = decision.blockingReasons.length;
     const accountLabel = isRealMode ? (chinese ? 'Kalshi 实盘账户' : 'Kalshi Real account') : (chinese ? 'AlphaLab 模拟账户' : 'AlphaLab Paper account');
     return chinese
@@ -1265,6 +1277,8 @@ const Kalshi: React.FC = () => {
       add_exposure_full: copy('No exposure room remains for an add-on', '当前没有可用的加仓敞口'),
       close_order_pending: copy('A close order is still pending', '平仓订单仍在处理中'),
       minimum_hold_period: copy('Minimum hold time has not elapsed', '尚未达到最短持仓时间'),
+      account_snapshot_stale: copy('The scheduler-owned Real account snapshot is stale', '后台实盘账户快照已过期'),
+      robot_scheduler_unhealthy: copy('The live robot scheduler is unhealthy', '实盘机器人调度器当前不健康'),
     };
     const reasons = (item?.blockingReasons || []).map((reason: string) => reasonLabels[reason] || reason.replace(/_/g, ' '));
     return (
