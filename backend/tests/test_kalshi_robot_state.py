@@ -1,4 +1,6 @@
 import json
+import copy
+from datetime import datetime, timezone
 
 from kalshi_robot_state import KalshiRobotState
 
@@ -71,6 +73,297 @@ def test_successful_cycle_clears_mode_local_transient_error(tmp_path):
 
 
 
+def test_getting_an_inactive_mode_is_a_pure_projection(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    store.configure("user-1", True, {"executionMode": "paper"})
+
+    real_view = store.get("user-1", environment="real")
+    active_after_read = store.get("user-1")
+
+    assert real_view["selectedEnvironment"] == "real"
+    assert real_view["config"]["executionMode"] == "real"
+    assert real_view["activeEnvironment"] == "paper"
+    assert real_view["schedulerEnabled"] is True
+    assert real_view["enabled"] is False
+    assert active_after_read["activeEnvironment"] == "paper"
+    assert active_after_read["config"]["executionMode"] == "paper"
+    assert active_after_read["enabled"] is True
+
+
+def test_real_display_baseline_money_materialization_is_durable_and_one_time(
+    tmp_path,
+):
+    path = tmp_path / "state.json"
+    store = KalshiRobotState(str(path))
+    baseline = store.materialize_real_display_baseline(
+        "user-1",
+        {
+            "resetAt": "2026-07-27T01:02:03Z",
+            "baselineEquityCents": 150_000,
+            "baselineCashCents": 125_000,
+            "environment": "real",
+            "alphaLabOnly": True,
+        },
+    )
+    unchanged = store.materialize_real_display_baseline(
+        "user-1",
+        {
+            "resetAt": "2026-07-27T02:00:00Z",
+            "baselineEquityCents": 999_999,
+            "baselineCashCents": 999_999,
+            "environment": "real",
+            "alphaLabOnly": True,
+        },
+    )
+    restored = KalshiRobotState(str(path)).get(
+        "user-1",
+        environment="real",
+    )["modeState"]["real"]["displayBaseline"]
+
+    assert baseline["baselineEquityCents"] == 150_000
+    assert baseline["baselineCashCents"] == 125_000
+    assert unchanged == baseline
+    assert restored == baseline
+
+
+def test_switching_from_paper_to_real_stops_and_requires_a_second_enable(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    store.configure("user-1", True, {"executionMode": "paper"})
+
+    switched = store.configure("user-1", True, {"executionMode": "real"})
+
+    assert switched["activeEnvironment"] == "real"
+    assert switched["enabled"] is False
+    assert switched["modeState"]["real"]["arming"]["armed"] is False
+    assert switched["modeState"]["real"]["arming"]["awaitingExplicitEnable"] is True
+    assert switched["modeState"]["real"]["displayBaseline"]["alphaLabOnly"] is True
+    assert switched["modeState"]["real"]["displayBaseline"]["resetAt"]
+
+    armed = store.configure("user-1", True, {"executionMode": "real"})
+    assert armed["enabled"] is True
+    assert armed["modeState"]["real"]["arming"]["armed"] is True
+    assert armed["modeState"]["real"]["arming"]["awaitingExplicitEnable"] is False
+
+
+def test_every_configure_enforces_safety_floors_and_preserves_stricter_values(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+
+    floored = store.configure("user-1", False, {
+        "executionMode": "paper",
+        "minModelProbability": 0.55,
+        "minNetEdge": 0.001,
+        "minConservativeEdge": 0.001,
+        "maxPrice": 0.99,
+        "riskPerTradePct": 2.0,
+        "fractionalKelly": 0.50,
+        "maxPortfolioExposurePct": 50.0,
+        "maxSingleMarketExposurePct": 20.0,
+        "minimumAddIntervalSeconds": 10,
+        "minimumHoldSeconds": 1,
+        "reversalCooldownSeconds": 1,
+        "addMinProbabilityImprovement": 0.0,
+        "addMinEdgeImprovement": 0.0,
+        "addSizeFraction": 1.0,
+        "maxDailyLossPct": 8.0,
+    })
+    assert floored["config"]["minModelProbability"] == 0.64
+    assert floored["config"]["minNetEdge"] == 0.01
+    assert floored["config"]["minConservativeEdge"] == 0.0075
+    assert floored["config"]["maxPrice"] == 0.92
+    assert floored["config"]["riskPerTradePct"] == 0.50
+    assert floored["config"]["fractionalKelly"] == 0.15
+    assert floored["config"]["maxPortfolioExposurePct"] == 10.0
+    assert floored["config"]["maxSingleMarketExposurePct"] == 2.0
+    assert floored["config"]["minimumAddIntervalSeconds"] == 90
+    assert floored["config"]["minimumHoldSeconds"] == 60
+    assert floored["config"]["reversalCooldownSeconds"] == 90
+    assert floored["config"]["addMinProbabilityImprovement"] == 0.01
+    assert floored["config"]["addMinEdgeImprovement"] == 0.001
+    assert floored["config"]["addSizeFraction"] == 0.25
+    assert floored["config"]["maxDailyLossPct"] == 2.0
+
+    stricter = store.configure("user-1", False, {
+        **floored["config"],
+        "minModelProbability": 0.72,
+        "minNetEdge": 0.03,
+        "minConservativeEdge": 0.02,
+        "maxPrice": 0.84,
+    })
+    assert stricter["config"]["minModelProbability"] == 0.72
+    assert stricter["config"]["minNetEdge"] == 0.03
+    assert stricter["config"]["minConservativeEdge"] == 0.02
+    assert stricter["config"]["maxPrice"] == 0.84
+    assert (
+        stricter["config"]["fullRiskModelProbability"]
+        >= stricter["config"]["minModelProbability"] + 0.01
+    )
+    assert (
+        stricter["config"]["fullRiskConservativeEdge"]
+        >= stricter["config"]["minConservativeEdge"] + 0.005
+    )
+
+
+def test_v10_real_migration_preserves_ledger_and_disarms_live_mode(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"user-1": {
+        "storageVersion": 9,
+        "enabled": True,
+        "activeEnvironment": "real",
+        "config": {
+            "executionMode": "real",
+            "minModelProbability": 0.70,
+            "minNetEdge": 0.02,
+            "minConservativeEdge": 0.02,
+            "maxPrice": 0.85,
+            "minimumHoldSeconds": 1,
+            "reversalCooldownSeconds": 1,
+            "addMinProbabilityImprovement": 0.0,
+            "addMinEdgeImprovement": 0.0,
+        },
+        "filledTrades": [{
+            "ticker": "KXBTC15M-KEEP",
+            "environment": "real",
+            "orderId": "keep-order",
+        }],
+        "decisions": [],
+        "strategy": {"settlementRecords": [{"key": "keep-settlement"}]},
+    }}), encoding="utf-8")
+
+    restored = KalshiRobotState(str(path)).get("user-1")
+    real = restored["modeState"]["real"]
+
+    assert restored["storageVersion"] == 10
+    assert restored["enabled"] is False
+    assert real["arming"]["awaitingExplicitEnable"] is True
+    assert real["displayBaseline"]["alphaLabOnly"] is True
+    assert real["config"]["minModelProbability"] == 0.70
+    assert real["config"]["minNetEdge"] == 0.02
+    assert real["config"]["minConservativeEdge"] == 0.02
+    assert real["config"]["maxPrice"] == 0.85
+    assert real["config"]["minimumHoldSeconds"] == 60
+    assert real["config"]["reversalCooldownSeconds"] == 90
+    assert real["config"]["addMinProbabilityImprovement"] == 0.01
+    assert real["config"]["addMinEdgeImprovement"] == 0.001
+    assert real["config"]["minimumRiskBudgetScale"] == 0.35
+    assert real["filledTrades"][0]["orderId"] == "keep-order"
+    assert real["strategy"]["settlementRecords"][0]["key"] == "keep-settlement"
+
+
+def test_v10_repairs_partial_real_display_baselines_and_persists_them(
+    tmp_path,
+):
+    invalid_values = [
+        {},
+        {"environment": "real", "alphaLabOnly": True},
+        {"resetAt": "2026-07-27T12:00:00Z", "alphaLabOnly": True},
+        {"resetAt": "2026-07-27T12:00:00Z", "environment": "real"},
+    ]
+    for index, invalid in enumerate(invalid_values):
+        original = KalshiRobotState._initial()
+        original["modeState"] = {
+            "real": {"displayBaseline": copy.deepcopy(invalid)},
+        }
+        saved = []
+        store = KalshiRobotState(
+            str(tmp_path / f"repair-{index}.json"),
+            state_loader=lambda _user_id, value=original: copy.deepcopy(value),
+            state_saver=lambda _user_id, payload: saved.append(
+                copy.deepcopy(payload)
+            ),
+        )
+
+        repaired = store.get("user-1", environment="real")
+        baseline = repaired["modeState"]["real"]["displayBaseline"]
+
+        assert baseline["resetAt"]
+        assert baseline["environment"] == "real"
+        assert baseline["alphaLabOnly"] is True
+        assert baseline["ledgerPreserved"] is True
+        assert len(saved) == 1
+
+
+def test_refresh_reports_whether_it_reloaded_a_durable_source(tmp_path):
+    local = KalshiRobotState(str(tmp_path / "local.json"))
+    local_refresh = local.refresh("user-1", environment="real")
+    durable = KalshiRobotState(
+        str(tmp_path / "durable.json"),
+        state_loader=lambda _user_id: None,
+    )
+    durable_refresh = durable.refresh("user-1", environment="real")
+
+    assert local.durable_state_loader_available is False
+    assert local_refresh["authoritativeRefresh"] is False
+    assert local_refresh["durableStateLoaderAvailable"] is False
+    assert durable.durable_state_loader_available is True
+    assert durable_refresh["authoritativeRefresh"] is True
+    assert durable_refresh["durableStateLoaderAvailable"] is True
+
+
+def test_filled_stop_loss_persists_same_ticker_reentry_block(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    state = store.record(
+        "user-1",
+        {
+            "generatedAt": "2026-07-27T12:00:00Z",
+            "action": "SELL_YES",
+            "side": "YES",
+            "config": {"executionMode": "paper"},
+            "market": {"ticker": "KXBTC15M-STOP"},
+            "edge": {"price": 0.30},
+            "exitAnalysis": {"trigger": "protective_stop_loss"},
+        },
+        {
+            "order_id": "stop-order",
+            "status": "filled",
+            "fill_count_fp": 2,
+            "environment": "paper",
+        },
+    )
+
+    assert state["modeState"]["paper"]["strategy"]["stopLossReentryTickers"] == [
+        "KXBTC15M-STOP"
+    ]
+
+
+def test_delayed_live_fill_promotes_provenance_and_stop_loss_block(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    store.configure("user-1", False, {"executionMode": "real"})
+    store.record(
+        "user-1",
+        {
+            "generatedAt": "2026-07-27T12:00:00Z",
+            "action": "SELL_YES",
+            "side": "YES",
+            "config": {"executionMode": "real"},
+            "market": {"ticker": "KXBTC15M-DELAYED"},
+            "edge": {"price": 0.30},
+            "exitAnalysis": {"trigger": "emergency_stop_loss"},
+        },
+        {
+            "order_id": "delayed-order",
+            "client_order_id": "delayed-client",
+            "status": "submitted",
+            "fill_count_fp": 0,
+            "environment": "real",
+        },
+    )
+
+    reconciled = store.reconcile_live_fills("user-1", [{
+        "fill_id": "delayed-fill",
+        "order_id": "delayed-order",
+        "ticker": "KXBTC15M-DELAYED",
+        "action": "SELL",
+        "fill_count_fp": 2,
+    }])
+    real = reconciled["modeState"]["real"]
+
+    assert real["filledTrades"][-1]["orderFilled"] is True
+    assert real["filledTrades"][-1]["orderId"] == "delayed-order"
+    assert real["strategy"]["stopLossReentryTickers"] == [
+        "KXBTC15M-DELAYED"
+    ]
+
+
 def test_pre_v6_trade_and_learning_data_is_removed_during_upgrade(tmp_path):
     path = tmp_path / "kalshi-robot.json"
     path.write_text(json.dumps({"user-1": {
@@ -85,7 +378,7 @@ def test_pre_v6_trade_and_learning_data_is_removed_during_upgrade(tmp_path):
 
     restored = KalshiRobotState(str(path)).get("user-1")
 
-    assert restored["storageVersion"] == 9
+    assert restored["storageVersion"] == 10
     assert restored["enabled"] is True
     assert restored["decisions"] == []
     assert restored["filledTrades"] == []
@@ -94,8 +387,8 @@ def test_pre_v6_trade_and_learning_data_is_removed_during_upgrade(tmp_path):
     assert "strategyLibrary" not in restored
     # Old longshot-era tuning is replaced by the deterministic v4 favorite band.
     assert restored["config"]["minPrice"] == 0.47
-    assert restored["config"]["maxPrice"] == 0.95
-    assert restored["config"]["minModelProbability"] == 0.58
+    assert restored["config"]["maxPrice"] == 0.92
+    assert restored["config"]["minModelProbability"] == 0.64
 
 
 def test_v6_state_adopts_calibrated_defaults_without_losing_records(tmp_path):
@@ -114,9 +407,9 @@ def test_v6_state_adopts_calibrated_defaults_without_losing_records(tmp_path):
 
     restored = KalshiRobotState(str(path)).get("user-1")
 
-    assert restored["storageVersion"] == 9
-    assert restored["config"]["minNetEdge"] == 0.0075
-    assert restored["config"]["minModelProbability"] == 0.58
+    assert restored["storageVersion"] == 10
+    assert restored["config"]["minNetEdge"] == 0.015
+    assert restored["config"]["minModelProbability"] == 0.64
     assert restored["config"]["marketBlendWeight"] == 0.45
     assert restored["config"]["probabilityLogitScale"] == 1.70
     assert restored["strategy"]["version"] == 6
@@ -353,6 +646,83 @@ def test_early_close_pnl_is_tracked_without_becoming_calibration_label(tmp_path)
     assert strategy["closedTradeRecords"][0]["exitTrigger"] == "fee_adjusted_take_profit"
     assert strategy["closedTradeRecords"][0]["netExitPnlPerContract"] == 0.136
     assert strategy["closedTradeRecords"][0]["exitLossFraction"] == 0.0
+
+
+def test_daily_pnl_idempotently_combines_sale_and_settlement(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    decision = {
+        "generatedAt": now,
+        "action": "SELL_YES",
+        "side": "YES",
+        "executionIntent": "CLOSE_YES",
+        "market": {"ticker": "KXBTC15M-DAILY-SALE"},
+        "exitAnalysis": {
+            "averageEntryPrice": 0.60,
+            "trigger": "protective_stop_loss",
+        },
+    }
+    close_order = {
+        "order_id": "daily-close",
+        "ticker": "KXBTC15M-DAILY-SALE",
+        "environment": "paper",
+        "action": "SELL",
+        "reduce_only": True,
+        "outcome_side": "YES",
+        "status": "executed",
+        "fill_count_fp": 5,
+        "average_price_dollars": 0.40,
+        "realized_pnl_dollars": -1.0,
+        "created_time": now,
+    }
+    store.record_early_close(
+        "user-1",
+        decision,
+        close_order,
+        environment="paper",
+    )
+    store.record(
+        "user-1",
+        {
+            "generatedAt": now,
+            "action": "BUY_YES",
+            "side": "YES",
+            "config": {"executionMode": "paper"},
+            "market": {"ticker": "KXBTC15M-DAILY-SETTLE"},
+            "edge": {"fairProbability": 0.70, "price": 0.50},
+        },
+        {
+            "order_id": "daily-entry",
+            "status": "filled",
+            "fill_count": 2,
+            "environment": "paper",
+        },
+    )
+    settlement = {
+        "ticker": "KXBTC15M-DAILY-SETTLE",
+        "market_result": "YES",
+        "settled_time": now,
+        "yes_count_fp": 2,
+        "revenue_dollars": 2.0,
+        "yes_total_cost_dollars": 1.0,
+        "fee_cost_dollars": 0.0,
+    }
+    first = store.reconcile_settlements(
+        "user-1",
+        [settlement],
+        environment="paper",
+    )
+    second = store.reconcile_settlements(
+        "user-1",
+        [settlement],
+        environment="paper",
+    )
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    assert first["strategy"]["dailyPnlDate"] == today
+    assert first["strategy"]["dailyPnl"] == 0.0
+    assert second["strategy"]["dailyPnl"] == 0.0
+    assert second["strategy"]["realizedSamples"] == 2
 
 
 def test_reconcile_backfills_reduce_only_fills_into_realized_analytics(tmp_path):

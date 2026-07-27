@@ -9,6 +9,7 @@ import {
   ReloadOutlined,
   SafetyCertificateOutlined,
   ThunderboltOutlined,
+  WarningOutlined,
 } from '@ant-design/icons';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -76,6 +77,10 @@ const cents = (value: unknown, digits = 1) => {
   return parsed === null ? '--' : `${(parsed * 100).toFixed(digits)}c`;
 };
 
+export const kalshiAccountEquityDollars = (balance: KalshiPaperPortfolio['balance']): number => (
+  (Number(balance?.balance || 0) + Number(balance?.portfolio_value || 0)) / 100
+);
+
 const orderSidePrice = (item: any, key: 'limit' | 'average') => {
   const direct = key === 'limit' ? item?.limit_price_dollars : item?.average_price_dollars;
   if (direct != null) return direct;
@@ -100,6 +105,204 @@ export const positionSideLabel = (item: any): 'YES' | 'NO' | '--' => {
   if (rawPosition > 0) return 'YES';
   if (rawPosition < 0) return 'NO';
   return '--';
+};
+
+export const portfolioEnvironmentMatchesMode = (
+  portfolio: Pick<KalshiPaperPortfolio, 'environment'> | null | undefined,
+  requestedMode: KalshiBotConfig['executionMode'],
+): boolean => String(portfolio?.environment || '').trim().toLowerCase() === requestedMode;
+
+export const shouldStartKalshiPortfolioRequest = (
+  inFlightMode: KalshiBotConfig['executionMode'] | null,
+  requestedMode: KalshiBotConfig['executionMode'],
+): boolean => inFlightMode !== requestedMode;
+
+export interface KalshiOperationToken {
+  mode: KalshiBotConfig['executionMode'];
+  epoch: number;
+  requestId: number;
+}
+
+const declaredKalshiMode = (value: unknown): KalshiBotConfig['executionMode'] | null => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'real' || normalized === 'paper' ? normalized : null;
+};
+
+export const kalshiResponseStateMatchesMode = (
+  state: unknown,
+  expectedMode: KalshiBotConfig['executionMode'],
+): boolean => {
+  if (!state || typeof state !== 'object') return false;
+  const record = state as Record<string, any>;
+  const configMode = declaredKalshiMode(record.config?.executionMode);
+  const activeMode = declaredKalshiMode(record.activeEnvironment);
+  const selectedMode = record.selectedEnvironment == null
+    ? expectedMode
+    : declaredKalshiMode(record.selectedEnvironment);
+  return (
+    configMode === expectedMode
+    && activeMode === expectedMode
+    && selectedMode === expectedMode
+  );
+};
+
+export const shouldAcceptKalshiOperationResponse = (
+  token: KalshiOperationToken,
+  currentMode: KalshiBotConfig['executionMode'],
+  currentEpoch: number,
+  currentRequestId: number,
+  responseState: unknown,
+): boolean => (
+  token.mode === currentMode
+  && token.epoch === currentEpoch
+  && token.requestId === currentRequestId
+  && kalshiResponseStateMatchesMode(responseState, token.mode)
+);
+
+const recordTimeMs = (record: Record<string, any>): number | null => {
+  const raw = (
+    record.created_time
+    ?? record.createdAt
+    ?? record.created_ts
+    ?? record.createdTs
+    ?? record.submitted_at
+    ?? record.submittedAt
+    ?? record.settled_time
+    ?? record.settledAt
+    ?? record.updated_time
+    ?? record.updatedAt
+    ?? record.ts
+  );
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (typeof raw === 'number' || /^\d+(?:\.\d+)?$/.test(String(raw).trim())) {
+    const numeric = Number(raw);
+    if (!Number.isFinite(numeric)) return null;
+    return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+  }
+  const parsed = Date.parse(String(raw));
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+export const isAlphaLabManagedLedgerRecord = (record: Record<string, any> | null | undefined): boolean => {
+  if (!record || typeof record !== 'object') return false;
+  return (
+    record.alphaLabManaged === true
+    || record.alphalabManaged === true
+    || record.alphaLabOrder === true
+    || String(record.source || '').trim().toLowerCase() === 'alphalab'
+  );
+};
+
+export interface KalshiVisibleLedger {
+  baselineReady: boolean;
+  resetAt: string | null;
+  orders: Array<Record<string, any>>;
+  fills: Array<Record<string, any>>;
+  settlements: Array<Record<string, any>>;
+}
+
+export const visibleKalshiLedger = (portfolio: KalshiPaperPortfolio): KalshiVisibleLedger => {
+  const orders = Array.isArray(portfolio.orders) ? portfolio.orders : [];
+  const fills = Array.isArray(portfolio.fills) ? portfolio.fills : [];
+  const settlements = Array.isArray(portfolio.settlements) ? portfolio.settlements : [];
+  if (String(portfolio.environment).toLowerCase() !== 'real') {
+    return { baselineReady: true, resetAt: null, orders, fills, settlements };
+  }
+
+  const baseline = portfolio.analytics?.displayBaseline as (
+    NonNullable<KalshiPaperPortfolio['analytics']>['displayBaseline'] & { alphaLabOnly?: boolean }
+  ) | undefined;
+  const resetAt = typeof baseline?.resetAt === 'string' ? baseline.resetAt : null;
+  const resetAtMs = resetAt ? Date.parse(resetAt) : Number.NaN;
+  const baselineEnvironment = String(baseline?.environment || 'real').toLowerCase();
+  const baselineReady = Boolean(
+    baseline?.active
+    && Number.isFinite(resetAtMs)
+    && baselineEnvironment === 'real'
+    && baseline?.alphaLabOnly === true
+  );
+  if (!baselineReady) {
+    return { baselineReady: false, resetAt, orders: [], fills: [], settlements: [] };
+  }
+
+  const afterBaseline = (record: Record<string, any>) => {
+    const timestamp = recordTimeMs(record);
+    return timestamp !== null && timestamp > resetAtMs;
+  };
+  const visibleOrders = orders.filter((record) => (
+    afterBaseline(record) && isAlphaLabManagedLedgerRecord(record)
+  ));
+  const visibleOrderIds = new Set(
+    visibleOrders
+      .flatMap((record) => [record.order_id, record.orderId])
+      .filter((value) => value !== null && value !== undefined && value !== '')
+      .map(String),
+  );
+  const linkedToVisibleOrder = (record: Record<string, any>) => (
+    [record.order_id, record.orderId]
+      .filter((value) => value !== null && value !== undefined && value !== '')
+      .some((value) => visibleOrderIds.has(String(value)))
+  );
+  const visibleEvent = (record: Record<string, any>) => (
+    afterBaseline(record)
+    && (isAlphaLabManagedLedgerRecord(record) || linkedToVisibleOrder(record))
+  );
+
+  return {
+    baselineReady: true,
+    resetAt,
+    orders: visibleOrders,
+    fills: fills.filter(visibleEvent),
+    settlements: settlements.filter(visibleEvent),
+  };
+};
+
+const warningStrings = (value: unknown): string[] => {
+  if (typeof value === 'string' && value.trim()) return [value.trim()];
+  if (Array.isArray(value)) return value.flatMap(warningStrings);
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return warningStrings(record.message ?? record.warning ?? record.detail);
+  }
+  return [];
+};
+
+export const kalshiPortfolioWarnings = (portfolio: unknown): string[] => {
+  if (!portfolio || typeof portfolio !== 'object') return [];
+  const record = portfolio as Record<string, unknown>;
+  const completeness = record.completeness && typeof record.completeness === 'object'
+    ? record.completeness as Record<string, unknown>
+    : null;
+  const warnings = [
+    ...warningStrings(record.warnings),
+    ...warningStrings(completeness?.warnings),
+    ...warningStrings(completeness?.errors),
+  ];
+  const incompleteResources = ['balance', 'positions', 'orders', 'fills', 'settlements', 'history']
+    .filter((key) => completeness?.[key] === false);
+  if (incompleteResources.length) {
+    warnings.push(`Incomplete account data: ${incompleteResources.join(', ')}`);
+  }
+  const missing = warningStrings(
+    completeness?.missing
+    ?? completeness?.missingResources
+    ?? completeness?.missing_resources,
+  );
+  if (missing.length) warnings.push(`Missing account data: ${missing.join(', ')}`);
+
+  const status = String(completeness?.status || '').trim().toLowerCase();
+  const explicitlyIncomplete = (
+    completeness?.complete === false
+    || completeness?.isComplete === false
+    || ['partial', 'incomplete', 'degraded', 'failed'].includes(status)
+  );
+  if (explicitlyIncomplete && warnings.length === 0) {
+    warnings.push(status
+      ? `Kalshi reported ${status} portfolio data.`
+      : 'Kalshi reported incomplete portfolio data.');
+  }
+
+  return Array.from(new Set(warnings));
 };
 
 const exitTriggerLabel = (trigger: string | null | undefined, chinese: boolean) => {
@@ -130,10 +333,12 @@ const readStoredConfig = (): KalshiBotConfig => {
   }
 };
 
-const writeStoredConfig = (config: KalshiBotConfig) => {
+const writeStoredConfig = (config: KalshiBotConfig, emitChange = false) => {
   try {
     localStorage.setItem(KALSHI_CONFIG_STORAGE_KEY, JSON.stringify(config));
-    window.dispatchEvent(new CustomEvent(KALSHI_CONFIG_CHANGED_EVENT, { detail: config }));
+    if (emitChange) {
+      window.dispatchEvent(new CustomEvent(KALSHI_CONFIG_CHANGED_EVENT, { detail: config }));
+    }
   } catch {}
 };
 
@@ -249,6 +454,7 @@ const Kalshi: React.FC = () => {
   const [accountStatus, setAccountStatus] = React.useState<Record<string, any> | null>(null);
   const [paperPortfolio, setPaperPortfolio] = React.useState<KalshiPaperPortfolio | null>(null);
   const [portfolioLoading, setPortfolioLoading] = React.useState(false);
+  const [portfolioError, setPortfolioError] = React.useState('');
   const [portfolioResetting, setPortfolioResetting] = React.useState(false);
   const [robotState, setRobotState] = React.useState<KalshiPaperRobotState | null>(null);
   const [robotBusy, setRobotBusy] = React.useState(false);
@@ -260,10 +466,63 @@ const Kalshi: React.FC = () => {
   const mountedRef = React.useRef(true);
   const syncedServerConfigRef = React.useRef('');
   const modeRef = React.useRef<KalshiBotConfig['executionMode']>(config.executionMode === 'real' ? 'real' : 'paper');
+  const operationEpochRef = React.useRef(0);
+  const writeOperationRequestRef = React.useRef(0);
+  const activeWriteOperationRef = React.useRef<KalshiOperationToken | null>(null);
+  const hourlyFamilyRef = React.useRef(isHourly);
   const portfolioRequestRef = React.useRef(0);
+  const portfolioInFlightRef = React.useRef<KalshiOperationToken | null>(null);
+  const portfolioResettingRef = React.useRef(false);
+  const robotStatusRequestRef = React.useRef(0);
   const evaluationRequestRef = React.useRef(0);
   const executionMode: KalshiBotConfig['executionMode'] = config.executionMode === 'real' ? 'real' : 'paper';
   const isRealMode = executionMode === 'real';
+
+  React.useLayoutEffect(() => {
+    hourlyFamilyRef.current = isHourly;
+  }, [isHourly]);
+
+  const operationTokenIsCurrent = React.useCallback((
+    token: KalshiOperationToken,
+    currentRequestId: number,
+  ): boolean => (
+    mountedRef.current
+    && token.mode === modeRef.current
+    && token.epoch === operationEpochRef.current
+    && token.requestId === currentRequestId
+  ), []);
+
+  const beginWriteOperation = React.useCallback((
+    expectedMode: KalshiBotConfig['executionMode'],
+  ): KalshiOperationToken | null => {
+    if (activeWriteOperationRef.current) return null;
+    const token: KalshiOperationToken = {
+      mode: expectedMode,
+      epoch: operationEpochRef.current,
+      requestId: writeOperationRequestRef.current + 1,
+    };
+    writeOperationRequestRef.current = token.requestId;
+    activeWriteOperationRef.current = token;
+
+    // A write can change state, portfolio, and the evaluation snapshot. Any
+    // older read must not commit after this operation starts.
+    portfolioRequestRef.current += 1;
+    portfolioInFlightRef.current = null;
+    robotStatusRequestRef.current += 1;
+    evaluationRequestRef.current += 1;
+    inFlightRef.current = false;
+    if (mountedRef.current) setPortfolioLoading(false);
+    return token;
+  }, []);
+
+  const writeOperationIsCurrent = React.useCallback((
+    token: KalshiOperationToken,
+  ): boolean => (
+    operationTokenIsCurrent(token, writeOperationRequestRef.current)
+    && activeWriteOperationRef.current?.mode === token.mode
+    && activeWriteOperationRef.current?.epoch === token.epoch
+    && activeWriteOperationRef.current?.requestId === token.requestId
+  ), [operationTokenIsCurrent]);
 
   React.useEffect(() => {
     modeRef.current = executionMode;
@@ -271,8 +530,11 @@ const Kalshi: React.FC = () => {
 
   const acceptPayload = React.useCallback((payload: KalshiEvaluationResponse, expectedMode = modeRef.current) => {
     if (!mountedRef.current) return;
-    const payloadMode = (payload.robotState?.config?.executionMode || payload.decision?.config?.executionMode || expectedMode) === 'real' ? 'real' : 'paper';
-    if (payloadMode !== expectedMode || modeRef.current !== expectedMode) return;
+    if (
+      modeRef.current !== expectedMode
+      || !payload.robotState
+      || !kalshiResponseStateMatchesMode(payload.robotState, expectedMode)
+    ) return;
     setSnapshot(payload.snapshot);
     setDecision(payload.decision);
     setHistory((current) => {
@@ -283,62 +545,141 @@ const Kalshi: React.FC = () => {
     if (payload.robotState) setRobotState(payload.robotState);
   }, []);
 
+  const acceptPortfolio = React.useCallback((
+    candidate: KalshiPaperPortfolio,
+    expectedMode: KalshiBotConfig['executionMode'],
+  ): boolean => {
+    if (!mountedRef.current || modeRef.current !== expectedMode) return false;
+    if (!portfolioEnvironmentMatchesMode(candidate, expectedMode)) {
+      const returnedEnvironment = String(candidate?.environment || copy('unknown', '未知')).toUpperCase();
+      setPaperPortfolio(null);
+      setPortfolioError(copy(
+        `Portfolio environment mismatch: requested ${expectedMode.toUpperCase()}, but the backend returned ${returnedEnvironment}. AlphaLab blocked the response instead of relabeling it.`,
+        `投资组合环境不一致：请求的是 ${expectedMode.toUpperCase()}，但后端返回了 ${returnedEnvironment}。AlphaLab 已阻止该响应，不会把它错误标记成当前模式。`,
+      ));
+      return false;
+    }
+    setPaperPortfolio(candidate);
+    setPortfolioError('');
+    return true;
+  }, [copy]);
+
   const evaluate = React.useCallback(async (quiet = false) => {
-    if (inFlightRef.current || document.hidden) return;
+    if (activeWriteOperationRef.current || inFlightRef.current || document.hidden) return;
     const expectedMode = executionMode;
+    const expectedHourly = isHourly;
     const requestId = evaluationRequestRef.current + 1;
     evaluationRequestRef.current = requestId;
+    const token: KalshiOperationToken = {
+      mode: expectedMode,
+      epoch: operationEpochRef.current,
+      requestId,
+    };
+    const isCurrentEvaluation = () => (
+      operationTokenIsCurrent(token, evaluationRequestRef.current)
+      && hourlyFamilyRef.current === expectedHourly
+    );
     inFlightRef.current = true;
     if (!quiet) setRefreshing(true);
     try {
-      const response = isHourly
+      const response = expectedHourly
         ? await kalshiAPI.evaluateHourly(expectedMode)
         : await kalshiAPI.evaluate(config);
       if (!response.data?.success) throw new Error(response.data?.message || 'Kalshi evaluation failed');
-      if (evaluationRequestRef.current === requestId) acceptPayload(response.data, expectedMode);
+      if (!isCurrentEvaluation()) return;
+      if (!kalshiResponseStateMatchesMode(response.data?.robotState, expectedMode)) {
+        throw new Error('Kalshi evaluation returned state for a stale execution mode.');
+      }
+      acceptPayload(response.data, expectedMode);
     } catch (requestError: any) {
-      if (mountedRef.current && modeRef.current === expectedMode && evaluationRequestRef.current === requestId) {
+      if (isCurrentEvaluation()) {
         setError(requestError?.response?.data?.message || requestError?.message || copy('Market data is temporarily unavailable.', '市场数据暂时不可用。'));
       }
     } finally {
-      if (evaluationRequestRef.current === requestId) inFlightRef.current = false;
-      if (mountedRef.current && modeRef.current === expectedMode && evaluationRequestRef.current === requestId) {
+      if (operationTokenIsCurrent(token, evaluationRequestRef.current)) inFlightRef.current = false;
+      if (isCurrentEvaluation()) {
         setLoading(false);
         setRefreshing(false);
       }
     }
-  }, [acceptPayload, config, copy, executionMode, isHourly]);
+  }, [acceptPayload, config, copy, executionMode, isHourly, operationTokenIsCurrent]);
 
   React.useEffect(() => {
     mountedRef.current = true;
     void evaluate();
-    return () => { mountedRef.current = false; };
+    return () => {
+      mountedRef.current = false;
+      operationEpochRef.current += 1;
+      writeOperationRequestRef.current += 1;
+      portfolioRequestRef.current += 1;
+      robotStatusRequestRef.current += 1;
+      evaluationRequestRef.current += 1;
+      activeWriteOperationRef.current = null;
+      portfolioInFlightRef.current = null;
+      portfolioResettingRef.current = false;
+      inFlightRef.current = false;
+    };
   // Initial request is intentionally once; config changes are applied explicitly.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadPaperPortfolio = React.useCallback(async (modeOverride: KalshiBotConfig['executionMode'] = modeRef.current) => {
+    if (activeWriteOperationRef.current || portfolioResettingRef.current) return;
+    if (!shouldStartKalshiPortfolioRequest(portfolioInFlightRef.current?.mode ?? null, modeOverride)) return;
     const requestId = portfolioRequestRef.current + 1;
     portfolioRequestRef.current = requestId;
+    const token: KalshiOperationToken = {
+      mode: modeOverride,
+      epoch: operationEpochRef.current,
+      requestId,
+    };
+    portfolioInFlightRef.current = token;
     if (mountedRef.current) setPortfolioLoading(true);
     try {
       const response = await kalshiAPI.paperPortfolio(modeOverride);
-      if (!mountedRef.current || modeRef.current !== modeOverride || portfolioRequestRef.current !== requestId) return;
+      if (!operationTokenIsCurrent(token, portfolioRequestRef.current)) return;
+      if (!shouldAcceptKalshiOperationResponse(
+        token,
+        modeRef.current,
+        operationEpochRef.current,
+        portfolioRequestRef.current,
+        response.data?.state,
+      )) {
+        setPaperPortfolio(null);
+        setPortfolioError(copy(
+          'Kalshi returned account state for a different execution mode. AlphaLab blocked the stale response.',
+          'Kalshi 返回了其他执行模式的账户状态。AlphaLab 已阻止该过期响应。',
+        ));
+        return;
+      }
       if (response.data?.portfolio) {
-        setPaperPortfolio(response.data.portfolio);
+        acceptPortfolio(response.data.portfolio, modeOverride);
+      } else {
+        setPaperPortfolio(null);
+        setPortfolioError(copy(
+          'Kalshi returned no portfolio payload. The account view remains unavailable for safety.',
+          'Kalshi 未返回投资组合数据。为确保安全，账户页面将保持不可用。',
+        ));
       }
-      if (response.data?.state) {
-        const stateMode = response.data.state.config?.executionMode === 'real' ? 'real' : 'paper';
-        if (stateMode === modeOverride) setRobotState(response.data.state);
-      }
+      setRobotState(response.data.state);
     } catch (requestError: any) {
-      if (mountedRef.current && modeRef.current === modeOverride) {
-        setError(requestError?.response?.data?.message || copy('Kalshi account refresh failed. Try again.', 'Kalshi 账户刷新失败，请重试。'));
+      if (operationTokenIsCurrent(token, portfolioRequestRef.current)) {
+        setPortfolioError(requestError?.response?.data?.message || requestError?.message || copy(
+          'Kalshi account refresh failed. Try again.',
+          'Kalshi 账户刷新失败，请重试。',
+        ));
       }
     } finally {
-      if (mountedRef.current && portfolioRequestRef.current === requestId) setPortfolioLoading(false);
+      if (
+        portfolioInFlightRef.current?.requestId === token.requestId
+        && portfolioInFlightRef.current?.epoch === token.epoch
+        && portfolioInFlightRef.current?.mode === token.mode
+      ) {
+        portfolioInFlightRef.current = null;
+        if (mountedRef.current) setPortfolioLoading(false);
+      }
     }
-  }, [copy]);
+  }, [acceptPortfolio, copy, operationTokenIsCurrent]);
 
   const loadAnalytics = React.useCallback(async (
     modeOverride: KalshiBotConfig['executionMode'] = modeRef.current,
@@ -360,22 +701,46 @@ const Kalshi: React.FC = () => {
       '确定开始一个新的 Portfolio 显示周期吗？账户权益以及所有历史订单、成交和结算都会完整保留。',
     ));
     if (!confirmed) return;
+    const expectedMode = modeRef.current;
+    const token = beginWriteOperation(expectedMode);
+    if (!token) return;
+    portfolioResettingRef.current = true;
     setPortfolioResetting(true);
     try {
-      const response = await kalshiAPI.resetPortfolioDisplay(executionMode);
+      const response = await kalshiAPI.resetPortfolioDisplay(expectedMode);
+      if (!writeOperationIsCurrent(token)) return;
       if (!response.data?.success || !response.data.portfolio) {
         throw new Error(response.data?.message || 'Portfolio display reset failed');
       }
-      setPaperPortfolio(response.data.portfolio);
-      if (response.data.state) setRobotState(response.data.state);
+      if (!shouldAcceptKalshiOperationResponse(
+        token,
+        modeRef.current,
+        operationEpochRef.current,
+        writeOperationRequestRef.current,
+        response.data?.state,
+      )) {
+        throw new Error(copy(
+          'Kalshi returned a stale mode state after resetting the Portfolio display.',
+          '重置 Portfolio 显示周期后，Kalshi 返回了过期的模式状态。',
+        ));
+      }
+      if (!acceptPortfolio(response.data.portfolio, expectedMode)) return;
+      setRobotState(response.data.state);
       setError('');
     } catch (requestError: any) {
-      setError(requestError?.response?.data?.message || requestError?.message || copy(
-        'Portfolio display period could not be reset.',
-        'Portfolio 显示周期重置失败。',
-      ));
+      if (writeOperationIsCurrent(token)) {
+        setError(requestError?.response?.data?.message || requestError?.message || copy(
+          'Portfolio display period could not be reset.',
+          'Portfolio 显示周期重置失败。',
+        ));
+      }
     } finally {
-      setPortfolioResetting(false);
+      if (writeOperationIsCurrent(token)) {
+        activeWriteOperationRef.current = null;
+        portfolioResettingRef.current = false;
+        setPortfolioResetting(false);
+        void loadPaperPortfolio(expectedMode);
+      }
     }
   };
 
@@ -385,48 +750,90 @@ const Kalshi: React.FC = () => {
       if (!detail || typeof detail !== 'object') return;
       const nextConfig = { ...readStoredConfig(), ...detail } as KalshiBotConfig;
       const nextMode = nextConfig.executionMode === 'real' ? 'real' : 'paper';
+
+      // Funding-environment changes are a hard async boundary. Invalidate
+      // every response captured under the prior mode before updating refs/UI.
+      operationEpochRef.current += 1;
+      writeOperationRequestRef.current += 1;
+      portfolioRequestRef.current += 1;
+      robotStatusRequestRef.current += 1;
+      evaluationRequestRef.current += 1;
+      activeWriteOperationRef.current = null;
+      portfolioInFlightRef.current = null;
+      portfolioResettingRef.current = false;
+      inFlightRef.current = false;
+
       setConfig(nextConfig);
       modeRef.current = nextMode;
       setPaperPortfolio(null);
+      setPortfolioError('');
       setSnapshot(null);
       setDecision(null);
       setHistory([]);
       setRobotState(null);
       setAnalytics(null);
+      setPortfolioLoading(false);
+      setPortfolioResetting(false);
+      setRobotBusy(false);
+      setApplyBusy(false);
       setRefreshing(true);
-      inFlightRef.current = false;
       const evaluationRequestId = evaluationRequestRef.current + 1;
       evaluationRequestRef.current = evaluationRequestId;
+      const expectedHourly = hourlyFamilyRef.current;
+      const evaluationToken: KalshiOperationToken = {
+        mode: nextMode,
+        epoch: operationEpochRef.current,
+        requestId: evaluationRequestId,
+      };
+      const modeEvaluationIsCurrent = () => (
+        operationTokenIsCurrent(evaluationToken, evaluationRequestRef.current)
+        && hourlyFamilyRef.current === expectedHourly
+      );
       void Promise.all([
         loadPaperPortfolio(nextMode),
         loadAnalytics(nextMode),
-        (isHourly ? kalshiAPI.evaluateHourly(nextMode) : kalshiAPI.evaluate(nextConfig)).then((response) => {
-          if (evaluationRequestRef.current === evaluationRequestId && response.data?.success) {
-            acceptPayload(response.data, nextMode);
+        (expectedHourly ? kalshiAPI.evaluateHourly(nextMode) : kalshiAPI.evaluate(nextConfig)).then((response) => {
+          if (!response.data?.success) throw new Error(response.data?.message || 'Kalshi evaluation failed');
+          if (!modeEvaluationIsCurrent()) return;
+          if (!kalshiResponseStateMatchesMode(response.data?.robotState, nextMode)) {
+            throw new Error('Kalshi evaluation returned state for a stale execution mode.');
           }
+          acceptPayload(response.data, nextMode);
         }),
       ])
         .catch((requestError: any) => {
-          if (modeRef.current === nextMode && evaluationRequestRef.current === evaluationRequestId) {
+          if (modeEvaluationIsCurrent()) {
             setError(requestError?.response?.data?.message || copy('Kalshi account refresh failed. Try again.', 'Kalshi 账户刷新失败，请重试。'));
           }
         })
         .finally(() => {
-          if (modeRef.current === nextMode && evaluationRequestRef.current === evaluationRequestId) {
+          if (modeEvaluationIsCurrent()) {
             setRefreshing(false);
           }
         });
     };
     window.addEventListener(KALSHI_CONFIG_CHANGED_EVENT, handleExternalConfigChange);
     return () => window.removeEventListener(KALSHI_CONFIG_CHANGED_EVENT, handleExternalConfigChange);
-  }, [acceptPayload, copy, isHourly, loadAnalytics, loadPaperPortfolio]);
+  }, [acceptPayload, copy, loadAnalytics, loadPaperPortfolio, operationTokenIsCurrent]);
 
   React.useEffect(() => {
     const mode = executionMode;
+    const token: KalshiOperationToken = {
+      mode,
+      epoch: operationEpochRef.current,
+      requestId: robotStatusRequestRef.current + 1,
+    };
+    robotStatusRequestRef.current = token.requestId;
     kalshiAPI.paperRobotStatus(mode)
       .then((response) => {
-        if (!mountedRef.current || modeRef.current !== mode) return;
-        if (response.data?.state && (response.data.state.config?.executionMode === mode)) setRobotState(response.data.state);
+        if (!shouldAcceptKalshiOperationResponse(
+          token,
+          modeRef.current,
+          operationEpochRef.current,
+          robotStatusRequestRef.current,
+          response.data?.state,
+        )) return;
+        setRobotState(response.data.state);
       })
       .catch(() => undefined);
     void loadPaperPortfolio(mode);
@@ -443,7 +850,7 @@ const Kalshi: React.FC = () => {
     syncedServerConfigRef.current = signature;
     setConfig((current) => {
       const next = { ...current, ...serverConfig } as KalshiBotConfig;
-      writeStoredConfig(next);
+      writeStoredConfig(next, false);
       return next;
     });
   }, [executionMode, robotState?.config]);
@@ -489,44 +896,133 @@ const Kalshi: React.FC = () => {
   }, [loadAnalytics]);
 
   const toggleRobot = async () => {
-    if (robotBusy) return;
+    if (robotBusy || activeWriteOperationRef.current) return;
+    const expectedMode = modeRef.current;
+    const expectedHourly = hourlyFamilyRef.current;
+    const token = beginWriteOperation(expectedMode);
+    if (!token) return;
+    const scopedConfig: KalshiBotConfig = {
+      ...config,
+      executionMode: expectedMode,
+    };
+    const requestedEnabled = !robotState?.enabled;
     setRobotBusy(true);
     try {
-      writeStoredConfig(config);
-      const response = await kalshiAPI.setPaperRobot(!robotState?.enabled, config, executionMode);
-      if (response.data?.state) setRobotState(response.data.state);
-      if (response.data?.portfolio) setPaperPortfolio(response.data.portfolio);
-      if (response.data?.snapshot && response.data?.decision) {
-        acceptPayload({ success: true, snapshot: response.data.snapshot, decision: response.data.decision, robotState: response.data.state }, executionMode);
+      writeStoredConfig(scopedConfig, false);
+      const response = await kalshiAPI.setPaperRobot(requestedEnabled, scopedConfig, expectedMode);
+      if (!writeOperationIsCurrent(token)) return;
+      if (!response.data?.success) {
+        throw new Error(response.data?.message || 'Kalshi robot update failed');
+      }
+      if (!shouldAcceptKalshiOperationResponse(
+        token,
+        modeRef.current,
+        operationEpochRef.current,
+        writeOperationRequestRef.current,
+        response.data?.state,
+      )) {
+        throw new Error(copy(
+          'Kalshi returned robot state for a stale execution mode.',
+          'Kalshi 返回了过期执行模式的机器人状态。',
+        ));
+      }
+      setRobotState(response.data.state);
+      // A successful start may include the tick's raw risk portfolio. Do not
+      // commit it because Real display-baseline filtering is applied only by
+      // the dedicated Portfolio GET performed in finally.
+      if (
+        hourlyFamilyRef.current === expectedHourly
+        && response.data?.snapshot
+        && response.data?.decision
+      ) {
+        acceptPayload({
+          success: true,
+          snapshot: response.data.snapshot,
+          decision: response.data.decision,
+          robotState: response.data.state,
+        }, expectedMode);
       }
       setError('');
     } catch (requestError: any) {
-      setError(requestError?.response?.data?.message || copy('Kalshi robot could not be updated.', 'Kalshi 机器人无法更新。'));
+      if (writeOperationIsCurrent(token)) {
+        setError(requestError?.response?.data?.message || requestError?.message || copy(
+          'Kalshi robot could not be updated.',
+          'Kalshi 机器人无法更新。',
+        ));
+      }
     } finally {
-      setRobotBusy(false);
+      if (writeOperationIsCurrent(token)) {
+        activeWriteOperationRef.current = null;
+        setRobotBusy(false);
+        void loadPaperPortfolio(expectedMode);
+      }
     }
   };
 
   const applyConfig = async (nextConfig: KalshiBotConfig = config) => {
-    if (applyBusy) return;
+    if (applyBusy || activeWriteOperationRef.current) return;
+    const expectedMode = modeRef.current;
+    const expectedHourly = hourlyFamilyRef.current;
+    const token = beginWriteOperation(expectedMode);
+    if (!token) return;
+    const scopedConfig: KalshiBotConfig = {
+      ...nextConfig,
+      executionMode: expectedMode,
+    };
     setApplyBusy(true);
     setApplyMessage('');
-    setConfig(nextConfig);
-    writeStoredConfig(nextConfig);
+    setConfig(scopedConfig);
+    writeStoredConfig(scopedConfig, false);
     try {
-      const saved = await kalshiAPI.savePaperRobotConfig(nextConfig, nextConfig.executionMode);
-      if (saved.data?.state) setRobotState(saved.data.state);
-      const response = isHourly
-        ? await kalshiAPI.evaluateHourly(nextConfig.executionMode)
-        : await kalshiAPI.evaluate(nextConfig);
+      const saved = await kalshiAPI.savePaperRobotConfig(scopedConfig, expectedMode);
+      if (!writeOperationIsCurrent(token)) return;
+      if (!saved.data?.success) {
+        throw new Error(saved.data?.message || 'Kalshi robot configuration could not be saved');
+      }
+      if (!shouldAcceptKalshiOperationResponse(
+        token,
+        modeRef.current,
+        operationEpochRef.current,
+        writeOperationRequestRef.current,
+        saved.data?.state,
+      )) {
+        throw new Error(copy(
+          'Kalshi returned configuration state for a stale execution mode.',
+          'Kalshi 返回了过期执行模式的配置状态。',
+        ));
+      }
+      setRobotState(saved.data.state);
+      const response = expectedHourly
+        ? await kalshiAPI.evaluateHourly(expectedMode)
+        : await kalshiAPI.evaluate(scopedConfig);
+      if (!writeOperationIsCurrent(token)) return;
       if (!response.data?.success) throw new Error(response.data?.message || 'Kalshi evaluation failed');
-      acceptPayload(response.data, nextConfig.executionMode === 'real' ? 'real' : 'paper');
+      if (hourlyFamilyRef.current === expectedHourly) {
+        if (
+          response.data.robotState
+          && !kalshiResponseStateMatchesMode(response.data.robotState, expectedMode)
+        ) {
+          throw new Error(copy(
+          'Kalshi evaluation returned state for a stale execution mode.',
+          'Kalshi 评估返回了过期执行模式的状态。',
+          ));
+        }
+        acceptPayload(response.data, expectedMode);
+      }
       setApplyMessage(copy('Saved and evaluated with the new limits.', '已保存，并使用新限制完成评估。'));
-      await loadPaperPortfolio(nextConfig.executionMode === 'real' ? 'real' : 'paper');
     } catch (requestError: any) {
-      setError(requestError?.response?.data?.message || copy('Robot limits could not be saved.', '机器人限制无法保存。'));
+      if (writeOperationIsCurrent(token)) {
+        setError(requestError?.response?.data?.message || requestError?.message || copy(
+          'Robot limits could not be saved.',
+          '机器人限制无法保存。',
+        ));
+      }
     } finally {
-      setApplyBusy(false);
+      if (writeOperationIsCurrent(token)) {
+        activeWriteOperationRef.current = null;
+        setApplyBusy(false);
+        void loadPaperPortfolio(expectedMode);
+      }
     }
   };
 
@@ -654,11 +1150,7 @@ const Kalshi: React.FC = () => {
 
   const renderRiskControls = () => {
     const modeEquity = paperPortfolio
-      ? (
-        isRealMode
-          ? Number(paperPortfolio.balance?.portfolio_value ?? paperPortfolio.balance?.balance ?? 0)
-          : Number(paperPortfolio.balance?.balance || 0) + Number(paperPortfolio.balance?.portfolio_value || 0)
-      ) / 100
+      ? kalshiAccountEquityDollars(paperPortfolio.balance)
       : Number(config.paperBankroll || 0);
     const controls: Array<{
       key: keyof KalshiBotConfig;
@@ -669,27 +1161,28 @@ const Kalshi: React.FC = () => {
       step: number;
       scale?: number;
     }> = [
-      { key: 'riskPerTradePct', label: ['Risk per order', '每次下单风险'], unit: ['%', '%'], min: 0.1, max: 2, step: 0.05 },
-      { key: 'minModelProbability', label: ['Model probability floor', '模型概率下限'], unit: ['%', '%'], min: 50, max: 90, step: 1, scale: 100 },
-      { key: 'minPrice', label: ['Entry price floor', '进场价格下限'], unit: ['cents', '美分'], min: 30, max: 60, step: 1, scale: 100 },
-      { key: 'maxPrice', label: ['Entry price ceiling', '进场价格上限'], unit: ['cents', '美分'], min: 40, max: 99, step: 1, scale: 100 },
+      { key: 'riskPerTradePct', label: ['Risk per order', '每次下单风险'], unit: ['%', '%'], min: 0.1, max: 0.5, step: 0.05 },
+      { key: 'maxDailyLossPct', label: ['Daily realized-loss stop', '单日已实现亏损停止线'], unit: ['%', '%'], min: 0.1, max: 2, step: 0.1 },
+      { key: 'minModelProbability', label: ['Model probability floor', '模型概率下限'], unit: ['%', '%'], min: 64, max: 90, step: 1, scale: 100 },
+      { key: 'minPrice', label: ['Entry price floor', '进场价格下限'], unit: ['cents', '美分'], min: 47, max: 60, step: 1, scale: 100 },
+      { key: 'maxPrice', label: ['Entry price ceiling', '进场价格上限'], unit: ['cents', '美分'], min: 60, max: 92, step: 1, scale: 100 },
       { key: 'minSecondsToClose', label: ['Entry window start', '进场窗口起点'], unit: ['seconds to close', '距关闭秒数'], min: 45, max: 360, step: 5 },
       { key: 'maxSecondsToClose', label: ['Entry window end', '进场窗口终点'], unit: ['seconds to close', '距关闭秒数'], min: 180, max: 840, step: 10 },
-      { key: 'minNetEdge', label: ['Minimum net edge', '最低净边际'], unit: ['%', '%'], min: 0, max: 15, step: 0.25, scale: 100 },
-      { key: 'minConservativeEdge', label: ['Conservative edge floor', '保守边际下限'], unit: ['%', '%'], min: 0, max: 10, step: 0.25, scale: 100 },
+      { key: 'minNetEdge', label: ['Minimum net edge', '最低净边际'], unit: ['%', '%'], min: 1, max: 15, step: 0.25, scale: 100 },
+      { key: 'minConservativeEdge', label: ['Conservative edge floor', '保守边际下限'], unit: ['%', '%'], min: 0.75, max: 10, step: 0.25, scale: 100 },
       { key: 'maxSpread', label: ['Maximum spread', '最大点差'], unit: ['cents', '美分'], min: 1, max: 20, step: 0.5, scale: 100 },
       { key: 'minDepthContracts', label: ['Minimum ask depth', '最低卖方深度'], unit: ['contracts', '份'], min: 1, max: 10000, step: 5 },
       { key: 'maxBookParticipation', label: ['Book participation cap', '盘口参与率上限'], unit: ['%', '%'], min: 1, max: 50, step: 1, scale: 100 },
-      { key: 'maxPortfolioExposurePct', label: ['Portfolio exposure cap', '组合敞口上限'], unit: ['%', '%'], min: 2, max: 50, step: 1 },
-      { key: 'maxSingleMarketExposurePct', label: ['Single-market exposure cap', '单一市场敞口上限'], unit: ['%', '%'], min: 1, max: 20, step: 1 },
+      { key: 'maxPortfolioExposurePct', label: ['Portfolio exposure cap', '组合敞口上限'], unit: ['%', '%'], min: 2, max: 10, step: 1 },
+      { key: 'maxSingleMarketExposurePct', label: ['Single-market / event exposure cap', '单一市场 / 事件敞口上限'], unit: ['%', '%'], min: 1, max: 2, step: 0.25 },
       { key: 'addMinModelProbability', label: ['Add-on probability floor', '加仓概率下限'], unit: ['%', '%'], min: 50, max: 95, step: 1, scale: 100 },
       { key: 'addMinConservativeEdge', label: ['Add-on edge floor', '加仓边际下限'], unit: ['%', '%'], min: 0, max: 10, step: 0.25, scale: 100 },
-      { key: 'addMinProbabilityImprovement', label: ['Add-on probability improvement', '加仓概率改善'], unit: ['percentage points', '百分点'], min: 0, max: 10, step: 0.25, scale: 100 },
-      { key: 'addMinEdgeImprovement', label: ['Add-on edge improvement', '加仓边际改善'], unit: ['percentage points', '百分点'], min: 0, max: 3, step: 0.1, scale: 100 },
-      { key: 'addSizeFraction', label: ['Add-on size fraction', '单次加仓比例'], unit: ['% of fresh size', '新计算仓位比例'], min: 10, max: 100, step: 5, scale: 100 },
-      { key: 'minimumAddIntervalSeconds', label: ['Minimum add interval', '最短加仓间隔'], unit: ['seconds', '秒'], min: 10, max: 180, step: 5 },
+      { key: 'addMinProbabilityImprovement', label: ['Add-on probability improvement', '加仓概率改善'], unit: ['percentage points', '百分点'], min: 1, max: 10, step: 0.25, scale: 100 },
+      { key: 'addMinEdgeImprovement', label: ['Add-on edge improvement', '加仓边际改善'], unit: ['percentage points', '百分点'], min: 0.1, max: 3, step: 0.1, scale: 100 },
+      { key: 'addSizeFraction', label: ['Add-on size fraction', '单次加仓比例'], unit: ['% of fresh size', '新计算仓位比例'], min: 10, max: 25, step: 5, scale: 100 },
+      { key: 'minimumAddIntervalSeconds', label: ['Minimum add interval', '最短加仓间隔'], unit: ['seconds', '秒'], min: 90, max: 180, step: 5 },
       { key: 'executionPriceTolerance', label: ['IOC crossing allowance', 'IOC 成交容差'], unit: ['cents', '美分'], min: 0, max: 3, step: 0.25, scale: 100 },
-      { key: 'minimumHoldSeconds', label: ['Minimum hold time', '最短持仓时间'], unit: ['seconds', '秒'], min: 0, max: 300, step: 5 },
+      { key: 'minimumHoldSeconds', label: ['Minimum hold time', '最短持仓时间'], unit: ['seconds', '秒'], min: 60, max: 300, step: 5 },
       { key: 'exitValueBuffer', label: ['Exit edge buffer', '平仓边际缓冲'], unit: ['%', '%'], min: 0.25, max: 5, step: 0.25, scale: 100 },
       { key: 'minimumExitProfit', label: ['Minimum net exit profit', '最低净平仓盈利'], unit: ['cents per contract', '每份美分'], min: 0, max: 10, step: 0.5, scale: 100 },
       { key: 'takeProfitScaleOutPct', label: ['Take-profit scale-out', '止盈减仓比例'], unit: ['% of position', '持仓比例'], min: 10, max: 100, step: 5, scale: 100 },
@@ -797,13 +1290,22 @@ const Kalshi: React.FC = () => {
       return <section className="kalshi-empty-workspace"><SafetyCertificateOutlined /><span>{kalshiModeLabel}</span><h2>{isRealMode ? copy('Your Kalshi account is loading.', '正在加载你的 Kalshi 账户。') : copy('The built-in Paper account is loading.', '内置 Paper 账户正在加载。')}</h2><p>{isRealMode ? copy('Real mode uses the API key saved in Settings.', '实盘模式使用设置里保存的 API Key。') : copy('No personal Kalshi API key is required.', '无需配置个人 Kalshi API Key。')}</p></section>;
     }
     const cash = Number(paperPortfolio.balance?.balance || 0) / 100;
-    const portfolioValue = Number(paperPortfolio.balance?.portfolio_value || 0) / 100;
-    const portfolioMode = (isRealMode || paperPortfolio.environment === 'real') ? 'real' : 'paper';
-    // Kalshi Real's portfolio_value is already total account value (cash plus
-    // positions). AlphaLab Paper stores open-position value separately.
-    const accountEquity = portfolioMode === 'real'
-      ? Number(paperPortfolio.balance?.portfolio_value ?? paperPortfolio.balance?.balance ?? 0) / 100
-      : cash + portfolioValue;
+    const portfolioMode = String(paperPortfolio.environment).toLowerCase() === 'real' ? 'real' : 'paper';
+    const visibleLedger = visibleKalshiLedger(paperPortfolio);
+    const portfolioWarnings = kalshiPortfolioWarnings(paperPortfolio);
+    const visibleResetAtMs = visibleLedger.resetAt ? Date.parse(visibleLedger.resetAt) : Number.NaN;
+    const visibleRealRecord = (record: Record<string, any>) => (
+      portfolioMode !== 'real'
+      || (
+        visibleLedger.baselineReady
+        && Number.isFinite(visibleResetAtMs)
+        && (recordTimeMs(record) ?? Number.NEGATIVE_INFINITY) > visibleResetAtMs
+      )
+    );
+    // Kalshi defines portfolio_value as the current value of positions only.
+    // Total account equity is therefore cash balance plus portfolio value in
+    // both Real and AlphaLab Paper environments.
+    const accountEquity = kalshiAccountEquityDollars(paperPortfolio.balance);
     const analytics = paperPortfolio.analytics || {};
     const fallbackSettlementRecords = robotState?.strategy?.settlementRecords || [];
     const realizedRecords = (
@@ -815,44 +1317,113 @@ const Kalshi: React.FC = () => {
             ? analytics.settlementRecords
             : fallbackSettlementRecords
     )
-      .filter((record: any) => !record.environment || record.environment === portfolioMode);
+      .filter((record: any) => !record.environment || record.environment === portfolioMode)
+      .filter(visibleRealRecord);
     const fallbackEquityCurve = robotState?.strategy?.equityCurve || [];
     const equityCurve = (Array.isArray(analytics.equityCurve) ? analytics.equityCurve : fallbackEquityCurve)
-      .filter((point: any) => !point.environment || point.environment === portfolioMode);
-    const realizedSamples = analytics.realizedSamples ?? realizedRecords.length;
-    const wins = analytics.realizedWins ?? analytics.wins ?? realizedRecords.filter((record) => record.pnl > 0).length;
-    const winRate = analytics.realizedWinRate ?? analytics.winRate ?? (realizedSamples ? wins / realizedSamples : null);
-    const totalPnl = analytics.realizedTotalPnl ?? analytics.totalPnl ?? realizedRecords.reduce((sum, record) => sum + Number(record.pnl || 0), 0);
-    const averagePnl = analytics.realizedAveragePnl ?? analytics.averagePnl ?? (realizedSamples ? Number(totalPnl) / realizedSamples : 0);
+      .filter((point: any) => !point.environment || point.environment === portfolioMode)
+      .filter(visibleRealRecord);
+    const realizedSamples = portfolioMode === 'real'
+      ? realizedRecords.length
+      : analytics.realizedSamples ?? realizedRecords.length;
+    const wins = portfolioMode === 'real'
+      ? realizedRecords.filter((record) => record.pnl > 0).length
+      : analytics.realizedWins ?? analytics.wins ?? realizedRecords.filter((record) => record.pnl > 0).length;
+    const winRate = portfolioMode === 'real'
+      ? (realizedSamples ? wins / realizedSamples : null)
+      : analytics.realizedWinRate ?? analytics.winRate ?? (realizedSamples ? wins / realizedSamples : null);
+    const totalPnl = portfolioMode === 'real'
+      ? realizedRecords.reduce((sum, record) => sum + Number(record.pnl || 0), 0)
+      : analytics.realizedTotalPnl ?? analytics.totalPnl ?? realizedRecords.reduce((sum, record) => sum + Number(record.pnl || 0), 0);
+    const averagePnl = portfolioMode === 'real'
+      ? (realizedSamples ? Number(totalPnl) / realizedSamples : 0)
+      : analytics.realizedAveragePnl ?? analytics.averagePnl ?? (realizedSamples ? Number(totalPnl) / realizedSamples : 0);
     const positionRows = paperPortfolio.positions || [];
-    const orderRows = paperPortfolio.orders || [];
+    const orderRows = visibleLedger.orders;
+    const fillRows = visibleLedger.fills;
+    const settlementRows = visibleLedger.settlements;
     const filledOrders = orderRows.filter((item: any) => Number(item.fill_count_fp || 0) > 0);
     const rejectedOrders = orderRows.filter((item: any) => String(item.status || '').toLowerCase() === 'rejected');
     const totalFees = orderRows.reduce((sum: number, item: any) => sum + Number(orderFee(item) || 0), 0);
     // Portfolio analytics ---------------------------------------------------
     const startingBalance = Number(paperPortfolio.balance?.starting_balance || 0) / 100;
     const displayBaseline = analytics.displayBaseline;
-    const displayBaselineEquity = displayBaseline?.active
-      ? Number(displayBaseline.baselineEquityCents || 0) / 100
+    const visiblePeriodActive = portfolioMode === 'real'
+      ? visibleLedger.baselineReady
+      : Boolean(displayBaseline?.active);
+    const displayBaselineEquity = visiblePeriodActive
+      ? Number(displayBaseline?.baselineEquityCents || 0) / 100
       : 0;
-    const returnBase = displayBaselineEquity > 0 ? displayBaselineEquity : startingBalance;
+    const returnBase = displayBaselineEquity > 0
+      ? displayBaselineEquity
+      : portfolioMode === 'real' && !visiblePeriodActive
+        ? 0
+        : startingBalance;
     const unrealizedPnl = positionRows.reduce((sum: number, item: any) => sum + Number(item.unrealized_pnl_dollars || 0), 0);
     const openExposure = positionRows.reduce((sum: number, item: any) => sum + Number(item.market_exposure_dollars || 0), 0);
     const totalReturnPct = returnBase > 0 ? (accountEquity - returnBase) / returnBase : null;
     const pnlValues = realizedRecords.map((record: any) => Number(record.pnl || 0));
-    const bestTrade = analytics.realizedBestTrade ?? (pnlValues.length ? Math.max(...pnlValues) : null);
-    const worstTrade = analytics.realizedWorstTrade ?? (pnlValues.length ? Math.min(...pnlValues) : null);
+    const bestTrade = portfolioMode === 'real'
+      ? (pnlValues.length ? Math.max(...pnlValues) : null)
+      : analytics.realizedBestTrade ?? (pnlValues.length ? Math.max(...pnlValues) : null);
+    const worstTrade = portfolioMode === 'real'
+      ? (pnlValues.length ? Math.min(...pnlValues) : null)
+      : analytics.realizedWorstTrade ?? (pnlValues.length ? Math.min(...pnlValues) : null);
     const losses = Math.max(0, realizedSamples - Number(wins || 0));
     const grossWin = pnlValues.filter((value) => value > 0).reduce((sum, value) => sum + value, 0);
     const grossLoss = pnlValues.filter((value) => value < 0).reduce((sum, value) => sum + Math.abs(value), 0);
     const profitFactor = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? Infinity : null);
-    const familyPerformance = (analytics.marketPerformance || {}) as Record<string, any>;
+    const familyPerformance = (
+      portfolioMode === 'real' && !visibleLedger.baselineReady
+        ? {}
+        : analytics.marketPerformance || {}
+    ) as Record<string, any>;
+    const portfolioCompletenessBanner = portfolioWarnings.length ? (
+      <div className="kalshi-error" role="alert" data-testid="kalshi-portfolio-completeness-warning">
+        <WarningOutlined />
+        <span>
+          <b>{copy('Kalshi returned partial account data', 'Kalshi 返回了不完整的账户数据')}</b>
+          {portfolioWarnings.join(' · ')}
+        </span>
+      </div>
+    ) : null;
+    const realLedgerBanner = portfolioMode === 'real' ? (
+      visibleLedger.baselineReady ? (
+        <section className="kalshi-display-baseline" data-testid="kalshi-real-ledger-baseline">
+          <DatabaseOutlined />
+          <div>
+            <span>{copy('ALPHALAB REAL LEDGER', 'ALPHALAB 实盘账本')}</span>
+            <strong>{copy('Only AlphaLab-managed activity is shown', '仅显示由 AlphaLab 管理的活动')}</strong>
+            <small>
+              {copy('Execution records begin after', '执行记录起始于')} {visibleLedger.resetAt ? new Date(visibleLedger.resetAt).toLocaleString(chinese ? 'zh-CN' : 'en-US') : '--'}
+              {' · '}
+              {copy('Account balance and open positions still reflect the full Kalshi account.', '账户余额和未平仓持仓仍反映完整的 Kalshi 账户。')}
+            </small>
+          </div>
+          <div><b>{orderRows.length}</b><span>{copy('visible AlphaLab orders', '笔可见 AlphaLab 订单')}</span></div>
+        </section>
+      ) : (
+        <div className="kalshi-policy-note" role="status" data-testid="kalshi-real-ledger-baseline">
+          <WarningOutlined />
+          <span>
+            <b>{copy('The AlphaLab Real execution ledger starts blank.', 'AlphaLab 实盘执行账本从空白开始。')}</b>
+            {' '}
+            {copy(
+              'No real account history is attributed to AlphaLab until the backend establishes an AlphaLab-only baseline. Balance and open positions remain visible.',
+              '在后端建立仅限 AlphaLab 的基线之前，不会把任何实盘账户历史归为 AlphaLab；账户余额和未平仓持仓仍会显示。',
+            )}
+          </span>
+        </div>
+      )
+    ) : null;
 
     if (view === 'orders') {
       return (
         <>
+          {portfolioCompletenessBanner}
+          {realLedgerBanner}
           <section className="kalshi-execution-strip">
-            <div><span>{copy('ORDER REQUESTS', '订单请求')}</span><strong>{orderRows.length}</strong><small>{copy('Current account ledger', '当前账户流水')}</small></div>
+            <div><span>{copy('ORDER REQUESTS', '订单请求')}</span><strong>{orderRows.length}</strong><small>{portfolioMode === 'real' ? copy('AlphaLab visible-period ledger', 'AlphaLab 当前周期流水') : copy('Current account ledger', '当前账户流水')}</small></div>
             <div><span>{copy('FILLED', '已成交')}</span><strong>{filledOrders.length}</strong><small>{copy('Full or partial fills', '全部或部分成交')}</small></div>
             <div><span>{copy('REJECTED', '已拒绝')}</span><strong>{rejectedOrders.length}</strong><small>{copy('No position created', '未建立仓位')}</small></div>
             <div><span>{copy('REPORTED FEES', '已报告费用')}</span><strong>{money(totalFees)}</strong><small>{copy('Across displayed orders', '当前列表合计')}</small></div>
@@ -876,12 +1447,12 @@ const Kalshi: React.FC = () => {
                     <span><em>{String(item.status || '--').replace(/_/g, ' ')}</em>{item.rejection_reason ? <small>{item.rejection_reason}</small> : null}</span>
                   </div>
                 );
-              }) : <div className="kalshi-empty-row">{isRealMode ? copy('No real Kalshi IOC orders have been returned yet.', '尚未返回实盘 Kalshi IOC 订单。') : copy('No Paper IOC orders have been submitted yet.', '尚无 Paper IOC 订单。')}</div>}
+              }) : <div className="kalshi-empty-row">{isRealMode ? copy('No baseline-qualified AlphaLab Real IOC orders are available yet.', '当前尚无符合基线条件的 AlphaLab 实盘 IOC 订单。') : copy('No Paper IOC orders have been submitted yet.', '尚无 Paper IOC 订单。')}</div>}
             </div>
           </section>
           <section className="kalshi-ledger-section">
-            <div className="kalshi-section-head"><div><span>{copy('EXECUTION EVENTS', '执行事件')}</span><h2>{copy('Fills and settlements', '成交与结算')}</h2><small>{copy('Raw account events for execution audit.', '用于执行审计的原始账户事件。')}</small></div><strong>{paperPortfolio.fills.length + paperPortfolio.settlements.length}</strong></div>
-            <div className="kalshi-activity-list">{[...paperPortfolio.fills.map((item) => ({ ...item, kind: 'FILL' })), ...paperPortfolio.settlements.map((item) => ({ ...item, kind: 'SETTLEMENT' }))].map((item: any, index) => {
+            <div className="kalshi-section-head"><div><span>{copy('EXECUTION EVENTS', '执行事件')}</span><h2>{copy('Fills and settlements', '成交与结算')}</h2><small>{portfolioMode === 'real' ? copy('Baseline-qualified AlphaLab events for execution audit.', '用于执行审计、符合基线条件的 AlphaLab 事件。') : copy('Raw account events for execution audit.', '用于执行审计的原始账户事件。')}</small></div><strong>{fillRows.length + settlementRows.length}</strong></div>
+            <div className="kalshi-activity-list">{[...fillRows.map((item) => ({ ...item, kind: 'FILL' })), ...settlementRows.map((item) => ({ ...item, kind: 'SETTLEMENT' }))].map((item: any, index) => {
               const eventTime = item.created_time || item.settled_time;
               return <div key={item.fill_id || item.settlement_id || `${item.ticker}-${index}`}><b className={item.kind === 'SETTLEMENT' ? 'is-settlement' : ''}>{item.kind}</b><strong>{item.ticker || item.market_ticker || '--'}</strong><span>{String(item.outcome_side || item.market_result || item.side || '--').toUpperCase()}</span><span>{item.count_fp || item.yes_count_fp || item.no_count_fp || '--'}</span><small>{eventTime ? new Date(eventTime).toLocaleString(chinese ? 'zh-CN' : 'en-US') : '--'}</small></div>;
             })}</div>
@@ -893,14 +1464,16 @@ const Kalshi: React.FC = () => {
     const returnClass = totalReturnPct === null ? '' : totalReturnPct >= 0 ? 'is-profit' : 'is-loss';
     return (
       <>
-        {displayBaseline?.active && <section className="kalshi-display-baseline" data-testid="kalshi-display-baseline">
+        {portfolioCompletenessBanner}
+        {realLedgerBanner}
+        {portfolioMode !== 'real' && visiblePeriodActive && <section className="kalshi-display-baseline" data-testid="kalshi-display-baseline">
           <DatabaseOutlined />
           <div>
             <span>{copy('VISIBLE PERIOD', '当前显示周期')}</span>
             <strong>{copy('New measurement period is active', '新的统计周期已启用')}</strong>
-            <small>{copy('Visible P/L and results restart from', '可见盈亏与交易结果从')} {displayBaseline.resetAt ? new Date(displayBaseline.resetAt).toLocaleString(chinese ? 'zh-CN' : 'en-US') : '--'} · {copy('The full execution ledger remains available in Orders.', '完整订单与成交历史仍保留在“订单”页面。')}</small>
+            <small>{copy('Visible P/L and results restart from', '可见盈亏与交易结果从')} {displayBaseline?.resetAt ? new Date(displayBaseline.resetAt).toLocaleString(chinese ? 'zh-CN' : 'en-US') : '--'} · {copy('The full execution ledger remains available in Orders.', '完整订单与成交历史仍保留在“订单”页面。')}</small>
           </div>
-          <div><b>{displayBaseline.archivedRealizedEvents || 0}</b><span>{copy('preserved prior events', '笔历史事件已保留')}</span></div>
+          <div><b>{displayBaseline?.archivedRealizedEvents || 0}</b><span>{copy('preserved prior events', '笔历史事件已保留')}</span></div>
         </section>}
         <section className="kalshi-family-performance">
           {([
@@ -925,7 +1498,7 @@ const Kalshi: React.FC = () => {
             <strong>{money(accountEquity)}</strong>
             <small>{totalReturnPct === null
               ? copy('Cash plus open-position value', '现金加未结持仓市值')
-              : <>{displayBaseline?.active ? copy('Visible-period return', '当前周期回报') : copy('Total return', '总回报')} <em className={returnClass}>{totalReturnPct >= 0 ? '+' : ''}{(totalReturnPct * 100).toFixed(2)}%</em>{returnBase > 0 ? ` · ${copy('from', '基准')} ${money(returnBase)}` : ''}</>}</small>
+              : <>{visiblePeriodActive ? copy('Visible-period return', '当前周期回报') : copy('Total return', '总回报')} <em className={returnClass}>{totalReturnPct >= 0 ? '+' : ''}{(totalReturnPct * 100).toFixed(2)}%</em>{returnBase > 0 ? ` · ${copy('from', '基准')} ${money(returnBase)}` : ''}</>}</small>
           </div>
           <div><span>{isRealMode ? copy('REAL CASH', '实盘现金') : copy('PAPER CASH', '模拟现金')}</span><strong>{money(cash)}</strong><small>{copy('Available buying power', '可用购买力')}</small></div>
           <div><span>{copy('UNREALIZED P/L', '未实现盈亏')}</span><strong className={unrealizedPnl >= 0 ? 'is-profit' : 'is-loss'}>{unrealizedPnl >= 0 ? '+' : ''}{money(unrealizedPnl)}</strong><small>{positionRows.length} {copy('open · exposure', '持仓 · 敞口')} {money(openExposure)}</small></div>
@@ -966,7 +1539,7 @@ const Kalshi: React.FC = () => {
           </div>
         </section>
         <section className="kalshi-ledger-section">
-          <div className="kalshi-section-head"><div><span>{copy('REALIZED LEDGER', '已实现账本')}</span><h2>{copy('Realized trade outcomes', '已实现交易结果')}</h2><small>{displayBaseline?.active ? copy('Showing the current visible period; prior results remain preserved in the durable ledger.', '当前仅显示新周期；以前的结果仍完整保存在持久账本中。') : copy('Every filled sale and final settlement is shown with net P/L.', '每笔成交卖出和最终结算均显示净收益。')}</small></div><strong>{realizedRecords.length}</strong></div>
+          <div className="kalshi-section-head"><div><span>{copy('REALIZED LEDGER', '已实现账本')}</span><h2>{copy('Realized trade outcomes', '已实现交易结果')}</h2><small>{visiblePeriodActive ? copy('Showing the current visible period; prior results remain preserved in the durable ledger.', '当前仅显示新周期；以前的结果仍完整保存在持久账本中。') : portfolioMode === 'real' ? copy('Waiting for the certified AlphaLab-only Real baseline.', '正在等待经过确认、仅限 AlphaLab 的实盘基线。') : copy('Every filled sale and final settlement is shown with net P/L.', '每笔成交卖出和最终结算均显示净收益。')}</small></div><strong>{realizedRecords.length}</strong></div>
           <div className="kalshi-settlement-table">
             <div className="kalshi-settlement-head"><span>{copy('SETTLED', '结算时间')}</span><span>{copy('CONTRACT', '合约')}</span><span>{copy('POSITION / RESULT', '方向 / 结果')}</span><span>{copy('BUY / EXIT', '买入 / 退出价')}</span><span>{copy('SIZE', '数量')}</span><span>{copy('COST / FEES', '成本 / 费用')}</span><span>{copy('REALIZED P/L', '已实现盈亏')}</span></div>
             {realizedRecords.length ? realizedRecords.map((record) => (
@@ -1220,6 +1793,7 @@ const Kalshi: React.FC = () => {
       {showSafetyBanner && <div className={`kalshi-safety-banner${isRealMode ? ' is-real' : ''}`}><SafetyCertificateOutlined /><span><b>{isRealMode ? copy('Kalshi Real mode.', 'Kalshi 实盘模式。') : copy('AlphaLab Paper mode.', 'AlphaLab 内置模拟盘。')}</b>{isRealMode ? copy(' Public market data is still used for evidence; orders are signed on the backend with your saved Kalshi API key and sent to your real Kalshi account.', ' 行情证据仍使用公开数据；订单会在后端用你保存的 Kalshi API Key 签名，并发送到你的真实 Kalshi 账户。') : copy(' Fills use production Kalshi public executable quotes and the official taker-fee schedule, but no order is sent to Kalshi and profitability is not guaranteed.', ' 成交使用 Kalshi 正式公开可成交报价和官方 taker 手续费规则，但不会向 Kalshi 发送订单，也不保证盈利。')}</span></div>}
       {showDecisionLoading && loading && !decision && <div className="kalshi-loading"><ClockCircleOutlined /><span>{copy('Loading Kalshi contract and BTC reference data...', '正在加载 Kalshi 合约与 BTC 参考数据……')}</span></div>}
       {error && <div className="kalshi-error" role="alert"><CloseCircleOutlined /><span><b>{copy('Data refresh failed', '数据刷新失败')}</b>{error}</span><button type="button" onClick={() => void evaluate()}>{copy('Retry', '重试')}</button></div>}
+      {showPortfolioRefresh && portfolioError && <div className="kalshi-error" role="alert" data-testid="kalshi-portfolio-error"><CloseCircleOutlined /><span><b>{copy('Account data was blocked', '账户数据已被阻止')}</b>{portfolioError}</span><button type="button" onClick={() => void loadPaperPortfolio()} disabled={portfolioLoading}>{copy('Retry', '重试')}</button></div>}
       {!loading && renderBody()}
     </div>
   );

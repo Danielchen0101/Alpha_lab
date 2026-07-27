@@ -1219,18 +1219,26 @@ SENSITIVE_FIELDS = {
 }
 
 
-def get_user_config(user_id, config_type):
+def get_user_config(user_id, config_type, *, bypass_cache=False):
     """Fetch and decrypt user config from Supabase. Returns dict or None.
-    Uses config cache to avoid per-request Supabase DB queries."""
+    Uses config cache to avoid per-request Supabase DB queries unless an
+    irreversible fenced workflow explicitly requests a durable read."""
     if not supabase_admin:
         safe_print(f'[Supabase] get_user_config: supabase_admin is None — cannot read config')
         return None
 
-    # Check config cache first
+    # Credential mutation, connection verification, and Real order routing
+    # call with bypass_cache=True only after acquiring their shared durable
+    # fence. Never satisfy those reads from this process-local TTL cache.
     cache_key = (user_id, config_type)
-    cached = _cache_get(_config_cache, cache_key, SUPABASE_CONFIG_CACHE_TTL_SECONDS)
-    if cached is not None:
-        return cached
+    if not bypass_cache:
+        cached = _cache_get(
+            _config_cache,
+            cache_key,
+            SUPABASE_CONFIG_CACHE_TTL_SECONDS,
+        )
+        if cached is not None:
+            return cached
 
     try:
         resp = _supabase_execute(
@@ -1257,6 +1265,7 @@ def get_user_config(user_id, config_type):
             )
             return config
         else:
+            _cache_invalidate(_config_cache, cache_key)
             safe_print(f'[Supabase] get_user_config: no row found for user={user_id[:8]}... type={config_type}')
     except Exception as e:
         safe_print(f'[Supabase] get_user_config failed: {type(e).__name__}: {e}')
@@ -52857,6 +52866,11 @@ _KALSHI_API_CONTROLS = register_kalshi_api(
     require_auth=require_auth,
     safe_print=safe_print,
     get_user_config=get_user_config,
+    authoritative_config_loader=lambda user_id, config_type: get_user_config(
+        user_id,
+        config_type,
+        bypass_cache=True,
+    ),
     save_user_config=save_user_config,
     mask_key=mask_key,
     robot_state_path=os.path.join(os.path.dirname(__file__), "kalshi_robot_state.json"),

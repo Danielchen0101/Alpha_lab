@@ -18,9 +18,12 @@ BTC_15M_SERIES = "KXBTC15M"
 DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "executionMode": "paper",
     "paperBankroll": 1000.0,
-    "riskPerTradePct": 0.75,
-    "minNetEdge": 0.0075,
-    "minConservativeEdge": 0.002,
+    "riskPerTradePct": 0.50,
+    "maxDailyLossPct": 2.0,
+    # These are policy floors, not an asserted win rate. They must be
+    # recalibrated against genuinely out-of-sample contract outcomes.
+    "minNetEdge": 0.010,
+    "minConservativeEdge": 0.0075,
     "maxSpread": 0.06,
     "maxRelativeSpread": 0.20,
     "minDepthContracts": 5.0,
@@ -29,11 +32,11 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     # more information and exposure duration remains short.
     "minSecondsToClose": 60,
     "maxSecondsToClose": 840,
-    # Buy the model-confirmed favorite side only. Longshot buying (the old
-    # 12-88c band) is what produced a ~20% realized win rate.
+    # Buy the model-confirmed favorite side only. Longshot buying is excluded
+    # because its payoff profile is inconsistent with this carry strategy.
     "minPrice": 0.47,
-    "maxPrice": 0.95,
-    "minModelProbability": 0.58,
+    "maxPrice": 0.92,
+    "minModelProbability": 0.64,
     # Logged out-of-sample contract outcomes show that Kalshi's executable
     # probability is a stronger prior than the old spot-only model early in a
     # contract.  Keep enough model weight to identify dislocations, but do not
@@ -49,9 +52,18 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "basisReserveBps": 3.0,
     "maxVolatilityRatio": 3.0,
     "maxJumpSigma": 5.0,
-    "fractionalKelly": 0.25,
-    "maxPortfolioExposurePct": 25.0,
-    "maxSingleMarketExposurePct": 8.0,
+    "fractionalKelly": 0.15,
+    # The hard loss budget is scaled down when a signal only just clears its
+    # probability/edge floors or when a high-priced favorite offers little
+    # payout relative to the capital at risk. Each multiplier is returned in
+    # the decision payload so the sizing haircut is fully auditable.
+    "minimumRiskBudgetScale": 0.35,
+    "fullRiskModelProbability": 0.75,
+    "fullRiskConservativeEdge": 0.030,
+    "highPriceRiskStart": 0.75,
+    "highPriceRiskFloor": 0.50,
+    "maxPortfolioExposurePct": 10.0,
+    "maxSingleMarketExposurePct": 2.0,
     "executionPriceTolerance": 0.01,
     "exitProbabilityThreshold": 0.35,
     # Exit orders are governed by executable value, not by the model
@@ -59,12 +71,12 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     # noisy five-second update cannot immediately reverse a fresh position.
     "minimumHoldSeconds": 60,
     "reversalCooldownSeconds": 90,
-    "minimumAddIntervalSeconds": 45,
+    "minimumAddIntervalSeconds": 90,
     "addMinModelProbability": 0.64,
     "addMinConservativeEdge": 0.0075,
     "addMinProbabilityImprovement": 0.01,
     "addMinEdgeImprovement": 0.001,
-    "addSizeFraction": 0.50,
+    "addSizeFraction": 0.25,
     "exitValueBuffer": 0.010,
     # Entries happen only inside the contract's bounded final window, so the
     # default is to HOLD TO SETTLEMENT. Crystallizing losses mid-window was a major
@@ -116,6 +128,7 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
     bounds: Dict[str, Tuple[float, float]] = {
         "paperBankroll": (100.0, 1_000_000.0),
         "riskPerTradePct": (0.10, 2.0),
+        "maxDailyLossPct": (0.10, 2.0),
         "minNetEdge": (0.005, 0.15),
         "minConservativeEdge": (0.0, 0.08),
         "maxSpread": (0.01, 0.20),
@@ -137,6 +150,11 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
         "maxVolatilityRatio": (1.5, 5.0),
         "maxJumpSigma": (2.5, 8.0),
         "fractionalKelly": (0.05, 0.50),
+        "minimumRiskBudgetScale": (0.10, 1.0),
+        "fullRiskModelProbability": (0.65, 0.95),
+        "fullRiskConservativeEdge": (0.01, 0.15),
+        "highPriceRiskStart": (0.60, 0.90),
+        "highPriceRiskFloor": (0.25, 1.0),
         "maxPortfolioExposurePct": (2.0, 50.0),
         "maxSingleMarketExposurePct": (1.0, 20.0),
         "executionPriceTolerance": (0.0, 0.03),
@@ -182,6 +200,18 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
     )
     if value["minPrice"] >= value["maxPrice"]:
         value["minPrice"], value["maxPrice"] = 0.50, 0.93
+    value["fullRiskModelProbability"] = max(
+        value["fullRiskModelProbability"],
+        min(0.95, value["minModelProbability"] + 0.01),
+    )
+    value["fullRiskConservativeEdge"] = max(
+        value["fullRiskConservativeEdge"],
+        min(0.15, value["minConservativeEdge"] + 0.005),
+    )
+    value["highPriceRiskStart"] = min(
+        value["highPriceRiskStart"],
+        value["maxPrice"],
+    )
     return value
 
 
@@ -751,14 +781,24 @@ def evaluate_btc15_contract(
     )
     reference_age = _age_seconds(reference_time, now)
     book_age = _age_seconds(book_time, now)
-    reference_fresh = reference_age is None or reference_age <= 10.0
-    book_fresh = book_age is None or book_age <= 8.0
+    reference_fresh = reference_age is not None and reference_age <= 10.0
+    book_fresh = book_age is not None and book_age <= 8.0
+    freshness_detail = " / ".join(
+        (
+            f"spot {reference_age:.1f}s"
+            if reference_age is not None
+            else "spot timestamp missing",
+            f"book {book_age:.1f}s"
+            if book_age is not None
+            else "book timestamp missing",
+        )
+    )
 
     gates = [
         _gate("contract_active", is_active, "Active contract", "合约交易中", f"status={status or 'unknown'}", category="data"),
         _gate("entry_window", timing_ok, "Entry window", "进场时段", f"{max(0, int(seconds_to_close))}s / {settings['minSecondsToClose']}-{settings['maxSecondsToClose']}s", category="data"),
         _gate("reference_ready", strike_ok, "Reference price", "参考价格", "BRTI strike and BTC reference available" if strike_ok else "missing strike or reference", category="data"),
-        _gate("data_freshness", reference_fresh and book_fresh, "Fresh evidence", "数据新鲜度", f"spot {reference_age:.1f}s / book {book_age:.1f}s" if reference_age is not None and book_age is not None else "timestamps supplied by live adapters", category="data"),
+        _gate("data_freshness", reference_fresh and book_fresh, "Fresh evidence", "数据新鲜度", freshness_detail, category="data"),
         _gate("history_sample", sample_ok, "Volatility sample", "波动率样本", f"{len(returns)} one-minute returns", category="data"),
         _gate("volatility_regime", volatility_ok, "Stable volatility regime", "波动状态", f"ratio {(volatility_ratio or 0.0):.2f} / jump {(jump_sigma or 0.0):.1f} sigma", category="signal"),
         _gate(
@@ -796,8 +836,15 @@ def evaluate_btc15_contract(
         _gate("conservative_edge", conservative_edge_ok, "Uncertainty-adjusted edge", "不确定性后边际", f"{conservative_edge * 100:.1f}pp / adaptive min {effective_min_conservative_edge * 100:.2f}pp" if conservative_edge is not None else "edge unavailable", category="signal"),
     ]
 
+    bankroll = _number(account.get("bankroll"), settings["paperBankroll"]) or settings["paperBankroll"]
+    daily_pnl = _number(account.get("dailyRealizedPnl"))
+    if daily_pnl is None:
+        daily_pnl = _number(account.get("dailyPnl"), 0.0) or 0.0
+    daily_realized_loss = max(0.0, -daily_pnl)
+    daily_loss_limit = bankroll * settings["maxDailyLossPct"] / 100.0
+    daily_loss_ok = daily_realized_loss < daily_loss_limit
+
     if account:
-        bankroll = _number(account.get("bankroll"), settings["paperBankroll"]) or settings["paperBankroll"]
         exposure = max(0.0, _number(account.get("portfolioExposure"), 0.0) or 0.0)
         market_exposure = max(0.0, _number(account.get("currentMarketExposure"), 0.0) or 0.0)
         exposure_pct = exposure / max(bankroll, 1.0) * 100.0
@@ -813,6 +860,24 @@ def evaluate_btc15_contract(
                 category="account",
             ),
             _gate("open_order", not bool(account.get("hasOpenOrder")), "No open order", "无未完成订单", "no resting order for this contract" if not account.get("hasOpenOrder") else "open order already exists", category="account"),
+            {
+                **_gate(
+                    "daily_loss_limit",
+                    daily_loss_ok,
+                    "Daily realized loss",
+                    "日内已实现亏损",
+                    (
+                        f"realized loss {daily_realized_loss:.2f} / "
+                        f"entry stop {daily_loss_limit:.2f} "
+                        f"({settings['maxDailyLossPct']:.2f}% of bankroll)"
+                    ),
+                    category="account",
+                ),
+                "scope": "new_buy_only",
+                "dailyPnl": daily_pnl,
+                "realizedLoss": daily_realized_loss,
+                "lossLimit": daily_loss_limit,
+            },
             _gate("portfolio_exposure", exposure_pct < settings["maxPortfolioExposurePct"], "Portfolio exposure", "组合总敞口", f"{exposure_pct:.1f}% / max {settings['maxPortfolioExposurePct']:.1f}%", category="account"),
             _gate("market_exposure", market_exposure_pct < settings["maxSingleMarketExposurePct"], "Single-market exposure", "单市场敞口", f"{market_exposure_pct:.1f}% / max {settings['maxSingleMarketExposurePct']:.1f}%", category="account"),
         ]
@@ -820,14 +885,72 @@ def evaluate_btc15_contract(
 
     blocking = [gate["key"] for gate in gates if gate.get("blocking")]
 
-    bankroll = _number(account.get("bankroll"), settings["paperBankroll"]) or settings["paperBankroll"]
     hard_risk_budget = bankroll * settings["riskPerTradePct"] / 100.0
+    probability_strength = 0.0
+    if selected_model_probability is not None:
+        probability_strength = _clamp(
+            (
+                selected_model_probability - settings["minModelProbability"]
+            )
+            / max(
+                settings["fullRiskModelProbability"]
+                - settings["minModelProbability"],
+                0.01,
+            ),
+            0.0,
+            1.0,
+        )
+    edge_strength = 0.0
+    if conservative_edge is not None:
+        edge_strength = _clamp(
+            (
+                conservative_edge - effective_min_conservative_edge
+            )
+            / max(
+                settings["fullRiskConservativeEdge"]
+                - effective_min_conservative_edge,
+                0.005,
+            ),
+            0.0,
+            1.0,
+        )
+    # Both components must be strong before the strategy receives its full
+    # hard loss budget. A setup that only just clears either entry floor gets
+    # the configured minimum scale instead of the old all-or-nothing sizing.
+    quality_strength = math.sqrt(probability_strength * edge_strength)
+    quality_risk_scale = (
+        settings["minimumRiskBudgetScale"]
+        + (1.0 - settings["minimumRiskBudgetScale"]) * quality_strength
+    )
+    price_risk_scale = 1.0
+    if (
+        selected_price is not None
+        and selected_price > settings["highPriceRiskStart"]
+    ):
+        high_price_progress = _clamp(
+            (
+                selected_price - settings["highPriceRiskStart"]
+            )
+            / max(
+                settings["maxPrice"] - settings["highPriceRiskStart"],
+                0.01,
+            ),
+            0.0,
+            1.0,
+        )
+        price_risk_scale = (
+            1.0
+            - high_price_progress
+            * (1.0 - settings["highPriceRiskFloor"])
+        )
+    applied_risk_scale = quality_risk_scale * price_risk_scale
+    scaled_hard_risk_budget = hard_risk_budget * applied_risk_scale
     full_kelly = 0.0
     if conservative_probability is not None and selected_price is not None and fee_per_contract is not None:
         unit_cost = selected_price + fee_per_contract
         full_kelly = max(0.0, (conservative_probability - unit_cost) / max(1.0 - unit_cost, 0.01))
     kelly_budget = bankroll * full_kelly * settings["fractionalKelly"]
-    max_loss_budget = min(hard_risk_budget, kelly_budget) if kelly_budget > 0 else 0.0
+    max_loss_budget = min(scaled_hard_risk_budget, kelly_budget) if kelly_budget > 0 else 0.0
     contracts = 0
     estimated_fee = 0.0
     max_loss = 0.0
@@ -977,8 +1100,19 @@ def evaluate_btc15_contract(
         "sizing": {
             "paperBankroll": bankroll,
             "riskPerTradePct": settings["riskPerTradePct"],
+            "maxDailyLossPct": settings["maxDailyLossPct"],
+            "dailyPnl": daily_pnl,
+            "dailyRealizedLoss": daily_realized_loss,
+            "dailyLossLimit": daily_loss_limit,
             "riskBudget": max_loss_budget,
             "hardRiskBudget": hard_risk_budget,
+            "scaledHardRiskBudget": scaled_hard_risk_budget,
+            "kellyRiskBudget": kelly_budget,
+            "probabilityStrength": probability_strength,
+            "edgeStrength": edge_strength,
+            "qualityRiskScale": quality_risk_scale,
+            "priceRiskScale": price_risk_scale,
+            "appliedRiskScale": applied_risk_scale,
             "fullKelly": full_kelly,
             "fractionalKelly": settings["fractionalKelly"],
             "bookParticipationPct": settings["maxBookParticipation"] * 100.0,
@@ -1003,6 +1137,10 @@ def evaluate_btc15_contract(
             ),
             "directionMode": "normal",
             "samplePolicy": "deterministic fee-adjusted entry; no AI or random exploration overrides",
+            "dailyLossPolicy": (
+                "Entry-only realized-loss stop; reduce-only exits remain "
+                "available to the position-management controller"
+            ),
             "orderPolicy": (
                 "Kalshi Real IOC limit order signed and submitted by the backend only after every deterministic gate passes"
                 if is_real_execution

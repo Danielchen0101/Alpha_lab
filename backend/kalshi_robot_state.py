@@ -22,7 +22,7 @@ def _now() -> str:
 MAX_DECISION_RECORDS = 250
 MAX_SETTLEMENT_RECORDS = 1000
 MAX_TRADED_TICKERS = 2000
-PAPER_STATE_VERSION = 9
+PAPER_STATE_VERSION = 10
 KALSHI_MODES = ("paper", "real")
 
 
@@ -64,6 +64,119 @@ def _execution_environment(value: Any) -> str:
     return "real" if mode in {"real", "live", "production"} else "paper"
 
 
+def _valid_real_display_baseline(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    reset_at = str(value.get("resetAt") or "").strip()
+    if not reset_at:
+        return False
+    try:
+        parsed = datetime.fromisoformat(reset_at.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        parsed is not None
+        and str(value.get("environment") or "").strip().lower() == "real"
+        and value.get("alphaLabOnly") is True
+    )
+
+
+def _new_real_display_baseline(reason: str) -> Dict[str, Any]:
+    return {
+        "resetAt": _now(),
+        "environment": "real",
+        "ledgerPreserved": True,
+        "alphaLabOnly": True,
+        "reason": str(reason or "real_display_baseline_repair"),
+    }
+
+
+def _safe_strategy_config(
+    raw: Optional[Mapping[str, Any]],
+    environment: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Normalize user settings while enforcing durable execution safety floors."""
+    requested = dict(raw or {})
+    configured = normalize_strategy_config(requested)
+    if environment is not None:
+        configured["executionMode"] = _execution_environment(environment)
+    configured["minModelProbability"] = max(
+        0.64, _number(configured.get("minModelProbability"), 0.64)
+    )
+    configured["minNetEdge"] = max(
+        0.01, _number(configured.get("minNetEdge"), 0.01)
+    )
+    configured["minConservativeEdge"] = max(
+        0.0075, _number(configured.get("minConservativeEdge"), 0.0075)
+    )
+    configured["maxPrice"] = min(
+        0.92, _number(configured.get("maxPrice"), 0.92)
+    )
+    configured.setdefault("minimumRiskBudgetScale", 0.35)
+    configured.setdefault("fullRiskModelProbability", 0.75)
+    configured.setdefault("fullRiskConservativeEdge", 0.03)
+    configured.setdefault("highPriceRiskStart", 0.75)
+    configured.setdefault("highPriceRiskFloor", 0.50)
+    configured["fullRiskModelProbability"] = max(
+        _number(configured.get("fullRiskModelProbability"), 0.75),
+        _number(configured.get("minModelProbability"), 0.64) + 0.01,
+    )
+    configured["fullRiskConservativeEdge"] = max(
+        _number(configured.get("fullRiskConservativeEdge"), 0.03),
+        _number(configured.get("minConservativeEdge"), 0.0075) + 0.005,
+    )
+    configured["highPriceRiskStart"] = min(
+        _number(configured.get("highPriceRiskStart"), 0.75),
+        _number(configured.get("maxPrice"), 0.92),
+    )
+    configured["riskPerTradePct"] = min(
+        0.50, _number(configured.get("riskPerTradePct"), 0.50)
+    )
+    configured["fractionalKelly"] = min(
+        0.15, _number(configured.get("fractionalKelly"), 0.15)
+    )
+    configured["maxPortfolioExposurePct"] = min(
+        10.0, _number(configured.get("maxPortfolioExposurePct"), 10.0)
+    )
+    configured["maxSingleMarketExposurePct"] = min(
+        2.0, _number(configured.get("maxSingleMarketExposurePct"), 2.0)
+    )
+    configured["minimumAddIntervalSeconds"] = max(
+        90, int(_number(configured.get("minimumAddIntervalSeconds"), 90))
+    )
+    configured["minimumHoldSeconds"] = max(
+        60, int(_number(configured.get("minimumHoldSeconds"), 60))
+    )
+    configured["reversalCooldownSeconds"] = max(
+        90, int(_number(configured.get("reversalCooldownSeconds"), 90))
+    )
+    configured["addMinProbabilityImprovement"] = max(
+        0.01,
+        _number(configured.get("addMinProbabilityImprovement"), 0.01),
+    )
+    configured["addMinEdgeImprovement"] = max(
+        0.001,
+        _number(configured.get("addMinEdgeImprovement"), 0.001),
+    )
+    configured["addSizeFraction"] = min(
+        0.25, _number(configured.get("addSizeFraction"), 0.25)
+    )
+    configured["maxDailyLossPct"] = max(
+        0.10,
+        min(
+            2.0,
+            _number(
+                requested.get(
+                    "maxDailyLossPct",
+                    configured.get("maxDailyLossPct", 2.0),
+                ),
+                2.0,
+            ),
+        ),
+    )
+    return configured
+
+
 def _order_fill_count(order: Optional[Mapping[str, Any]]) -> float:
     if not order:
         return 0.0
@@ -102,7 +215,23 @@ class KalshiRobotState:
         def update_config(raw: Optional[Mapping[str, Any]], environment: Optional[str] = None) -> Dict[str, Any]:
             configured = normalize_strategy_config(raw or {})
             for field in fields:
-                configured[field] = DEFAULT_STRATEGY_CONFIG[field]
+                default_value = DEFAULT_STRATEGY_CONFIG[field]
+                if field in {
+                    "minNetEdge",
+                    "minConservativeEdge",
+                    "minModelProbability",
+                }:
+                    configured[field] = max(
+                        _number(configured.get(field), default_value),
+                        _number(default_value),
+                    )
+                elif field == "maxPrice":
+                    configured[field] = min(
+                        _number(configured.get(field), default_value),
+                        _number(default_value),
+                    )
+                else:
+                    configured[field] = default_value
             if environment:
                 configured["executionMode"] = _execution_environment(environment)
             return configured
@@ -193,6 +322,59 @@ class KalshiRobotState:
                     update_bucket(bucket, environment)
         state["storageVersion"] = PAPER_STATE_VERSION
 
+    def _apply_v10_mode_safety(self, state: Dict[str, Any]) -> None:
+        """Migrate live accounts to explicit arming and conservative sizing.
+
+        This migration deliberately preserves every decision, fill, and
+        settlement record.  It only adds missing configuration fields, raises
+        safety floors when an older value is less conservative, and creates a
+        durable Real display baseline so pre-AlphaLab account activity is not
+        presented as robot history.
+        """
+        active_environment = _execution_environment(
+            state.get("activeEnvironment")
+            or (state.get("config") or {}).get("executionMode")
+        )
+        migrated_at = _now()
+        for environment in KALSHI_MODES:
+            bucket = self._mode_bucket(state, environment)
+            bucket["config"] = _safe_strategy_config(
+                bucket.get("config") or {},
+                environment,
+            )
+            arming = dict(bucket.get("arming") or {})
+            arming.setdefault("armed", False)
+            arming.setdefault("awaitingExplicitEnable", environment == "real")
+            arming.setdefault("updatedAt", migrated_at)
+            bucket["arming"] = arming
+            if (
+                environment == "real"
+                and not _valid_real_display_baseline(
+                    bucket.get("displayBaseline")
+                )
+            ):
+                bucket["displayBaseline"] = {
+                    **_new_real_display_baseline(
+                        "real_mode_safety_migration"
+                    ),
+                    "resetAt": migrated_at,
+                }
+
+        # A deployment must never silently carry a previously armed Real robot
+        # across a mode-safety migration.  The user can explicitly arm it again
+        # after reviewing the new baseline and risk settings.
+        if active_environment == "real":
+            state["enabled"] = False
+            real_arming = state["modeState"]["real"]["arming"]
+            real_arming.update({
+                "armed": False,
+                "awaitingExplicitEnable": True,
+                "updatedAt": migrated_at,
+                "reason": "mode_safety_migration",
+            })
+        self._sync_mode_mirror(state, active_environment, activate=True)
+        state["storageVersion"] = PAPER_STATE_VERSION
+
     def __init__(
         self,
         path: Optional[str] = None,
@@ -255,7 +437,9 @@ class KalshiRobotState:
                 self._apply_v8_strategy_defaults(self._users[user_id])
                 migrated = True
             if int(self._users[user_id].get("storageVersion") or 0) < PAPER_STATE_VERSION:
-                self._apply_v9_strategy_defaults(self._users[user_id])
+                if int(self._users[user_id].get("storageVersion") or 0) < 9:
+                    self._apply_v9_strategy_defaults(self._users[user_id])
+                self._apply_v10_mode_safety(self._users[user_id])
                 migrated = True
         if migrated and self._persist_migrations:
             self._save_all()
@@ -332,13 +516,21 @@ class KalshiRobotState:
         environment = _execution_environment(environment)
         initial = KalshiRobotState._initial()
         source = dict(source or {})
-        config = normalize_strategy_config(source.get("config") or {"executionMode": environment})
-        config["executionMode"] = environment
+        config = _safe_strategy_config(
+            source.get("config") or {"executionMode": environment},
+            environment,
+        )
         strategy = copy.deepcopy(source.get("strategy") or initial["strategy"])
         strategy.pop("learning", None)
         return {
             "config": config,
             "strategy": strategy,
+            "displayBaseline": copy.deepcopy(source.get("displayBaseline")),
+            "arming": copy.deepcopy(source.get("arming") or {
+                "armed": False,
+                "awaitingExplicitEnable": environment == "real",
+                "updatedAt": None,
+            }),
             "tradedTickers": list(source.get("tradedTickers") or [])[-MAX_TRADED_TICKERS:],
             "filledTrades": [
                 dict(row) for row in list(source.get("filledTrades") or [])
@@ -369,7 +561,10 @@ class KalshiRobotState:
         template = self._mode_template(environment)
         for field, value in template.items():
             bucket.setdefault(field, copy.deepcopy(value))
-        bucket["config"] = normalize_strategy_config({**bucket.get("config", {}), "executionMode": environment})
+        bucket["config"] = _safe_strategy_config(
+            {**bucket.get("config", {}), "executionMode": environment},
+            environment,
+        )
         bucket["strategy"].pop("learning", None)
         bucket["decisionLimit"] = MAX_DECISION_RECORDS
         bucket["decisions"] = list(bucket.get("decisions") or [])[:MAX_DECISION_RECORDS]
@@ -409,14 +604,19 @@ class KalshiRobotState:
     def _state(self, user_id: str) -> Dict[str, Any]:
         key = str(user_id)
         migrated = False
+        had_cached_state = key in self._users
+        restored_existing_state = False
         if key not in self._users:
             restored = self._state_loader(key) if callable(self._state_loader) else None
+            restored_existing_state = isinstance(restored, Mapping)
             self._users[key] = dict(restored) if isinstance(restored, Mapping) else self._initial()
             if int(self._users[key].get("storageVersion") or 0) < 8:
                 self._apply_v8_strategy_defaults(self._users[key])
                 migrated = True
             if int(self._users[key].get("storageVersion") or 0) < PAPER_STATE_VERSION:
-                self._apply_v9_strategy_defaults(self._users[key])
+                if int(self._users[key].get("storageVersion") or 0) < 9:
+                    self._apply_v9_strategy_defaults(self._users[key])
+                self._apply_v10_mode_safety(self._users[key])
                 migrated = True
         else:
             initial = self._initial()
@@ -425,8 +625,9 @@ class KalshiRobotState:
             for field, value in initial["strategy"].items():
                 self._users[key]["strategy"].setdefault(field, value)
             strategy = self._users[key]["strategy"]
-            self._users[key]["config"] = normalize_strategy_config(
-                self._users[key].get("config") or {}
+            self._users[key]["config"] = _safe_strategy_config(
+                self._users[key].get("config") or {},
+                self._users[key].get("activeEnvironment"),
             )
             # The user-facing decision state is intentionally ephemeral: only
             # the current five-second evaluation is retained. Filled trades are
@@ -465,6 +666,19 @@ class KalshiRobotState:
         )
         for environment in KALSHI_MODES:
             self._mode_bucket(self._users[key], environment)
+        real_bucket = self._mode_bucket(self._users[key], "real")
+        if not _valid_real_display_baseline(
+            real_bucket.get("displayBaseline")
+        ):
+            real_bucket["displayBaseline"] = _new_real_display_baseline(
+                "invalid_real_display_baseline_repair"
+            )
+            # A brand-new user will be persisted by its first mutation. Avoid
+            # an extra compare-and-swap write during that mutation, while still
+            # repairing any cached or durably restored invalid v10 state now.
+            migrated = bool(
+                migrated or had_cached_state or restored_existing_state
+            )
         self._sync_mode_mirror(self._users[key], active_environment, activate=True)
         if migrated and self._persist_migrations:
             self._save_user(key)
@@ -510,13 +724,121 @@ class KalshiRobotState:
     def get(self, user_id: str, *, environment: Optional[str] = None) -> Dict[str, Any]:
         with self._lock:
             state = self._state(user_id)
-            if environment is not None:
+            snapshot = copy.deepcopy(state)
+            if environment is None:
+                return snapshot
+            selected_environment = _execution_environment(environment)
+            bucket = self._mode_bucket(snapshot, selected_environment)
+            for field in (
+                "config", "strategy", "tradedTickers", "filledTrades",
+                "processedSettlements", "decisions", "decisionLimit",
+            ):
+                snapshot[field] = copy.deepcopy(bucket.get(field))
+            snapshot["selectedEnvironment"] = selected_environment
+            snapshot["schedulerEnabled"] = bool(state.get("enabled"))
+            snapshot["enabled"] = bool(
+                state.get("enabled")
+                and _execution_environment(state.get("activeEnvironment"))
+                == selected_environment
+            )
+            # activeEnvironment remains the persisted scheduler mode. Merely
+            # requesting another bucket must never arm or activate it.
+            return snapshot
+
+    def refresh(self, user_id: str, *, environment: Optional[str] = None) -> Dict[str, Any]:
+        """Reload authoritative durable state before an irreversible action."""
+        with self._lock:
+            key = str(user_id)
+            authoritative = callable(self._state_loader)
+            if authoritative:
+                self._users.pop(key, None)
+            state = self._state(key)
+            snapshot = copy.deepcopy(state)
+            if environment is None:
+                snapshot["authoritativeRefresh"] = authoritative
+                snapshot["durableStateLoaderAvailable"] = authoritative
+                return snapshot
+            selected_environment = _execution_environment(environment)
+            bucket = self._mode_bucket(snapshot, selected_environment)
+            for field in (
+                "config", "strategy", "tradedTickers", "filledTrades",
+                "processedSettlements", "decisions", "decisionLimit",
+            ):
+                snapshot[field] = copy.deepcopy(bucket.get(field))
+            snapshot["selectedEnvironment"] = selected_environment
+            snapshot["schedulerEnabled"] = bool(state.get("enabled"))
+            snapshot["enabled"] = bool(
+                state.get("enabled")
+                and _execution_environment(state.get("activeEnvironment"))
+                == selected_environment
+            )
+            snapshot["authoritativeRefresh"] = authoritative
+            snapshot["durableStateLoaderAvailable"] = authoritative
+            return snapshot
+
+    @property
+    def durable_state_loader_available(self) -> bool:
+        return callable(self._state_loader)
+
+    def ensure_real_display_baseline(self, user_id: str) -> Dict[str, Any]:
+        """Persist a valid fail-closed baseline and return its copy."""
+        with self._lock:
+            state = self._state(user_id)
+            bucket = self._mode_bucket(state, "real")
+            baseline = bucket.get("displayBaseline")
+            if not _valid_real_display_baseline(baseline):
+                baseline = _new_real_display_baseline(
+                    "invalid_real_display_baseline_repair"
+                )
+                bucket["displayBaseline"] = baseline
+                self._save_user(user_id)
+            return copy.deepcopy(dict(baseline))
+
+    def materialize_real_display_baseline(
+        self,
+        user_id: str,
+        baseline: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        """Persist the live-money display origin discovered by the API layer.
+
+        State migrations cannot know a Kalshi account's current balance, so
+        their structural Real baseline intentionally omits money. Once an
+        authenticated portfolio read supplies it, atomically replace that
+        placeholder with the exact reset timestamp, equity, and cash values.
+        """
+        equity_cents = _number(baseline.get("baselineEquityCents"), -1.0)
+        cash_cents = _number(baseline.get("baselineCashCents"), -1.0)
+        reset_at = str(baseline.get("resetAt") or "").strip()
+        if equity_cents < 0.0 or cash_cents < 0.0 or not reset_at:
+            raise ValueError("invalid_real_display_baseline_money")
+        with self._lock:
+            state = self._state(user_id)
+            bucket = self._mode_bucket(state, "real")
+            current = dict(bucket.get("displayBaseline") or {})
+            if (
+                current.get("baselineEquityCents") is None
+                or current.get("baselineCashCents") is None
+            ):
+                current = {
+                    **dict(baseline),
+                    "resetAt": reset_at,
+                    "baselineEquityCents": int(round(equity_cents)),
+                    "baselineCashCents": int(round(cash_cents)),
+                    "environment": "real",
+                    "ledgerPreserved": True,
+                    "alphaLabOnly": True,
+                }
+                bucket["displayBaseline"] = current
                 self._sync_mode_mirror(
                     state,
-                    _execution_environment(environment),
+                    _execution_environment(
+                        state.get("activeEnvironment")
+                        or (state.get("config") or {}).get("executionMode")
+                    ),
                     activate=True,
                 )
-            return copy.deepcopy(state)
+                self._save_user(user_id)
+            return copy.deepcopy(current)
 
     def reset_trading_history(self, user_id: str) -> Dict[str, Any]:
         """Clear all fills, settlements, and decisions."""
@@ -593,13 +915,54 @@ class KalshiRobotState:
     def configure(self, user_id: str, enabled: bool, config: Mapping[str, Any]) -> Dict[str, Any]:
         with self._lock:
             state = self._state(user_id)
-            normalized = normalize_strategy_config(config)
+            normalized = _safe_strategy_config(
+                config,
+                (config or {}).get("executionMode"),
+            )
             environment = _execution_environment(normalized.get("executionMode"))
+            previous_environment = _execution_environment(
+                state.get("activeEnvironment")
+                or (state.get("config") or {}).get("executionMode")
+            )
+            mode_changed = previous_environment != environment
             bucket = self._mode_bucket(state, environment)
-            state["enabled"] = bool(enabled)
             bucket["config"] = normalized
             state["lastError"] = None
             bucket["strategy"].pop("learning", None)
+            changed_at = _now()
+            if (
+                environment == "real"
+                and not _valid_real_display_baseline(
+                    bucket.get("displayBaseline")
+                )
+            ):
+                bucket["displayBaseline"] = {
+                    **_new_real_display_baseline("first_real_activation"),
+                    "resetAt": changed_at,
+                }
+            arming = dict(bucket.get("arming") or {})
+            if mode_changed:
+                # Switching funding sources is a separate action from arming.
+                # Even if the same request contains enabled=true, require one
+                # subsequent explicit enable request in the newly active mode.
+                state["enabled"] = False
+                arming.update({
+                    "armed": False,
+                    "awaitingExplicitEnable": True,
+                    "requestedEnableOnSwitch": bool(enabled),
+                    "updatedAt": changed_at,
+                    "reason": f"mode_switch_from_{previous_environment}",
+                })
+            else:
+                state["enabled"] = bool(enabled)
+                arming.update({
+                    "armed": bool(enabled),
+                    "awaitingExplicitEnable": False,
+                    "requestedEnableOnSwitch": False,
+                    "updatedAt": changed_at,
+                    "reason": "explicit_enable" if enabled else "explicit_disable",
+                })
+            bucket["arming"] = arming
             self._sync_mode_mirror(state, environment, activate=True)
             self._save_user(user_id)
             return copy.deepcopy(state)
@@ -642,6 +1005,7 @@ class KalshiRobotState:
                 "orderSubmitted": bool(order),
                 "orderFilled": _order_fill_count(order) > 0,
                 "executionIntent": decision.get("executionIntent"),
+                "exitTrigger": (decision.get("exitAnalysis") or {}).get("trigger"),
                 "account": dict(decision.get("account") or {}),
                 "engine": decision.get("engine"),
                 "features": {
@@ -692,6 +1056,20 @@ class KalshiRobotState:
                     # page changes, and process restarts.
                     bucket["strategy"]["lastExitTicker"] = row.get("ticker")
                     bucket["strategy"]["lastExitAt"] = row.get("generatedAt")
+                    exit_trigger = str(
+                        (decision.get("exitAnalysis") or {}).get("trigger") or ""
+                    )
+                    if exit_trigger in {
+                        "protective_stop_loss",
+                        "emergency_stop_loss",
+                    }:
+                        blocked = list(
+                            bucket["strategy"].get("stopLossReentryTickers") or []
+                        )
+                        if ticker := str(row.get("ticker") or ""):
+                            if ticker not in blocked:
+                                blocked.append(ticker)
+                        bucket["strategy"]["stopLossReentryTickers"] = blocked[-MAX_TRADED_TICKERS:]
             ticker = str(market.get("ticker") or "")
             if _order_fill_count(order) > 0 and ticker and ticker not in bucket["tradedTickers"]:
                 bucket["tradedTickers"].append(ticker)
@@ -709,6 +1087,93 @@ class KalshiRobotState:
             bucket["runs"] = int(bucket.get("runs") or 0) + 1
             self._sync_mode_mirror(state, environment)
             self._save_user(user_id)
+            return copy.deepcopy(state)
+
+    def reconcile_live_fills(
+        self,
+        user_id: str,
+        fills,
+        *,
+        environment: str = "real",
+        persist: bool = True,
+    ) -> Dict[str, Any]:
+        """Promote delayed authenticated fills into durable robot provenance."""
+        environment = _execution_environment(environment)
+        with self._lock:
+            state = self._state(user_id)
+            bucket = self._mode_bucket(state, environment)
+            evidence_rows = (
+                list(bucket.get("filledTrades") or [])
+                + list(bucket.get("decisions") or [])
+            )
+            evidence_by_id = {}
+            for evidence in evidence_rows:
+                if not isinstance(evidence, Mapping):
+                    continue
+                for identifier in (
+                    evidence.get("orderId"),
+                    evidence.get("clientOrderId"),
+                    evidence.get("order_id"),
+                    evidence.get("client_order_id"),
+                ):
+                    if identifier:
+                        evidence_by_id[str(identifier)] = dict(evidence)
+
+            changed = False
+            filled_trades = list(bucket.get("filledTrades") or [])
+            known_ids = {
+                str(row.get("orderId") or row.get("clientOrderId") or "")
+                for row in filled_trades
+            }
+            blocked = list(
+                (bucket.get("strategy") or {}).get("stopLossReentryTickers") or []
+            )
+            for fill in fills or []:
+                if not isinstance(fill, Mapping) or _order_fill_count(fill) <= 0:
+                    continue
+                order_id = str(
+                    fill.get("order_id")
+                    or fill.get("client_order_id")
+                    or ""
+                )
+                evidence = evidence_by_id.get(order_id)
+                if not evidence:
+                    continue
+                if order_id and order_id not in known_ids:
+                    promoted = {
+                        **evidence,
+                        "orderId": fill.get("order_id") or evidence.get("orderId"),
+                        "clientOrderId": (
+                            fill.get("client_order_id")
+                            or evidence.get("clientOrderId")
+                        ),
+                        "orderStatus": "filled",
+                        "fillCount": _order_fill_count(fill),
+                        "orderSubmitted": True,
+                        "orderFilled": True,
+                        "environment": environment,
+                    }
+                    filled_trades.append(promoted)
+                    known_ids.add(order_id)
+                    changed = True
+                action = str(fill.get("action") or evidence.get("action") or "").upper()
+                trigger = str(evidence.get("exitTrigger") or "")
+                ticker = str(fill.get("ticker") or evidence.get("ticker") or "")
+                if (
+                    (action == "SELL" or action.startswith("SELL_"))
+                    and trigger in {"protective_stop_loss", "emergency_stop_loss"}
+                    and ticker
+                    and ticker not in blocked
+                ):
+                    blocked.append(ticker)
+                    changed = True
+
+            if changed:
+                bucket["filledTrades"] = filled_trades[-MAX_SETTLEMENT_RECORDS:]
+                bucket["strategy"]["stopLossReentryTickers"] = blocked[-MAX_TRADED_TICKERS:]
+                self._sync_mode_mirror(state, environment)
+                if persist:
+                    self._save_user(user_id)
             return copy.deepcopy(state)
 
     def record_early_close(
@@ -857,6 +1322,28 @@ class KalshiRobotState:
         strategy["averagePnl"] = strategy["realizedAveragePnl"]
         strategy["bestTrade"] = strategy["realizedBestTrade"]
         strategy["worstTrade"] = strategy["realizedWorstTrade"]
+        # The entry loss gate must include both final settlements and
+        # authenticated reduce-only sales. Recompute from canonical realized
+        # records every time instead of incrementing one code path, making the
+        # value idempotent across retries, delayed fills, and reconciliation.
+        today = datetime.now(timezone.utc).date().isoformat()
+        daily_pnl = 0.0
+        for row in realized:
+            realized_at = row.get("settledAt") or row.get("closedAt")
+            if not realized_at:
+                continue
+            try:
+                parsed = datetime.fromisoformat(
+                    str(realized_at).replace("Z", "+00:00")
+                )
+            except (TypeError, ValueError):
+                continue
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            if parsed.astimezone(timezone.utc).date().isoformat() == today:
+                daily_pnl += _number(row.get("pnl"))
+        strategy["dailyPnlDate"] = today
+        strategy["dailyPnl"] = round(daily_pnl, 4)
 
     def error(self, user_id: str, message: str) -> None:
         with self._lock:
