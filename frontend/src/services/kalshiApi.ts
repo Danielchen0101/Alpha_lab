@@ -11,6 +11,7 @@ export interface KalshiBotConfig {
   executionMode: KalshiExecutionMode;
   paperBankroll: number;
   riskPerTradePct: number;
+  maxDailyLossPct: number;
   minNetEdge: number;
   minConservativeEdge: number;
   maxSpread: number;
@@ -30,6 +31,11 @@ export interface KalshiBotConfig {
   maxVolatilityRatio: number;
   maxJumpSigma: number;
   fractionalKelly: number;
+  minimumRiskBudgetScale: number;
+  fullRiskModelProbability: number;
+  fullRiskConservativeEdge: number;
+  highPriceRiskStart: number;
+  highPriceRiskFloor: number;
   maxPortfolioExposurePct: number;
   executionPriceTolerance: number;
   exitProbabilityThreshold: number;
@@ -53,9 +59,10 @@ export interface KalshiBotConfig {
 export const DEFAULT_KALSHI_BOT_CONFIG: KalshiBotConfig = {
   executionMode: 'paper',
   paperBankroll: 1000,
-  riskPerTradePct: 0.75,
-  minNetEdge: 0.0075,
-  minConservativeEdge: 0.002,
+  riskPerTradePct: 0.50,
+  maxDailyLossPct: 2.0,
+  minNetEdge: 0.010,
+  minConservativeEdge: 0.0075,
   maxSpread: 0.06,
   maxRelativeSpread: 0.20,
   minDepthContracts: 5,
@@ -63,8 +70,8 @@ export const DEFAULT_KALSHI_BOT_CONFIG: KalshiBotConfig = {
   minSecondsToClose: 60,
   maxSecondsToClose: 840,
   minPrice: 0.47,
-  maxPrice: 0.95,
-  minModelProbability: 0.58,
+  maxPrice: 0.92,
+  minModelProbability: 0.64,
   marketBlendWeight: 0.45,
   maxModelMarketGap: 0.30,
   probabilityLogitScale: 1.70,
@@ -72,21 +79,26 @@ export const DEFAULT_KALSHI_BOT_CONFIG: KalshiBotConfig = {
   basisReserveBps: 3,
   maxVolatilityRatio: 3,
   maxJumpSigma: 5,
-  fractionalKelly: 0.25,
-  maxPortfolioExposurePct: 25,
+  fractionalKelly: 0.15,
+  minimumRiskBudgetScale: 0.35,
+  fullRiskModelProbability: 0.75,
+  fullRiskConservativeEdge: 0.030,
+  highPriceRiskStart: 0.75,
+  highPriceRiskFloor: 0.50,
+  maxPortfolioExposurePct: 10,
   executionPriceTolerance: 0.01,
   exitProbabilityThreshold: 0.35,
   minimumExitProfit: 0.015,
   takeProfitScaleOutPct: 0.50,
   stopLossPct: 0.45,
   emergencyStopLossPct: 0.25,
-  maxSingleMarketExposurePct: 8,
-  minimumAddIntervalSeconds: 45,
+  maxSingleMarketExposurePct: 2,
+  minimumAddIntervalSeconds: 90,
   addMinModelProbability: 0.64,
   addMinConservativeEdge: 0.0075,
   addMinProbabilityImprovement: 0.01,
   addMinEdgeImprovement: 0.001,
-  addSizeFraction: 0.50,
+  addSizeFraction: 0.25,
   minimumHoldSeconds: 60,
   reversalCooldownSeconds: 90,
   exitValueBuffer: 0.010,
@@ -403,6 +415,8 @@ export interface KalshiPortfolioAnalytics {
     baselineCashCents?: number;
     environment?: KalshiExecutionMode | string;
     ledgerPreserved?: boolean;
+    alphaLabOnly?: boolean;
+    reason?: string;
     archivedRealizedEvents?: number;
   };
   marketPerformance?: Record<'btc15m' | 'btchourly', {
@@ -425,12 +439,40 @@ export interface KalshiPortfolioAnalytics {
 export interface KalshiPaperPortfolio {
   environment: KalshiExecutionMode | string;
   accountProvider?: 'AlphaLab' | 'Kalshi' | string;
-  balance: { balance?: number; portfolio_value?: number; starting_balance?: number; updated_ts?: number };
+  balance: {
+    balance?: number;
+    portfolio_value?: number;
+    equity?: number;
+    starting_balance?: number;
+    realized_pnl_dollars?: number;
+    updated_ts?: number;
+  };
   positions: Array<Record<string, any>>;
   orders: Array<Record<string, any>>;
   fills: Array<Record<string, any>>;
   settlements: Array<Record<string, any>>;
   analytics?: KalshiPortfolioAnalytics;
+  warnings?: Array<string | Record<string, unknown>>;
+  completeness?: {
+    complete?: boolean;
+    balance?: boolean;
+    positions?: boolean;
+    orders?: boolean;
+    fills?: boolean;
+    settlements?: boolean;
+    history?: boolean;
+    status?: string;
+    warnings?: unknown;
+    errors?: unknown;
+    missing?: unknown;
+    missingResources?: unknown;
+    missing_resources?: unknown;
+  };
+  accountActivity?: {
+    scope?: string;
+    lifetimeCounts?: Record<string, number>;
+    visibleCounts?: Record<string, number>;
+  };
   asOf: string;
 }
 

@@ -18,7 +18,7 @@ from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 
-PAPER_ACCOUNT_VERSION = 2
+PAPER_ACCOUNT_VERSION = 3
 DEFAULT_STARTING_BALANCE_CENTS = 1_000_000  # $10,000.00
 MAX_LEDGER_ROWS = 500
 
@@ -291,9 +291,9 @@ class KalshiPaperAccountStore:
                 self._users = {}
         migrated = False
         for user_id, account in list(self._users.items()):
-            if int(account.get("version") or 0) < PAPER_ACCOUNT_VERSION:
-                self._users[user_id] = self._initial()
-                migrated = True
+            upgraded, changed = self._upgrade_account(account)
+            self._users[user_id] = upgraded
+            migrated = migrated or changed
         if migrated:
             self._save_all()
 
@@ -316,11 +316,80 @@ class KalshiPaperAccountStore:
                 "formula": "0.07 * contracts * price * (1 - price)",
             },
             "cashCents": initial_balance,
+            "realizedPnlDollars": 0.0,
             "positions": {},
             "orders": [],
             "fills": [],
             "settlements": [],
         }
+
+    @staticmethod
+    def _ledger_realized_pnl(account: Mapping[str, Any]) -> float:
+        """Rebuild closed-position P/L from the immutable Paper ledger.
+
+        Version 2 updated this account total for reduce-only sales but omitted
+        expiry settlements.  That made the cash/equity total correct while the
+        headline realized P/L could remain negative after profitable
+        settlements.  Rebuilding from fills and settlements repairs the
+        reporting field without deleting or rewriting any trade records.
+        """
+        total = 0.0
+        seen_fills = set()
+        for row in account.get("fills") or []:
+            if not isinstance(row, Mapping):
+                continue
+            if str(row.get("action") or "").upper() != "SELL":
+                continue
+            identity = str(
+                row.get("fill_id")
+                or row.get("order_id")
+                or row.get("client_order_id")
+                or ""
+            )
+            if identity and identity in seen_fills:
+                continue
+            if identity:
+                seen_fills.add(identity)
+            total += _number(row.get("realized_pnl_dollars"))
+
+        seen_settlements = set()
+        for row in account.get("settlements") or []:
+            if not isinstance(row, Mapping):
+                continue
+            identity = str(
+                row.get("settlement_id")
+                or f"{row.get('ticker')}:{row.get('settled_time')}"
+            )
+            if identity and identity in seen_settlements:
+                continue
+            if identity:
+                seen_settlements.add(identity)
+            total += (
+                _number(row.get("revenue_dollars"))
+                - _number(row.get("yes_total_cost_dollars"))
+                - _number(row.get("no_total_cost_dollars"))
+                - _number(row.get("fee_cost_dollars"))
+                - _number(row.get("settlement_fee_dollars"))
+            )
+        return round(total, 4)
+
+    def _upgrade_account(self, raw: Mapping[str, Any]) -> Tuple[Dict[str, Any], bool]:
+        """Upgrade a Paper account without discarding the v2 audit ledger."""
+        account = dict(raw or {})
+        version = int(account.get("version") or 0)
+        if version < 2:
+            # Version 1 used complementary buys as closes and cannot be
+            # reconciled safely into the reduce-only FIFO ledger.
+            return self._initial(), True
+        changed = version < PAPER_ACCOUNT_VERSION
+        rebuilt_pnl = self._ledger_realized_pnl(account)
+        if round(_number(account.get("realizedPnlDollars")), 4) != rebuilt_pnl:
+            account["realizedPnlDollars"] = rebuilt_pnl
+            changed = True
+        if version != PAPER_ACCOUNT_VERSION:
+            account["version"] = PAPER_ACCOUNT_VERSION
+            changed = True
+        return account, changed
 
     def _account(self, user_id: str) -> Dict[str, Any]:
         key = str(user_id)
@@ -330,8 +399,11 @@ class KalshiPaperAccountStore:
             account = dict(restored) if isinstance(restored, Mapping) else None
             if account is not None:
                 self._users[key] = account
-        if not isinstance(account, dict) or int(account.get("version") or 0) != PAPER_ACCOUNT_VERSION:
+        if not isinstance(account, dict):
             account = self._initial()
+            self._users[key] = account
+        else:
+            account, _changed = self._upgrade_account(account)
             self._users[key] = account
         return account
 
@@ -727,6 +799,17 @@ class KalshiPaperAccountStore:
             yes_count = int(position.get("yesCount") or 0)
             no_count = int(position.get("noCount") or 0)
             revenue = float(yes_count if result == "YES" else no_count)
+            yes_cost = _number(position.get("yesCost"))
+            no_cost = _number(position.get("noCost"))
+            entry_fees = _number(position.get("feeCost"))
+            settlement_fee = 0.0
+            realized_pnl = (
+                revenue
+                - yes_cost
+                - no_cost
+                - entry_fees
+                - settlement_fee
+            )
             account["cashCents"] = int(account.get("cashCents") or 0) + int(round(revenue * 100))
             row = {
                 "settlement_id": f"paper-settlement-{uuid.uuid4()}",
@@ -735,15 +818,20 @@ class KalshiPaperAccountStore:
                 "yes_count_fp": yes_count,
                 "no_count_fp": no_count,
                 "revenue_dollars": round(revenue, 4),
-                "yes_total_cost_dollars": round(_number(position.get("yesCost")), 4),
-                "no_total_cost_dollars": round(_number(position.get("noCost")), 4),
-                "fee_cost_dollars": round(_number(position.get("feeCost")), 4),
-                "settlement_fee_dollars": 0.0,
+                "yes_total_cost_dollars": round(yes_cost, 4),
+                "no_total_cost_dollars": round(no_cost, 4),
+                "fee_cost_dollars": round(entry_fees, 4),
+                "settlement_fee_dollars": settlement_fee,
+                "realized_pnl_dollars": round(realized_pnl, 4),
                 "settled_time": settled_time or _now(),
                 "environment": "paper",
             }
             account["settlements"].insert(0, row)
             account["settlements"] = account["settlements"][:MAX_LEDGER_ROWS]
+            account["realizedPnlDollars"] = round(
+                _number(account.get("realizedPnlDollars")) + realized_pnl,
+                4,
+            )
             account["updatedAt"] = _now()
             if persist:
                 self._save_user(user_id)
@@ -794,6 +882,11 @@ class KalshiPaperAccountStore:
                     "balance": int(account.get("cashCents") or 0),
                     "portfolio_value": int(round(portfolio_value * 100)),
                     "starting_balance": int(account.get("startingBalanceCents") or self.starting_balance_cents),
+                    "equity": int(account.get("cashCents") or 0) + int(round(portfolio_value * 100)),
+                    "realized_pnl_dollars": round(
+                        _number(account.get("realizedPnlDollars")),
+                        4,
+                    ),
                 },
                 "positions": positions,
                 "orders": copy.deepcopy(list(account.get("orders") or [])),

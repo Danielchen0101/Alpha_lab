@@ -279,7 +279,10 @@ def test_settlement_has_no_fee_and_credits_winning_contracts(tmp_path):
     portfolio = store.portfolio("u")
     assert settlement["revenue_dollars"] == 4.0
     assert settlement["settlement_fee_dollars"] == 0.0
+    assert settlement["realized_pnl_dollars"] == 2.94
     assert portfolio["balance"]["balance"] == cash_after_fill + 400
+    assert portfolio["balance"]["realized_pnl_dollars"] == 2.94
+    assert portfolio["balance"]["equity"] == portfolio["balance"]["balance"]
     assert portfolio["positions"] == []
 
 
@@ -387,3 +390,40 @@ def test_pre_v2_account_data_is_removed_during_upgrade(tmp_path):
     assert portfolio["orders"] == []
     assert portfolio["fills"] == []
     assert portfolio["settlements"] == []
+
+
+def test_v2_account_upgrade_preserves_ledger_and_repairs_settlement_pnl(tmp_path):
+    path = tmp_path / "paper.json"
+    path.write_text(json.dumps({"u": {
+        "version": 2,
+        "startingBalanceCents": 100_000,
+        "cashCents": 100_450,
+        "realizedPnlDollars": -0.5,
+        "positions": {},
+        "orders": [{"order_id": "kept-order"}],
+        "fills": [{
+            "fill_id": "closed-fill",
+            "action": "SELL",
+            "realized_pnl_dollars": -0.5,
+        }],
+        "settlements": [{
+            "settlement_id": "kept-settlement",
+            "ticker": "KXBTC15M-KEEP",
+            "revenue_dollars": 5.0,
+            "yes_total_cost_dollars": 4.0,
+            "no_total_cost_dollars": 0.0,
+            "fee_cost_dollars": 0.05,
+            "settlement_fee_dollars": 0.0,
+        }],
+    }}), encoding="utf-8")
+
+    store = KalshiPaperAccountStore(str(path))
+    portfolio = store.portfolio("u")
+    persisted = json.loads(path.read_text(encoding="utf-8"))["u"]
+
+    assert persisted["version"] == 3
+    assert persisted["orders"][0]["order_id"] == "kept-order"
+    assert persisted["fills"][0]["fill_id"] == "closed-fill"
+    assert persisted["settlements"][0]["settlement_id"] == "kept-settlement"
+    assert persisted["realizedPnlDollars"] == 0.45
+    assert portfolio["balance"]["realized_pnl_dollars"] == 0.45

@@ -1,7 +1,9 @@
 import {
   getShellNavigationState,
   isShellPath,
+  KALSHI_REAL_MODE_CONFIRMATION,
   normalizeShellPath,
+  stopKalshiRobotAndSaveMode,
 } from './AuthenticatedShell';
 
 jest.mock('../services/api', () => ({
@@ -61,6 +63,58 @@ describe('authenticated workspace navigation', () => {
     expect(getShellNavigationState('/portfolio-report')).toMatchObject({
       sectionKey: null,
       linkKey: null,
+    });
+  });
+
+  it('states the real-money, robot-stop, and manual-restart consequences', () => {
+    expect(KALSHI_REAL_MODE_CONFIRMATION.en.copy).toMatch(/real funds/i);
+    expect(KALSHI_REAL_MODE_CONFIRMATION.en.stop).toMatch(/stops the Kalshi robot/i);
+    expect(KALSHI_REAL_MODE_CONFIRMATION.en.restart).toMatch(/start it again manually/i);
+    expect(KALSHI_REAL_MODE_CONFIRMATION.zh.copy).toContain('真实资金');
+    expect(KALSHI_REAL_MODE_CONFIRMATION.zh.restart).toContain('手动重新启动');
+  });
+
+  it('stops the current-mode robot before saving the target mode', async () => {
+    const calls = [];
+    const apiClient = {
+      setPaperRobot: jest.fn(async (enabled, config, mode) => {
+        calls.push(['stop', enabled, config.executionMode, mode]);
+        return { data: { success: true } };
+      }),
+      savePaperRobotConfig: jest.fn(async (config, mode) => {
+        calls.push(['save', config.executionMode, mode]);
+        return { data: { success: true } };
+      }),
+    };
+
+    const nextConfig = await stopKalshiRobotAndSaveMode(
+      apiClient,
+      { executionMode: 'paper', paperBankroll: 1000 },
+      'real',
+    );
+
+    expect(calls).toEqual([
+      ['stop', false, 'paper', 'paper'],
+      ['save', 'real', 'real'],
+    ]);
+    expect(nextConfig.executionMode).toBe('real');
+  });
+
+  it('reports that the robot remains stopped when mode persistence fails', async () => {
+    const apiClient = {
+      setPaperRobot: jest.fn(async () => ({ data: { success: true } })),
+      savePaperRobotConfig: jest.fn(async () => {
+        throw new Error('save failed');
+      }),
+    };
+
+    await expect(stopKalshiRobotAndSaveMode(
+      apiClient,
+      { executionMode: 'paper' },
+      'real',
+    )).rejects.toMatchObject({
+      message: 'save failed',
+      kalshiRobotStopped: true,
     });
   });
 });

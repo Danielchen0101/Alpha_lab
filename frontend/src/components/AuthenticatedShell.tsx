@@ -27,6 +27,7 @@ import {
   SlidersOutlined,
   SunOutlined,
   MoonOutlined,
+  PauseCircleOutlined,
   StockOutlined,
   SwapOutlined,
   TrophyOutlined,
@@ -428,10 +429,53 @@ const readKalshiStoredConfig = (): KalshiBotConfig => {
 const writeKalshiStoredConfig = (config: KalshiBotConfig) => {
   try {
     localStorage.setItem(KALSHI_CONFIG_STORAGE_KEY, JSON.stringify(config));
-    window.dispatchEvent(new CustomEvent(KALSHI_CONFIG_CHANGED_EVENT, { detail: config }));
   } catch {
-    // Local persistence is best-effort; backend config remains authoritative.
+    // Local persistence is best-effort; the successful backend mode change
+    // must still be announced to the mounted Kalshi workspace exactly once.
   }
+  window.dispatchEvent(new CustomEvent(KALSHI_CONFIG_CHANGED_EVENT, { detail: config }));
+};
+
+export const KALSHI_REAL_MODE_CONFIRMATION = {
+  en: {
+    title: 'Confirm real-money Kalshi trading',
+    copy: 'This mode can submit signed orders that use real funds in your connected Kalshi account.',
+    stop: 'Switching environments stops the Kalshi robot before the mode changes.',
+    restart: 'The robot stays stopped after the switch. Review the new environment, then start it again manually.',
+    acceptance: 'I understand this uses real money and that I must restart the robot manually after switching.',
+  },
+  zh: {
+    title: '确认 Kalshi 真钱交易',
+    copy: '此模式可以向你连接的 Kalshi 账户提交已签名订单，并使用真实资金。',
+    stop: '切换环境会先停止 Kalshi 机器人，然后才更改模式。',
+    restart: '切换后机器人会保持停止；请先检查新环境，再手动重新启动。',
+    acceptance: '我明白这会使用真实资金，并且切换后必须由我手动重新启动机器人。',
+  },
+} as const;
+
+export const stopKalshiRobotAndSaveMode = async (
+  apiClient: Pick<typeof kalshiAPI, 'setPaperRobot' | 'savePaperRobotConfig'>,
+  currentConfig: KalshiBotConfig,
+  nextMode: KalshiExecutionMode,
+): Promise<KalshiBotConfig> => {
+  const currentMode: KalshiExecutionMode = currentConfig.executionMode === 'real' ? 'real' : 'paper';
+  const stopped = await apiClient.setPaperRobot(false, currentConfig, currentMode);
+  if (stopped.data?.success === false) {
+    throw new Error(stopped.data?.message || 'Kalshi robot could not be stopped before switching modes.');
+  }
+
+  const nextConfig: KalshiBotConfig = { ...currentConfig, executionMode: nextMode };
+  try {
+    const saved = await apiClient.savePaperRobotConfig(nextConfig, nextMode);
+    if (saved.data?.success === false) {
+      throw new Error(saved.data?.message || 'Kalshi mode configuration could not be saved.');
+    }
+  } catch (error: any) {
+    const failure = error instanceof Error ? error : new Error(String(error || 'Kalshi mode switch failed'));
+    (failure as Error & { kalshiRobotStopped?: boolean }).kalshiRobotStopped = true;
+    throw failure;
+  }
+  return nextConfig;
 };
 
 export const getShellNavigationState = (pathname: string): ShellNavigationState => {
@@ -466,6 +510,8 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
   ));
   const [kalshiConfigured, setKalshiConfigured] = React.useState(false);
   const [kalshiModeBusy, setKalshiModeBusy] = React.useState(false);
+  const [kalshiRealModalOpen, setKalshiRealModalOpen] = React.useState(false);
+  const [kalshiRealRiskAccepted, setKalshiRealRiskAccepted] = React.useState(false);
   const [realModalOpen, setRealModalOpen] = React.useState(false);
   const [realRiskAccepted, setRealRiskAccepted] = React.useState(false);
   const [signingOut, setSigningOut] = React.useState(false);
@@ -807,12 +853,14 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
     handleModeToggle();
   };
 
-  const handleKalshiModeToggle = async () => {
-    if (kalshiModeBusy) return;
-    const currentMode = kalshiExecutionMode === 'real' ? 'real' : 'paper';
-    const nextMode: KalshiExecutionMode = currentMode === 'real' ? 'paper' : 'real';
-    const currentConfig = readKalshiStoredConfig();
-    const nextConfig: KalshiBotConfig = { ...currentConfig, executionMode: nextMode };
+  const performKalshiModeSwitch = async (nextMode: KalshiExecutionMode): Promise<boolean> => {
+    if (kalshiModeBusy) return false;
+    const currentMode: KalshiExecutionMode = kalshiExecutionMode === 'real' ? 'real' : 'paper';
+    if (currentMode === nextMode) return true;
+    const currentConfig: KalshiBotConfig = {
+      ...readKalshiStoredConfig(),
+      executionMode: currentMode,
+    };
     setKalshiModeBusy(true);
     try {
       if (nextMode === 'real') {
@@ -828,24 +876,57 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
             okText: isChinese ? '去设置' : 'Open settings',
             onOk: () => navigate('/settings/configuration'),
           });
-          return;
+          setKalshiRealModalOpen(false);
+          setKalshiRealRiskAccepted(false);
+          return false;
         }
       }
+      const nextConfig = await stopKalshiRobotAndSaveMode(kalshiAPI, currentConfig, nextMode);
       setKalshiExecutionMode(nextMode);
       writeKalshiStoredConfig(nextConfig);
-      await kalshiAPI.savePaperRobotConfig(nextConfig, nextMode);
-      window.dispatchEvent(new CustomEvent(KALSHI_CONFIG_CHANGED_EVENT, { detail: nextConfig }));
       window.dispatchEvent(new Event('alphalab:refresh'));
+      return true;
     } catch (error: any) {
       setKalshiExecutionMode(currentMode);
-      writeKalshiStoredConfig(currentConfig);
+      const robotStopped = Boolean(error?.kalshiRobotStopped);
       Modal.error({
         title: isChinese ? 'Kalshi 模式切换失败' : 'Kalshi mode switch failed',
-        content: error?.response?.data?.message || error?.message || (isChinese ? '请检查 Kalshi 连接设置后重试。' : 'Check Kalshi connection settings and try again.'),
+        content: (
+          <>
+            {error?.response?.data?.message || error?.message || (isChinese ? '请检查 Kalshi 连接设置后重试。' : 'Check Kalshi connection settings and try again.')}
+            {robotStopped ? (
+              <p>
+                {isChinese
+                  ? '机器人已经停止，并会为安全起见保持停止；确认模式状态后再手动启动。'
+                  : 'The robot was stopped and remains stopped for safety. Confirm the mode state before starting it manually.'}
+              </p>
+            ) : null}
+          </>
+        ),
       });
+      return false;
     } finally {
       setKalshiModeBusy(false);
     }
+  };
+
+  const handleKalshiModeToggle = () => {
+    if (kalshiModeBusy) return;
+    setMobileMenuOpen(false);
+    if (kalshiExecutionMode === 'real') {
+      void performKalshiModeSwitch('paper');
+      return;
+    }
+    setKalshiRealRiskAccepted(false);
+    setKalshiRealModalOpen(true);
+  };
+
+  const handleKalshiRealConfirm = async () => {
+    if (!kalshiRealRiskAccepted || kalshiModeBusy) return;
+    const switched = await performKalshiModeSwitch('real');
+    if (!switched) return;
+    setKalshiRealModalOpen(false);
+    setKalshiRealRiskAccepted(false);
   };
 
   const handlePlatformSwitch = () => {
@@ -1428,6 +1509,72 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
           </button>
         </div>
       </Drawer>
+
+      <Modal
+        title={(
+          <div className="auth-shell__real-modal-title">
+            <span><RobotOutlined /> KALSHI · {isChinese ? '真钱执行确认' : 'REAL-MONEY EXECUTION'}</span>
+            <strong>{isChinese ? KALSHI_REAL_MODE_CONFIRMATION.zh.title : KALSHI_REAL_MODE_CONFIRMATION.en.title}</strong>
+          </div>
+        )}
+        open={kalshiRealModalOpen}
+        onOk={() => void handleKalshiRealConfirm()}
+        onCancel={() => {
+          if (kalshiModeBusy) return;
+          setKalshiRealModalOpen(false);
+          setKalshiRealRiskAccepted(false);
+        }}
+        okText={isChinese ? '停止机器人并切到实盘' : 'Stop robot & switch to Real'}
+        cancelText={isChinese ? '留在模拟模式' : 'Stay in Paper'}
+        okButtonProps={{
+          disabled: !kalshiRealRiskAccepted,
+          className: 'auth-shell__real-confirm-button',
+        }}
+        cancelButtonProps={{ disabled: kalshiModeBusy }}
+        confirmLoading={kalshiModeBusy}
+        closable={!kalshiModeBusy}
+        maskClosable={!kalshiModeBusy}
+        width={500}
+        className="auth-shell__real-modal"
+        centered
+        destroyOnHidden
+        data-testid="kalshi-real-mode-confirmation"
+      >
+        <div className="auth-shell__mode-transition" aria-label={isChinese ? 'Kalshi 交易环境' : 'Kalshi trading environment'}>
+          <div>
+            <span>{isChinese ? '当前环境' : 'Current environment'}</span>
+            <strong>{isChinese ? 'AlphaLab 模拟盘' : 'AlphaLab Paper'}</strong>
+          </div>
+          <i aria-hidden="true">→</i>
+          <div className="is-live">
+            <span>{isChinese ? '目标环境' : 'Target environment'}</span>
+            <strong>{isChinese ? 'Kalshi 实盘真钱' : 'Kalshi Real Money'}</strong>
+          </div>
+        </div>
+
+        <p className="auth-shell__real-modal-copy">
+          {isChinese ? KALSHI_REAL_MODE_CONFIRMATION.zh.copy : KALSHI_REAL_MODE_CONFIRMATION.en.copy}
+        </p>
+
+        <div className="auth-shell__real-guardrails">
+          <div>
+            <PauseCircleOutlined />
+            <span>{isChinese ? KALSHI_REAL_MODE_CONFIRMATION.zh.stop : KALSHI_REAL_MODE_CONFIRMATION.en.stop}</span>
+          </div>
+          <div>
+            <WarningOutlined />
+            <span>{isChinese ? KALSHI_REAL_MODE_CONFIRMATION.zh.restart : KALSHI_REAL_MODE_CONFIRMATION.en.restart}</span>
+          </div>
+        </div>
+
+        <label className="auth-shell__real-acceptance">
+          <Checkbox
+            checked={kalshiRealRiskAccepted}
+            onChange={(event) => setKalshiRealRiskAccepted(event.target.checked)}
+          />
+          <span>{isChinese ? KALSHI_REAL_MODE_CONFIRMATION.zh.acceptance : KALSHI_REAL_MODE_CONFIRMATION.en.acceptance}</span>
+        </label>
+      </Modal>
 
       <Modal
         title={(

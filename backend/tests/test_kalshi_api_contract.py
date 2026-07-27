@@ -21,11 +21,15 @@ from kalshi_api import (
     _normalise_live_settlement,
     _open_live_fill_inventory,
     _reconcile_live_exit_fills,
+    _scale_in_signal_improved,
     _estimate_reduce_only_sale,
     _exit_economic_state,
+    _hourly_candidate_management_priority,
+    _hourly_reference_policy,
     _intent_client_order_id,
     _market_observation,
     _monotone_ladder_probabilities,
+    _paper_account_context,
     _paper_order_payload,
     _position_execution_context,
     _position_side_and_count,
@@ -182,6 +186,7 @@ def test_hourly_snapshot_fetches_strike_books_in_one_batch():
         now=now,
         reference_override={
             "price": 65_000,
+            "rawPrice": 65_000,
             "timestamp": now.isoformat(),
             "model": "kalshi_cf_benchmarks_brti",
             "isOfficialBrti": True,
@@ -202,6 +207,148 @@ def test_hourly_snapshot_fetches_strike_books_in_one_batch():
     assert set(batch_calls[0][1]["tickers"]) == {"KXBTCD-E-T64000", "KXBTCD-E-T65000"}
     assert len(snapshot["markets"]) == 2
     assert len(snapshot["ladderFit"]) == 2
+
+
+def test_hourly_reference_uses_raw_price_except_true_top_of_hour_final_window():
+    reference = {
+        "price": 65_050,
+        "rawPrice": 65_000,
+        "settlementWindowAverage": 65_120,
+        "settlementWindowSamples": 30,
+        "isOfficialBrti": True,
+    }
+    top_close = {"close_time": "2026-07-27T13:00:00Z"}
+    final = _hourly_reference_policy(
+        reference,
+        top_close,
+        now=datetime(2026, 7, 27, 12, 59, 30, tzinfo=timezone.utc),
+    )
+    before_window = _hourly_reference_policy(
+        reference,
+        top_close,
+        now=datetime(2026, 7, 27, 12, 58, 30, tzinfo=timezone.utc),
+    )
+    quarter_hour = _hourly_reference_policy(
+        reference,
+        {"close_time": "2026-07-27T13:15:00Z"},
+        now=datetime(2026, 7, 27, 13, 14, 30, tzinfo=timezone.utc),
+    )
+
+    assert final["selectedSource"] == "settlement_window_average"
+    assert final["selectedPrice"] == 65_120
+    assert final["settlementAverageEligible"] is True
+    assert before_window["selectedSource"] == "raw_price"
+    assert before_window["selectedPrice"] == 65_000
+    assert quarter_hour["selectedSource"] == "raw_price"
+    assert quarter_hour["trueTopOfHourClose"] is False
+
+
+def test_hourly_reference_never_falls_back_to_generic_price_when_raw_missing():
+    policy = _hourly_reference_policy(
+        {
+            "price": 65_500,
+            "isOfficialBrti": True,
+            "settlementWindowSamples": 0,
+        },
+        {"close_time": "2026-07-27T13:00:00Z"},
+        now=datetime(2026, 7, 27, 12, 58, 0, tzinfo=timezone.utc),
+    )
+
+    assert policy["selectedSource"] == "unavailable"
+    assert policy["selectedPrice"] is None
+    assert policy["fallbackPrice"] == 65_500
+    assert policy["warning"] == "btc_reference_unavailable"
+
+
+def test_hourly_snapshot_fails_closed_when_only_generic_price_exists():
+    now = datetime(2026, 7, 27, 12, 20, tzinfo=timezone.utc)
+    client = _PublicDataClient(http_get=lambda *_args, **_kwargs: None)
+    client.snapshot = lambda **_kwargs: {
+        "reference": {
+            "price": 65_500,
+            "timestamp": now.isoformat(),
+            "isOfficialBrti": True,
+        },
+        "warnings": [],
+        "sources": {},
+    }
+    client._cached_json = lambda _key, url, **_kwargs: {
+        "events": [{
+            "event_ticker": "KXBTCD-27JUL2613",
+            "markets": [{
+                "ticker": "KXBTCD-27JUL2613-T65000",
+                "event_ticker": "KXBTCD-27JUL2613",
+                "status": "active",
+                "close_time": (now + timedelta(minutes=40)).isoformat(),
+                "floor_strike": 65_000,
+            }],
+        }],
+    } if url.endswith("/events") else {}
+
+    with pytest.raises(KalshiApiError) as unavailable:
+        client.hourly_snapshot(now=now)
+
+    assert unavailable.value.code == "btc_reference_unavailable"
+
+
+def test_hourly_snapshot_retains_required_held_strike_outside_nearest_32():
+    now = datetime(2026, 7, 27, 12, 20, tzinfo=timezone.utc)
+    event = "KXBTCD-27JUL2613"
+    markets = [
+        {
+            "ticker": f"{event}-T{64_000 + index * 100}",
+            "event_ticker": event,
+            "status": "active",
+            "close_time": (now + timedelta(minutes=40)).isoformat(),
+            "floor_strike": 64_000 + index * 100,
+            "yes_bid_dollars": "0.49",
+            "yes_ask_dollars": "0.51",
+        }
+        for index in range(45)
+    ]
+    required = markets[-1]["ticker"]
+    batch_tickers = []
+    client = _PublicDataClient(http_get=lambda *_args, **_kwargs: None)
+    client.snapshot = lambda **_kwargs: {
+        "reference": {
+            "price": 65_000,
+            "rawPrice": 65_000,
+            "timestamp": now.isoformat(),
+            "candles": [],
+            "isOfficialBrti": True,
+        },
+        "warnings": [],
+        "sources": {},
+    }
+
+    def cached(_key, url, params=None, **_kwargs):
+        if url.endswith("/events"):
+            return {"events": [{"event_ticker": event, "markets": markets}]}
+        if url.endswith("/markets/orderbooks"):
+            batch_tickers.extend((params or {}).get("tickers") or [])
+            return {"orderbooks": [{
+                "ticker": ticker,
+                "orderbook_fp": {
+                    "yes_dollars": [["0.49", "100"]],
+                    "no_dollars": [["0.49", "100"]],
+                },
+            } for ticker in (params or {}).get("tickers") or []]}
+        raise AssertionError(url)
+
+    client._cached_json = cached
+    client._cache_status = lambda _key: {}
+    snapshot = client.hourly_snapshot(
+        now=now,
+        required_tickers=[required],
+    )
+
+    assert required in batch_tickers
+    assert required in {
+        market["ticker"] for market in snapshot["markets"]
+    }
+    assert snapshot["includedRequiredTickers"] == [required]
+    assert snapshot["missingRequiredTickers"] == []
+    assert len(snapshot["markets"]) == 32
 
 
 def test_hourly_snapshot_reports_expected_standby_when_no_event_is_in_window():
@@ -585,12 +732,83 @@ def test_live_fill_uses_current_fixed_point_dollar_fields():
     assert fill["fee_cost_dollars"] == 0.56
 
 
-def test_account_equity_uses_mode_specific_balance_semantics():
+def test_account_equity_adds_cash_and_position_value_in_both_modes():
     balance = {"balance": 80_000, "portfolio_value": 100_000}
 
-    assert _account_equity_cents(balance, "real") == 100_000
+    assert _account_equity_cents(balance, "real") == 180_000
     assert _account_equity_cents(balance, "paper") == 180_000
     assert _account_equity_cents({"balance": 80_000}, "real") == 80_000
+
+
+def test_hourly_account_context_aggregates_positions_and_open_orders_by_event():
+    event = "KXBTCD-27JUL2613"
+    selected = f"{event}-T65000"
+    sibling = f"{event}-T65100"
+    portfolio = {
+        "balance": {"balance": 100_000},
+        "positions": [
+            {
+                "ticker": selected,
+                "event_ticker": event,
+                "position_fp": 2,
+                "market_exposure_dollars": 6.0,
+            },
+            {
+                "ticker": sibling,
+                "event_ticker": event,
+                "position_fp": 3,
+                "market_exposure_dollars": 8.0,
+            },
+            {
+                "ticker": "KXBTCD-27JUL2614-T65000",
+                "event_ticker": "KXBTCD-27JUL2614",
+                "position_fp": 1,
+                "market_exposure_dollars": 4.0,
+            },
+        ],
+        "orders": [
+            {
+                "ticker": sibling,
+                "event_ticker": event,
+                "status": "resting",
+                "remaining_count_fp": 2,
+                "limit_price_dollars": 0.50,
+            },
+            {
+                "ticker": selected,
+                "event_ticker": event,
+                "status": "filled",
+                "count_fp": 10,
+                "limit_price_dollars": 0.50,
+            },
+            {
+                "ticker": "KXBTCD-27JUL2614-T65100",
+                "event_ticker": "KXBTCD-27JUL2614",
+                "status": "pending",
+                "remaining_count_fp": 2,
+                "limit_price_dollars": 0.50,
+            },
+        ],
+        "fills": [],
+    }
+
+    context = _paper_account_context(
+        portfolio,
+        {"strategy": {}, "tradedTickers": []},
+        selected,
+        1_000,
+        event_ticker=event,
+    )
+
+    assert context["currentTickerExposure"] == 6.0
+    assert context["currentEventPositionExposure"] == 14.0
+    assert context["currentEventOpenOrderExposure"] == 1.0
+    assert context["currentMarketExposure"] == 15.0
+    assert context["portfolioExposure"] == 20.0
+    assert context["hasPosition"] is True
+    assert context["hasEventPosition"] is True
+    assert context["hasOpenOrder"] is True
+    assert context["openOrderTickers"] == [sibling]
 
 
 def test_live_position_direction_never_labels_flat_exposure_as_yes():
@@ -655,6 +873,156 @@ def test_real_tick_with_zero_cash_fails_closed_without_routing(monkeypatch):
     assert result["decision"]["sizing"]["contracts"] == 0
 
 
+def test_hourly_tick_manages_held_strike_and_suppresses_higher_edge_sibling(
+    monkeypatch,
+):
+    event = "KXBTCD-27JUL2613"
+    held = f"{event}-T65000"
+    sibling = f"{event}-T65100"
+    captured = {}
+
+    class State:
+        def get(self, _user_id, *, environment=None):
+            return {
+                "enabled": True,
+                "activeEnvironment": "paper",
+                "config": {"executionMode": environment or "paper"},
+                "strategy": {},
+                "tradedTickers": [],
+                "filledTrades": [],
+            }
+
+    class Client:
+        def hourly_snapshot(self, **kwargs):
+            captured.update(kwargs)
+            markets = [
+                {
+                    "ticker": held,
+                    "event_ticker": event,
+                    "status": "active",
+                    "close_time": "2026-07-27T13:00:00Z",
+                    "floor_strike": 65_000,
+                },
+                {
+                    "ticker": sibling,
+                    "event_ticker": event,
+                    "status": "active",
+                    "close_time": "2026-07-27T13:00:00Z",
+                    "floor_strike": 65_100,
+                },
+            ]
+            return {
+                "eventTicker": event,
+                "markets": markets,
+                "orderbooks": {
+                    ticker: {
+                        "yes": [["0.40", "100"]],
+                        "no": [["0.58", "100"]],
+                    }
+                    for ticker in (held, sibling)
+                },
+                "ladderFit": {},
+                "reference": {
+                    "price": 65_050,
+                    "rawPrice": 65_000,
+                    "candles": [],
+                    "timestamp": "2026-07-27T12:30:00Z",
+                    "isOfficialBrti": True,
+                },
+                "referencePolicy": {
+                    "policy": "kxbtcd_raw_reference_v1",
+                    "selectedSource": "raw_price",
+                    "selectedPrice": 65_000,
+                },
+                "orderbookAsOf": "2026-07-27T12:30:00Z",
+                "warnings": [],
+            }
+
+    def evaluate(market, *_args, **_kwargs):
+        is_held = market["ticker"] == held
+        return {
+            "generatedAt": "2026-07-27T12:30:00Z",
+            "action": "WAIT" if is_held else "BUY_YES",
+            "side": "YES",
+            "model": {"fairYesProbability": 0.75},
+            "market": {
+                "ticker": market["ticker"],
+                "yesAskDepth": 100,
+                "secondsToClose": 1800,
+            },
+            "edge": {
+                "price": 0.42,
+                "conservativeEdge": 0.01 if is_held else 0.20,
+                "netEdge": 0.02 if is_held else 0.25,
+            },
+            "sizing": {"contracts": 0 if is_held else 5},
+            "gates": [],
+            "blockingReasons": ["position_size"] if is_held else [],
+            "config": {"executionMode": "paper"},
+        }
+
+    monkeypatch.setattr(kalshi_api, "evaluate_btc15_contract", evaluate)
+    controller = _PaperRobotController(
+        Client(),
+        State(),
+        None,
+        portfolio_display_loader=lambda _user_id: {
+            "modes": {
+                "paper": {
+                    "resetAt": "2026-07-27T12:00:00Z",
+                    "environment": "paper",
+                    "ledgerPreserved": True,
+                    "alphaLabOnly": False,
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        controller,
+        "portfolio",
+        lambda *_args, **_kwargs: {
+            "environment": "paper",
+            "balance": {"balance": 100_000, "portfolio_value": 84},
+            "positions": [{
+                "ticker": held,
+                "event_ticker": event,
+                "position_fp": 2,
+                "yes_count_fp": 2,
+                "yes_average_price_dollars": 0.42,
+                "market_exposure_dollars": 0.84,
+                "last_trade_at": "2026-07-27T12:20:00Z",
+            }],
+            "orders": [],
+            "fills": [],
+            "settlements": [],
+            "analytics": {
+                "realizedTradeRecords": [{
+                    "ticker": "KXBTCD-OLD-T64000",
+                    "settledAt": "2026-07-27T11:00:00Z",
+                    "pnl": 1.0,
+                }],
+            },
+        },
+    )
+
+    result = controller.tick(
+        "user-1",
+        submit_order=False,
+        mode="paper",
+        family="btchourly",
+    )
+
+    assert captured["required_tickers"] == [held]
+    assert result["snapshot"]["market"]["ticker"] == held
+    assert result["decision"]["managementPriority"]["active"] is True
+    assert result["decision"]["managementPriority"][
+        "suppressedNewStrikeTickers"
+    ] == [sibling]
+    assert result["orderSubmitted"] is False
+    assert result["portfolio"]["analytics"]["displayBaseline"]["active"] is True
+    assert result["portfolio"]["analytics"]["realizedSamples"] == 0
+
+
 @pytest.mark.parametrize(
     "warning",
     [
@@ -664,14 +1032,21 @@ def test_real_tick_with_zero_cash_fails_closed_without_routing(monkeypatch):
         "hourly_orderbooks_unavailable",
         "brti_proxy_stale",
         "btc_history_stale",
+        "kalshi_account_history_incomplete",
+        "kalshi_account_orders_incomplete",
+        "kalshi_account_positions_incomplete",
     ],
 )
 def test_tick_never_routes_when_execution_input_is_not_fresh(monkeypatch, warning):
+    account_warning = warning.startswith("kalshi_account_")
+    execution_mode = "real" if account_warning else "paper"
+
     class State:
         def get(self, _user_id, *, environment=None):
             return {
                 "enabled": True,
-                "config": {"executionMode": environment or "paper"},
+                "activeEnvironment": execution_mode,
+                "config": {"executionMode": environment or execution_mode},
                 "strategy": {},
                 "tradedTickers": [],
             }
@@ -693,7 +1068,7 @@ def test_tick_never_routes_when_execution_input_is_not_fresh(monkeypatch, warnin
                     "no": [["0.49", "100"]],
                 },
                 "orderbookAsOf": "2026-07-26T12:00:00Z",
-                "warnings": [warning],
+                "warnings": [] if account_warning else [warning],
             }
 
     decision = {
@@ -705,7 +1080,7 @@ def test_tick_never_routes_when_execution_input_is_not_fresh(monkeypatch, warnin
         "sizing": {"contracts": 5, "notional": 2.5},
         "gates": [],
         "blockingReasons": [],
-        "config": {"executionMode": "paper"},
+        "config": {"executionMode": execution_mode},
     }
     monkeypatch.setattr(
         kalshi_api,
@@ -722,10 +1097,12 @@ def test_tick_never_routes_when_execution_input_is_not_fresh(monkeypatch, warnin
             "orders": [],
             "fills": [],
             "settlements": [],
+            "warnings": [warning] if account_warning else [],
+            "completeness": {"complete": not account_warning},
         },
     )
 
-    result = controller.tick("user-1", submit_order=True, mode="paper")
+    result = controller.tick("user-1", submit_order=True, mode=execution_mode)
 
     assert result["orderSubmitted"] is False
     assert result["decision"]["action"] == "WAIT"
@@ -748,6 +1125,15 @@ def test_same_side_signal_becomes_add_on_without_a_trade_count_gate(monkeypatch)
                 },
                 "strategy": {},
                 "tradedTickers": ["KXBTC15M-TEST-00"],
+                "filledTrades": [{
+                    "ticker": "KXBTC15M-TEST-00",
+                    "side": "YES",
+                    "action": "BUY_YES",
+                    "orderFilled": True,
+                    "orderId": "prior-entry",
+                    "fairProbability": 0.72,
+                    "conservativeEdge": 0.02,
+                }],
             }
 
         def record(self, _user_id, decision, order):
@@ -808,6 +1194,95 @@ def test_same_side_signal_becomes_add_on_without_a_trade_count_gate(monkeypatch)
     assert result["decision"]["executionIntent"] == "ADD_YES"
     assert result["decision"]["positionManagement"]["existingContracts"] == 5
     assert "market_flat" not in result["decision"]["blockingReasons"]
+
+
+def test_scale_in_requires_probability_and_edge_to_improve_together():
+    previous = {"probability": 0.70, "conservativeEdge": 0.02}
+
+    assert _scale_in_signal_improved(None, 0.80, 0.08, 0.01, 0.001) is False
+    assert _scale_in_signal_improved(previous, 0.72, 0.022, 0.01, 0.001) is True
+    assert _scale_in_signal_improved(previous, 0.72, 0.0205, 0.01, 0.001) is False
+    assert _scale_in_signal_improved(previous, 0.705, 0.022, 0.01, 0.001) is False
+
+
+def test_real_tick_never_manages_manual_contracts_in_selected_ticker(monkeypatch):
+    class State:
+        def get(self, _user_id, *, environment=None):
+            return {
+                "enabled": True,
+                "activeEnvironment": "real",
+                "config": {"executionMode": "real"},
+                "strategy": {},
+                "tradedTickers": [],
+                "filledTrades": [],
+            }
+
+        def record(self, _user_id, decision, order):
+            return {"decision": decision, "order": order}
+
+    class Client:
+        def snapshot(self, *, base_url):
+            return {
+                "market": {"ticker": "KXBTC15M-MANUAL"},
+                "reference": {
+                    "price": 65_000,
+                    "candles": [],
+                    "timestamp": "2026-07-27T12:00:00Z",
+                },
+                "orderbook": {
+                    "yes": [["0.49", "100"]],
+                    "no": [["0.49", "100"]],
+                },
+                "orderbookAsOf": "2026-07-27T12:00:00Z",
+                "warnings": [],
+            }
+
+    monkeypatch.setattr(
+        kalshi_api,
+        "evaluate_btc15_contract",
+        lambda *_args, **_kwargs: {
+            "action": "BUY_YES",
+            "side": "YES",
+            "model": {"fairYesProbability": 0.75},
+            "market": {"yesAskDepth": 100},
+            "edge": {"price": 0.50, "conservativeEdge": 0.05},
+            "sizing": {"contracts": 5, "notional": 2.5},
+            "gates": [],
+            "blockingReasons": [],
+            "config": {"executionMode": "real"},
+        },
+    )
+    controller = _PaperRobotController(Client(), State(), None)
+    monkeypatch.setattr(
+        controller,
+        "portfolio",
+        lambda *_args, **_kwargs: {
+            "environment": "real",
+            "balance": {"balance": 100_000, "portfolio_value": 100},
+            "positions": [{
+                "ticker": "KXBTC15M-MANUAL",
+                "position_fp": 2,
+                "net_count_fp": 2,
+                "net_side": "YES",
+                "alphaLabManaged": False,
+                "alphaLabManagedCount": 0,
+                "alphaLabUnmanagedCount": 2,
+            }],
+            "orders": [],
+            "fills": [],
+            "settlements": [],
+            "warnings": [],
+            "completeness": {"complete": True},
+        },
+    )
+
+    result = controller.tick("user-1", submit_order=True, mode="real")
+
+    assert result["orderSubmitted"] is False
+    assert result["decision"]["action"] == "WAIT"
+    assert result["decision"]["executionIntent"] == "WAIT_UNMANAGED_POSITION_CONFLICT"
+    assert "unmanaged_position_conflict" in result["decision"]["blockingReasons"]
+    assert result["decision"]["account"]["unmanagedPositionCount"] == 2
 
 
 def test_live_exit_fill_reconciliation_uses_fifo_cost_and_both_fees():
@@ -1096,6 +1571,463 @@ def test_display_reset_preserves_the_complete_paper_ledger(tmp_path):
     assert before["orders"][0]["client_order_id"] == after["orders"][0]["client_order_id"]
     assert before["balance"] == after["balance"]
     assert display_store["user-1"]["modes"]["paper"]["baselineEquityCents"] == 1_000_000
+    assert display_store["user-1"]["modes"]["paper"]["alphaLabOnly"] is False
+
+
+def test_real_display_reset_persists_alphalab_only_contract(monkeypatch):
+    display_store = {}
+    controller = _PaperRobotController(
+        None,
+        type("State", (), {"get": lambda *_args, **_kwargs: {"modeState": {}}})(),
+        None,
+        portfolio_display_loader=lambda user_id: copy.deepcopy(
+            display_store.get(user_id)
+        ),
+        portfolio_display_saver=lambda user_id, payload: display_store.update({
+            user_id: copy.deepcopy(payload),
+        }),
+    )
+    monkeypatch.setattr(
+        controller,
+        "portfolio",
+        lambda *_args, **_kwargs: {
+            "balance": {"balance": 80_000, "portfolio_value": 20_000},
+            "orders": [],
+            "fills": [],
+            "settlements": [],
+            "analytics": {},
+        },
+    )
+
+    result = controller.reset_portfolio_display("user-1", mode="real")
+    baseline = display_store["user-1"]["modes"]["real"]
+
+    assert baseline["alphaLabOnly"] is True
+    assert baseline["baselineEquityCents"] == 100_000
+    assert result["analytics"]["displayBaseline"]["alphaLabOnly"] is True
+
+
+def test_real_display_baseline_exposes_only_post_baseline_alphalab_activity():
+    baseline = {
+        "resetAt": "2026-07-26T12:00:00Z",
+        "baselineEquityCents": 100_000,
+        "baselineCashCents": 100_000,
+        "environment": "real",
+        "ledgerPreserved": True,
+        "alphaLabOnly": True,
+    }
+
+    class State:
+        def get(self, _user_id, *, environment=None):
+            return {
+                "modeState": {"real": {"displayBaseline": baseline}},
+                "strategy": {},
+            }
+
+    controller = _PaperRobotController(None, State(), None)
+    result = controller._apply_portfolio_display(
+        "user-1",
+        {
+            "orders": [
+                {
+                    "order_id": "old-managed",
+                    "created_time": "2026-07-26T11:59:00Z",
+                    "alphaLabManaged": True,
+                },
+                {
+                    "order_id": "new-manual",
+                    "created_time": "2026-07-26T12:01:00Z",
+                    "alphaLabManaged": False,
+                },
+                {
+                    "order_id": "new-managed",
+                    "created_time": "2026-07-26T12:02:00Z",
+                    "alphaLabManaged": True,
+                },
+            ],
+            "fills": [],
+            "settlements": [],
+            "analytics": {},
+        },
+        "real",
+    )
+
+    assert [row["order_id"] for row in result["orders"]] == ["new-managed"]
+    assert result["analytics"]["displayBaseline"]["active"] is True
+    assert result["analytics"]["displayBaseline"]["resetAt"] == baseline["resetAt"]
+    assert result["accountActivity"]["lifetimeCounts"]["orders"] == 3
+    assert result["accountActivity"]["visibleCounts"]["orders"] == 1
+
+
+@pytest.mark.parametrize(
+    "invalid_baseline",
+    [
+        {},
+        {"environment": "real", "alphaLabOnly": True},
+        {"resetAt": "2026-07-26T12:00:00Z", "alphaLabOnly": True},
+        {"resetAt": "2026-07-26T12:00:00Z", "environment": "real"},
+    ],
+)
+def test_real_display_artifact_repairs_invalid_baseline_fail_closed(
+    invalid_baseline,
+):
+    display_store = {
+        "user-1": {"modes": {"real": copy.deepcopy(invalid_baseline)}},
+    }
+
+    class State:
+        def get(self, _user_id, *, environment=None):
+            return {"modeState": {"real": {"displayBaseline": {}}}}
+
+        def ensure_real_display_baseline(self, _user_id):
+            return {
+                "resetAt": "2026-07-27T12:00:00Z",
+                "environment": "real",
+                "ledgerPreserved": True,
+                "alphaLabOnly": True,
+                "reason": "test_repair",
+            }
+
+    controller = _PaperRobotController(
+        None,
+        State(),
+        None,
+        portfolio_display_loader=lambda user_id: copy.deepcopy(
+            display_store.get(user_id)
+        ),
+        portfolio_display_saver=lambda user_id, payload: display_store.update({
+            user_id: copy.deepcopy(payload),
+        }),
+    )
+    result = controller._apply_portfolio_display(
+        "user-1",
+        {
+            "balance": {"balance": 100_000, "portfolio_value": 0},
+                "orders": [{
+                    "order_id": "pre-repair",
+                    "created_time": "2020-01-01T00:00:00Z",
+                    "alphaLabManaged": True,
+                }],
+            "fills": [],
+            "settlements": [],
+            "analytics": {},
+        },
+        "real",
+    )
+
+    repaired = display_store["user-1"]["modes"]["real"]
+    assert repaired["baselineEquityCents"] == 100_000
+    assert repaired["baselineCashCents"] == 100_000
+    assert repaired["environment"] == "real"
+    assert repaired["alphaLabOnly"] is True
+    assert result["orders"] == []
+    assert result["analytics"]["displayBaseline"]["active"] is True
+
+
+def test_real_state_fallback_baseline_materializes_current_cash_and_equity():
+    materialized = []
+
+    class State:
+        def get(self, _user_id, *, environment=None):
+            return {
+                "modeState": {
+                    "real": {
+                        "displayBaseline": {
+                            "resetAt": "2026-07-26T12:00:00Z",
+                            "environment": "real",
+                            "ledgerPreserved": True,
+                            "alphaLabOnly": True,
+                        },
+                    },
+                },
+            }
+
+        def ensure_real_display_baseline(self, _user_id):
+            return self.get(_user_id)["modeState"]["real"][
+                "displayBaseline"
+            ]
+
+        def materialize_real_display_baseline(self, _user_id, baseline):
+            materialized.append(copy.deepcopy(baseline))
+            return dict(baseline)
+
+    controller = _PaperRobotController(None, State(), None)
+    result = controller._apply_portfolio_display(
+        "user-1",
+        {
+            "balance": {
+                "balance": 125_000,
+                "portfolio_value": 25_000,
+            },
+            "orders": [],
+            "fills": [],
+            "settlements": [],
+            "analytics": {},
+        },
+        "real",
+    )
+
+    assert len(materialized) == 1
+    assert materialized[0]["resetAt"] == "2026-07-26T12:00:00Z"
+    assert materialized[0]["baselineEquityCents"] == 150_000
+    assert materialized[0]["baselineCashCents"] == 125_000
+    assert result["analytics"]["displayBaseline"][
+        "baselineEquityCents"
+    ] == 150_000
+    assert result["analytics"]["displayBaseline"][
+        "baselineCashCents"
+    ] == 125_000
+
+
+def test_live_portfolio_marks_missing_position_value_as_unknown(monkeypatch):
+    class State:
+        def get(self, _user_id, *, environment=None):
+            return {
+                "strategy": {},
+                "filledTrades": [],
+                "decisions": [],
+                "modeState": {"real": {"displayBaseline": {}}},
+            }
+
+    def signed_request(_config, _environment, _method, endpoint, **_kwargs):
+        if endpoint == "/portfolio/balance":
+            return {"balance": 80_000, "portfolio_value": 20_000}
+        if endpoint == "/portfolio/positions":
+            return {"market_positions": [{
+                "ticker": "KXBTC15M-TEST-00",
+                "position_fp": 3,
+                "market_exposure_dollars": "1.20",
+            }]}
+        if endpoint == "/portfolio/orders":
+            return {"orders": []}
+        if endpoint == "/portfolio/fills":
+            return {"fills": []}
+        if endpoint == "/portfolio/settlements":
+            return {"settlements": []}
+        raise AssertionError(endpoint)
+
+    controller = _PaperRobotController(
+        None,
+        State(),
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        signed_request=signed_request,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_historical_account_rows",
+        lambda *_args: {"orders": [], "fills": [], "complete": True, "warnings": []},
+    )
+
+    portfolio = controller._live_portfolio("user-1", mutate=False)
+
+    assert _account_equity_cents(portfolio["balance"], "real") == 100_000
+    assert portfolio["positions"][0]["market_value_dollars"] is None
+    assert portfolio["positions"][0]["unrealized_pnl_dollars"] is None
+    assert portfolio["positions"][0]["markAvailable"] is False
+    assert portfolio["positions"][0]["alphaLabManaged"] is False
+    assert portfolio["positions"][0]["alphaLabManagedCount"] == 0
+    assert portfolio["positions"][0]["alphaLabUnmanagedCount"] == 3
+    assert portfolio["completeness"]["complete"] is True
+    assert portfolio["warnings"] == ["kalshi_unmanaged_positions_present"]
+
+
+def test_live_portfolio_separates_managed_and_manual_contract_counts(monkeypatch):
+    class State:
+        def get(self, _user_id, *, environment=None):
+            return {
+                "strategy": {},
+                "filledTrades": [{
+                    "ticker": "KXBTC15M-TEST-00",
+                    "side": "YES",
+                    "action": "BUY_YES",
+                    "orderId": "managed-order",
+                    "clientOrderId": "managed-client",
+                    "orderFilled": True,
+                    "fillCount": 2,
+                }],
+                "decisions": [],
+                "modeState": {"real": {"displayBaseline": {}}},
+            }
+
+    def signed_request(_config, _environment, _method, endpoint, **_kwargs):
+        if endpoint == "/portfolio/balance":
+            return {"balance": 80_000, "portfolio_value": 20_000}
+        if endpoint == "/portfolio/positions":
+            return {"market_positions": [{
+                "ticker": "KXBTC15M-TEST-00",
+                "position_fp": 5,
+                "market_exposure_dollars": "2.00",
+            }]}
+        if endpoint == "/portfolio/orders":
+            return {"orders": [{
+                "order_id": "managed-order",
+                "client_order_id": "managed-client",
+                "ticker": "KXBTC15M-TEST-00",
+                "outcome_side": "YES",
+                "reduce_only": False,
+                "count_fp": 2,
+                "fill_count_fp": 2,
+            }]}
+        if endpoint == "/portfolio/fills":
+            return {"fills": [{
+                "fill_id": "managed-fill",
+                "order_id": "managed-order",
+                "ticker": "KXBTC15M-TEST-00",
+                "outcome_side": "YES",
+                "count_fp": 2,
+                "yes_price_dollars": "0.40",
+                "no_price_dollars": "0.60",
+            }]}
+        if endpoint == "/portfolio/settlements":
+            return {"settlements": []}
+        raise AssertionError(endpoint)
+
+    controller = _PaperRobotController(
+        None,
+        State(),
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        signed_request=signed_request,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_historical_account_rows",
+        lambda *_args: {"orders": [], "fills": [], "complete": True, "warnings": []},
+    )
+
+    portfolio = controller._live_portfolio("user-1", mutate=False)
+    position = portfolio["positions"][0]
+
+    assert position["alphaLabManaged"] is True
+    assert position["alphaLabManagedSide"] == "YES"
+    assert position["alphaLabManagedCount"] == 2
+    assert position["alphaLabUnmanagedCount"] == 3
+    assert position["yes_average_price_dollars"] == 0.40
+    assert "kalshi_unmanaged_positions_present" in portfolio["warnings"]
+    assert _position_execution_context(
+        portfolio, "KXBTC15M-TEST-00"
+    )["count"] == 2
+
+
+def test_manual_fill_roundtrip_to_zero_does_not_poison_managed_inventory(
+    monkeypatch,
+):
+    ticker = "KXBTC15M-ROUNDTRIP"
+
+    class State:
+        def get(self, _user_id, *, environment=None):
+            return {
+                "strategy": {},
+                "filledTrades": [{
+                    "ticker": ticker,
+                    "side": "YES",
+                    "action": "BUY_YES",
+                    "orderId": "managed-order",
+                    "clientOrderId": "managed-client",
+                    "orderFilled": True,
+                    "fillCount": 2,
+                }],
+                "decisions": [],
+                "modeState": {"real": {"displayBaseline": {}}},
+            }
+
+    def signed_request(_config, _environment, _method, endpoint, **_kwargs):
+        if endpoint == "/portfolio/balance":
+            return {"balance": 80_000, "portfolio_value": 20_000}
+        if endpoint == "/portfolio/positions":
+            return {"market_positions": [{
+                "ticker": ticker,
+                "position_fp": 2,
+                "yes_count_fp": 2,
+                "market_exposure_dollars": "0.80",
+            }]}
+        if endpoint == "/portfolio/orders":
+            return {"orders": [{
+                "order_id": "managed-order",
+                "client_order_id": "managed-client",
+                "ticker": ticker,
+                "outcome_side": "YES",
+                "reduce_only": False,
+                "count_fp": 2,
+                "fill_count_fp": 2,
+            }]}
+        if endpoint == "/portfolio/fills":
+            return {"fills": [
+                {
+                    "fill_id": "managed-fill",
+                    "order_id": "managed-order",
+                    "ticker": ticker,
+                    "action": "BUY",
+                    "outcome_side": "YES",
+                    "count_fp": 2,
+                    "yes_price_dollars": "0.40",
+                },
+                {
+                    "fill_id": "manual-buy",
+                    "order_id": "manual-buy-order",
+                    "ticker": ticker,
+                    "action": "BUY",
+                    "outcome_side": "YES",
+                    "count_fp": 5,
+                    "yes_price_dollars": "0.45",
+                },
+                {
+                    "fill_id": "manual-sell",
+                    "order_id": "manual-sell-order",
+                    "ticker": ticker,
+                    "action": "SELL",
+                    # Kalshi V2 outcome_side is the resulting exposure;
+                    # SELL YES is therefore canonical NO.
+                    "outcome_side": "NO",
+                    "count_fp": 5,
+                    "yes_price_dollars": "0.50",
+                },
+            ]}
+        if endpoint == "/portfolio/settlements":
+            return {"settlements": [{
+                "ticker": ticker,
+                "market_result": "YES",
+                "settled_time": "2026-07-27T02:00:00Z",
+            }]}
+        raise AssertionError(endpoint)
+
+    controller = _PaperRobotController(
+        None,
+        State(),
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        signed_request=signed_request,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_historical_account_rows",
+        lambda *_args: {
+            "orders": [],
+            "fills": [],
+            "complete": True,
+            "warnings": [],
+        },
+    )
+
+    portfolio = controller._live_portfolio("user-1", mutate=False)
+    position = portfolio["positions"][0]
+
+    assert position["alphaLabManaged"] is True
+    assert position["alphaLabManagedCount"] == 2
+    assert position["alphaLabUnmanagedCount"] == 0
+    assert position["alphaLabOwnershipConflict"] is False
+    assert portfolio["settlements"][0]["alphaLabManaged"] is True
+    assert "kalshi_unmanaged_positions_present" not in portfolio["warnings"]
 
 
 def test_config_exposes_builtin_paper_and_production_only_environment(tmp_path):
@@ -1256,7 +2188,7 @@ def test_live_v2_partial_fill_uses_average_price_fee_and_remaining_count():
     assert order["status"] == "partially_filled"
 
 
-def test_live_fill_prefers_canonical_outcome_price_and_action():
+def test_live_sell_fill_maps_canonical_direction_to_reduced_contract():
     fill = _normalise_live_fill({
         "fill_id": "fill-no-1",
         "ticker": "KXBTC15M-TEST-00",
@@ -1269,10 +2201,47 @@ def test_live_fill_prefers_canonical_outcome_price_and_action():
         "fee_cost": "0.0200",
     })
 
-    assert fill["outcome_side"] == "NO"
-    assert fill["action"] == "sell"
-    assert fill["price_dollars"] == 0.36
+    assert fill["canonical_outcome_side"] == "NO"
+    assert fill["outcome_side"] == "YES"
+    assert fill["action"] == "SELL"
+    assert fill["price_dollars"] == 0.64
     assert fill["fee_cost_dollars"] == 0.02
+
+
+@pytest.mark.parametrize(
+    (
+        "action",
+        "canonical_side",
+        "expected_contract_side",
+        "expected_price",
+    ),
+    (
+        ("buy", "YES", "YES", 0.64),
+        ("buy", "NO", "NO", 0.36),
+        ("sell", "NO", "YES", 0.64),
+        ("sell", "YES", "NO", 0.36),
+    ),
+)
+def test_live_fill_canonical_direction_and_price_cover_all_four_quadrants(
+    action,
+    canonical_side,
+    expected_contract_side,
+    expected_price,
+):
+    fill = _normalise_live_fill({
+        "fill_id": f"{action}-{canonical_side}",
+        "ticker": "KXBTC15M-TEST-00",
+        "outcome_side": canonical_side,
+        "action": action,
+        "count_fp": "2.00",
+        "yes_price_dollars": "0.6400",
+        "no_price_dollars": "0.3600",
+    })
+
+    assert fill["canonical_outcome_side"] == canonical_side
+    assert fill["outcome_side"] == expected_contract_side
+    assert fill["action"] == action.upper()
+    assert fill["price_dollars"] == expected_price
 
 
 def test_live_order_recovers_all_economic_sides_from_yes_book_shape():
@@ -1308,7 +2277,7 @@ def test_live_fill_uses_matching_order_when_fill_omits_economic_side_and_action(
     }, order)
 
     assert fill["outcome_side"] == "NO"
-    assert fill["action"] == "buy"
+    assert fill["action"] == "BUY"
     assert fill["price_dollars"] == 0.36
 
 
@@ -1352,11 +2321,57 @@ def test_live_order_payload_keeps_symmetric_yes_and_no_order_shapes():
 
 
 class _EnabledRealState:
+    def __init__(self, *, filled_trades=None, strategy=None):
+        self.filled_trades = list(filled_trades or [])
+        self.strategy = dict(strategy or {})
+
     def get(self, _user_id, *, environment=None):
         return {
             "enabled": True,
-            "config": {"executionMode": environment or "real"},
+            "activeEnvironment": "real",
+            "config": {
+                "executionMode": environment or "real",
+                "maxPortfolioExposurePct": 10,
+                "maxSingleMarketExposurePct": 2,
+                "maxDailyLossPct": 2,
+            },
+            "strategy": copy.deepcopy(self.strategy),
+            "filledTrades": copy.deepcopy(self.filled_trades),
         }
+
+    def refresh(self, _user_id, *, environment=None):
+        return {
+            **self.get(_user_id, environment=environment),
+            "authoritativeRefresh": True,
+            "durableStateLoaderAvailable": True,
+        }
+
+
+def _test_real_credentials(_user_id):
+    return {
+        "production_api_key_id": "key-id-12345678",
+        "production_private_key": "private-key-present",
+    }
+
+
+def _real_preflight_response(
+    endpoint,
+    *,
+    balance=100_000,
+    portfolio_value=0,
+    positions=None,
+    orders=None,
+):
+    if endpoint == "/portfolio/balance":
+        return {
+            "balance": balance,
+            "portfolio_value": portfolio_value,
+        }
+    if endpoint == "/portfolio/positions":
+        return {"market_positions": list(positions or [])}
+    if endpoint == "/portfolio/orders":
+        return {"orders": list(orders or [])}
+    raise AssertionError(endpoint)
 
 
 class _FencedLeaseStore:
@@ -1381,13 +2396,861 @@ class _FencedLeaseStore:
         return fencing_token == 73
 
 
+class _MutualFencedLeaseStore:
+    def __init__(self):
+        self.condition = threading.Condition()
+        self.owner = None
+        self.token = 0
+        self.events = []
+
+    def claim_worker_lease_fenced(self, lease_name, owner_id, **_kwargs):
+        with self.condition:
+            if self.owner is not None:
+                return {"acquired": False}
+            self.token += 1
+            self.owner = owner_id
+            self.events.append(("claim", lease_name, owner_id, self.token))
+            return {"acquired": True, "fencingToken": self.token}
+
+    def renew_worker_lease(
+        self,
+        lease_name,
+        owner_id,
+        fencing_token,
+        **_kwargs,
+    ):
+        with self.condition:
+            valid = (
+                self.owner == owner_id and self.token == fencing_token
+            )
+            self.events.append(
+                ("renew", lease_name, owner_id, fencing_token)
+            )
+            return valid
+
+    def release_worker_lease(
+        self,
+        lease_name,
+        owner_id,
+        fencing_token=None,
+    ):
+        with self.condition:
+            valid = (
+                self.owner == owner_id and self.token == fencing_token
+            )
+            self.events.append(
+                ("release", lease_name, owner_id, fencing_token)
+            )
+            if valid:
+                self.owner = None
+                self.condition.notify_all()
+            return valid
+
+
+def _durable_state_callbacks():
+    durable = {}
+    versions = {}
+
+    def load(user_id):
+        return copy.deepcopy(durable.get(user_id))
+
+    def save(user_id, state):
+        durable[user_id] = copy.deepcopy(state)
+        versions[user_id] = versions.get(user_id, 0) + 1
+        return {"version": versions[user_id]}
+
+    return durable, load, save
+
+
+@pytest.mark.parametrize("mutation", ["delete", "rotate"])
+def test_connection_test_fence_prevents_stale_credential_writeback(
+    tmp_path,
+    monkeypatch,
+    mutation,
+):
+    _durable, load_state, save_state = _durable_state_callbacks()
+    connection_lock = threading.RLock()
+    connection = {
+        "production_api_key_id": "old-key-id-123456",
+        "production_private_key": "old-private-material",
+        "production_test_status": "saved",
+    }
+
+    def get_connection(_user_id, _kind):
+        with connection_lock:
+            return copy.deepcopy(connection)
+
+    def save_connection(_user_id, _kind, payload):
+        with connection_lock:
+            connection.clear()
+            connection.update(copy.deepcopy(payload))
+        return True, None
+
+    class ObservableLeaseStore(_MutualFencedLeaseStore):
+        def __init__(self):
+            super().__init__()
+            self.blocked_attempt = threading.Event()
+
+        def claim_worker_lease_fenced(
+            self,
+            lease_name,
+            owner_id,
+            **kwargs,
+        ):
+            if self.owner is not None:
+                self.blocked_attempt.set()
+            return super().claim_worker_lease_fenced(
+                lease_name,
+                owner_id,
+                **kwargs,
+            )
+
+    lease_store = ObservableLeaseStore()
+    balance_read_started = threading.Event()
+    allow_connection_test = threading.Event()
+
+    def http_get(_url, **_kwargs):
+        balance_read_started.set()
+        assert allow_connection_test.wait(timeout=3.0)
+        return _Response({
+            "balance": 100_000,
+            "portfolio_value": 0,
+        })
+
+    def http_request(_method, url, **_kwargs):
+        if str(url).endswith("/portfolio/positions"):
+            return _Response({"market_positions": []})
+        if str(url).endswith("/portfolio/orders"):
+            return _Response({"orders": []})
+        raise AssertionError(url)
+
+    # These tests exercise routing/credential serialization, not RSA crypto.
+    monkeypatch.setattr(kalshi_api, "_signed_headers", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        kalshi_api,
+        "_load_rsa_private_key",
+        lambda _value: object(),
+    )
+
+    app = Flask(__name__)
+    register_kalshi_api(
+        app,
+        require_auth=lambda: {"id": "user-1"},
+        http_get=http_get,
+        http_request=http_request,
+        get_user_config=get_connection,
+        authoritative_config_loader=get_connection,
+        save_user_config=save_connection,
+        robot_state_loader=load_state,
+        robot_state_saver=save_state,
+        worker_lease_store=lease_store,
+        robot_state_path=str(tmp_path / "state.json"),
+        paper_account_path=str(tmp_path / "paper.json"),
+    )
+    test_responses = []
+    mutation_responses = []
+
+    def run_connection_test():
+        with app.test_client() as client:
+            test_responses.append(client.post(
+                "/api/kalshi/config/test",
+                json={"environment": "production"},
+            ))
+
+    def run_mutation():
+        with app.test_client() as client:
+            if mutation == "delete":
+                response = client.delete(
+                    "/api/kalshi/config",
+                    json={"environment": "production"},
+                )
+            else:
+                response = client.post(
+                    "/api/kalshi/config",
+                    json={
+                        "environment": "production",
+                        "apiKeyId": "new-key-id-123456",
+                        "privateKey": "new-private-material",
+                    },
+                )
+            mutation_responses.append(response)
+
+    test_thread = threading.Thread(target=run_connection_test)
+    test_thread.start()
+    assert balance_read_started.wait(timeout=2.0)
+    mutation_thread = threading.Thread(target=run_mutation)
+    mutation_thread.start()
+    mutation_waited_for_fence = lease_store.blocked_attempt.wait(
+        timeout=2.0
+    )
+    allow_connection_test.set()
+    test_thread.join(timeout=5.0)
+    mutation_thread.join(timeout=5.0)
+
+    assert mutation_waited_for_fence is True
+    assert not test_thread.is_alive()
+    assert not mutation_thread.is_alive()
+    assert [response.status_code for response in test_responses] == [200]
+    assert [response.status_code for response in mutation_responses] == [200]
+    with connection_lock:
+        final_connection = copy.deepcopy(connection)
+    if mutation == "delete":
+        assert "production_api_key_id" not in final_connection
+        assert "production_private_key" not in final_connection
+        assert "production_test_status" not in final_connection
+    else:
+        assert (
+            final_connection["production_api_key_id"]
+            == "new-key-id-123456"
+        )
+        assert (
+            final_connection["production_private_key"]
+            == "new-private-material"
+        )
+        assert final_connection["production_test_status"] == "saved"
+    assert [event[0] for event in lease_store.events].count("renew") >= 1
+
+
+def test_connection_test_bypasses_stale_cross_worker_credential_cache(
+    tmp_path,
+    monkeypatch,
+):
+    stale_cache = {
+        "production_api_key_id": "old-key-id-123456",
+        "production_private_key": "old-private-material",
+        "production_test_status": "connected",
+    }
+    durable = {
+        "production_api_key_id": "new-key-id-123456",
+        "production_private_key": "new-private-material",
+        "production_test_status": "saved",
+        "unrelatedSetting": "preserve-me",
+    }
+    signed_credentials = []
+
+    def authoritative_loader(_user_id, _kind):
+        return copy.deepcopy(durable)
+
+    def save_connection(_user_id, _kind, payload):
+        durable.clear()
+        durable.update(copy.deepcopy(payload))
+        return True, None
+
+    def capture_headers(key_id, private_key, *_args, **_kwargs):
+        signed_credentials.append((key_id, private_key))
+        return {}
+
+    monkeypatch.setattr(kalshi_api, "_signed_headers", capture_headers)
+    app = Flask(__name__)
+    register_kalshi_api(
+        app,
+        require_auth=lambda: {"id": "user-1"},
+        http_get=lambda *_args, **_kwargs: _Response({
+            "balance": 100_000,
+            "portfolio_value": 0,
+        }),
+        http_request=lambda method, url, **_kwargs: _Response(
+            {"market_positions": []}
+            if str(url).endswith("/portfolio/positions")
+            else {"orders": []}
+        ),
+        get_user_config=lambda *_args: copy.deepcopy(stale_cache),
+        authoritative_config_loader=authoritative_loader,
+        save_user_config=save_connection,
+        worker_lease_store=_FencedLeaseStore(),
+        robot_state_path=str(tmp_path / "state.json"),
+        paper_account_path=str(tmp_path / "paper.json"),
+    )
+
+    response = app.test_client().post(
+        "/api/kalshi/config/test",
+        json={"environment": "production"},
+    )
+
+    assert response.status_code == 200
+    assert signed_credentials == [
+        ("new-key-id-123456", "new-private-material"),
+    ] * 3
+    assert durable["production_api_key_id"] == "new-key-id-123456"
+    assert durable["production_private_key"] == "new-private-material"
+    assert durable["production_test_status"] == "connected"
+    assert durable["unrelatedSetting"] == "preserve-me"
+
+
+def test_production_config_bypass_reads_supabase_instead_of_ttl_cache(
+    monkeypatch,
+):
+    import start_quant_backend as backend
+
+    user_id = "kalshi-cache-bypass-user"
+    cache_key = (user_id, "kalshi")
+    stale = {
+        "production_api_key_id": "old-key-id-123456",
+        "production_private_key": "old-private-material",
+    }
+    fresh = {
+        "production_api_key_id": "new-key-id-123456",
+        "production_private_key": "new-private-material",
+    }
+    reads = []
+
+    class Query:
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            reads.append(1)
+            return type(
+                "ConfigResponse",
+                (),
+                {"data": [{"config": copy.deepcopy(fresh)}]},
+            )()
+
+    class Supabase:
+        def table(self, table_name):
+            assert table_name == "user_api_configs"
+            return Query()
+
+    monkeypatch.setattr(backend, "supabase_admin", Supabase())
+    monkeypatch.setitem(
+        backend._config_cache,
+        cache_key,
+        (copy.deepcopy(stale), time.time()),
+    )
+
+    cached = backend.get_user_config(user_id, "kalshi")
+    authoritative = backend.get_user_config(
+        user_id,
+        "kalshi",
+        bypass_cache=True,
+    )
+
+    assert cached == stale
+    assert reads == [1]
+    assert authoritative == fresh
+    assert backend.get_user_config(user_id, "kalshi") == fresh
+
+
+def test_credential_rotation_uses_authoritative_record_not_stale_cache(
+    tmp_path,
+    monkeypatch,
+):
+    _state, load_state, save_state = _durable_state_callbacks()
+    stale_cache = {
+        "production_api_key_id": "old-key-id-123456",
+        "production_private_key": "old-private-material",
+    }
+    durable = {
+        "production_api_key_id": "current-key-id-123456",
+        "production_private_key": "current-private-material",
+        "unrelatedSetting": "preserve-me",
+    }
+
+    def save_connection(_user_id, _kind, payload):
+        durable.clear()
+        durable.update(copy.deepcopy(payload))
+        return True, None
+
+    monkeypatch.setattr(
+        kalshi_api,
+        "_load_rsa_private_key",
+        lambda _value: object(),
+    )
+    app = Flask(__name__)
+    register_kalshi_api(
+        app,
+        require_auth=lambda: {"id": "user-1"},
+        get_user_config=lambda *_args: copy.deepcopy(stale_cache),
+        authoritative_config_loader=lambda *_args: copy.deepcopy(
+            durable
+        ),
+        save_user_config=save_connection,
+        robot_state_loader=load_state,
+        robot_state_saver=save_state,
+        worker_lease_store=_FencedLeaseStore(),
+        robot_state_path=str(tmp_path / "state.json"),
+        paper_account_path=str(tmp_path / "paper.json"),
+    )
+
+    response = app.test_client().post(
+        "/api/kalshi/config",
+        json={
+            "environment": "production",
+            "apiKeyId": "third-key-id-123456",
+            "privateKey": "********",
+        },
+    )
+
+    assert response.status_code == 200
+    assert durable["production_api_key_id"] == "third-key-id-123456"
+    assert (
+        durable["production_private_key"]
+        == "current-private-material"
+    )
+    assert durable["production_test_status"] == "saved"
+    assert durable["unrelatedSetting"] == "preserve-me"
+
+
+def test_deleted_durable_credentials_block_real_state_mutations_from_stale_worker(
+    tmp_path,
+):
+    _durable, load_state, save_state = _durable_state_callbacks()
+    stale_cache = {
+        "production_api_key_id": "deleted-key-id-123456",
+        "production_private_key": "deleted-private-material",
+    }
+    lease_store = _FencedLeaseStore()
+    app = Flask(__name__)
+    controls = register_kalshi_api(
+        app,
+        require_auth=lambda: {"id": "user-1"},
+        get_user_config=lambda *_args: copy.deepcopy(stale_cache),
+        authoritative_config_loader=lambda *_args: {},
+        save_user_config=lambda *_args: (True, None),
+        robot_state_loader=load_state,
+        robot_state_saver=save_state,
+        worker_lease_store=lease_store,
+        robot_state_path=str(tmp_path / "state.json"),
+        paper_account_path=str(tmp_path / "paper.json"),
+    )
+    state = controls["robot_state"]
+    state.configure(
+        "user-1",
+        False,
+        {
+            "executionMode": "paper",
+            "riskPerTradePct": 0.40,
+        },
+    )
+    before = state.refresh("user-1")
+    client = app.test_client()
+
+    enable = client.post(
+        "/api/kalshi/paper/robot",
+        json={
+            "enabled": True,
+            "config": {
+                "executionMode": "real",
+                "riskPerTradePct": 0.20,
+            },
+        },
+    )
+    save_config = client.post(
+        "/api/kalshi/paper/robot/config",
+        json={
+            "config": {
+                "executionMode": "real",
+                "riskPerTradePct": 0.10,
+            },
+        },
+    )
+    after = state.refresh("user-1")
+
+    assert [enable.status_code, save_config.status_code] == [409, 409]
+    assert [
+        enable.get_json()["code"],
+        save_config.get_json()["code"],
+    ] == [
+        "kalshi_real_credentials_missing",
+        "kalshi_real_credentials_missing",
+    ]
+    assert after["enabled"] is False
+    assert after["activeEnvironment"] == "paper"
+    assert after["config"] == before["config"]
+    assert after["modeState"] == before["modeState"]
+    assert [event[0] for event in lease_store.events].count("claim") == 2
+
+
+def test_real_control_mutation_routes_share_the_routing_fence(tmp_path):
+    _durable, load_state, save_state = _durable_state_callbacks()
+    connection = {
+        "production_api_key_id": "key-id-12345678",
+        "production_private_key": "private-key-present",
+    }
+
+    def save_connection(_user_id, _kind, payload):
+        connection.clear()
+        connection.update(copy.deepcopy(payload))
+        return True, None
+
+    lease_store = _FencedLeaseStore()
+    app = Flask(__name__)
+    controls = register_kalshi_api(
+        app,
+        require_auth=lambda: {"id": "user-1"},
+        get_user_config=lambda *_args: copy.deepcopy(connection),
+        authoritative_config_loader=lambda *_args: copy.deepcopy(
+            connection
+        ),
+        save_user_config=save_connection,
+        robot_state_loader=load_state,
+        robot_state_saver=save_state,
+        worker_lease_store=lease_store,
+        robot_state_path=str(tmp_path / "state.json"),
+        paper_account_path=str(tmp_path / "paper.json"),
+    )
+    state = controls["robot_state"]
+    state.configure("user-1", False, {"executionMode": "real"})
+    state.configure("user-1", True, {"executionMode": "real"})
+    client = app.test_client()
+
+    responses = [
+        client.post(
+            "/api/kalshi/paper/robot",
+            json={
+                "enabled": False,
+                "config": {"executionMode": "real"},
+            },
+        ),
+        client.post(
+            "/api/kalshi/paper/robot/config",
+            json={"config": {"executionMode": "real"}},
+        ),
+        client.post(
+            "/api/kalshi/paper/robot/config",
+            json={"config": {"executionMode": "paper"}},
+        ),
+        client.post(
+            "/api/kalshi/paper/robot",
+            json={
+                "enabled": False,
+                "config": {"executionMode": "real"},
+            },
+        ),
+        client.post(
+            "/api/kalshi/config",
+            json={
+                "environment": "production",
+                "apiKeyId": "********",
+                "privateKey": "********",
+            },
+        ),
+        client.delete(
+            "/api/kalshi/config",
+            json={"environment": "production"},
+        ),
+    ]
+
+    assert [response.status_code for response in responses] == [200] * 6
+    assert [event[0] for event in lease_store.events].count("claim") == 6
+    assert [event[0] for event in lease_store.events].count("release") == 6
+
+
+def test_real_control_mutation_fails_closed_without_durable_fence(tmp_path):
+    connection = {
+        "production_api_key_id": "key-id-12345678",
+        "production_private_key": "private-key-present",
+    }
+    app = Flask(__name__)
+    register_kalshi_api(
+        app,
+        require_auth=lambda: {"id": "user-1"},
+        get_user_config=lambda *_args: copy.deepcopy(connection),
+        authoritative_config_loader=lambda *_args: copy.deepcopy(
+            connection
+        ),
+        save_user_config=lambda *_args: (True, None),
+        robot_state_path=str(tmp_path / "state.json"),
+        paper_account_path=str(tmp_path / "paper.json"),
+    )
+
+    response = app.test_client().post(
+        "/api/kalshi/config",
+        json={
+            "environment": "production",
+            "apiKeyId": "********",
+            "privateKey": "********",
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.get_json()["code"] == "kalshi_routing_fence_unavailable"
+
+
+def test_concurrent_real_stop_linearizes_with_post_and_blocks_later_posts(
+    tmp_path,
+):
+    _durable, load_state, save_state = _durable_state_callbacks()
+    connection = {
+        "production_api_key_id": "key-id-12345678",
+        "production_private_key": "private-key-present",
+    }
+    lease_store = _MutualFencedLeaseStore()
+    app = Flask(__name__)
+    controls = register_kalshi_api(
+        app,
+        require_auth=lambda: {"id": "user-1"},
+        get_user_config=lambda *_args: copy.deepcopy(connection),
+        authoritative_config_loader=lambda *_args: copy.deepcopy(
+            connection
+        ),
+        save_user_config=lambda *_args: (True, None),
+        robot_state_loader=load_state,
+        robot_state_saver=save_state,
+        worker_lease_store=lease_store,
+        robot_state_path=str(tmp_path / "state.json"),
+        paper_account_path=str(tmp_path / "paper.json"),
+    )
+    state = controls["robot_state"]
+    state.configure("user-1", False, {"executionMode": "real"})
+    state.configure("user-1", True, {"executionMode": "real"})
+    controller = controls["paper_robot"]
+    account_read = threading.Event()
+    allow_post = threading.Event()
+    posts = []
+    ordering = []
+
+    def signed_request(_config, _environment, method, endpoint, **kwargs):
+        if method == "POST":
+            posts.append(time.monotonic())
+            ordering.append("post")
+            body = kwargs["json_body"]
+            return {"order": {
+                "order_id": "linearized-order",
+                "client_order_id": body["client_order_id"],
+                "ticker": body["ticker"],
+                "side": body["side"],
+                "count_fp": body["count"],
+                "fill_count_fp": body["count"],
+                "price": body["price"],
+                "status": "filled",
+            }}
+        if endpoint == "/portfolio/orders":
+            account_read.set()
+            assert allow_post.wait(2.0)
+        return _real_preflight_response(endpoint)
+
+    controller.signed_request = signed_request
+    payload = _paper_order_payload(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {"price": 0.42},
+            "sizing": {"contracts": 1},
+        },
+        "KXBTC15M-LINEARIZED",
+    )
+    worker_errors = []
+    stop_result = []
+
+    def submit_worker():
+        try:
+            controller._submit_live_order(
+                "user-1",
+                payload,
+                {"side": "YES", "action": "BUY_YES"},
+            )
+        except Exception as exc:  # pragma: no cover - assertion below
+            worker_errors.append(exc)
+
+    def stop_worker():
+        with app.test_client() as client:
+            response = client.post(
+                "/api/kalshi/paper/robot",
+                json={
+                    "enabled": False,
+                    "config": {"executionMode": "real"},
+                },
+            )
+            ordering.append("stop_return")
+            stop_result.append((response, time.monotonic()))
+
+    submit_thread = threading.Thread(target=submit_worker)
+    stop_thread = threading.Thread(target=stop_worker)
+    submit_thread.start()
+    assert account_read.wait(2.0)
+    stop_thread.start()
+    time.sleep(0.05)
+    assert stop_result == []
+    allow_post.set()
+    submit_thread.join(timeout=3.0)
+    stop_thread.join(timeout=3.0)
+
+    assert not submit_thread.is_alive()
+    assert not stop_thread.is_alive()
+    assert worker_errors == []
+    assert len(posts) == 1
+    assert stop_result[0][0].status_code == 200
+    assert ordering == ["post", "stop_return"]
+    assert state.refresh("user-1")["enabled"] is False
+
+    with pytest.raises(KalshiApiError) as stopped:
+        controller._submit_live_order(
+            "user-1",
+            payload,
+            {"side": "YES", "action": "BUY_YES"},
+        )
+    assert stopped.value.code == "kalshi_automation_stopped"
+    assert len(posts) == 1
+
+
+def test_concurrent_paper_and_real_config_mutations_are_linearized(
+    tmp_path,
+):
+    _durable, load_state, save_state = _durable_state_callbacks()
+    connection = {
+        "production_api_key_id": "key-id-12345678",
+        "production_private_key": "private-key-present",
+    }
+    lease_store = _MutualFencedLeaseStore()
+    app = Flask(__name__)
+    controls = register_kalshi_api(
+        app,
+        require_auth=lambda: {"id": "user-1"},
+        get_user_config=lambda *_args: copy.deepcopy(connection),
+        authoritative_config_loader=lambda *_args: copy.deepcopy(
+            connection
+        ),
+        save_user_config=lambda *_args: (True, None),
+        robot_state_loader=load_state,
+        robot_state_saver=save_state,
+        worker_lease_store=lease_store,
+        robot_state_path=str(tmp_path / "state.json"),
+        paper_account_path=str(tmp_path / "paper.json"),
+    )
+    state = controls["robot_state"]
+    state.configure("user-1", False, {"executionMode": "paper"})
+    original_configure = state.configure
+    paper_inside_mutation = threading.Event()
+    allow_paper_mutation = threading.Event()
+
+    def blocking_configure(user_id, enabled, config):
+        if (
+            str((config or {}).get("executionMode") or "") == "paper"
+            and not paper_inside_mutation.is_set()
+        ):
+            paper_inside_mutation.set()
+            assert allow_paper_mutation.wait(2.0)
+        return original_configure(user_id, enabled, config)
+
+    state.configure = blocking_configure
+    responses = []
+
+    def save_mode(mode):
+        with app.test_client() as client:
+            response = client.post(
+                "/api/kalshi/paper/robot/config",
+                json={"config": {"executionMode": mode}},
+            )
+            responses.append((mode, response.status_code))
+
+    paper_thread = threading.Thread(target=save_mode, args=("paper",))
+    real_thread = threading.Thread(target=save_mode, args=("real",))
+    paper_thread.start()
+    assert paper_inside_mutation.wait(2.0)
+    real_thread.start()
+    time.sleep(0.05)
+    assert responses == []
+    allow_paper_mutation.set()
+    paper_thread.join(timeout=3.0)
+    real_thread.join(timeout=3.0)
+
+    assert not paper_thread.is_alive()
+    assert not real_thread.is_alive()
+    assert responses == [("paper", 200), ("real", 200)]
+    final_state = state.refresh("user-1")
+    assert final_state["activeEnvironment"] == "real"
+    assert final_state["enabled"] is False
+    assert [event[0] for event in lease_store.events].count("claim") == 2
+
+
+def test_real_order_never_posts_when_refresh_is_only_local_cache():
+    posts = []
+
+    class LocalOnlyState:
+        def refresh(self, _user_id, *, environment=None):
+            return {
+                "enabled": True,
+                "activeEnvironment": "real",
+                "config": {"executionMode": "real"},
+                "strategy": {},
+                "authoritativeRefresh": False,
+                "durableStateLoaderAvailable": False,
+            }
+
+    def signed_request(_config, _environment, method, _endpoint, **kwargs):
+        if method == "POST":
+            posts.append(kwargs.get("json_body"))
+        return {"orders": []}
+
+    controller = _PaperRobotController(
+        None,
+        LocalOnlyState(),
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        authoritative_connection_loader=_test_real_credentials,
+        signed_request=signed_request,
+        worker_lease_store=_FencedLeaseStore(),
+    )
+    payload = _paper_order_payload(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {"price": 0.42},
+            "sizing": {"contracts": 1},
+        },
+        "KXBTC15M-TEST",
+    )
+
+    with pytest.raises(KalshiApiError) as blocked:
+        controller._submit_live_order(
+            "user-1",
+            payload,
+            {"side": "YES", "action": "BUY_YES"},
+        )
+
+    assert blocked.value.code == "kalshi_robot_state_not_authoritative"
+    assert posts == []
+
+
+def test_real_order_blocks_deleted_credentials_despite_stale_process_cache():
+    transport_calls = []
+    controller = _PaperRobotController(
+        None,
+        _EnabledRealState(),
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "deleted-key-id-123456",
+            "production_private_key": "deleted-private-material",
+        },
+        authoritative_connection_loader=lambda _uid: {},
+        signed_request=lambda *_args, **_kwargs: transport_calls.append(1),
+        worker_lease_store=_FencedLeaseStore(),
+    )
+    payload = _paper_order_payload(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {"price": 0.42},
+            "sizing": {"contracts": 1},
+        },
+        "KXBTC15M-DELETED-CREDENTIAL",
+    )
+
+    with pytest.raises(KalshiApiError) as blocked:
+        controller._submit_live_order(
+            "user-1",
+            payload,
+            {"side": "YES", "action": "BUY_YES"},
+        )
+
+    assert blocked.value.code == "kalshi_real_credentials_missing"
+    assert transport_calls == []
+
+
 def test_real_order_submission_uses_current_event_order_endpoint_without_side_rewrite():
     calls = []
 
     def signed_request(config, environment, method, endpoint, **kwargs):
         calls.append((config, environment, method, endpoint, kwargs))
         if method == "GET":
-            return {"orders": []}
+            return _real_preflight_response(endpoint)
         body = kwargs["json_body"]
         return {"order": {
             "order_id": "order-yes-1",
@@ -1408,6 +3271,7 @@ def test_real_order_submission_uses_current_event_order_endpoint_without_side_re
             "production_api_key_id": "key-id-12345678",
             "production_private_key": "private-key-present",
         },
+        authoritative_connection_loader=_test_real_credentials,
         signed_request=signed_request,
         worker_lease_store=_FencedLeaseStore(),
     )
@@ -1417,12 +3281,412 @@ def test_real_order_submission_uses_current_event_order_endpoint_without_side_re
     )
     order = controller._submit_live_order("user-1", payload, {"side": "YES", "config": {"executionMode": "real"}})
 
-    assert calls[0][1:4] == ("production", "GET", "/portfolio/orders")
-    assert calls[1][1:4] == ("production", "POST", "/portfolio/events/orders")
-    assert calls[1][4]["json_body"]["side"] == "bid"
-    assert calls[1][4]["json_body"]["price"] == "0.4200"
+    assert [call[3] for call in calls[:3]] == [
+        "/portfolio/balance",
+        "/portfolio/positions",
+        "/portfolio/orders",
+    ]
+    assert calls[3][1:4] == (
+        "production",
+        "POST",
+        "/portfolio/events/orders",
+    )
+    assert calls[3][4]["json_body"]["side"] == "bid"
+    assert calls[3][4]["json_body"]["price"] == "0.4200"
     assert order["environment"] == "real"
     assert order["outcome_side"] == "YES"
+
+
+@pytest.mark.parametrize(
+    ("account_overrides", "expected_code"),
+    [
+        (
+            {"balance": 20, "portfolio_value": 0},
+            "kalshi_live_cash_changed",
+        ),
+        (
+            {
+                "positions": [{
+                    "ticker": "KXBTC15M-FRESH-GUARD",
+                    "position_fp": 1,
+                    "yes_count_fp": 1,
+                    "market_exposure_dollars": 0.42,
+                }],
+            },
+            "kalshi_live_position_ownership_conflict",
+        ),
+        (
+            {
+                "orders": [{
+                    "order_id": "manual-resting",
+                    "client_order_id": "manual-client",
+                    "ticker": "KXBTC15M-FRESH-GUARD",
+                    "status": "resting",
+                    "count_fp": 1,
+                    "fill_count_fp": 0,
+                    "price_dollars": 0.42,
+                }],
+            },
+            "kalshi_live_open_order_conflict",
+        ),
+    ],
+)
+def test_real_prepost_guard_blocks_fresh_account_changes(
+    account_overrides,
+    expected_code,
+):
+    posts = []
+
+    def signed_request(_config, _environment, method, endpoint, **_kwargs):
+        if method == "POST":
+            posts.append(1)
+            return {"order": {}}
+        return _real_preflight_response(
+            endpoint,
+            **account_overrides,
+        )
+
+    controller = _PaperRobotController(
+        None,
+        _EnabledRealState(),
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        authoritative_connection_loader=_test_real_credentials,
+        signed_request=signed_request,
+        worker_lease_store=_FencedLeaseStore(),
+    )
+    payload = _paper_order_payload(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {"price": 0.42},
+            "sizing": {"contracts": 1},
+        },
+        "KXBTC15M-FRESH-GUARD",
+    )
+
+    with pytest.raises(KalshiApiError) as blocked:
+        controller._submit_live_order(
+            "user-1",
+            payload,
+            {"side": "YES", "action": "BUY_YES"},
+        )
+
+    assert blocked.value.code == expected_code
+    assert posts == []
+
+
+@pytest.mark.parametrize(
+    "positions",
+    [
+        [{
+            "ticker": "KXBTC15M-MANUAL-REDUCE",
+            "position_fp": 1,
+            "yes_count_fp": 1,
+            "market_exposure_dollars": 0.42,
+        }],
+        [],
+    ],
+)
+def test_real_preflight_blocks_manual_reduction_of_managed_inventory(
+    positions,
+):
+    posts = []
+    state = _EnabledRealState(filled_trades=[{
+        "orderFilled": True,
+        "orderId": "managed-two",
+        "generatedAt": "2026-07-27T01:00:00Z",
+        "ticker": "KXBTC15M-MANUAL-REDUCE",
+        "action": "BUY_YES",
+        "side": "YES",
+        "fillCount": 2,
+    }])
+
+    def signed_request(_config, _environment, method, endpoint, **_kwargs):
+        if method == "POST":
+            posts.append(1)
+            return {"order": {}}
+        return _real_preflight_response(endpoint, positions=positions)
+
+    controller = _PaperRobotController(
+        None,
+        state,
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        authoritative_connection_loader=_test_real_credentials,
+        signed_request=signed_request,
+        worker_lease_store=_FencedLeaseStore(),
+    )
+    payload = _paper_order_payload(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {"price": 0.42},
+            "sizing": {"contracts": 1},
+        },
+        "KXBTC15M-MANUAL-REDUCE",
+    )
+
+    with pytest.raises(KalshiApiError) as blocked:
+        controller._submit_live_order(
+            "user-1",
+            payload,
+            {"side": "YES", "action": "BUY_YES"},
+        )
+
+    assert blocked.value.code == "kalshi_live_position_ownership_conflict"
+    assert posts == []
+
+
+def test_real_preflight_follows_order_cursor_before_routing():
+    order_cursors = []
+    posts = []
+
+    def signed_request(_config, _environment, method, endpoint, **kwargs):
+        if method == "POST":
+            posts.append(1)
+            return {"order": {}}
+        if endpoint == "/portfolio/orders":
+            cursor = (kwargs.get("params") or {}).get("cursor")
+            order_cursors.append(cursor)
+            if not cursor:
+                return {"orders": [], "cursor": "page-2"}
+            return {"orders": [{
+                "order_id": "page-two-open",
+                "client_order_id": "different-client",
+                "ticker": "KXBTC15M-PAGED",
+                "status": "resting",
+                "count_fp": 1,
+                "fill_count_fp": 0,
+                "price_dollars": 0.42,
+            }]}
+        return _real_preflight_response(endpoint)
+
+    controller = _PaperRobotController(
+        None,
+        _EnabledRealState(),
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        authoritative_connection_loader=_test_real_credentials,
+        signed_request=signed_request,
+        worker_lease_store=_FencedLeaseStore(),
+    )
+    payload = _paper_order_payload(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {"price": 0.42},
+            "sizing": {"contracts": 1},
+        },
+        "KXBTC15M-PAGED",
+    )
+
+    with pytest.raises(KalshiApiError) as blocked:
+        controller._submit_live_order(
+            "user-1",
+            payload,
+            {"side": "YES", "action": "BUY_YES"},
+        )
+
+    assert blocked.value.code == "kalshi_live_open_order_conflict"
+    assert order_cursors == [None, "page-2"]
+    assert posts == []
+
+
+def test_real_preflight_fails_closed_on_incomplete_position_page():
+    posts = []
+
+    def signed_request(_config, _environment, method, endpoint, **_kwargs):
+        if method == "POST":
+            posts.append(1)
+            return {"order": {}}
+        if endpoint == "/portfolio/positions":
+            return {"market_positions": [], "complete": False}
+        return _real_preflight_response(endpoint)
+
+    controller = _PaperRobotController(
+        None,
+        _EnabledRealState(),
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        authoritative_connection_loader=_test_real_credentials,
+        signed_request=signed_request,
+        worker_lease_store=_FencedLeaseStore(),
+    )
+    payload = _paper_order_payload(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {"price": 0.42},
+            "sizing": {"contracts": 1},
+        },
+        "KXBTC15M-INCOMPLETE",
+    )
+
+    with pytest.raises(KalshiApiError) as blocked:
+        controller._submit_live_order(
+            "user-1",
+            payload,
+            {"side": "YES", "action": "BUY_YES"},
+        )
+
+    assert blocked.value.code == "kalshi_live_preflight_incomplete"
+    assert posts == []
+
+
+def test_real_preflight_recomputes_official_fee_when_decision_omits_it():
+    posts = []
+
+    def signed_request(_config, _environment, method, endpoint, **_kwargs):
+        if method == "POST":
+            posts.append(1)
+            return {"order": {}}
+        return _real_preflight_response(
+            endpoint,
+            balance=42,
+            portfolio_value=99_958,
+        )
+
+    controller = _PaperRobotController(
+        None,
+        _EnabledRealState(),
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        authoritative_connection_loader=_test_real_credentials,
+        signed_request=signed_request,
+        worker_lease_store=_FencedLeaseStore(),
+    )
+    payload = _paper_order_payload(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {"price": 0.42},
+            "sizing": {"contracts": 1},
+        },
+        "KXBTC15M-FEE-CASH",
+    )
+
+    with pytest.raises(KalshiApiError) as blocked:
+        controller._submit_live_order(
+            "user-1",
+            payload,
+            {"side": "YES", "action": "BUY_YES"},
+        )
+
+    assert blocked.value.code == "kalshi_live_cash_changed"
+    assert posts == []
+
+
+def test_real_preflight_blocks_buy_at_durable_daily_loss_limit():
+    today = datetime.now(timezone.utc).date().isoformat()
+    posts = []
+    state = _EnabledRealState(strategy={
+        "dailyPnlDate": today,
+        "dailyPnl": -20.0,
+    })
+
+    def signed_request(_config, _environment, method, endpoint, **_kwargs):
+        if method == "POST":
+            posts.append(1)
+            return {"order": {}}
+        return _real_preflight_response(endpoint)
+
+    controller = _PaperRobotController(
+        None,
+        state,
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        authoritative_connection_loader=_test_real_credentials,
+        signed_request=signed_request,
+        worker_lease_store=_FencedLeaseStore(),
+    )
+    payload = _paper_order_payload(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {"price": 0.42},
+            "sizing": {"contracts": 1},
+        },
+        "KXBTC15M-DAILY-LOSS",
+    )
+
+    with pytest.raises(KalshiApiError) as blocked:
+        controller._submit_live_order(
+            "user-1",
+            payload,
+            {"side": "YES", "action": "BUY_YES"},
+        )
+
+    assert blocked.value.code == "kalshi_daily_loss_limit"
+    assert posts == []
+
+
+def test_real_preflight_recomputes_account_wide_exposure_before_buy():
+    posts = []
+
+    def signed_request(_config, _environment, method, endpoint, **_kwargs):
+        if method == "POST":
+            posts.append(1)
+            return {"order": {}}
+        return _real_preflight_response(
+            endpoint,
+            positions=[{
+                "ticker": "UNRELATED-MANUAL-MARKET",
+                "position_fp": 100,
+                "yes_count_fp": 100,
+                "market_exposure_dollars": 99.80,
+            }],
+        )
+
+    controller = _PaperRobotController(
+        None,
+        _EnabledRealState(),
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        authoritative_connection_loader=_test_real_credentials,
+        signed_request=signed_request,
+        worker_lease_store=_FencedLeaseStore(),
+    )
+    payload = _paper_order_payload(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {"price": 0.42},
+            "sizing": {"contracts": 1},
+        },
+        "KXBTC15M-EXPOSURE",
+    )
+
+    with pytest.raises(KalshiApiError) as blocked:
+        controller._submit_live_order(
+            "user-1",
+            payload,
+            {"side": "YES", "action": "BUY_YES"},
+        )
+
+    assert blocked.value.code == "kalshi_live_exposure_changed"
+    assert posts == []
 
 
 def test_real_reduce_only_close_is_preserved_and_normalised_as_sell():
@@ -1430,7 +3694,15 @@ def test_real_reduce_only_close_is_preserved_and_normalised_as_sell():
 
     def signed_request(config, environment, method, endpoint, **kwargs):
         if method == "GET":
-            return {"orders": []}
+            return _real_preflight_response(
+                endpoint,
+                positions=[{
+                    "ticker": "KXBTC15M-TEST",
+                    "position_fp": -4,
+                    "no_count_fp": 4,
+                    "market_exposure_dollars": 1.44,
+                }],
+            )
         calls.append(kwargs["json_body"])
         body = kwargs["json_body"]
         return {"order": {
@@ -1446,13 +3718,30 @@ def test_real_reduce_only_close_is_preserved_and_normalised_as_sell():
 
     controller = _PaperRobotController(
         client=None,
-        state=_EnabledRealState(),
+        state=_EnabledRealState(
+            filled_trades=[{
+                "orderFilled": True,
+                "orderId": "managed-entry",
+                "generatedAt": "2026-07-27T01:00:00Z",
+                "ticker": "KXBTC15M-TEST",
+                "action": "BUY_NO",
+                "side": "NO",
+                "fillCount": 4,
+            }],
+            strategy={
+                "dailyPnlDate": datetime.now(
+                    timezone.utc
+                ).date().isoformat(),
+                "dailyPnl": -999.0,
+            },
+        ),
         paper_accounts=None,
-        connection_loader=lambda _uid: {
-            "production_api_key_id": "key-id-12345678",
-            "production_private_key": "private-key-present",
-        },
-        signed_request=signed_request,
+            connection_loader=lambda _uid: {
+                "production_api_key_id": "key-id-12345678",
+                "production_private_key": "private-key-present",
+            },
+            authoritative_connection_loader=_test_real_credentials,
+            signed_request=signed_request,
         worker_lease_store=_FencedLeaseStore(),
     )
     payload = _paper_order_payload(
@@ -1475,9 +3764,9 @@ def test_real_reduce_only_close_is_preserved_and_normalised_as_sell():
 def test_real_order_post_is_blocked_when_fenced_lease_renewal_is_lost():
     posts = []
 
-    def signed_request(_config, _environment, method, _endpoint, **kwargs):
+    def signed_request(_config, _environment, method, endpoint, **kwargs):
         if method == "GET":
-            return {"orders": []}
+            return _real_preflight_response(endpoint)
         posts.append(kwargs["json_body"])
         return {"order": {}}
 
@@ -1490,6 +3779,7 @@ def test_real_order_post_is_blocked_when_fenced_lease_renewal_is_lost():
             "production_api_key_id": "key-id-12345678",
             "production_private_key": "private-key-present",
         },
+        authoritative_connection_loader=_test_real_credentials,
         signed_request=signed_request,
         worker_lease_store=lease_store,
     )
@@ -1515,6 +3805,308 @@ def test_real_order_post_is_blocked_when_fenced_lease_renewal_is_lost():
     assert [event[0] for event in lease_store.events] == [
         "claim", "renew", "release",
     ]
+
+
+def test_real_order_refreshes_durable_state_and_blocks_stale_worker_after_stop():
+    transport_calls = []
+
+    class StoppedDurableState:
+        def get(self, _user_id, *, environment=None):
+            raise AssertionError("submission must not trust cached get()")
+
+        def refresh(self, _user_id, *, environment=None):
+            return {
+                "enabled": False,
+                "activeEnvironment": "real",
+                "config": {"executionMode": "real"},
+                "authoritativeRefresh": True,
+                "durableStateLoaderAvailable": True,
+            }
+
+    controller = _PaperRobotController(
+        client=None,
+        state=StoppedDurableState(),
+        paper_accounts=None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        signed_request=lambda *_args, **_kwargs: transport_calls.append(1),
+        worker_lease_store=_FencedLeaseStore(),
+    )
+    payload = _paper_order_payload(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {"price": 0.42},
+            "sizing": {"contracts": 1},
+        },
+        "KXBTC15M-TEST",
+    )
+
+    with pytest.raises(KalshiApiError) as stopped:
+        controller._submit_live_order(
+            "user-1",
+            payload,
+            {"side": "YES", "config": {"executionMode": "real"}},
+        )
+
+    assert stopped.value.code == "kalshi_automation_stopped"
+    assert transport_calls == []
+
+
+def test_real_order_refresh_rechecks_durable_stop_loss_reentry_block():
+    transport_calls = []
+
+    class StoppedTickerState:
+        def refresh(self, _user_id, *, environment=None):
+            return {
+                "enabled": True,
+                "activeEnvironment": "real",
+                "config": {"executionMode": "real"},
+                "authoritativeRefresh": True,
+                "durableStateLoaderAvailable": True,
+                "strategy": {
+                    "stopLossReentryTickers": ["KXBTC15M-STOPPED"],
+                },
+            }
+
+    def signed_request(
+        _config,
+        _environment,
+        method,
+        endpoint,
+        **_kwargs,
+    ):
+        transport_calls.append((method, endpoint))
+        return _real_preflight_response(endpoint)
+
+    controller = _PaperRobotController(
+        None,
+        StoppedTickerState(),
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        authoritative_connection_loader=_test_real_credentials,
+        signed_request=signed_request,
+        worker_lease_store=_FencedLeaseStore(),
+    )
+    payload = _paper_order_payload(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {"price": 0.42},
+            "sizing": {"contracts": 1},
+        },
+        "KXBTC15M-STOPPED",
+    )
+
+    with pytest.raises(KalshiApiError) as stopped:
+        controller._submit_live_order(
+            "user-1",
+            payload,
+            {"side": "YES", "action": "BUY_YES"},
+        )
+
+    assert stopped.value.code == "kalshi_stop_loss_reentry_blocked"
+    assert [endpoint for _method, endpoint in transport_calls] == [
+        "/portfolio/balance",
+        "/portfolio/positions",
+        "/portfolio/orders",
+    ]
+
+
+def test_real_order_requires_stronger_durable_same_ticker_reentry_signal():
+    transport_calls = []
+    recent_exit = (
+        datetime.now(timezone.utc) - timedelta(seconds=120)
+    ).isoformat()
+
+    def signed_request(
+        _config,
+        _environment,
+        method,
+        endpoint,
+        **_kwargs,
+    ):
+        transport_calls.append((method, endpoint))
+        if method == "GET":
+            return _real_preflight_response(endpoint)
+        raise AssertionError("weak re-entry must not POST")
+
+    controller = _PaperRobotController(
+        None,
+        _EnabledRealState(strategy={
+            "lastExitTicker": "KXBTC15M-REENTRY",
+            "lastExitAt": recent_exit,
+            "settlementRecords": [],
+        }),
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        authoritative_connection_loader=_test_real_credentials,
+        signed_request=signed_request,
+        worker_lease_store=_FencedLeaseStore(),
+    )
+    payload = _paper_order_payload(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {"price": 0.42},
+            "sizing": {"contracts": 1},
+        },
+        "KXBTC15M-REENTRY",
+    )
+
+    with pytest.raises(KalshiApiError) as blocked:
+        controller._submit_live_order(
+            "user-1",
+            payload,
+            {
+                "action": "BUY_YES",
+                "side": "YES",
+                "edge": {
+                    "fairProbability": 0.699,
+                    "conservativeEdge": 0.02,
+                },
+            },
+        )
+
+    assert blocked.value.code == "kalshi_reentry_confirmation_required"
+    assert transport_calls == [
+        ("GET", "/portfolio/balance"),
+        ("GET", "/portfolio/positions"),
+        ("GET", "/portfolio/orders"),
+    ]
+
+
+def test_real_order_allows_confirmed_durable_same_ticker_reentry_signal():
+    posts = []
+    recent_exit = (
+        datetime.now(timezone.utc) - timedelta(seconds=120)
+    ).isoformat()
+
+    def signed_request(
+        _config,
+        _environment,
+        method,
+        endpoint,
+        **kwargs,
+    ):
+        if method == "GET":
+            return _real_preflight_response(endpoint)
+        posts.append(dict(kwargs["json_body"]))
+        return {"order": {
+            "order_id": "confirmed-reentry",
+            **dict(kwargs["json_body"]),
+            "status": "submitted",
+        }}
+
+    controller = _PaperRobotController(
+        None,
+        _EnabledRealState(strategy={
+            "lastExitTicker": "KXBTC15M-REENTRY",
+            "lastExitAt": recent_exit,
+            "settlementRecords": [],
+        }),
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        authoritative_connection_loader=_test_real_credentials,
+        signed_request=signed_request,
+        worker_lease_store=_FencedLeaseStore(),
+    )
+    payload = _paper_order_payload(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {"price": 0.42},
+            "sizing": {"contracts": 1},
+        },
+        "KXBTC15M-REENTRY",
+    )
+
+    order = controller._submit_live_order(
+        "user-1",
+        payload,
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {
+                "fairProbability": 0.71,
+                "conservativeEdge": 0.013,
+            },
+        },
+    )
+
+    assert len(posts) == 1
+    assert order["order_id"] == "confirmed-reentry"
+
+
+def test_real_order_rechecks_mode_after_idempotency_read_before_post():
+    posts = []
+
+    class StopsDuringAccountRead:
+        def __init__(self):
+            self.refreshes = 0
+
+        def refresh(self, _user_id, *, environment=None):
+            self.refreshes += 1
+            return {
+                "enabled": self.refreshes == 1,
+                "activeEnvironment": "real",
+                "config": {"executionMode": "real"},
+                "authoritativeRefresh": True,
+                "durableStateLoaderAvailable": True,
+                "strategy": {},
+            }
+
+    state = StopsDuringAccountRead()
+
+    def signed_request(_config, _environment, method, endpoint, **kwargs):
+        if method == "GET":
+            return _real_preflight_response(endpoint)
+        posts.append(kwargs["json_body"])
+        return {"order": {}}
+
+    controller = _PaperRobotController(
+        None,
+        state,
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        authoritative_connection_loader=_test_real_credentials,
+        signed_request=signed_request,
+        worker_lease_store=_FencedLeaseStore(),
+    )
+    payload = _paper_order_payload(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {"price": 0.42},
+            "sizing": {"contracts": 1},
+        },
+        "KXBTC15M-STOP-RACE",
+    )
+
+    with pytest.raises(KalshiApiError) as stopped:
+        controller._submit_live_order(
+            "user-1",
+            payload,
+            {"side": "YES", "action": "BUY_YES"},
+        )
+
+    assert state.refreshes == 2
+    assert stopped.value.code == "kalshi_automation_stopped"
+    assert posts == []
 
 
 def test_complementary_fills_are_net_not_repeated_close_exposure():
@@ -1554,6 +4146,231 @@ def test_reduce_only_sale_estimate_uses_depth_weighted_price_and_fees():
     assert estimate["worstBid"] == 0.58
     assert estimate["estimatedExitFee"] > 0
     assert estimate["netProceeds"] < estimate["grossProceeds"]
+
+
+def test_two_hourly_holdings_prioritize_emergency_exit_over_add():
+    add_ticker = "KXBTCD-27JUL2613-T64000"
+    emergency_ticker = "KXBTCD-27JUL2613-T66000"
+    portfolio = {
+        "environment": "paper",
+        "positions": [
+            {
+                "ticker": add_ticker,
+                "position_fp": 5,
+                "yes_count_fp": 5,
+                "yes_average_price_dollars": 0.40,
+                "last_trade_at": "2026-07-27T00:00:00Z",
+            },
+            {
+                "ticker": emergency_ticker,
+                "position_fp": 5,
+                "yes_count_fp": 5,
+                "yes_average_price_dollars": 0.80,
+                "last_trade_at": "2026-07-27T00:00:00Z",
+            },
+        ],
+    }
+    config = {
+        "minimumHoldSeconds": 45,
+        "exitProbabilityThreshold": 0.46,
+        "stopLossPct": 0.35,
+        "emergencyStopLossPct": 0.20,
+        "minimumExitProfit": 0.01,
+        "exitValueBuffer": 0.01,
+    }
+    add = {
+        "action": "BUY_YES",
+        "side": "YES",
+        "model": {"fairYesProbability": 0.80},
+        "edge": {"conservativeEdge": 0.04, "netEdge": 0.05},
+    }
+    emergency = {
+        "action": "BUY_YES",
+        "side": "YES",
+        "model": {"fairYesProbability": 0.10},
+        "edge": {"conservativeEdge": 0.001, "netEdge": 0.002},
+    }
+    book = {
+        "yes": [[0.50, 100]],
+        "no": [[0.48, 100]],
+    }
+    add_rank = _hourly_candidate_management_priority(
+        add,
+        {"ticker": add_ticker},
+        book,
+        portfolio,
+        {},
+        config,
+    )
+    emergency_rank = _hourly_candidate_management_priority(
+        emergency,
+        {"ticker": emergency_ticker},
+        book,
+        portfolio,
+        {},
+        config,
+    )
+
+    selected = max(
+        [
+            (add_rank, add_ticker),
+            (emergency_rank, emergency_ticker),
+        ],
+        key=lambda item: item[0],
+    )
+    assert add_rank[0] == 2
+    assert emergency_rank[0] == 7
+    assert selected[1] == emergency_ticker
+
+
+def test_two_hourly_holdings_prioritize_unfillable_exit_attention_over_add():
+    add_ticker = "KXBTCD-27JUL2613-T64000"
+    distressed_ticker = "KXBTCD-27JUL2613-T66000"
+    portfolio = {
+        "environment": "paper",
+        "positions": [
+            {
+                "ticker": add_ticker,
+                "position_fp": 5,
+                "yes_count_fp": 5,
+                "yes_average_price_dollars": 0.40,
+                "last_trade_at": "2026-07-27T00:00:00Z",
+            },
+            {
+                "ticker": distressed_ticker,
+                "position_fp": 5,
+                "yes_count_fp": 5,
+                "yes_average_price_dollars": 0.80,
+                "last_trade_at": "2026-07-27T00:00:00Z",
+            },
+        ],
+    }
+    config = {
+        "minimumHoldSeconds": 45,
+        "exitProbabilityThreshold": 0.46,
+        "stopLossPct": 0.35,
+        "emergencyStopLossPct": 0.20,
+        "minimumExitProfit": 0.01,
+        "exitValueBuffer": 0.01,
+    }
+    add = {
+        "action": "BUY_YES",
+        "side": "YES",
+        "model": {"fairYesProbability": 0.80},
+        "edge": {"conservativeEdge": 0.04, "netEdge": 0.05},
+    }
+    distressed = {
+        "action": "WAIT",
+        "side": "NO",
+        "model": {"fairYesProbability": 0.10},
+        "edge": {"conservativeEdge": -0.01, "netEdge": 0.0},
+    }
+    quoted_book = {
+        "yes": [[0.50, 100]],
+        "no": [[0.48, 100]],
+    }
+    no_bid_book = {"yes": [], "no": [[0.89, 100]]}
+
+    add_rank = _hourly_candidate_management_priority(
+        add,
+        {"ticker": add_ticker},
+        quoted_book,
+        portfolio,
+        {},
+        config,
+    )
+    distressed_rank = _hourly_candidate_management_priority(
+        distressed,
+        {"ticker": distressed_ticker},
+        no_bid_book,
+        portfolio,
+        {},
+        config,
+    )
+
+    assert add_rank[0] == 2
+    assert distressed_rank[0] == 5
+    assert distressed_rank > add_rank
+
+
+def test_fillable_protective_exit_outranks_unfillable_emergency_exit():
+    protective_ticker = "KXBTCD-27JUL2613-T64000"
+    emergency_ticker = "KXBTCD-27JUL2613-T66000"
+    portfolio = {
+        "environment": "paper",
+        "positions": [
+            {
+                "ticker": protective_ticker,
+                "position_fp": 5,
+                "yes_count_fp": 5,
+                "yes_average_price_dollars": 0.80,
+                "last_trade_at": "2026-07-27T00:00:00Z",
+            },
+            {
+                "ticker": emergency_ticker,
+                "position_fp": 5,
+                "yes_count_fp": 5,
+                "yes_average_price_dollars": 0.80,
+                "last_trade_at": "2026-07-27T00:00:00Z",
+            },
+        ],
+    }
+    config = {
+        "minimumHoldSeconds": 60,
+        "exitProbabilityThreshold": 0.46,
+        "stopLossPct": 0.35,
+        "emergencyStopLossPct": 0.20,
+        "minimumExitProfit": 0.01,
+        "exitValueBuffer": 0.01,
+    }
+    protective = {
+        "action": "WAIT",
+        "side": "YES",
+        "model": {"fairYesProbability": 0.35},
+        "edge": {"conservativeEdge": -0.01, "netEdge": 0.0},
+    }
+    emergency = {
+        "action": "WAIT",
+        "side": "YES",
+        "model": {"fairYesProbability": 0.10},
+        "edge": {"conservativeEdge": -0.01, "netEdge": 0.0},
+    }
+    fillable_book = {
+        "yes": [[0.50, 100]],
+        "no": [[0.48, 100]],
+    }
+    no_yes_bid_book = {
+        "yes": [],
+        "no": [[0.89, 100]],
+    }
+
+    protective_rank = _hourly_candidate_management_priority(
+        protective,
+        {"ticker": protective_ticker},
+        fillable_book,
+        portfolio,
+        {},
+        config,
+    )
+    emergency_rank = _hourly_candidate_management_priority(
+        emergency,
+        {"ticker": emergency_ticker},
+        no_yes_bid_book,
+        portfolio,
+        {},
+        config,
+    )
+
+    selected = max(
+        [
+            (protective_rank, protective_ticker),
+            (emergency_rank, emergency_ticker),
+        ],
+        key=lambda item: item[0],
+    )
+    assert protective_rank[0] == 6
+    assert emergency_rank[0] == 5
+    assert selected[1] == protective_ticker
 
 
 def test_protective_exit_uses_configured_threshold_and_emergency_floor():

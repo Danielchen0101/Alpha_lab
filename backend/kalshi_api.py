@@ -29,6 +29,7 @@ try:
     from kalshi_engine import (
         BTC_15M_SERIES,
         evaluate_btc15_contract,
+        kalshi_fee,
         normalize_strategy_config,
         select_btc15_market,
     )
@@ -36,6 +37,7 @@ except ImportError:  # pragma: no cover - package-style test imports
     from .kalshi_engine import (
         BTC_15M_SERIES,
         evaluate_btc15_contract,
+        kalshi_fee,
         normalize_strategy_config,
         select_btc15_market,
     )
@@ -67,6 +69,9 @@ KALSHI_EXECUTION_BLOCKING_WARNINGS = frozenset({
     "brti_proxy_stale",
     "btc_reference_unavailable",
     "btc_history_stale",
+    "kalshi_account_history_incomplete",
+    "kalshi_account_orders_incomplete",
+    "kalshi_account_positions_incomplete",
 })
 COINBASE_EXCHANGE_BASE = "https://api.exchange.coinbase.com"
 BITSTAMP_BASE = "https://www.bitstamp.net/api/v2"
@@ -85,6 +90,28 @@ def _is_btc15_ticker(value: Any) -> bool:
 
 
 BTC_HOURLY_SERIES = "KXBTCD"
+
+
+def _kalshi_event_ticker(
+    ticker: Any,
+    row: Optional[Mapping[str, Any]] = None,
+) -> str:
+    """Return the common event scope used by KXBTCD strike contracts."""
+    explicit = str(
+        (row or {}).get("event_ticker")
+        or (row or {}).get("eventTicker")
+        or ""
+    ).strip()
+    if explicit:
+        return explicit
+    normalized = str(ticker or "").strip()
+    if not normalized.upper().startswith(BTC_HOURLY_SERIES):
+        return normalized
+    # Hourly strikes are commonly suffixed with ``-T65000`` (and older
+    # contracts may use ``-B65000``).  Everything before that suffix is the
+    # event shared by every strike in the ladder.
+    match = re.match(r"^(KXBTCD-.+?)-[TB]\d", normalized, flags=re.IGNORECASE)
+    return match.group(1) if match else normalized
 
 
 def _market_family(value: Any) -> Optional[str]:
@@ -183,13 +210,34 @@ def _portfolio_timestamp(value: Any) -> Optional[float]:
         return None
 
 
+def _valid_real_display_baseline(value: Any) -> bool:
+    """Validate the minimum fail-closed contract for a Real display reset."""
+    if not isinstance(value, Mapping):
+        return False
+    equity_cents = _finite_number(value.get("baselineEquityCents"), None)
+    cash_cents = _finite_number(value.get("baselineCashCents"), None)
+    return bool(
+        _portfolio_timestamp(value.get("resetAt")) is not None
+        and str(value.get("environment") or "").strip().lower() == "real"
+        and value.get("alphaLabOnly") is True
+        and equity_cents is not None
+        and cash_cents is not None
+        and equity_cents >= 0.0
+        and cash_cents >= 0.0
+    )
+
+
 def _portfolio_record_timestamp(row: Mapping[str, Any]) -> Optional[float]:
     return _portfolio_timestamp(
         row.get("settledAt")
         or row.get("closedAt")
         or row.get("settled_time")
         or row.get("created_time")
+        or row.get("created_ts")
+        or row.get("trade_time")
+        or row.get("executed_time")
         or row.get("updated_time")
+        or row.get("updated_ts")
     )
 
 
@@ -202,6 +250,27 @@ def _portfolio_rows_after(rows: Any, reset_timestamp: float) -> list:
         if row_timestamp is not None and row_timestamp > reset_timestamp:
             visible.append(dict(row))
     return visible
+
+
+def _is_alpha_lab_activity(row: Mapping[str, Any]) -> bool:
+    return bool(
+        row.get("alphaLabManaged")
+        or row.get("alphalabManaged")
+        or row.get("alphaLabOrder")
+        or str(row.get("source") or "").lower() == "alphalab"
+    )
+
+
+def _visible_real_activity(rows: Any, baseline: Mapping[str, Any]) -> list:
+    """Expose only post-baseline AlphaLab-owned account activity."""
+    reset_timestamp = _portfolio_timestamp(baseline.get("resetAt"))
+    if reset_timestamp is None:
+        return []
+    return [
+        dict(row)
+        for row in _portfolio_rows_after(rows, reset_timestamp)
+        if _is_alpha_lab_activity(row)
+    ]
 
 
 def _portfolio_realized_summary(records: Any, *, baseline_at: Optional[str] = None) -> Dict[str, Any]:
@@ -591,15 +660,11 @@ def _monotone_ladder_probabilities(
 
 
 def _account_equity_cents(balance: Mapping[str, Any], environment: str) -> float:
-    """Return mode-correct account equity without double counting Real cash."""
+    """Return cash plus marked positions for both AlphaLab Paper and Kalshi."""
     cash_cents = _finite_number(balance.get("balance"))
-    portfolio_value = balance.get("portfolio_value")
-    if str(environment).lower() == "real":
-        # Kalshi's current API defines portfolio_value as total account value.
-        # Fall back to cash only for older or incomplete responses.
-        return _finite_number(portfolio_value, cash_cents) if portfolio_value is not None else cash_cents
-    # AlphaLab Paper stores marked open-position value separately from cash.
-    return cash_cents + _finite_number(portfolio_value)
+    # Kalshi defines portfolio_value as the current value of positions held,
+    # excluding available cash. AlphaLab Paper uses the same decomposition.
+    return cash_cents + _finite_number(balance.get("portfolio_value"))
 
 
 def _live_position_direction(
@@ -631,6 +696,94 @@ def _parse_utc(value: Any) -> Optional[datetime]:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _hourly_reference_policy(
+    reference: Mapping[str, Any],
+    market: Mapping[str, Any],
+    *,
+    now: Optional[datetime] = None,
+    seconds_to_close: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Select KXBTCD's model reference without leaking 15-minute semantics.
+
+    The authenticated reference stream's generic ``price`` may contain a
+    15-minute contract's flat-forward settlement estimate.  Hourly strikes
+    instead use the instantaneous official BRTI tick by default.  The observed
+    settlement-window average is eligible only during the final 60 seconds of
+    a contract whose close timestamp is an actual top-of-hour boundary.
+    """
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    close_at = _parse_utc(market.get("close_time") or market.get("close_ts"))
+    remaining = (
+        float(seconds_to_close)
+        if seconds_to_close is not None
+        else (close_at - now).total_seconds() if close_at else None
+    )
+    true_top_of_hour = bool(
+        close_at
+        and close_at.minute == 0
+        and close_at.second == 0
+        and close_at.microsecond == 0
+    )
+    inside_final_window = bool(
+        remaining is not None and 0.0 <= remaining <= 60.0
+    )
+    raw_price = _finite_number(reference.get("rawPrice"), None)
+    fallback_price = _finite_number(reference.get("price"), None)
+    settlement_average = _finite_number(
+        reference.get("settlementWindowAverage"),
+        None,
+    )
+    settlement_samples = max(
+        0,
+        int(_finite_number(reference.get("settlementWindowSamples"), 0.0)),
+    )
+    official = bool(reference.get("isOfficialBrti"))
+    settlement_eligible = bool(
+        official
+        and true_top_of_hour
+        and inside_final_window
+        and settlement_average is not None
+        and settlement_average > 0.0
+        and settlement_samples > 0
+    )
+    if settlement_eligible:
+        selected_price = settlement_average
+        selected_source = "settlement_window_average"
+        reason = "official_top_of_hour_final_settlement_window"
+    elif raw_price is not None and raw_price > 0.0:
+        selected_price = raw_price
+        selected_source = "raw_price"
+        reason = "kxbtcd_uses_instantaneous_reference_by_default"
+    else:
+        # ``reference.price`` is the generic BTC15 settlement estimator. It is
+        # not an admissible KXBTCD strike reference and must never silently
+        # substitute for the instantaneous official raw BRTI observation.
+        selected_price = None
+        selected_source = "unavailable"
+        reason = "raw_price_unavailable"
+    return {
+        "policy": "kxbtcd_raw_reference_v1",
+        "selectedSource": selected_source,
+        "selectedPrice": selected_price,
+        "rawPrice": raw_price,
+        "fallbackPrice": fallback_price,
+        "settlementWindowAverage": settlement_average,
+        "settlementWindowSamples": settlement_samples,
+        "officialBrti": official,
+        "closeTime": (
+            close_at.isoformat().replace("+00:00", "Z") if close_at else None
+        ),
+        "secondsToClose": remaining,
+        "trueTopOfHourClose": true_top_of_hour,
+        "insideFinalSettlementWindow": inside_final_window,
+        "settlementAverageEligible": settlement_eligible,
+        "warning": (
+            None if selected_price is not None else "btc_reference_unavailable"
+        ),
+        "reason": reason,
+    }
 
 
 def _market_observation(
@@ -727,36 +880,126 @@ def _market_observation(
     }
 
 
+def _open_order_remaining(row: Mapping[str, Any]) -> float:
+    explicit = row.get("remaining_count_fp")
+    if explicit in (None, ""):
+        explicit = row.get("remaining_count")
+    if explicit not in (None, ""):
+        return max(0.0, _finite_number(explicit, 0.0))
+    requested = _finite_number(
+        row.get("count_fp") or row.get("count") or row.get("contracts"),
+        0.0,
+    )
+    filled = _finite_number(
+        row.get("fill_count_fp")
+        or row.get("fill_count")
+        or row.get("filled_count_fp")
+        or row.get("filled_count"),
+        0.0,
+    )
+    return max(0.0, requested - filled)
+
+
+def _open_order_exposure(row: Mapping[str, Any]) -> float:
+    """Conservatively estimate the outstanding notional of one live order."""
+    for key in (
+        "remaining_exposure_dollars",
+        "market_exposure_dollars",
+        "notional_dollars",
+    ):
+        if row.get(key) not in (None, ""):
+            return abs(_finite_number(row.get(key), 0.0))
+    for key in ("remaining_exposure", "market_exposure", "notional"):
+        if row.get(key) not in (None, ""):
+            return abs(_finite_number(row.get(key), 0.0)) / 100.0
+    remaining = _open_order_remaining(row)
+    if remaining <= 0.0:
+        return 0.0
+    price = None
+    for key in (
+        "limit_price_dollars",
+        "average_price_dollars",
+        "price_dollars",
+        "yes_price_dollars",
+        "no_price_dollars",
+        "price",
+    ):
+        if row.get(key) not in (None, ""):
+            price = abs(_finite_number(row.get(key), 0.0))
+            if key == "price" and price > 1.0:
+                price /= 100.0
+            break
+    # Unknown-price open orders reserve the full $1 payout per contract. This
+    # intentionally fails closed instead of understating event exposure.
+    return remaining * (price if price is not None and price > 0.0 else 1.0)
+
+
 def _paper_account_context(
     portfolio: Mapping[str, Any],
     state: Mapping[str, Any],
     ticker: str,
     bankroll: float,
+    *,
+    event_ticker: Optional[str] = None,
 ) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     positions = list(portfolio.get("positions") or [])
     orders = list(portfolio.get("orders") or [])
     fills = list(portfolio.get("fills") or [])
-    matching_positions = [
+    target_event = str(event_ticker or _kalshi_event_ticker(ticker)).strip()
+    is_hourly = _market_family(ticker) == "btchourly"
+
+    def in_risk_scope(row: Mapping[str, Any]) -> bool:
+        row_ticker = str(row.get("ticker") or row.get("market_ticker") or "")
+        if not is_hourly:
+            return row_ticker == ticker
+        return _kalshi_event_ticker(row_ticker, row) == target_event
+
+    exact_positions = [
         row for row in positions
         if str(row.get("ticker") or row.get("market_ticker") or "") == ticker
         and abs(_finite_number(row.get("position_fp") or row.get("position"))) > 1e-9
     ]
-    terminal_order_states = {"canceled", "cancelled", "executed", "filled", "expired", "rejected"}
-    matching_orders = [
-        row for row in orders
-        if str(row.get("ticker") or row.get("market_ticker") or "") == ticker
-        and str(row.get("status") or "").lower() not in terminal_order_states
-        and _finite_number(row.get("remaining_count_fp") or row.get("remaining_count") or row.get("count_fp") or row.get("count"), 1.0) > 0
+    event_positions = [
+        row for row in positions
+        if in_risk_scope(row)
+        and abs(_finite_number(
+            row.get("position_fp")
+            or row.get("position")
+            or row.get("net_count_fp")
+            or row.get("yes_count_fp")
+            or row.get("no_count_fp")
+        )) > 1e-9
     ]
-    portfolio_exposure = sum(
-        abs(_finite_number(row.get("market_exposure_dollars") or row.get("market_exposure")))
+    terminal_order_states = {
+        "canceled", "cancelled", "closed", "executed", "filled", "expired",
+        "rejected",
+    }
+    open_orders = [
+        row for row in orders
+        if str(row.get("status") or "").lower() not in terminal_order_states
+        and _open_order_remaining(row) > 0.0
+    ]
+    event_orders = [row for row in open_orders if in_risk_scope(row)]
+    position_exposure = sum(
+        abs(_finite_number(
+            row.get("market_exposure_dollars")
+            or row.get("market_exposure")
+        ))
         for row in positions
     )
-    current_market_exposure = sum(
-        abs(_finite_number(row.get("market_exposure_dollars") or row.get("market_exposure")))
-        for row in matching_positions
+    open_order_exposure = sum(_open_order_exposure(row) for row in open_orders)
+    portfolio_exposure = sum(
+        (position_exposure, open_order_exposure)
     )
+    current_position_exposure = sum(
+        abs(_finite_number(row.get("market_exposure_dollars") or row.get("market_exposure")))
+        for row in event_positions
+    )
+    current_order_exposure = sum(
+        _open_order_exposure(row) for row in event_orders
+    )
+    current_market_exposure = current_position_exposure + current_order_exposure
     daily_order_ids = {
         str(row.get("order_id") or row.get("fill_id") or "")
         for row in fills
@@ -775,8 +1018,25 @@ def _paper_account_context(
         "cashAvailable": max(0.0, cash_available),
         "portfolioExposure": portfolio_exposure,
         "currentMarketExposure": current_market_exposure,
-        "hasPosition": bool(matching_positions),
-        "hasOpenOrder": bool(matching_orders),
+        "currentTickerExposure": sum(
+            abs(_finite_number(
+                row.get("market_exposure_dollars")
+                or row.get("market_exposure")
+            ))
+            for row in exact_positions
+        ),
+        "currentEventExposure": current_market_exposure,
+        "currentEventPositionExposure": current_position_exposure,
+        "currentEventOpenOrderExposure": current_order_exposure,
+        "eventTicker": target_event if is_hourly else ticker,
+        "hasPosition": bool(exact_positions),
+        "hasEventPosition": bool(event_positions),
+        "hasOpenOrder": bool(event_orders),
+        "openOrderTickers": sorted({
+            str(row.get("ticker") or row.get("market_ticker") or "")
+            for row in event_orders
+            if row.get("ticker") or row.get("market_ticker")
+        }),
         "alreadyTraded": ticker in set(state.get("tradedTickers") or []),
         "dailyTrades": len(daily_order_ids - {""}),
         "dailyPnl": daily_pnl,
@@ -787,6 +1047,19 @@ def _position_side_and_count(portfolio: Mapping[str, Any], ticker: str) -> Tuple
     for row in list(portfolio.get("positions") or []):
         if str(row.get("ticker") or row.get("market_ticker") or "") != ticker:
             continue
+        if _execution_mode(portfolio.get("environment")) == "real":
+            managed_side = str(
+                row.get("alphaLabManagedSide")
+                or row.get("net_side")
+                or ""
+            ).upper()
+            managed_count = _finite_number(
+                row.get("alphaLabManagedCount"),
+                0.0,
+            )
+            if managed_side in {"YES", "NO"} and managed_count > 0:
+                return managed_side, int(math.ceil(managed_count))
+            return None, 0
         yes_count = _finite_number(row.get("yes_count_fp") or row.get("yes_count"), 0.0)
         no_count = _finite_number(row.get("no_count_fp") or row.get("no_count"), 0.0)
         # Older Paper ledgers may contain complementary YES/NO hedges from the
@@ -805,6 +1078,29 @@ def _position_side_and_count(portfolio: Mapping[str, Any], ticker: str) -> Tuple
     return None, 0
 
 
+def _managed_open_tickers(
+    portfolio: Mapping[str, Any],
+    family: str,
+) -> list[str]:
+    """Return only positions this robot is allowed to manage."""
+    environment = _execution_mode(portfolio.get("environment"))
+    selected = []
+    seen = set()
+    for row in list(portfolio.get("positions") or []):
+        ticker = str(row.get("ticker") or row.get("market_ticker") or "")
+        if not ticker or ticker in seen or _market_family(ticker) != family:
+            continue
+        if environment == "real":
+            managed = _finite_number(row.get("alphaLabManagedCount"), 0.0) > 0.0
+        else:
+            _side, count = _position_side_and_count(portfolio, ticker)
+            managed = count > 0
+        if managed:
+            selected.append(ticker)
+            seen.add(ticker)
+    return selected
+
+
 def _position_execution_context(
     portfolio: Mapping[str, Any],
     ticker: str,
@@ -814,29 +1110,34 @@ def _position_execution_context(
     result: Dict[str, Any] = {
         "side": side,
         "count": count,
+        "accountPositionCount": 0,
+        "unmanagedCount": 0,
         "averageEntryPrice": None,
         "allocatedEntryFee": 0.0,
         "lastTradeAt": None,
     }
-    if not side or count <= 0:
-        return result
     for row in list(portfolio.get("positions") or []):
         if str(row.get("ticker") or row.get("market_ticker") or "") != ticker:
             continue
+        result["accountPositionCount"] = int(math.ceil(abs(_finite_number(
+            row.get("net_count_fp")
+            if row.get("net_count_fp") not in (None, "")
+            else row.get("position_fp")
+            if row.get("position_fp") not in (None, "")
+            else row.get("position"),
+            count,
+        ))))
+        result["unmanagedCount"] = int(math.ceil(max(
+            0.0,
+            _finite_number(row.get("alphaLabUnmanagedCount"), 0.0),
+        )))
+        if not side or count <= 0:
+            break
         prefix = side.lower()
         average = _finite_number(row.get(f"{prefix}_average_price_dollars"), -1.0)
         side_cost = _finite_number(row.get(f"{prefix}_cost"), -1.0)
         if average <= 0.0 and side_cost >= 0.0:
             average = side_cost / count
-        if average <= 0.0:
-            # Kalshi's live position response exposes market exposure more
-            # consistently than an average entry field. It is a conservative
-            # fallback for reporting; exit routing never relies on it.
-            exposure = abs(_finite_number(
-                row.get("market_exposure_dollars") or row.get("market_exposure"),
-                0.0,
-            ))
-            average = exposure / count if exposure > 0 else -1.0
         fee = _finite_number(
             row.get(f"{prefix}_fee_cost_dollars")
             or row.get("feeCost")
@@ -993,6 +1294,113 @@ def _exit_economic_state(
     }
 
 
+def _hourly_candidate_management_priority(
+    candidate: Mapping[str, Any],
+    market: Mapping[str, Any],
+    orderbook: Mapping[str, Any],
+    portfolio: Mapping[str, Any],
+    robot_state: Mapping[str, Any],
+    strategy_config: Mapping[str, Any],
+) -> Tuple[int, float, float]:
+    """Rank an owned hourly strike by the action its position needs now.
+
+    Multiple KXBTCD strikes can remain open after partial fills. Candidate
+    entry edge alone must not let an add-on starve a sibling's stop or
+    profitable reduction. Executability is considered before severity so an
+    unfillable emergency cannot starve a fillable protective exit. The tuple
+    orders: fillable emergency, fillable protective, unfillable emergency,
+    unfillable protective, profitable reduce, add, then hold.
+    """
+    ticker = str(market.get("ticker") or "")
+    position = _position_execution_context(portfolio, ticker)
+    held_side = str(position.get("side") or "").upper()
+    held_count = int(position.get("count") or 0)
+    if held_side not in {"YES", "NO"} or held_count <= 0:
+        return (0, -1.0, -1.0)
+
+    fair_yes = _finite_number(
+        (candidate.get("model") or {}).get("fairYesProbability"),
+        0.5,
+    )
+    held_probability = fair_yes if held_side == "YES" else 1.0 - fair_yes
+    sale = _estimate_reduce_only_sale(held_side, held_count, orderbook)
+    fillable = int(sale.get("fillableCount") or 0)
+    net_exit = (
+        _finite_number(sale.get("netProceeds"), 0.0) / fillable
+        if fillable > 0
+        else None
+    )
+    economics = _exit_economic_state(
+        average_entry_price=position.get("averageEntryPrice"),
+        allocated_entry_fee=_finite_number(
+            position.get("allocatedEntryFee"),
+            0.0,
+        ),
+        held_count=held_count,
+        net_exit_value_per_contract=net_exit,
+        held_probability=held_probability,
+        strategy_config=strategy_config,
+    )
+    hold_age = _seconds_since(position.get("lastTradeAt"))
+    if hold_age is None:
+        hold_age = _recent_filled_entry_age(robot_state, ticker)
+    minimum_hold = int(
+        _finite_number(strategy_config.get("minimumHoldSeconds"), 45)
+    )
+    hold_elapsed = hold_age is None or hold_age >= minimum_hold
+    exit_value_edge = (
+        net_exit - held_probability if net_exit is not None else None
+    )
+    profitable_reduce = bool(
+        fillable > 0
+        and hold_elapsed
+        and exit_value_edge is not None
+        and exit_value_edge
+        >= _finite_number(strategy_config.get("exitValueBuffer"), 0.01)
+        and economics["profitableExit"]
+    )
+    loss_fraction = _finite_number(
+        economics.get("exitLossFraction"),
+        0.0,
+    )
+    # A probability stop that currently has no executable bid still outranks
+    # every add. A fillable protective exit must nevertheless outrank an
+    # unfillable emergency so executable risk reduction is never starved.
+    if economics["emergencyExit"]:
+        return (
+            7 if fillable > 0 else 5,
+            1.0 if economics["emergencyLossExit"] else 0.0,
+            loss_fraction - held_probability,
+        )
+    if economics["protectiveExit"]:
+        return (
+            6 if fillable > 0 else 4,
+            1.0 if economics["protectiveLossExit"] and hold_elapsed else 0.0,
+            loss_fraction - held_probability,
+        )
+    if profitable_reduce:
+        return (
+            3,
+            _finite_number(economics.get("netExitPnlPerContract"), 0.0),
+            _finite_number(exit_value_edge, 0.0),
+        )
+    action = str(candidate.get("action") or "").upper()
+    candidate_side = str(candidate.get("side") or "").upper()
+    if action.startswith("BUY_") and candidate_side == held_side:
+        return (
+            2,
+            _finite_number(
+                (candidate.get("edge") or {}).get("conservativeEdge"),
+                -1.0,
+            ),
+            _finite_number(
+                (candidate.get("edge") or {}).get("netEdge"),
+                -1.0,
+            ),
+        )
+    return (1, -held_probability, 0.0)
+
+
 def _seconds_since(value: Any) -> Optional[float]:
     parsed = _parse_utc(value)
     if parsed is None:
@@ -1015,6 +1423,71 @@ def _recent_filled_exit_age(state: Mapping[str, Any], ticker: str) -> Optional[f
     return None
 
 
+def _same_ticker_reentry_confirmation(
+    state: Mapping[str, Any],
+    ticker: str,
+    edge: Mapping[str, Any],
+    config: Mapping[str, Any],
+    *,
+    recent_exit_age: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Require a materially stronger signal after a filled same-ticker exit.
+
+    The last filled exit is durable robot state, so this gate survives worker
+    restarts and is shared by Paper evaluation and Real's final pre-POST
+    refresh. A stop-loss ticker is handled by the stricter permanent block.
+    """
+    strategy = dict(state.get("strategy") or {})
+    settled = any(
+        str(
+            row.get("ticker")
+            or row.get("market_ticker")
+            or ""
+        ) == str(ticker or "")
+        for row in strategy.get("settlementRecords") or []
+        if isinstance(row, Mapping)
+    )
+    exit_age = (
+        recent_exit_age
+        if recent_exit_age is not None
+        else _recent_filled_exit_age(state, ticker)
+    )
+    probability = _finite_number(
+        edge.get("fairProbability"),
+        _finite_number(edge.get("modelProbability"), 0.0),
+    )
+    conservative_edge = _finite_number(
+        edge.get("conservativeEdge"),
+        -1.0,
+    )
+    probability_threshold = max(
+        _finite_number(config.get("minModelProbability"), 0.64) + 0.05,
+        0.70,
+    )
+    edge_threshold = max(
+        _finite_number(config.get("minConservativeEdge"), 0.0075) + 0.005,
+        0.0125,
+    )
+    required = bool(str(ticker or "") and exit_age is not None and not settled)
+    confirmed = bool(
+        not required
+        or (
+            probability >= probability_threshold
+            and conservative_edge >= edge_threshold
+        )
+    )
+    return {
+        "required": required,
+        "confirmed": confirmed,
+        "settled": settled,
+        "recentExitAgeSeconds": exit_age,
+        "modelProbability": probability,
+        "requiredModelProbability": probability_threshold,
+        "conservativeEdge": conservative_edge,
+        "requiredConservativeEdge": edge_threshold,
+    }
+
+
 def _recent_filled_entry_age(state: Mapping[str, Any], ticker: str) -> Optional[float]:
     strategy = dict(state.get("strategy") or {})
     if str(strategy.get("lastEntryTicker") or "") == ticker:
@@ -1033,7 +1506,16 @@ def _recent_filled_entry_age(state: Mapping[str, Any], ticker: str) -> Optional[
 def _recent_filled_entry_signal(state: Mapping[str, Any], ticker: str, side: str) -> Optional[Dict[str, float]]:
     """Return the last filled same-side signal so scale-ins require improvement."""
     side = str(side or "").upper()
-    for row in list(state.get("decisions") or []):
+    rows = list(state.get("decisions") or []) + list(
+        reversed(list(state.get("filledTrades") or []))
+    )
+    seen = set()
+    for row in rows:
+        identity = str(row.get("orderId") or row.get("clientOrderId") or "")
+        if identity and identity in seen:
+            continue
+        if identity:
+            seen.add(identity)
         if str(row.get("ticker") or "") != ticker or str(row.get("side") or "").upper() != side:
             continue
         if not row.get("orderFilled") or not str(row.get("action") or "").startswith("BUY_"):
@@ -1043,6 +1525,25 @@ def _recent_filled_entry_signal(state: Mapping[str, Any], ticker: str, side: str
             "conservativeEdge": _finite_number(row.get("conservativeEdge"), -1.0),
         }
     return None
+
+
+def _scale_in_signal_improved(
+    previous_signal: Optional[Mapping[str, Any]],
+    probability: float,
+    conservative_edge: float,
+    probability_improvement: float,
+    edge_improvement: float,
+) -> bool:
+    if not previous_signal:
+        return False
+    return bool(
+        probability
+        >= _finite_number(previous_signal.get("probability"), 0.0)
+        + probability_improvement
+        and conservative_edge
+        >= _finite_number(previous_signal.get("conservativeEdge"), -1.0)
+        + edge_improvement
+    )
 
 
 def _intent_client_order_id(
@@ -1192,6 +1693,26 @@ def _dollar_amount(dollar_value: Any = None, cents_value: Any = None, default: f
     return default
 
 
+def _optional_dollar_amount(
+    dollar_value: Any = None,
+    cents_value: Any = None,
+) -> Optional[float]:
+    """Return None when an account response does not provide a monetary mark."""
+    if dollar_value not in (None, ""):
+        return _finite_number(dollar_value, None)
+    if cents_value not in (None, ""):
+        return _cents_amount(cents_value) / 100.0
+    return None
+
+
+def _first_present(row: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
 def _live_order_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
     allowed = {
         "ticker",
@@ -1210,15 +1731,47 @@ def _live_order_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
     return {key: value for key, value in dict(payload or {}).items() if key in allowed and value is not None}
 
 
-def _live_order_economic_side(order: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
-    """Recover the traded outcome from Kalshi's single YES-book order shape."""
+def _opposite_outcome(side: Any) -> str:
+    normalized = str(side or "").upper()
+    if normalized == "YES":
+        return "NO"
+    if normalized == "NO":
+        return "YES"
+    return ""
+
+
+def _live_order_action(order: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
     explicit = str(
+        order.get("action")
+        or payload.get("action")
+        or ""
+    ).upper()
+    if explicit in {"BUY", "SELL"}:
+        return explicit
+    for source in (order, payload):
+        if "reduce_only" in source and source.get("reduce_only") is not None:
+            return "SELL" if bool(source.get("reduce_only")) else "BUY"
+    return ""
+
+
+def _live_order_economic_side(order: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
+    """Recover the contract being increased/reduced from canonical V2 fields.
+
+    Canonical ``outcome_side`` is directional exposure, not always the contract
+    named in a legacy BUY/SELL pair: SELL YES has outcome_side=NO, while SELL
+    NO has outcome_side=YES.  AlphaLab keeps ``outcome_side`` as the held/traded
+    contract for its FIFO ledger and exposes the exchange value separately.
+    """
+    canonical = str(
         order.get("outcome_side")
         or payload.get("outcome_side")
         or ""
     ).upper()
-    if explicit in {"YES", "NO"}:
-        return explicit
+    action = _live_order_action(order, payload)
+    if canonical in {"YES", "NO"}:
+        return _opposite_outcome(canonical) if action == "SELL" else canonical
+
+    # Legacy responses used YES/NO in ``side`` to name the contract directly.
     legacy_side = str(order.get("side") or "").upper()
     if legacy_side in {"YES", "NO"}:
         return legacy_side
@@ -1230,16 +1783,9 @@ def _live_order_economic_side(order: Mapping[str, Any], payload: Mapping[str, An
         or payload.get("side")
         or ""
     ).lower()
-    action = str(order.get("action") or payload.get("action") or "").lower()
-    reduce_only = bool(
-        order.get("reduce_only")
-        or payload.get("reduce_only")
-        or action == "sell"
-    )
-    if book_side == "bid":
-        return "NO" if reduce_only else "YES"
-    if book_side == "ask":
-        return "YES" if reduce_only else "NO"
+    canonical = "YES" if book_side == "bid" else "NO" if book_side == "ask" else ""
+    if canonical:
+        return _opposite_outcome(canonical) if action == "SELL" else canonical
     return ""
 
 
@@ -1248,13 +1794,18 @@ def _normalise_live_order(raw: Mapping[str, Any], payload: Mapping[str, Any], de
     side = str((decision.get("side") or "")).upper()
     if side not in {"YES", "NO"}:
         side = _live_order_economic_side(order, payload)
-    explicit_action = str(order.get("action") or payload.get("action") or "").upper()
-    reduce_only = bool(
-        payload.get("reduce_only")
-        or order.get("reduce_only")
-        or explicit_action == "SELL"
+    action = _live_order_action(
+        order,
+        {**dict(payload or {}), "action": decision.get("action") or payload.get("action")},
     )
-    action = explicit_action if explicit_action in {"BUY", "SELL"} else ("SELL" if reduce_only else "BUY")
+    reduce_only = action == "SELL"
+    canonical_side = str(order.get("outcome_side") or payload.get("outcome_side") or "").upper()
+    if canonical_side not in {"YES", "NO"}:
+        canonical_side = (
+            _opposite_outcome(side)
+            if reduce_only and side in {"YES", "NO"}
+            else side
+        )
     requested = _finite_number(order.get("count") or order.get("count_fp") or payload.get("count"), 0.0)
     filled = _finite_number(order.get("fill_count") or order.get("fill_count_fp") or order.get("filled_count"), 0.0)
     explicit_remaining = order.get("remaining_count_fp")
@@ -1320,6 +1871,7 @@ def _normalise_live_order(raw: Mapping[str, Any], payload: Mapping[str, Any], de
         "order_id": order.get("order_id") or order.get("id") or payload.get("client_order_id"),
         "client_order_id": order.get("client_order_id") or payload.get("client_order_id"),
         "outcome_side": side,
+        "canonical_outcome_side": canonical_side,
         "action": action,
         "reduce_only": reduce_only,
         "count_fp": requested,
@@ -1330,7 +1882,12 @@ def _normalise_live_order(raw: Mapping[str, Any], payload: Mapping[str, Any], de
         "fee_cost_dollars": fee_cost,
         "status": status,
         "time_in_force": order.get("time_in_force") or payload.get("time_in_force") or "immediate_or_cancel",
-        "created_time": order.get("created_time") or order.get("created_ts") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "created_time": (
+            order.get("created_time")
+            or order.get("created_ts")
+            or payload.get("created_time")
+            or payload.get("created_ts")
+        ),
     }
 
 
@@ -1341,9 +1898,20 @@ def _normalise_live_fill(
     fill = dict(raw or {})
     context = dict(order_context or {})
     ticker = fill.get("ticker") or fill.get("market_ticker") or fill.get("market") or fill.get("contract_ticker")
-    side = str(fill.get("outcome_side") or fill.get("side") or fill.get("result") or "").upper()
-    if side not in {"YES", "NO"}:
-        side = str(context.get("outcome_side") or "").upper()
+    action = str(fill.get("action") or context.get("action") or "").upper()
+    if action not in {"BUY", "SELL"}:
+        action = _live_order_action(fill, context)
+    context_side = str(context.get("outcome_side") or "").upper()
+    canonical_side = str(fill.get("outcome_side") or "").upper()
+    legacy_side = str(fill.get("side") or fill.get("result") or "").upper()
+    if context_side in {"YES", "NO"}:
+        side = context_side
+    elif canonical_side in {"YES", "NO"}:
+        side = _opposite_outcome(canonical_side) if action == "SELL" else canonical_side
+    elif legacy_side in {"YES", "NO"}:
+        side = legacy_side
+    else:
+        side = ""
     if side not in {"YES", "NO"}:
         has_yes = fill.get("yes_price") not in (None, "") or fill.get("yes_price_dollars") not in (None, "")
         has_no = fill.get("no_price") not in (None, "") or fill.get("no_price_dollars") not in (None, "")
@@ -1398,11 +1966,10 @@ def _normalise_live_fill(
         or fill.get("maker_fees_dollars"),
         fill.get("fee") or fill.get("fees") or fill.get("taker_fees") or fill.get("maker_fees"),
     )
-    action = str(fill.get("action") or context.get("action") or "").lower()
     reduce_only = bool(
         fill.get("reduce_only")
         or context.get("reduce_only")
-        or action == "sell"
+        or action == "SELL"
     )
     return {
         **fill,
@@ -1411,6 +1978,7 @@ def _normalise_live_fill(
         "fill_id": fill.get("fill_id") or fill.get("trade_id") or fill.get("id") or fill.get("order_id"),
         "order_id": fill.get("order_id"),
         "outcome_side": side,
+        "canonical_outcome_side": canonical_side,
         "action": action,
         "reduce_only": reduce_only,
         "count_fp": count,
@@ -1564,6 +2132,72 @@ def _open_live_fill_inventory(fills) -> Dict[Tuple[str, str], Dict[str, Any]]:
             "lastTradeAt": last_trade.get(key),
         }
     return result
+
+
+def _durable_managed_inventory(
+    state: Mapping[str, Any],
+) -> Dict[Tuple[str, str], float]:
+    """Rebuild AlphaLab-owned counts from authoritative durable fill evidence.
+
+    ``filledTrades`` is the crash-safe provenance boundary used by the router.
+    A position that exists at Kalshi but is not covered by these rows is
+    deliberately treated as manual/unmanaged.
+    """
+    by_identity: Dict[str, Dict[str, Any]] = {}
+    anonymous = []
+    for raw in state.get("filledTrades") or []:
+        if not isinstance(raw, Mapping) or not raw.get("orderFilled"):
+            continue
+        row = dict(raw)
+        identity = str(
+            row.get("orderId")
+            or row.get("clientOrderId")
+            or row.get("order_id")
+            or row.get("client_order_id")
+            or ""
+        )
+        if identity:
+            # Delayed reconciliation may promote the same order with a more
+            # complete fill count. Keep the latest durable representation.
+            by_identity[identity] = row
+        else:
+            anonymous.append(row)
+    rows = list(by_identity.values()) + anonymous
+    rows.sort(key=lambda row: str(
+        row.get("generatedAt")
+        or row.get("created_time")
+        or row.get("createdAt")
+        or ""
+    ))
+    inventory: Dict[Tuple[str, str], float] = {}
+    for row in rows:
+        ticker = str(row.get("ticker") or row.get("market_ticker") or "")
+        side = str(row.get("side") or row.get("outcome_side") or "").upper()
+        action = str(row.get("action") or "").upper()
+        count = _finite_number(
+            row.get("fillCount")
+            or row.get("fill_count_fp")
+            or row.get("fill_count")
+            or row.get("count_fp")
+            or row.get("count"),
+            0.0,
+        )
+        if (
+            not ticker
+            or side not in {"YES", "NO"}
+            or count <= 0.0
+        ):
+            continue
+        key = (ticker, side)
+        if action == "BUY" or action.startswith("BUY_"):
+            inventory[key] = inventory.get(key, 0.0) + count
+        elif action == "SELL" or action.startswith("SELL_"):
+            inventory[key] = max(0.0, inventory.get(key, 0.0) - count)
+    return {
+        key: count
+        for key, count in inventory.items()
+        if count > 1e-9
+    }
 
 
 def _normalise_live_settlement(raw: Mapping[str, Any]) -> Dict[str, Any]:
@@ -2392,6 +3026,7 @@ class _PublicDataClient:
         now: Optional[datetime] = None,
         base_url: str = KALSHI_PUBLIC_BASE,
         reference_override: Optional[Mapping[str, Any]] = None,
+        required_tickers: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Return the nearest active KXBTCD event and executable strike books.
 
@@ -2401,6 +3036,11 @@ class _PublicDataClient:
         """
         started_at = time.perf_counter()
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        required = {
+            str(value or "").strip()
+            for value in (required_tickers or [])
+            if _market_family(value) == "btchourly"
+        }
         reference_snapshot = self.snapshot(
             now=now,
             base_url=base_url,
@@ -2436,16 +3076,49 @@ class _PublicDataClient:
             close_at = _parse_utc(market.get("close_time") or market.get("close_ts"))
             seconds = (close_at - now).total_seconds() if close_at else -1
             if 45 <= seconds <= 3700 and str(market.get("status") or "").lower() in {"active", "open"}:
-                eligible.append((seconds, str(market.get("event_ticker") or ""), market))
+                ticker = str(market.get("ticker") or "")
+                eligible.append((
+                    seconds,
+                    _kalshi_event_ticker(ticker, market),
+                    market,
+                ))
         if not eligible:
             raise KalshiApiError(
                 "No KXBTCD hourly event is inside the trading window",
                 status=409,
                 code=KALSHI_NO_ACTIVE_HOURLY_MARKET,
             )
-        nearest_seconds, event_ticker, _ = min(eligible, key=lambda item: item[0])
+        required_eligible = [
+            item
+            for item in eligible
+            if str((item[2] or {}).get("ticker") or "") in required
+        ]
+        # If AlphaLab already owns a strike, select its event before the
+        # nearest fresh event. This makes the snapshot a position-management
+        # input and prevents a higher-edge sibling/new event from replacing it.
+        nearest_seconds, event_ticker, anchor_market = min(
+            required_eligible or eligible,
+            key=lambda item: item[0],
+        )
         event_markets = [market for seconds, event, market in eligible if event == event_ticker]
-        spot = _finite_number((reference_snapshot.get("reference") or {}).get("price"), 0.0)
+        reference_policy = _hourly_reference_policy(
+            reference_snapshot.get("reference") or {},
+            anchor_market,
+            now=now,
+            seconds_to_close=nearest_seconds,
+        )
+        selected_reference = _finite_number(
+            reference_policy.get("selectedPrice"),
+            None,
+        )
+        if selected_reference is None or selected_reference <= 0.0:
+            raise KalshiApiError(
+                "KXBTCD requires a fresh raw BRTI reference; the generic "
+                "BTC15 settlement estimate cannot be used for hourly strikes.",
+                status=409,
+                code="btc_reference_unavailable",
+            )
+        spot = selected_reference
         event_markets.sort(
             key=lambda market: abs(_finite_number(market.get("floor_strike"), spot) - spot)
         )
@@ -2457,19 +3130,45 @@ class _PublicDataClient:
             if 0.0 < _finite_number(market.get("yes_bid_dollars"), -1.0) < 1.0
             and 0.0 < _finite_number(market.get("yes_ask_dollars"), -1.0) < 1.0
         ]
+        required_event_markets = [
+            market for market in event_markets
+            if str(market.get("ticker") or "") in required
+        ]
         selected_by_ticker = {
             str(market.get("ticker") or ""): market
-            for market in (event_markets[:16] + quoted)
+            for market in (required_event_markets + event_markets[:16] + quoted)
             if str(market.get("ticker") or "")
         }
-        selected_markets = list(selected_by_ticker.values())
-        selected_markets.sort(
+        required_selected = [
+            selected_by_ticker[str(market.get("ticker") or "")]
+            for market in required_event_markets
+            if str(market.get("ticker") or "") in selected_by_ticker
+        ]
+        required_selected_tickers = {
+            str(market.get("ticker") or "") for market in required_selected
+        }
+        optional_selected = [
+            market for ticker, market in selected_by_ticker.items()
+            if ticker not in required_selected_tickers
+        ]
+        optional_selected.sort(
             key=lambda market: abs(_finite_number(market.get("floor_strike"), spot) - spot)
         )
-        selected_markets = selected_markets[:32]
+        selected_markets = (
+            required_selected
+            + optional_selected[:max(0, 32 - len(required_selected))]
+        )
 
         books: Dict[str, Dict[str, Any]] = {}
         warnings = list(reference_snapshot.get("warnings") or [])
+        included_required = sorted(
+            required.intersection({
+                str(market.get("ticker") or "") for market in selected_markets
+            })
+        )
+        missing_required = sorted(required - set(included_required))
+        if missing_required:
+            warnings.append("hourly_required_held_ticker_unavailable")
         if self._cache_status(hourly_events_key).get("servedStale"):
             warnings.append("hourly_markets_stale")
         tickers = [str(market.get("ticker") or "") for market in selected_markets]
@@ -2514,11 +3213,15 @@ class _PublicDataClient:
             "seriesTicker": BTC_HOURLY_SERIES,
             "eventTicker": event_ticker,
             "secondsToClose": nearest_seconds,
+            "requiredTickers": sorted(required),
+            "includedRequiredTickers": included_required,
+            "missingRequiredTickers": missing_required,
             "markets": selected_markets,
             "orderbooks": books,
             "orderbookAsOf": orderbook_as_of,
             "ladderFit": ladder_fit,
             "reference": dict(reference_snapshot.get("reference") or {}),
+            "referencePolicy": reference_policy,
             "warnings": sorted(set(warnings)),
             "sources": {
                 **dict(reference_snapshot.get("sources") or {}),
@@ -2535,6 +3238,9 @@ class _PaperRobotController:
         paper_accounts,
         *,
         connection_loader: Optional[Callable[[str], Mapping[str, Any]]] = None,
+        authoritative_connection_loader: Optional[
+            Callable[[str], Mapping[str, Any]]
+        ] = None,
         signed_request: Optional[Callable[..., Dict[str, Any]]] = None,
         notifier: Optional[Callable[[str, str, Mapping[str, Any]], Any]] = None,
         observation_saver: Optional[Callable[[str, Mapping[str, Any]], Any]] = None,
@@ -2550,6 +3256,9 @@ class _PaperRobotController:
         self.state = state
         self.paper_accounts = paper_accounts
         self.connection_loader = connection_loader
+        self.authoritative_connection_loader = (
+            authoritative_connection_loader
+        )
         self.signed_request = signed_request
         self.notifier = notifier
         self.observation_saver = observation_saver
@@ -2679,11 +3388,171 @@ class _PaperRobotController:
         payload = dict(display_payload or self._load_portfolio_display(user_id) or {})
         modes = payload.get("modes") if isinstance(payload.get("modes"), Mapping) else {}
         baseline = modes.get(environment) if isinstance(modes, Mapping) else None
+        if environment == "real" and not _valid_real_display_baseline(baseline):
+            structural_reset_at = (
+                str(baseline.get("resetAt"))
+                if isinstance(baseline, Mapping)
+                and _portfolio_timestamp(baseline.get("resetAt")) is not None
+                and str(baseline.get("environment") or "").lower() == "real"
+                and baseline.get("alphaLabOnly") is True
+                else None
+            )
+            baseline = None
+            try:
+                state_snapshot = self.state.get(user_id, environment="real")
+                mode_state = state_snapshot.get("modeState")
+                real_bucket = (
+                    mode_state.get("real")
+                    if isinstance(mode_state, Mapping)
+                    and isinstance(mode_state.get("real"), Mapping)
+                    else {}
+                )
+                state_baseline = real_bucket.get("displayBaseline")
+                if (
+                    isinstance(state_baseline, Mapping)
+                    and _portfolio_timestamp(
+                        state_baseline.get("resetAt")
+                    ) is not None
+                    and str(
+                        state_baseline.get("environment") or ""
+                    ).lower() == "real"
+                    and state_baseline.get("alphaLabOnly") is True
+                ):
+                    structural_reset_at = str(
+                        state_baseline.get("resetAt")
+                    )
+                if _valid_real_display_baseline(state_baseline):
+                    baseline = dict(state_baseline)
+                elif callable(
+                    getattr(self.state, "ensure_real_display_baseline", None)
+                ):
+                    repaired = self.state.ensure_real_display_baseline(user_id)
+                    if (
+                        isinstance(repaired, Mapping)
+                        and _portfolio_timestamp(
+                            repaired.get("resetAt")
+                        ) is not None
+                        and str(
+                            repaired.get("environment") or ""
+                        ).lower() == "real"
+                        and repaired.get("alphaLabOnly") is True
+                    ):
+                        structural_reset_at = str(repaired.get("resetAt"))
+                    if _valid_real_display_baseline(repaired):
+                        baseline = dict(repaired)
+            except Exception as exc:
+                self.safe_print(
+                    "[KalshiPortfolio] Real baseline state repair failed "
+                    f"user={str(user_id)[:8]} error={type(exc).__name__}"
+                )
+            if not _valid_real_display_baseline(baseline):
+                balance = dict(result.get("balance") or {})
+                reset_at = (
+                    structural_reset_at
+                    or datetime.now(timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+                baseline = {
+                    "resetAt": reset_at,
+                    "baselineEquityCents": int(round(
+                        _account_equity_cents(balance, "real")
+                    )),
+                    "baselineCashCents": int(round(
+                        _finite_number(balance.get("balance"), 0.0)
+                    )),
+                    "environment": "real",
+                    "ledgerPreserved": True,
+                    "alphaLabOnly": True,
+                    "reason": "fail_closed_missing_baseline_repair",
+                }
+                materialize = getattr(
+                    self.state,
+                    "materialize_real_display_baseline",
+                    None,
+                )
+                if callable(materialize):
+                    try:
+                        persisted_baseline = materialize(user_id, baseline)
+                        if _valid_real_display_baseline(persisted_baseline):
+                            baseline = dict(persisted_baseline)
+                    except Exception as exc:
+                        self.safe_print(
+                            "[KalshiPortfolio] Real baseline state "
+                            "materialization failed "
+                            f"user={str(user_id)[:8]} "
+                            f"error={type(exc).__name__}"
+                        )
+            # Repair the canonical display artifact as well as the state
+            # fallback. Subsequent reads therefore cannot repeatedly accept
+            # ``{}`` or a partially populated Real baseline.
+            try:
+                with self._portfolio_display_lock:
+                    repaired_modes = (
+                        dict(payload.get("modes") or {})
+                        if isinstance(payload.get("modes"), Mapping)
+                        else {}
+                    )
+                    repaired_modes["real"] = dict(baseline)
+                    repaired_payload = {
+                        **payload,
+                        "schemaVersion": 1,
+                        "modes": repaired_modes,
+                        "updatedAt": baseline["resetAt"],
+                    }
+                    if callable(self.portfolio_display_saver):
+                        self.portfolio_display_saver(
+                            user_id,
+                            repaired_payload,
+                        )
+                    else:
+                        self._local_portfolio_display[str(user_id)] = (
+                            copy.deepcopy(repaired_payload)
+                        )
+                    payload = repaired_payload
+            except Exception as exc:
+                # The in-memory baseline still keeps the response fail-closed;
+                # report the durability issue without exposing old activity.
+                self.safe_print(
+                    "[KalshiPortfolio] Real baseline artifact repair failed "
+                    f"user={str(user_id)[:8]} error={type(exc).__name__}"
+                )
         analytics = dict(result.get("analytics") or {})
-        if isinstance(baseline, Mapping):
+        if (
+            isinstance(baseline, Mapping)
+            and (
+                environment != "real"
+                or _valid_real_display_baseline(baseline)
+            )
+        ):
             analytics = _portfolio_analytics_after_reset(analytics, baseline)
         else:
             analytics["displayBaseline"] = {"active": False}
+        if environment == "real":
+            if _valid_real_display_baseline(baseline):
+                lifetime_counts = {
+                    collection: len(result.get(collection) or [])
+                    for collection in ("orders", "fills", "settlements")
+                }
+                for collection in ("orders", "fills", "settlements"):
+                    result[collection] = _visible_real_activity(
+                        result.get(collection) or [],
+                        baseline,
+                    )
+                result["accountActivity"] = {
+                    "scope": "alphalab_post_baseline",
+                    "lifetimeCounts": lifetime_counts,
+                    "visibleCounts": {
+                        collection: len(result.get(collection) or [])
+                        for collection in ("orders", "fills", "settlements")
+                    },
+                }
+            else:
+                for collection in ("orders", "fills", "settlements"):
+                    result[collection] = []
+                warnings = list(result.get("warnings") or [])
+                warnings.append("kalshi_real_display_baseline_missing")
+                result["warnings"] = sorted(set(warnings))
         result["analytics"] = analytics
         return result
 
@@ -2698,6 +3567,7 @@ class _PaperRobotController:
             "baselineCashCents": int(round(_finite_number(balance.get("balance"), 0.0))),
             "environment": environment,
             "ledgerPreserved": True,
+            "alphaLabOnly": environment == "real",
         }
         with self._portfolio_display_lock:
             payload = self._load_portfolio_display(user_id, strict=True)
@@ -2720,10 +3590,32 @@ class _PaperRobotController:
             display_payload=updated,
         )
 
-    def _real_config(self, user_id: str) -> Mapping[str, Any]:
-        if not callable(self.connection_loader):
-            raise KalshiApiError("Kalshi credential storage is unavailable", status=503, code="credential_store_unavailable")
-        config = dict(self.connection_loader(user_id) or {})
+    def _real_config(
+        self,
+        user_id: str,
+        *,
+        authoritative: bool = False,
+    ) -> Mapping[str, Any]:
+        loader = (
+            self.authoritative_connection_loader
+            if authoritative
+            else self.connection_loader
+        )
+        if not callable(loader):
+            raise KalshiApiError(
+                (
+                    "Authoritative Kalshi credential storage is unavailable"
+                    if authoritative
+                    else "Kalshi credential storage is unavailable"
+                ),
+                status=503,
+                code=(
+                    "kalshi_authoritative_credentials_unavailable"
+                    if authoritative
+                    else "credential_store_unavailable"
+                ),
+            )
+        config = dict(loader(user_id) or {})
         key_field, private_field = _credential_fields("production")
         if not str(config.get(key_field) or "").strip() or not str(config.get(private_field) or "").strip():
             raise KalshiApiError(
@@ -2746,38 +3638,66 @@ class _PaperRobotController:
             return payload if isinstance(payload, Mapping) else {}
         except Exception as exc:
             self.safe_print(f"[KalshiReal] optional signed fetch failed endpoint={endpoint} error={type(exc).__name__}")
-            return {}
+            return {
+                "_alphalabIncomplete": True,
+                "_alphalabWarning": "kalshi_account_history_incomplete",
+            }
 
     def _historical_account_rows(self, user_id: str, config: Mapping[str, Any]) -> Dict[str, Any]:
         """Load paginated exchange history with a bounded 15-minute cache."""
-        cache_key = str(user_id)
+        key_field, _private_field = _credential_fields("production")
+        credential_fingerprint = hashlib.sha256(
+            str(config.get(key_field) or "").encode("utf-8")
+        ).hexdigest()[:16]
+        cache_key = f"{user_id}:{credential_fingerprint}:subaccount-0"
         now = time.monotonic()
         with self._historical_cache_lock:
             cached = self._historical_cache.get(cache_key)
             if cached and now - cached[0] < 900:
                 return copy.deepcopy(cached[1])
 
-        def collect(endpoint: str, collection: str) -> list:
+        def collect(endpoint: str, collection: str) -> Dict[str, Any]:
             rows = []
             cursor = None
+            complete = True
+            warnings = []
             for _ in range(5):
-                params: Dict[str, Any] = {"limit": 1000}
+                params: Dict[str, Any] = {"limit": 1000, "subaccount": 0}
                 if cursor:
                     params["cursor"] = cursor
                 payload = self._optional_signed(config, endpoint, params=params)
+                if payload.get("_alphalabIncomplete"):
+                    complete = False
+                    warnings.append(
+                        str(payload.get("_alphalabWarning") or "kalshi_account_history_incomplete")
+                    )
+                    break
                 page = payload.get(collection) or []
                 rows.extend(dict(row) for row in page if isinstance(row, Mapping))
                 cursor = payload.get("cursor") or payload.get("next_cursor")
                 if not cursor or not page:
                     break
-            return rows
+            if cursor:
+                complete = False
+                warnings.append("kalshi_account_history_incomplete")
+            return {
+                "rows": rows,
+                "complete": complete,
+                "warnings": sorted(set(warnings)),
+            }
 
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="kalshi-history") as pool:
             orders_future = pool.submit(collect, "/historical/orders", "orders")
             fills_future = pool.submit(collect, "/historical/fills", "fills")
+            orders_result = orders_future.result()
+            fills_result = fills_future.result()
             result = {
-                "orders": orders_future.result(),
-                "fills": fills_future.result(),
+                "orders": orders_result["rows"],
+                "fills": fills_result["rows"],
+                "complete": bool(orders_result["complete"] and fills_result["complete"]),
+                "warnings": sorted(set(
+                    list(orders_result["warnings"]) + list(fills_result["warnings"])
+                )),
             }
         with self._historical_cache_lock:
             self._historical_cache[cache_key] = (now, copy.deepcopy(result))
@@ -2785,22 +3705,60 @@ class _PaperRobotController:
 
     def _live_portfolio(self, user_id: str, *, mutate: bool = True) -> Dict[str, Any]:
         config = self._real_config(user_id)
+        before_state = self.state.get(user_id, environment="real")
+        managed_contexts: Dict[str, Dict[str, Any]] = {}
+        managed_tickers = set()
+        for evidence in (
+            list(before_state.get("filledTrades") or [])
+            + list(before_state.get("decisions") or [])
+        ):
+            if not isinstance(evidence, Mapping):
+                continue
+            action_value = str(evidence.get("action") or "").upper()
+            action = (
+                "SELL" if action_value.startswith("SELL")
+                else "BUY" if action_value.startswith("BUY")
+                else ""
+            )
+            context = {
+                "side": str(evidence.get("side") or "").upper(),
+                "action": action,
+                "reduce_only": action == "SELL",
+                "alphaLabManaged": True,
+            }
+            for identifier in (
+                evidence.get("orderId"),
+                evidence.get("clientOrderId"),
+                evidence.get("order_id"),
+                evidence.get("client_order_id"),
+            ):
+                if identifier:
+                    managed_contexts[str(identifier)] = context
+            ticker = str(evidence.get("ticker") or "")
+            if ticker and (
+                evidence.get("orderFilled")
+                or evidence.get("fillCount")
+                or evidence in list(before_state.get("filledTrades") or [])
+            ):
+                managed_tickers.add(ticker)
         # These endpoints are independent. Reading them concurrently cuts the
         # pre-decision account snapshot latency without increasing request count
         # or weakening any execution/risk gate.
         with ThreadPoolExecutor(max_workers=5, thread_name_prefix="kalshi-account") as pool:
-            balance_future = pool.submit(self._signed, config, "GET", "/portfolio/balance")
+            balance_future = pool.submit(
+                self._signed, config, "GET", "/portfolio/balance", params={"subaccount": 0}
+            )
             positions_future = pool.submit(
-                self._signed, config, "GET", "/portfolio/positions", params={"limit": 100}
+                self._signed, config, "GET", "/portfolio/positions", params={"limit": 100, "subaccount": 0}
             )
             orders_future = pool.submit(
-                self._signed, config, "GET", "/portfolio/orders", params={"limit": 100}
+                self._signed, config, "GET", "/portfolio/orders", params={"limit": 100, "subaccount": 0}
             )
             fills_future = pool.submit(
-                self._optional_signed, config, "/portfolio/fills", params={"limit": 1000}
+                self._optional_signed, config, "/portfolio/fills", params={"limit": 1000, "subaccount": 0}
             )
             settlements_future = pool.submit(
-                self._optional_signed, config, "/portfolio/settlements", params={"limit": 1000}
+                self._optional_signed, config, "/portfolio/settlements", params={"limit": 1000, "subaccount": 0}
             )
             balance_payload = balance_future.result()
             positions_payload = positions_future.result()
@@ -2808,6 +3766,34 @@ class _PaperRobotController:
             fills_payload = fills_future.result()
             settlements_payload = settlements_future.result()
         historical = self._historical_account_rows(user_id, config)
+        warnings = list(historical.get("warnings") or [])
+        completeness = {
+            "balance": True,
+            "positions": not bool(
+                positions_payload.get("cursor") or positions_payload.get("next_cursor")
+            ),
+            "orders": not bool(
+                orders_payload.get("cursor") or orders_payload.get("next_cursor")
+            ),
+            "fills": not bool(
+                fills_payload.get("_alphalabIncomplete")
+                or fills_payload.get("cursor")
+                or fills_payload.get("next_cursor")
+            ),
+            "settlements": not bool(
+                settlements_payload.get("_alphalabIncomplete")
+                or settlements_payload.get("cursor")
+                or settlements_payload.get("next_cursor")
+            ),
+            "history": bool(historical.get("complete", True)),
+        }
+        if not completeness["positions"]:
+            warnings.append("kalshi_account_positions_incomplete")
+        if not completeness["orders"]:
+            warnings.append("kalshi_account_orders_incomplete")
+        if not completeness["fills"] or not completeness["settlements"] or not completeness["history"]:
+            warnings.append("kalshi_account_history_incomplete")
+        completeness["complete"] = all(completeness.values())
 
         raw_positions = list(
             positions_payload.get("market_positions")
@@ -2837,9 +3823,14 @@ class _PaperRobotController:
                 row.get("market_exposure_dollars") or row.get("cost_dollars"),
                 row.get("market_exposure") or row.get("cost") or row.get("realized_cost"),
             )
-            value_dollars = _dollar_amount(
-                row.get("market_value_dollars") or row.get("value_dollars") or row.get("settlement_value_dollars"),
-                row.get("market_value") or row.get("value") or row.get("settlement_value"),
+            value_dollars = _optional_dollar_amount(
+                _first_present(
+                    row,
+                    "market_value_dollars",
+                    "value_dollars",
+                    "settlement_value_dollars",
+                ),
+                _first_present(row, "market_value", "value", "settlement_value"),
             )
             fee_dollars = _dollar_amount(
                 row.get("fees_paid_dollars") or row.get("fee_cost_dollars"),
@@ -2857,9 +3848,20 @@ class _PaperRobotController:
                 "market_exposure_dollars": exposure_dollars,
                 "market_value_dollars": value_dollars,
                 "fee_cost_dollars": fee_dollars,
-                "unrealized_pnl_dollars": value_dollars - exposure_dollars - fee_dollars,
-                "yes_mark_dollars": _finite_number(row.get("yes_mark_dollars") or row.get("yes_mark") or row.get("yes_price"), 0.0),
-                "no_mark_dollars": _finite_number(row.get("no_mark_dollars") or row.get("no_mark") or row.get("no_price"), 0.0),
+                "unrealized_pnl_dollars": (
+                    value_dollars - exposure_dollars - fee_dollars
+                    if value_dollars is not None
+                    else None
+                ),
+                "yes_mark_dollars": _optional_dollar_amount(
+                    _first_present(row, "yes_mark_dollars"),
+                    _first_present(row, "yes_mark", "yes_price"),
+                ),
+                "no_mark_dollars": _optional_dollar_amount(
+                    _first_present(row, "no_mark_dollars"),
+                    _first_present(row, "no_mark", "no_price"),
+                ),
+                "markAvailable": value_dollars is not None,
                 "last_trade_at": row.get("last_trade_at") or row.get("updated_time") or row.get("created_time"),
             })
 
@@ -2872,9 +3874,21 @@ class _PaperRobotController:
         for row in raw_orders:
             if not isinstance(row, Mapping):
                 continue
-            normalized = _normalise_live_order(row, row, {"side": row.get("outcome_side") or ""})
+            evidence = None
+            for identifier in (row.get("order_id"), row.get("id"), row.get("client_order_id")):
+                if identifier and str(identifier) in managed_contexts:
+                    evidence = managed_contexts[str(identifier)]
+                    break
+            normalized = _normalise_live_order(row, row, evidence or {})
             if not _is_supported_kalshi_ticker(normalized.get("ticker") or normalized.get("market_ticker")):
                 continue
+            managed = evidence is not None
+            normalized.update({
+                "alphaLabManaged": managed,
+                "alphalabManaged": managed,
+                "alphaLabOrder": managed,
+                "source": "alphalab" if managed else "kalshi_account",
+            })
             order_key = str(normalized.get("order_id") or normalized.get("client_order_id") or "")
             if order_key and order_key in seen_order_ids:
                 continue
@@ -2904,6 +3918,18 @@ class _PaperRobotController:
             normalized = _normalise_live_fill(row, order_context)
             if not _is_supported_kalshi_ticker(normalized.get("ticker") or normalized.get("market_ticker")):
                 continue
+            managed = bool((order_context or {}).get("alphaLabManaged"))
+            if not managed:
+                for identifier in (row.get("order_id"), row.get("client_order_id")):
+                    if identifier and str(identifier) in managed_contexts:
+                        managed = True
+                        break
+            normalized.update({
+                "alphaLabManaged": managed,
+                "alphalabManaged": managed,
+                "alphaLabOrder": managed,
+                "source": "alphalab" if managed else "kalshi_account",
+            })
             fill_id = str(normalized.get("fill_id") or normalized.get("order_id") or uuid.uuid4())
             if fill_id in seen_fill_ids:
                 continue
@@ -2915,28 +3941,109 @@ class _PaperRobotController:
         if not fills:
             fills = order_fill_fallback
         fills = _reconcile_live_exit_fills(fills)
-        open_inventory = _open_live_fill_inventory(fills)
+        if mutate and callable(getattr(self.state, "reconcile_live_fills", None)):
+            before_state = self.state.reconcile_live_fills(
+                user_id,
+                [row for row in fills if row.get("alphaLabManaged")],
+                environment="real",
+                persist=self.persist_derived_state,
+            )
+        managed_inventory = _open_live_fill_inventory(
+            [row for row in fills if row.get("alphaLabManaged")]
+        )
+        # Historical manual activity is not an ownership conflict by itself.
+        # Only manual lots that remain open after their own FIFO round trips
+        # may contaminate a currently held ticker. Previously, one old manual
+        # fill permanently marked the ticker unmanaged even after it was sold
+        # back to zero.
+        unmanaged_inventory = _open_live_fill_inventory(
+            [row for row in fills if not row.get("alphaLabManaged")]
+        )
+        unmanaged_open_tickers = {
+            str(ticker)
+            for (ticker, _side), inventory in unmanaged_inventory.items()
+            if _finite_number(inventory.get("count"), 0.0) > 1e-9
+        }
         for position_row in positions:
             ticker = str(position_row.get("ticker") or "")
             side = str(position_row.get("net_side") or "").upper()
-            inventory = open_inventory.get((ticker, side))
-            if not inventory:
+            account_count = max(
+                0.0,
+                _finite_number(position_row.get("net_count_fp"), 0.0),
+            )
+            inventory = managed_inventory.get((ticker, side))
+            managed_count = min(
+                account_count,
+                max(0.0, _finite_number((inventory or {}).get("count"), 0.0)),
+            )
+            unmanaged_count = max(0.0, account_count - managed_count)
+            opposite_inventory = managed_inventory.get(
+                (ticker, _opposite_outcome(side))
+            )
+            ownership_conflict = bool(
+                ticker in unmanaged_open_tickers
+                or (
+                    opposite_inventory
+                    and _finite_number(opposite_inventory.get("count"), 0.0) > 0
+                )
+            )
+            if ownership_conflict:
+                managed_count = 0.0
+                unmanaged_count = account_count
+            managed = managed_count > 1e-9 and not ownership_conflict
+            position_row.update({
+                "alphaLabManaged": managed,
+                "alphalabManaged": managed,
+                "alphaLabManagedSide": side if managed else None,
+                "alphaLabManagedCount": managed_count,
+                "alphaLabUnmanagedCount": unmanaged_count,
+                "alphaLabOwnershipConflict": ownership_conflict,
+                "source": (
+                    "alphalab"
+                    if managed and unmanaged_count <= 1e-9
+                    else "mixed"
+                    if managed
+                    else "kalshi_account"
+                ),
+            })
+            if not managed or not inventory:
                 continue
+            inventory_count = max(
+                _finite_number(inventory.get("count"), 0.0),
+                1e-9,
+            )
+            managed_fraction = managed_count / inventory_count
+            managed_principal = _finite_number(
+                inventory.get("principal"), 0.0
+            ) * managed_fraction
+            managed_entry_fee = _finite_number(
+                inventory.get("entryFee"), 0.0
+            ) * managed_fraction
             prefix = side.lower()
             position_row[f"{prefix}_average_price_dollars"] = inventory["averagePrice"]
-            position_row[f"{prefix}_cost"] = inventory["principal"]
-            position_row[f"{prefix}_fee_cost_dollars"] = inventory["entryFee"]
-            position_row["position_cost_dollars"] = inventory["principal"]
-            position_row["fee_cost_dollars"] = inventory["entryFee"]
+            position_row[f"{prefix}_cost"] = managed_principal
+            position_row[f"{prefix}_fee_cost_dollars"] = managed_entry_fee
+            position_row["position_cost_dollars"] = managed_principal
+            position_row["fee_cost_dollars"] = managed_entry_fee
             position_row["last_trade_at"] = inventory.get("lastTradeAt") or position_row.get("last_trade_at")
             # Cost-based unrealized P/L is intentionally marked only when the
             # position endpoint supplies a usable current value.
-            if _finite_number(position_row.get("market_value_dollars"), 0.0) > 0:
+            if (
+                position_row.get("market_value_dollars") is not None
+                and unmanaged_count <= 1e-9
+            ):
                 position_row["unrealized_pnl_dollars"] = (
                     _finite_number(position_row.get("market_value_dollars"))
-                    - inventory["principal"]
-                    - inventory["entryFee"]
+                    - managed_principal
+                    - managed_entry_fee
                 )
+            elif unmanaged_count > 1e-9:
+                position_row["unrealized_pnl_dollars"] = None
+        if any(
+            _finite_number(row.get("alphaLabUnmanagedCount"), 0.0) > 0
+            for row in positions
+        ):
+            warnings.append("kalshi_unmanaged_positions_present")
 
         raw_settlements = list(
             settlements_payload.get("settlements")
@@ -2950,19 +4057,33 @@ class _PaperRobotController:
                 continue
             normalized = _normalise_live_settlement(row)
             if _is_supported_kalshi_ticker(normalized.get("ticker") or normalized.get("market_ticker")):
+                settlement_ticker = str(normalized.get("ticker") or "")
+                managed = (
+                    settlement_ticker in managed_tickers
+                    and settlement_ticker not in unmanaged_open_tickers
+                )
+                normalized.update({
+                    "alphaLabManaged": managed,
+                    "alphalabManaged": managed,
+                    "alphaLabOrder": managed,
+                    "source": "alphalab" if managed else "kalshi_account",
+                })
                 settlements.append(normalized)
 
-        before_state = self.state.get(user_id, environment="real")
         before_records = {
             str(row.get("key") or "")
             for row in ((before_state.get("strategy") or {}).get("settlementRecords") or [])
             if row.get("key")
         }
         if mutate:
+            managed_fills = [row for row in fills if row.get("alphaLabManaged")]
+            managed_settlements = [
+                row for row in settlements if row.get("alphaLabManaged")
+            ]
             state = self.state.reconcile_settlements(
                 user_id,
-                settlements,
-                fills,
+                managed_settlements,
+                managed_fills,
                 environment="real",
                 persist=self.persist_derived_state,
             )
@@ -2987,6 +4108,8 @@ class _PaperRobotController:
             "fills": [_tag_market_family(row) for row in fills],
             "settlements": [_tag_market_family(row) for row in settlements],
             "analytics": analytics,
+            "warnings": sorted(set(warnings)),
+            "completeness": completeness,
         }
 
     def portfolio(
@@ -3165,52 +4288,624 @@ class _PaperRobotController:
                 code="kalshi_routing_lease_lost",
             )
 
+    def _collect_live_preflight_rows(
+        self,
+        config: Mapping[str, Any],
+        endpoint: str,
+        collection_keys: Tuple[str, ...],
+    ) -> list:
+        """Read every page required by an irreversible Real account guard."""
+        rows = []
+        cursor = None
+        seen_cursors = set()
+        for _page_number in range(50):
+            params: Dict[str, Any] = {"limit": 100, "subaccount": 0}
+            if cursor:
+                params["cursor"] = cursor
+            payload = self._signed(
+                config,
+                "GET",
+                endpoint,
+                params=params,
+            )
+            if (
+                not isinstance(payload, Mapping)
+                or payload.get("_alphalabIncomplete")
+                or payload.get("complete") is False
+                or payload.get("incomplete") is True
+            ):
+                raise KalshiApiError(
+                    "Kalshi returned an incomplete Real account preflight.",
+                    status=503,
+                    code="kalshi_live_preflight_incomplete",
+                )
+            collection = None
+            for key in collection_keys:
+                if key in payload:
+                    collection = payload.get(key)
+                    break
+            if not isinstance(collection, list):
+                raise KalshiApiError(
+                    "Kalshi omitted required Real account preflight rows.",
+                    status=503,
+                    code="kalshi_live_preflight_incomplete",
+                )
+            rows.extend(
+                dict(row) for row in collection if isinstance(row, Mapping)
+            )
+            next_cursor = str(
+                payload.get("cursor")
+                or payload.get("next_cursor")
+                or ""
+            ).strip()
+            if not next_cursor:
+                return rows
+            if next_cursor in seen_cursors:
+                raise KalshiApiError(
+                    "Kalshi repeated an account cursor during Real preflight.",
+                    status=503,
+                    code="kalshi_live_preflight_incomplete",
+                )
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        raise KalshiApiError(
+            "Kalshi account pagination exceeded the bounded Real preflight.",
+            status=503,
+            code="kalshi_live_preflight_incomplete",
+        )
+
+    def _fresh_live_account_preflight(
+        self,
+        config: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        """Fetch uncached cash, positions, and every current account order."""
+        balance = self._signed(
+            config,
+            "GET",
+            "/portfolio/balance",
+            params={"subaccount": 0},
+        )
+        if (
+            not isinstance(balance, Mapping)
+            or balance.get("balance") in (None, "")
+            or _first_present(balance, "portfolio_value", "portfolioValue")
+            in (None, "")
+        ):
+            raise KalshiApiError(
+                "Kalshi omitted balance fields required for Real routing.",
+                status=503,
+                code="kalshi_live_preflight_incomplete",
+            )
+        positions = self._collect_live_preflight_rows(
+            config,
+            "/portfolio/positions",
+            ("market_positions", "positions", "event_positions"),
+        )
+        orders = self._collect_live_preflight_rows(
+            config,
+            "/portfolio/orders",
+            ("orders", "order_history"),
+        )
+        return {
+            "balance": dict(balance),
+            "positions": positions,
+            "orders": orders,
+        }
+
+    def _validate_live_order_preflight(
+        self,
+        latest_state: Mapping[str, Any],
+        account: Mapping[str, Any],
+        payload: Mapping[str, Any],
+        live_payload: Mapping[str, Any],
+        decision: Mapping[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Re-evaluate irreversible account gates from the final fresh reads."""
+        ticker = str(live_payload.get("ticker") or "")
+        client_order_id = str(live_payload.get("client_order_id") or "")
+        action_value = str(decision.get("action") or "").upper()
+        is_sell = bool(live_payload.get("reduce_only")) or action_value.startswith(
+            "SELL"
+        )
+        is_buy = not is_sell and (
+            action_value.startswith("BUY") or not action_value
+        )
+        side = str(decision.get("side") or "").upper()
+        if side not in {"YES", "NO"}:
+            side = _live_order_economic_side(
+                {},
+                {
+                    **dict(payload or {}),
+                    "reduce_only": is_sell,
+                },
+            )
+        requested_count = _finite_number(live_payload.get("count"), 0.0)
+        user_price = _finite_number(
+            payload.get("user_side_limit_price"),
+            None,
+        )
+        if user_price is None:
+            yes_book_price = _finite_number(live_payload.get("price"), None)
+            if yes_book_price is not None:
+                user_price = (
+                    1.0 - yes_book_price
+                    if side == "NO"
+                    else yes_book_price
+                )
+        if (
+            not ticker
+            or not client_order_id
+            or side not in {"YES", "NO"}
+            or requested_count <= 0.0
+            or user_price is None
+            or not 0.0 < user_price < 1.0
+            or not (is_buy or is_sell)
+        ):
+            raise KalshiApiError(
+                "Real Kalshi order payload is incomplete.",
+                status=400,
+                code="kalshi_live_order_incomplete",
+            )
+
+        terminal_states = {
+            "canceled", "cancelled", "closed", "executed", "filled",
+            "expired", "rejected",
+        }
+        all_orders = [
+            dict(row)
+            for row in account.get("orders") or []
+            if isinstance(row, Mapping)
+        ]
+        existing = next(
+            (
+                row for row in all_orders
+                if str(row.get("client_order_id") or "") == client_order_id
+            ),
+            None,
+        )
+        if existing is not None:
+            return dict(existing)
+        open_orders = [
+            row for row in all_orders
+            if str(row.get("status") or "").lower() not in terminal_states
+            and _open_order_remaining(row) > 0.0
+        ]
+
+        normalized_positions = []
+        for raw in account.get("positions") or []:
+            if not isinstance(raw, Mapping):
+                continue
+            row = dict(raw)
+            row_ticker = str(
+                row.get("ticker")
+                or row.get("market_ticker")
+                or row.get("market")
+                or ""
+            )
+            yes_count = _finite_number(
+                row.get("yes_count_fp")
+                or row.get("yes_count")
+                or row.get("yes_position"),
+                0.0,
+            )
+            no_count = _finite_number(
+                row.get("no_count_fp")
+                or row.get("no_count")
+                or row.get("no_position"),
+                0.0,
+            )
+            signed = _finite_number(
+                row.get("position_fp")
+                if row.get("position_fp") not in (None, "")
+                else row.get("position"),
+                yes_count - no_count,
+            )
+            position_side, position_count = _live_position_direction(
+                signed,
+                yes_count,
+                no_count,
+            )
+            if not position_side or position_count <= 0.0:
+                continue
+            exposure = _optional_dollar_amount(
+                _first_present(
+                    row,
+                    "market_exposure_dollars",
+                    "cost_dollars",
+                ),
+                _first_present(
+                    row,
+                    "market_exposure",
+                    "cost",
+                    "realized_cost",
+                ),
+            )
+            normalized_positions.append({
+                **row,
+                "ticker": row_ticker,
+                "side": position_side,
+                "count": position_count,
+                # Missing account exposure must not understate risk.
+                "exposure": (
+                    abs(exposure)
+                    if exposure is not None
+                    else position_count
+                ),
+            })
+
+        is_hourly = _market_family(ticker) == "btchourly"
+        target_event = _kalshi_event_ticker(ticker)
+
+        def in_target_scope(row: Mapping[str, Any]) -> bool:
+            row_ticker = str(
+                row.get("ticker")
+                or row.get("market_ticker")
+                or ""
+            )
+            if is_hourly:
+                return _kalshi_event_ticker(row_ticker, row) == target_event
+            return row_ticker == ticker
+
+        event_open_orders = [
+            row for row in open_orders if in_target_scope(row)
+        ]
+        if event_open_orders:
+            raise KalshiApiError(
+                "A Kalshi order is already open in this event.",
+                status=409,
+                code="kalshi_live_open_order_conflict",
+            )
+
+        managed_inventory = _durable_managed_inventory(latest_state)
+        scoped_positions = [
+            row for row in normalized_positions if in_target_scope(row)
+        ]
+        account_scope_counts: Dict[Tuple[str, str], float] = {}
+        for row in scoped_positions:
+            row_ticker = str(row.get("ticker") or "")
+            row_side = str(row.get("side") or "").upper()
+            key = (row_ticker, row_side)
+            account_scope_counts[key] = (
+                account_scope_counts.get(key, 0.0)
+                + _finite_number(row.get("count"), 0.0)
+            )
+        managed_scope_counts = {
+            (managed_ticker, managed_side): _finite_number(
+                managed_count,
+                0.0,
+            )
+            for (
+                managed_ticker,
+                managed_side,
+            ), managed_count in managed_inventory.items()
+            if in_target_scope({"ticker": managed_ticker})
+            and _finite_number(managed_count, 0.0) > 1e-9
+        }
+        # Equality is intentionally bidirectional. A fresh manual add makes
+        # account > durable; a manual reduction or close makes durable >
+        # account (including a completely missing position row). Either means
+        # AlphaLab can no longer prove ownership of the contracts it would add
+        # to or sell.
+        ownership_conflict = any(
+            abs(
+                account_scope_counts.get(key, 0.0)
+                - managed_scope_counts.get(key, 0.0)
+            ) > 1e-9
+            for key in (
+                set(account_scope_counts)
+                | set(managed_scope_counts)
+            )
+        )
+        if ownership_conflict:
+            raise KalshiApiError(
+                "Fresh Kalshi positions include manual or unmanaged contracts.",
+                status=409,
+                code="kalshi_live_position_ownership_conflict",
+            )
+
+        exact_positions = [
+            row for row in normalized_positions
+            if str(row.get("ticker") or "") == ticker
+        ]
+        exact_same_side = [
+            row for row in exact_positions
+            if str(row.get("side") or "").upper() == side
+        ]
+        exact_opposite = [
+            row for row in exact_positions
+            if str(row.get("side") or "").upper() != side
+        ]
+
+        if is_sell:
+            account_count = sum(
+                _finite_number(row.get("count"), 0.0)
+                for row in exact_same_side
+            )
+            managed_count = _finite_number(
+                managed_inventory.get((ticker, side)),
+                0.0,
+            )
+            if (
+                exact_opposite
+                or account_count <= 0.0
+                or managed_count + 1e-9 < account_count
+                or requested_count > account_count + 1e-9
+                or requested_count > managed_count + 1e-9
+            ):
+                raise KalshiApiError(
+                    "The fresh AlphaLab-managed position no longer covers "
+                    "this reduce-only order.",
+                    status=409,
+                    code="kalshi_live_close_inventory_changed",
+                )
+            # Real exits are never blocked by cash, exposure, or daily loss.
+            return None
+
+        if exact_opposite:
+            raise KalshiApiError(
+                "The fresh Kalshi position conflicts with this entry side.",
+                status=409,
+                code="kalshi_live_position_ownership_conflict",
+            )
+        if is_hourly and any(
+            str(row.get("ticker") or "") != ticker
+            for row in scoped_positions
+        ):
+            raise KalshiApiError(
+                "An owned KXBTCD strike must be managed before another strike "
+                "in the event can be added.",
+                status=409,
+                code="kalshi_live_event_position_conflict",
+            )
+
+        strategy = dict(latest_state.get("strategy") or {})
+        if ticker in set(strategy.get("stopLossReentryTickers") or []):
+            raise KalshiApiError(
+                "This ticker was stopped out and cannot be re-entered.",
+                status=409,
+                code="kalshi_stop_loss_reentry_blocked",
+            )
+        config = normalize_strategy_config(
+            latest_state.get("config") or {}
+        )
+        if not exact_same_side:
+            reentry_confirmation = _same_ticker_reentry_confirmation(
+                latest_state,
+                ticker,
+                dict(decision.get("edge") or {}),
+                config,
+            )
+            reversal_cooldown = max(
+                90,
+                int(
+                    _finite_number(
+                        config.get("reversalCooldownSeconds"),
+                        90,
+                    )
+                ),
+            )
+            if (
+                reentry_confirmation["required"]
+                and _finite_number(
+                    reentry_confirmation.get("recentExitAgeSeconds"),
+                    0.0,
+                ) < reversal_cooldown
+            ):
+                raise KalshiApiError(
+                    "The durable same-ticker reversal cooldown is active.",
+                    status=409,
+                    code="kalshi_reversal_cooldown_active",
+                )
+            if (
+                reentry_confirmation["required"]
+                and not reentry_confirmation["confirmed"]
+            ):
+                raise KalshiApiError(
+                    "Same-ticker re-entry requires a stronger confirmed "
+                    "probability and conservative edge.",
+                    status=409,
+                    code="kalshi_reentry_confirmation_required",
+                )
+        balance = dict(account.get("balance") or {})
+        cash_cents = _cents_amount(balance.get("balance"))
+        portfolio_value_cents = _cents_amount(
+            _first_present(balance, "portfolio_value", "portfolioValue")
+        )
+        equity_dollars = (cash_cents + portfolio_value_cents) / 100.0
+        cash_dollars = cash_cents / 100.0
+        if equity_dollars <= 0.0:
+            raise KalshiApiError(
+                "Fresh Kalshi account equity is unavailable.",
+                status=409,
+                code="kalshi_live_cash_changed",
+            )
+        decision_fee_per_contract = max(
+            0.0,
+            _finite_number(
+                (decision.get("edge") or {}).get("feePerContract"),
+                0.0,
+            ),
+        )
+        requested_exposure = requested_count * user_price
+        conservative_fee = max(
+            requested_count * decision_fee_per_contract,
+            kalshi_fee(user_price, requested_count),
+        )
+        required_cash = requested_exposure + conservative_fee
+        if required_cash > cash_dollars + 1e-9:
+            raise KalshiApiError(
+                "Kalshi cash changed after the strategy decision.",
+                status=409,
+                code="kalshi_live_cash_changed",
+            )
+
+        today = datetime.now(timezone.utc).date().isoformat()
+        daily_pnl = (
+            _finite_number(strategy.get("dailyPnl"), 0.0)
+            if strategy.get("dailyPnlDate") == today
+            else 0.0
+        )
+        daily_loss_limit = equity_dollars * min(
+            2.0,
+            max(
+                0.10,
+                _finite_number(config.get("maxDailyLossPct"), 2.0),
+            ),
+        ) / 100.0
+        if max(0.0, -daily_pnl) >= daily_loss_limit:
+            raise KalshiApiError(
+                "The durable Real daily realized-loss limit is active.",
+                status=409,
+                code="kalshi_daily_loss_limit",
+            )
+
+        position_exposure = sum(
+            _finite_number(row.get("exposure"), 0.0)
+            for row in normalized_positions
+        )
+        order_exposure = sum(
+            _open_order_exposure(row) for row in open_orders
+        )
+        portfolio_exposure = position_exposure + order_exposure
+        scope_exposure = sum(
+            _finite_number(row.get("exposure"), 0.0)
+            for row in scoped_positions
+        ) + sum(
+            _open_order_exposure(row)
+            for row in open_orders
+            if in_target_scope(row)
+        )
+        ticker_exposure = sum(
+            _finite_number(row.get("exposure"), 0.0)
+            for row in exact_positions
+        ) + sum(
+            _open_order_exposure(row)
+            for row in open_orders
+            if str(
+                row.get("ticker")
+                or row.get("market_ticker")
+                or ""
+            ) == ticker
+        )
+        portfolio_limit = equity_dollars * min(
+            10.0,
+            max(
+                0.1,
+                _finite_number(
+                    config.get("maxPortfolioExposurePct"),
+                    10.0,
+                ),
+            ),
+        ) / 100.0
+        market_limit = equity_dollars * min(
+            2.0,
+            max(
+                0.1,
+                _finite_number(
+                    config.get("maxSingleMarketExposurePct"),
+                    2.0,
+                ),
+            ),
+        ) / 100.0
+        if portfolio_exposure + requested_exposure > portfolio_limit + 1e-9:
+            raise KalshiApiError(
+                "Fresh Kalshi portfolio exposure exceeds the Real limit.",
+                status=409,
+                code="kalshi_live_exposure_changed",
+            )
+        if ticker_exposure + requested_exposure > market_limit + 1e-9:
+            raise KalshiApiError(
+                "Fresh Kalshi ticker exposure exceeds the Real limit.",
+                status=409,
+                code="kalshi_live_exposure_changed",
+            )
+        if is_hourly and scope_exposure + requested_exposure > market_limit + 1e-9:
+            raise KalshiApiError(
+                "Fresh KXBTCD event exposure exceeds the Real limit.",
+                status=409,
+                code="kalshi_live_exposure_changed",
+            )
+        return None
+
     def _submit_live_order(self, user_id: str, payload: Mapping[str, Any], decision: Mapping[str, Any]) -> Dict[str, Any]:
         live_payload = _live_order_payload(payload)
         if not live_payload.get("ticker") or not live_payload.get("client_order_id"):
             raise KalshiApiError("Real Kalshi order payload is incomplete", status=400, code="kalshi_live_order_incomplete")
         with self._live_routing_lease(user_id) as lease:
-            if self.state is None or not callable(getattr(self.state, "get", None)):
+            refresh_state = getattr(self.state, "refresh", None)
+            if self.state is None or not callable(refresh_state):
                 raise KalshiApiError(
-                    "Durable Kalshi robot state is unavailable",
+                    "Authoritative durable Kalshi robot state refresh is unavailable",
                     status=503,
                     code="kalshi_robot_state_unavailable",
                 )
-            latest_state = self.state.get(user_id, environment="real")
-            latest_config = dict((latest_state or {}).get("config") or {})
-            if (
-                not bool((latest_state or {}).get("enabled"))
-                or _execution_mode(latest_config.get("executionMode")) != "real"
-            ):
-                raise KalshiApiError(
-                    "Real Kalshi automation was stopped before order submission",
-                    status=409,
-                    code="kalshi_automation_stopped",
-                )
-            config = self._real_config(user_id)
-            recent = self._signed(
-                config,
-                "GET",
-                "/portfolio/orders",
-                params={"ticker": live_payload["ticker"], "limit": 100},
+            def validate_authoritative_state() -> Dict[str, Any]:
+                latest = refresh_state(user_id, environment="real")
+                if (
+                    not isinstance(latest, Mapping)
+                    or latest.get("authoritativeRefresh") is not True
+                    or latest.get("durableStateLoaderAvailable") is not True
+                ):
+                    raise KalshiApiError(
+                        "Real Kalshi orders require a durable robot-state refresh",
+                        status=503,
+                        code="kalshi_robot_state_not_authoritative",
+                    )
+                latest_config = dict((latest or {}).get("config") or {})
+                if (
+                    not bool((latest or {}).get("enabled"))
+                    or _execution_mode((latest or {}).get("activeEnvironment")) != "real"
+                    or _execution_mode(latest_config.get("executionMode")) != "real"
+                ):
+                    raise KalshiApiError(
+                        "Real Kalshi automation was stopped before order submission",
+                        status=409,
+                        code="kalshi_automation_stopped",
+                    )
+                return dict(latest or {})
+
+            latest = validate_authoritative_state()
+            config = self._real_config(
+                user_id,
+                authoritative=True,
             )
-            existing = next(
-                (
-                    dict(row)
-                    for row in (recent.get("orders") or [])
-                    if isinstance(row, Mapping)
-                    and str(row.get("client_order_id") or "")
-                    == str(live_payload["client_order_id"])
-                ),
-                None,
+            account = self._fresh_live_account_preflight(config)
+            existing = self._validate_live_order_preflight(
+                latest,
+                account,
+                payload,
+                live_payload,
+                decision,
             )
             if existing is not None:
+                normalized_existing = _normalise_live_order(
+                    existing,
+                    payload,
+                    decision,
+                )
+                if not normalized_existing.get("created_time"):
+                    normalized_existing["created_time"] = (
+                        datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                    )
                 return {
-                    **_normalise_live_order(existing, payload, decision),
+                    **normalized_existing,
+                    "alphaLabManaged": True,
+                    "alphalabManaged": True,
+                    "alphaLabOrder": True,
+                    "source": "alphalab",
                     "idempotent": True,
                 }
-            # The account read above can outlive a lease generation. An exact
-            # unexpired-token renewal is the final fence before the real POST.
+            # The account read above can outlive both configuration and lease
+            # generations. Reload durable mode/arming state once more, then
+            # renew the exact fencing token immediately before the real POST.
+            latest = validate_authoritative_state()
+            self._validate_live_order_preflight(
+                latest,
+                account,
+                payload,
+                live_payload,
+                decision,
+            )
             self._renew_live_routing_lease(lease)
             response = self._signed(
                 config,
@@ -3226,6 +4921,16 @@ class _PaperRobotController:
         # normalization so NO orders cannot be recorded at the complementary
         # YES-book price.
         order = _normalise_live_order(raw_order, payload, decision)
+        if not order.get("created_time"):
+            order["created_time"] = datetime.now(timezone.utc).isoformat().replace(
+                "+00:00", "Z"
+            )
+        order.update({
+            "alphaLabManaged": True,
+            "alphalabManaged": True,
+            "alphaLabOrder": True,
+            "source": "alphalab",
+        })
         self._notify_order(user_id, order, decision)
         return order
 
@@ -3282,10 +4987,8 @@ class _PaperRobotController:
         environment = "real" if execution_mode == "real" else "paper"
         balance = portfolio.get("balance") or {}
         cash_cents = _finite_number(balance.get("balance"), 0.0)
-        # Current Kalshi /portfolio/balance semantics define portfolio_value as
-        # total account value (available balance plus marked positions). Do not
-        # add cash again or Real sizing will be overstated. AlphaLab Paper keeps
-        # open-position value separately and still requires the sum.
+        # Kalshi and AlphaLab Paper both expose cash separately from marked
+        # position value. Risk capital is their sum.
         bankroll_cents = _account_equity_cents(balance, execution_mode)
         try:
             bankroll = float(bankroll_cents) / 100.0
@@ -3308,15 +5011,30 @@ class _PaperRobotController:
                     f"error={type(exc).__name__}"
                 )
         if family == "btchourly":
+            required_held_tickers = _managed_open_tickers(
+                portfolio,
+                "btchourly",
+            )
             hourly_snapshot_args: Dict[str, Any] = {"base_url": KALSHI_PUBLIC_BASE}
+            if required_held_tickers:
+                hourly_snapshot_args["required_tickers"] = required_held_tickers
             if reference_override is not None:
                 hourly_snapshot_args["reference_override"] = reference_override
             ladder = self.client.hourly_snapshot(**hourly_snapshot_args)
             hourly_config = {
                 **strategy_config,
-                "riskPerTradePct": min(_finite_number(strategy_config.get("riskPerTradePct"), 0.75), 0.50),
-                "minNetEdge": max(0.005, min(_finite_number(strategy_config.get("minNetEdge"), 0.0075), 0.0075)),
-                "minConservativeEdge": max(0.001, min(_finite_number(strategy_config.get("minConservativeEdge"), 0.002), 0.002)),
+                "riskPerTradePct": min(_finite_number(strategy_config.get("riskPerTradePct"), 0.50), 0.50),
+                "minNetEdge": max(
+                    0.01,
+                    _finite_number(strategy_config.get("minNetEdge"), 0.01),
+                ),
+                "minConservativeEdge": max(
+                    0.0075,
+                    _finite_number(
+                        strategy_config.get("minConservativeEdge"),
+                        0.0075,
+                    ),
+                ),
                 "marketBlendWeight": max(
                     0.45,
                     min(_finite_number(strategy_config.get("marketBlendWeight"), 0.45), 0.65),
@@ -3324,26 +5042,67 @@ class _PaperRobotController:
                 "minSecondsToClose": 120,
                 "maxSecondsToClose": 1800,
                 "minPrice": 0.48,
-                "maxPrice": 0.96,
-                "minModelProbability": 0.56,
-                "maxSingleMarketExposurePct": min(_finite_number(strategy_config.get("maxSingleMarketExposurePct"), 8.0), 6.0),
+                "maxPrice": min(
+                    0.92,
+                    _finite_number(strategy_config.get("maxPrice"), 0.92),
+                ),
+                "minModelProbability": max(
+                    0.64,
+                    _finite_number(
+                        strategy_config.get("minModelProbability"),
+                        0.64,
+                    ),
+                ),
+                "maxSingleMarketExposurePct": min(
+                    _finite_number(
+                        strategy_config.get("maxSingleMarketExposurePct"),
+                        2.0,
+                    ),
+                    2.0,
+                ),
             }
             hourly_config = normalize_strategy_config(hourly_config)
+            reference_policy = dict(ladder.get("referencePolicy") or {})
+            evaluation_spot = _finite_number(
+                reference_policy.get("selectedPrice"),
+                None,
+            )
+            if evaluation_spot is None or evaluation_spot <= 0.0:
+                raise KalshiApiError(
+                    "KXBTCD evaluation requires a fresh raw BRTI reference.",
+                    status=409,
+                    code="btc_reference_unavailable",
+                )
             candidates = []
             for market in ladder.get("markets") or []:
                 candidate_ticker = str((market or {}).get("ticker") or "")
                 book = (ladder.get("orderbooks") or {}).get(candidate_ticker) or {}
-                context = _paper_account_context(portfolio, robot_state, candidate_ticker, bankroll)
+                context = _paper_account_context(
+                    portfolio,
+                    robot_state,
+                    candidate_ticker,
+                    bankroll,
+                    event_ticker=str(
+                        (market or {}).get("event_ticker")
+                        or ladder.get("eventTicker")
+                        or ""
+                    ),
+                )
                 if context.get("hasPosition"):
                     context["hasPosition"] = False
                     context["alreadyTraded"] = False
                 candidate_reference = dict(ladder.get("reference") or {})
+                candidate_reference.update({
+                    "price": evaluation_spot,
+                    "evaluationPrice": evaluation_spot,
+                    "referencePolicy": reference_policy,
+                })
                 candidate_reference.update(
                     dict((ladder.get("ladderFit") or {}).get(candidate_ticker) or {})
                 )
                 candidate = evaluate_btc15_contract(
                     market,
-                    spot_price=(ladder.get("reference") or {}).get("price"),
+                    spot_price=evaluation_spot,
                     candles=(ladder.get("reference") or {}).get("candles") or [],
                     config=hourly_config,
                     orderbook=book,
@@ -3355,22 +5114,81 @@ class _PaperRobotController:
                 candidates.append((candidate, market, book))
             if not candidates:
                 raise KalshiApiError("The active KXBTCD event has no executable strike candidates")
+            held_candidates = [
+                item
+                for item in candidates
+                if str((item[1] or {}).get("ticker") or "")
+                in set(required_held_tickers)
+            ]
+            if required_held_tickers and not held_candidates:
+                raise KalshiApiError(
+                    "A managed KXBTCD holding is unavailable in the executable ladder",
+                    status=409,
+                    code="kalshi_hourly_held_market_unavailable",
+                )
+            held_management_ranks = {
+                str((item[1] or {}).get("ticker") or ""):
+                _hourly_candidate_management_priority(
+                    item[0],
+                    item[1],
+                    item[2],
+                    portfolio,
+                    robot_state,
+                    hourly_config,
+                )
+                for item in held_candidates
+            }
             # Prefer a routable opportunity; otherwise expose the closest
             # uncertainty-adjusted candidate so the UI explains why it waited.
+            # An owned strike always narrows this pool first: while it is being
+            # managed, no higher-edge sibling strike may become a new entry.
+            # Among multiple owned strikes, exit urgency outranks add edge.
             decision, selected_market, selected_book = max(
-                candidates,
+                held_candidates or candidates,
                 key=lambda item: (
+                    *(
+                        held_management_ranks.get(
+                            str((item[1] or {}).get("ticker") or ""),
+                            (0, -1.0, -1.0),
+                        )
+                        if held_candidates
+                        else ()
+                    ),
                     1 if str(item[0].get("action") or "").startswith("BUY_") else 0,
                     _finite_number((item[0].get("edge") or {}).get("conservativeEdge"), -99.0),
                     _finite_number((item[0].get("edge") or {}).get("netEdge"), -99.0),
                 ),
             )
+            suppressed_new_strikes = sorted({
+                str((item[1] or {}).get("ticker") or "")
+                for item in candidates
+                if required_held_tickers
+                and str((item[1] or {}).get("ticker") or "")
+                not in set(required_held_tickers)
+                and str(item[0].get("action") or "").startswith("BUY_")
+            })
+            decision = dict(decision)
+            decision["referencePolicy"] = reference_policy
+            decision["managementPriority"] = {
+                "active": bool(required_held_tickers),
+                "requiredHeldTickers": list(required_held_tickers),
+                "selectedTicker": (selected_market or {}).get("ticker"),
+                "newStrikeOpeningSuppressed": bool(suppressed_new_strikes),
+                "suppressedNewStrikeTickers": suppressed_new_strikes,
+                "heldCandidateRanks": {
+                    ticker: list(rank)
+                    for ticker, rank in held_management_ranks.items()
+                },
+            }
             strategy_config = hourly_config
             snapshot = {
                 **dict(ladder),
                 "market": dict(selected_market),
                 "orderbook": dict(selected_book),
                 "candidateCount": len(candidates),
+                "evaluationReferencePrice": evaluation_spot,
+                "referencePolicy": reference_policy,
+                "managementPriority": dict(decision["managementPriority"]),
                 "candidateSummary": [
                     {
                         "ticker": (item[1] or {}).get("ticker"),
@@ -3408,6 +5226,11 @@ class _PaperRobotController:
         decision = dict(decision)
         decision["marketFamily"] = family
         decision["engine"] = "btchourly-strike-ladder-v2" if family == "btchourly" else decision.get("engine")
+        account_warnings = (
+            list(portfolio.get("warnings") or [])
+            if execution_mode == "real"
+            else []
+        )
         decision["dataQuality"] = {
             "referenceModel": (snapshot.get("reference") or {}).get("model"),
             "officialBrti": bool((snapshot.get("reference") or {}).get("isOfficialBrti")),
@@ -3415,14 +5238,31 @@ class _PaperRobotController:
             "bookAgeSeconds": (decision.get("market") or {}).get("bookAgeSeconds"),
             "snapshotLatencyMs": snapshot.get("latencyMs"),
             "settlementWindowSamples": (snapshot.get("reference") or {}).get("settlementWindowSamples"),
-            "warnings": list(snapshot.get("warnings") or []),
+            "referencePolicy": dict(snapshot.get("referencePolicy") or {}),
+            "warnings": sorted(set(
+                list(snapshot.get("warnings") or []) + account_warnings
+            )),
             "candidateCount": snapshot.get("candidateCount", 1),
+            "accountCompleteness": dict(portfolio.get("completeness") or {}),
         }
         ticker = str((snapshot.get("market") or {}).get("ticker") or "")
-        account_context = _paper_account_context(portfolio, robot_state, ticker, bankroll)
+        account_context = _paper_account_context(
+            portfolio,
+            robot_state,
+            ticker,
+            bankroll,
+            event_ticker=(
+                str(snapshot.get("eventTicker") or "")
+                if family == "btchourly"
+                else None
+            ),
+        )
         position_context = _position_execution_context(portfolio, ticker)
         held_side = position_context.get("side")
         held_count = int(position_context.get("count") or 0)
+        unmanaged_position_count = int(
+            position_context.get("unmanagedCount") or 0
+        )
         fair_yes = _finite_number((decision.get("model") or {}).get("fairYesProbability"), 0.5)
         held_probability = (
             fair_yes if held_side == "YES"
@@ -3443,7 +5283,15 @@ class _PaperRobotController:
         hold_age_seconds = _seconds_since(position_context.get("lastTradeAt"))
         if hold_age_seconds is None and held_side:
             hold_age_seconds = _recent_filled_entry_age(robot_state, ticker)
-        minimum_hold_seconds = int(_finite_number(strategy_config.get("minimumHoldSeconds"), 45))
+        minimum_hold_seconds = max(
+            60,
+            int(
+                _finite_number(
+                    strategy_config.get("minimumHoldSeconds"),
+                    60,
+                )
+            ),
+        )
         exit_value_buffer = _finite_number(strategy_config.get("exitValueBuffer"), 0.01)
         exit_value_edge = (
             exit_net_per_contract - held_probability
@@ -3480,9 +5328,23 @@ class _PaperRobotController:
         decision["account"] = {
             "heldSide": held_side,
             "heldCount": held_count,
+            "unmanagedPositionCount": unmanaged_position_count,
+            "accountPositionCount": position_context.get("accountPositionCount"),
             "cashAvailable": account_context.get("cashAvailable"),
             "portfolioExposure": account_context.get("portfolioExposure"),
             "currentMarketExposure": account_context.get("currentMarketExposure"),
+            "currentTickerExposure": account_context.get("currentTickerExposure"),
+            "currentEventExposure": account_context.get("currentEventExposure"),
+            "currentEventPositionExposure": account_context.get(
+                "currentEventPositionExposure"
+            ),
+            "currentEventOpenOrderExposure": account_context.get(
+                "currentEventOpenOrderExposure"
+            ),
+            "eventTicker": account_context.get("eventTicker"),
+            "hasEventPosition": account_context.get("hasEventPosition"),
+            "hasOpenOrder": account_context.get("hasOpenOrder"),
+            "openOrderTickers": account_context.get("openOrderTickers"),
         }
 
         if execution_mode == "real" and cash_cents <= 0 and not held_side:
@@ -3502,10 +5364,40 @@ class _PaperRobotController:
         decision_side = str(decision.get("side") or "").upper()
         can_route = False
         route_count_override: Optional[int] = None
+        if (
+            held_side
+            and str(decision.get("action") or "").startswith("BUY_")
+            and decision_side == held_side
+            and (
+                exit_economics["emergencyExit"]
+                or exit_economics["protectiveExit"]
+            )
+        ):
+            # Never add to a position already demanding exit attention. Even
+            # when no bid makes the loss economically authorizable yet, keep
+            # the cycle in position-management mode and wait for close depth.
+            decision["action"] = "WAIT"
+            decision["executionIntent"] = (
+                f"WAIT_{held_side}_EXIT_ATTENTION"
+            )
+            decision["blockingReasons"] = list(dict.fromkeys(
+                list(decision.get("blockingReasons") or [])
+                + ["position_exit_attention"]
+            ))
         if str(decision.get("action") or "").startswith("BUY_") and ticker:
             if held_side and held_side == decision_side:
                 add_age_seconds = _seconds_since(position_context.get("lastTradeAt"))
-                minimum_add_interval = int(_finite_number(strategy_config.get("minimumAddIntervalSeconds"), 30))
+                minimum_add_interval = max(
+                    90,
+                    int(
+                        _finite_number(
+                            strategy_config.get(
+                                "minimumAddIntervalSeconds"
+                            ),
+                            90,
+                        )
+                    ),
+                )
                 add_probability = _finite_number(
                     (decision.get("edge") or {}).get("fairProbability"),
                     _finite_number((decision.get("edge") or {}).get("modelProbability"), 0.0),
@@ -3514,14 +5406,28 @@ class _PaperRobotController:
                 add_probability_floor = _finite_number(strategy_config.get("addMinModelProbability"), 0.67)
                 add_edge_floor = _finite_number(strategy_config.get("addMinConservativeEdge"), 0.01)
                 previous_signal = _recent_filled_entry_signal(robot_state, ticker, decision_side)
-                probability_improvement = _finite_number(
-                    strategy_config.get("addMinProbabilityImprovement"), 0.01
+                probability_improvement = max(
+                    0.01,
+                    _finite_number(
+                        strategy_config.get(
+                            "addMinProbabilityImprovement"
+                        ),
+                        0.01,
+                    ),
                 )
-                edge_improvement = _finite_number(strategy_config.get("addMinEdgeImprovement"), 0.001)
-                signal_improved = bool(
-                    not previous_signal
-                    or add_probability >= previous_signal["probability"] + probability_improvement
-                    or add_edge >= previous_signal["conservativeEdge"] + edge_improvement
+                edge_improvement = max(
+                    0.001,
+                    _finite_number(
+                        strategy_config.get("addMinEdgeImprovement"),
+                        0.001,
+                    ),
+                )
+                signal_improved = _scale_in_signal_improved(
+                    previous_signal,
+                    add_probability,
+                    add_edge,
+                    probability_improvement,
+                    edge_improvement,
                 )
                 if account_context.get("hasOpenOrder"):
                     decision["action"] = "WAIT"
@@ -3608,20 +5514,151 @@ class _PaperRobotController:
                 # There is deliberately no per-contract or per-day trade-count
                 # ceiling.  Re-entry is governed by current position/open-order,
                 # cash, Kelly sizing, exposure, and anti-churn timing gates.
+                stop_loss_blocked = ticker in set(
+                    (robot_state.get("strategy") or {}).get("stopLossReentryTickers")
+                    or []
+                )
                 recent_exit_age = _recent_filled_exit_age(robot_state, ticker)
-                reversal_cooldown = int(_finite_number(strategy_config.get("reversalCooldownSeconds"), 90))
-                if recent_exit_age is not None and recent_exit_age < reversal_cooldown:
+                reversal_cooldown = max(
+                    90,
+                    int(
+                        _finite_number(
+                            strategy_config.get("reversalCooldownSeconds"),
+                            90,
+                        )
+                    ),
+                )
+                reentry_confirmation = _same_ticker_reentry_confirmation(
+                    robot_state,
+                    ticker,
+                    dict(decision.get("edge") or {}),
+                    strategy_config,
+                    recent_exit_age=recent_exit_age,
+                )
+                if stop_loss_blocked:
+                    decision["action"] = "WAIT"
+                    decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + [
+                        "stop_loss_reentry_blocked"
+                    ]
+                    decision["executionIntent"] = "WAIT_STOP_LOSS_REENTRY_BLOCKED"
+                elif recent_exit_age is not None and recent_exit_age < reversal_cooldown:
                     decision["action"] = "WAIT"
                     decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["reversal_cooldown"]
                     decision["exitAnalysis"]["recentExitAgeSeconds"] = recent_exit_age
                     decision["exitAnalysis"]["reversalCooldownSeconds"] = reversal_cooldown
+                    decision["reentryConfirmation"] = reentry_confirmation
+                elif (
+                    reentry_confirmation["required"]
+                    and not reentry_confirmation["confirmed"]
+                ):
+                    decision["action"] = "WAIT"
+                    decision["blockingReasons"] = list(
+                        decision.get("blockingReasons") or []
+                    ) + ["reentry_confirmation"]
+                    decision["executionIntent"] = (
+                        "WAIT_REENTRY_CONFIRMATION"
+                    )
+                    decision["reentryConfirmation"] = (
+                        reentry_confirmation
+                    )
+                    decision["gates"] = list(
+                        decision.get("gates") or []
+                    ) + [{
+                        "category": "position",
+                        "name": "Same-ticker re-entry confirmation",
+                        "status": "block",
+                        "value": {
+                            "modelProbability": reentry_confirmation[
+                                "modelProbability"
+                            ],
+                            "conservativeEdge": reentry_confirmation[
+                                "conservativeEdge"
+                            ],
+                        },
+                        "threshold": {
+                            "modelProbability": reentry_confirmation[
+                                "requiredModelProbability"
+                            ],
+                            "conservativeEdge": reentry_confirmation[
+                                "requiredConservativeEdge"
+                            ],
+                        },
+                        "detail": (
+                            "A filled same-ticker exit requires a stronger "
+                            "signal before settlement."
+                        ),
+                    }]
                 else:
                     can_route = True
                     decision["executionIntent"] = f"OPEN_{decision_side}"
+                    if reentry_confirmation["required"]:
+                        decision["reentryConfirmation"] = (
+                            reentry_confirmation
+                        )
+                        decision["positionManagement"] = {
+                            "mode": "confirmed_reentry",
+                            "recentExitAgeSeconds": (
+                                reentry_confirmation[
+                                    "recentExitAgeSeconds"
+                                ]
+                            ),
+                        }
+                        decision["gates"] = list(
+                            decision.get("gates") or []
+                        ) + [{
+                            "category": "position",
+                            "name": (
+                                "Same-ticker re-entry confirmation"
+                            ),
+                            "status": "pass",
+                            "value": {
+                                "modelProbability": (
+                                    reentry_confirmation[
+                                        "modelProbability"
+                                    ]
+                                ),
+                                "conservativeEdge": (
+                                    reentry_confirmation[
+                                        "conservativeEdge"
+                                    ]
+                                ),
+                            },
+                            "threshold": {
+                                "modelProbability": (
+                                    reentry_confirmation[
+                                        "requiredModelProbability"
+                                    ]
+                                ),
+                                "conservativeEdge": (
+                                    reentry_confirmation[
+                                        "requiredConservativeEdge"
+                                    ]
+                                ),
+                            },
+                            "detail": (
+                                "The post-exit re-entry signal cleared both "
+                                "durable confirmation thresholds."
+                            ),
+                        }]
         elif held_side and ticker:
             if account_context.get("hasOpenOrder"):
                 decision["action"] = "WAIT"
                 decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["close_order_pending"]
+            elif (
+                fillable_exit_count <= 0
+                and (
+                    exit_economics["emergencyExit"]
+                    or exit_economics["protectiveExit"]
+                )
+            ):
+                decision["action"] = "WAIT"
+                decision["executionIntent"] = (
+                    f"WAIT_{held_side}_EXIT_DEPTH"
+                )
+                decision["blockingReasons"] = list(dict.fromkeys(
+                    list(decision.get("blockingReasons") or [])
+                    + ["no_executable_close_depth"]
+                ))
             elif (
                 hold_age_seconds is not None
                 and hold_age_seconds < minimum_hold_seconds
@@ -3680,6 +5717,32 @@ class _PaperRobotController:
             else:
                 decision["executionIntent"] = f"HOLD_{held_side}_TO_SETTLEMENT"
                 decision["exitAnalysis"]["trigger"] = "hold_to_settlement"
+        if execution_mode == "real" and unmanaged_position_count > 0:
+            intended_action = str(decision.get("action") or "")
+            can_route = False
+            decision["action"] = "WAIT"
+            decision["executionIntent"] = "WAIT_UNMANAGED_POSITION_CONFLICT"
+            decision["blockingReasons"] = list(dict.fromkeys(
+                list(decision.get("blockingReasons") or [])
+                + ["unmanaged_position_conflict"]
+            ))
+            decision["account"] = {
+                **dict(decision.get("account") or {}),
+                "executionBlocked": True,
+                "intendedAction": intended_action,
+            }
+            decision["gates"] = list(decision.get("gates") or []) + [{
+                "category": "account",
+                "name": "AlphaLab-managed position ownership",
+                "status": "block",
+                "value": unmanaged_position_count,
+                "threshold": "0 unmanaged contracts in selected ticker",
+                "detail": (
+                    "The Kalshi account contains contracts that AlphaLab did not "
+                    "open. They count toward risk but are never added to or sold "
+                    "by the robot."
+                ),
+            }]
         execution_warnings = sorted(
             set((decision.get("dataQuality") or {}).get("warnings") or [])
             & KALSHI_EXECUTION_BLOCKING_WARNINGS
@@ -3806,8 +5869,13 @@ class _PaperRobotController:
         clean_snapshot = dict(snapshot)
         clean_snapshot["reference"] = dict(snapshot["reference"])
         clean_snapshot["reference"].pop("candles", None)
+        response_portfolio = self._apply_portfolio_display(
+            user_id,
+            portfolio,
+            execution_mode,
+        )
         return {
-            "portfolio": portfolio,
+            "portfolio": response_portfolio,
             "state": state,
             "snapshot": clean_snapshot,
             "decision": decision,
@@ -4196,6 +6264,7 @@ def register_kalshi_api(
     safe_print=print,
     http_get=None,
     get_user_config=None,
+    authoritative_config_loader=None,
     save_user_config=None,
     mask_key=None,
     robot_state_path=None,
@@ -4266,6 +6335,17 @@ def register_kalshi_api(
             return dict(cached)
         return {}
 
+    def load_authoritative_connection(user_id: str) -> Dict[str, Any]:
+        """Read the durable credential record without the fallback cache."""
+        if not callable(authoritative_config_loader):
+            raise KalshiApiError(
+                "Authoritative credential storage is unavailable",
+                status=503,
+                code="kalshi_authoritative_credentials_unavailable",
+            )
+        raw = authoritative_config_loader(user_id, "kalshi")
+        return dict(raw or {}) if isinstance(raw, Mapping) else {}
+
     def request_mode(default: str = "paper") -> str:
         body = request.get_json(silent=True) if request.method in {"POST", "PUT", "PATCH", "DELETE"} else None
         if isinstance(body, Mapping):
@@ -4279,7 +6359,10 @@ def register_kalshi_api(
     def ensure_real_ready(user_id: str, mode: str) -> None:
         if _execution_mode(mode) != "real":
             return
-        config = load_connection(user_id)
+        # Real arming/configuration must never trust this worker's TTL cache:
+        # another worker may have deleted or rotated credentials before this
+        # routing generation acquired the fence.
+        config = load_authoritative_connection(user_id)
         if not environment_summary(config, "production")["configured"]:
             raise KalshiApiError(
                 "Kalshi Real mode needs a production API key and private key in Settings before the robot can trade.",
@@ -4415,6 +6498,7 @@ def register_kalshi_api(
         robot_state,
         paper_accounts,
         connection_loader=load_connection,
+        authoritative_connection_loader=load_authoritative_connection,
         signed_request=signed_api_request,
         notifier=notifier,
         observation_saver=observation_saver,
@@ -4427,6 +6511,53 @@ def register_kalshi_api(
         start_background=start_background,
     )
 
+    def authoritative_robot_state(user_id: str) -> Dict[str, Any]:
+        refresh = getattr(robot_state, "refresh", None)
+        if not callable(refresh):
+            raise KalshiApiError(
+                "Authoritative durable Kalshi robot state is unavailable.",
+                status=503,
+                code="kalshi_robot_state_not_authoritative",
+            )
+        snapshot = refresh(user_id)
+        if (
+            not isinstance(snapshot, Mapping)
+            or snapshot.get("authoritativeRefresh") is not True
+            or snapshot.get("durableStateLoaderAvailable") is not True
+        ):
+            raise KalshiApiError(
+                "Real Kalshi control changes require durable robot state.",
+                status=503,
+                code="kalshi_robot_state_not_authoritative",
+            )
+        return dict(snapshot)
+
+    def robot_control_guard(
+        user_id: str,
+        target_mode: str,
+        previous_mode: str,
+    ):
+        """Serialize every production robot mutation with order routing.
+
+        When the durable fenced store exists, even an apparently Paper-only
+        mutation takes the fence: another worker may switch to Real after our
+        initial read. A single-process Paper development setup can continue
+        without the durable store, while any mutation already involving Real
+        still fails closed through ``_live_routing_lease``.
+        """
+        fenced = all(callable(getattr(worker_lease_store, name, None)) for name in (
+            "claim_worker_lease_fenced",
+            "renew_worker_lease",
+            "release_worker_lease",
+        ))
+        if (
+            fenced
+            or _execution_mode(target_mode) == "real"
+            or _execution_mode(previous_mode) == "real"
+        ):
+            return paper_robot._live_routing_lease(user_id)
+        return nullcontext()
+
     @blueprint.route("/api/kalshi/config", methods=["GET", "POST", "DELETE"])
     def kalshi_config():
         try:
@@ -4435,9 +6566,14 @@ def register_kalshi_api(
                 raise KalshiApiError("Credential storage is unavailable", status=503, code="credential_store_unavailable")
             config = load_connection(user["id"])
             if request.method == "GET":
+                state_snapshot = robot_state.get(user["id"])
+                active_environment = _execution_mode(
+                    state_snapshot.get("activeEnvironment")
+                    or (state_snapshot.get("config") or {}).get("executionMode")
+                )
                 return ok({
                     "success": True,
-                    "activeEnvironment": "paper",
+                    "activeEnvironment": active_environment,
                     "paper": {
                         "builtIn": True,
                         "configured": True,
@@ -4455,43 +6591,101 @@ def register_kalshi_api(
                 raise KalshiApiError("JSON body must be an object", status=400, code="invalid_request")
             environment = _environment_name(body.get("environment"))
             key_field, private_field = _credential_fields(environment)
-
-            if request.method == "DELETE" or body.get("clear") is True:
-                config.pop(key_field, None)
-                config.pop(private_field, None)
-                config.pop(f"{environment}_test_status", None)
-                config.pop(f"{environment}_last_tested_at", None)
-            else:
-                incoming_key_id = str(body.get("apiKeyId") or "").strip()
-                incoming_private = str(body.get("privateKey") or "").strip()
+            clearing_credentials = (
+                request.method == "DELETE" or body.get("clear") is True
+            )
+            incoming_key_id = str(body.get("apiKeyId") or "").strip()
+            incoming_private = str(body.get("privateKey") or "").strip()
+            prepared_key_id = None
+            prepared_private = None
+            if not clearing_credentials:
                 if incoming_key_id and "****" not in incoming_key_id:
-                    if not re.fullmatch(r"[A-Za-z0-9._-]{8,200}", incoming_key_id):
-                        raise KalshiApiError("A valid Kalshi API Key ID is required", status=400, code="invalid_api_key_id")
-                    config[key_field] = incoming_key_id
+                    if not re.fullmatch(
+                        r"[A-Za-z0-9._-]{8,200}",
+                        incoming_key_id,
+                    ):
+                        raise KalshiApiError(
+                            "A valid Kalshi API Key ID is required",
+                            status=400,
+                            code="invalid_api_key_id",
+                        )
+                    prepared_key_id = incoming_key_id
                 if incoming_private and "****" not in incoming_private:
+                    # Validate and normalize the CPU-heavy RSA material before
+                    # acquiring the routing fence. The lease below covers only
+                    # the actual credential/state mutation.
                     _load_rsa_private_key(incoming_private)
-                    config[private_field] = _normalize_private_key(incoming_private)
-                if not config.get(key_field) or not config.get(private_field):
-                    raise KalshiApiError(
-                        "Both the API Key ID and RSA private key are required",
-                        status=400,
-                        code="incomplete_credentials",
+                    prepared_private = _normalize_private_key(
+                        incoming_private
                     )
-                config[f"{environment}_test_status"] = "saved"
-            config["active_environment"] = environment
-            config["updated_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-            saved, error = save_user_config(user["id"], "kalshi", config)
-            if not saved:
-                message = "Kalshi configuration could not be saved"
-                if error == "config_type_check":
-                    message = "Database migration for Kalshi configuration is required"
-                raise KalshiApiError(message, status=500, code=error or "config_save_failed")
-            remember_connection(user["id"], config)
+            # Credential rotation/deletion is part of the same per-user
+            # routing generation as order submission. Once this lease returns,
+            # no worker holding an older credential/state view can still POST.
+            with paper_robot._live_routing_lease(user["id"]):
+                authoritative_robot_state(user["id"])
+                config = load_authoritative_connection(user["id"])
+                if clearing_credentials:
+                    current_state = authoritative_robot_state(user["id"])
+                    current_mode = _execution_mode(
+                        current_state.get("activeEnvironment")
+                        or (current_state.get("config") or {}).get(
+                            "executionMode"
+                        )
+                    )
+                    if current_mode == "real" and current_state.get("enabled"):
+                        robot_state.configure(
+                            user["id"],
+                            False,
+                            current_state.get("config")
+                            or {"executionMode": "real"},
+                        )
+                    config.pop(key_field, None)
+                    config.pop(private_field, None)
+                    config.pop(f"{environment}_test_status", None)
+                    config.pop(f"{environment}_last_tested_at", None)
+                else:
+                    if prepared_key_id is not None:
+                        config[key_field] = prepared_key_id
+                    if prepared_private is not None:
+                        config[private_field] = prepared_private
+                    if not config.get(key_field) or not config.get(
+                        private_field
+                    ):
+                        raise KalshiApiError(
+                            "Both the API Key ID and RSA private key are required",
+                            status=400,
+                            code="incomplete_credentials",
+                        )
+                    config[f"{environment}_test_status"] = "saved"
+                config["active_environment"] = environment
+                config["updated_at"] = (
+                    datetime.now(timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+                saved, error = save_user_config(
+                    user["id"],
+                    "kalshi",
+                    config,
+                )
+                if not saved:
+                    message = "Kalshi configuration could not be saved"
+                    if error == "config_type_check":
+                        message = (
+                            "Database migration for Kalshi configuration "
+                            "is required"
+                        )
+                    raise KalshiApiError(
+                        message,
+                        status=500,
+                        code=error or "config_save_failed",
+                    )
+                remember_connection(user["id"], config)
             return ok({
                 "success": True,
                 "environment": environment,
                 "configured": bool(config.get(key_field) and config.get(private_field)),
-                "message": "Kalshi credentials removed" if request.method == "DELETE" or body.get("clear") is True else "Kalshi credentials saved",
+                "message": "Kalshi credentials removed" if clearing_credentials else "Kalshi credentials saved",
             })
         except Exception as exc:
             return fail(exc)
@@ -4504,39 +6698,86 @@ def register_kalshi_api(
             if not isinstance(body, Mapping):
                 raise KalshiApiError("JSON body must be an object", status=400, code="invalid_request")
             environment = _environment_name(body.get("environment"))
-            config = load_connection(user["id"])
-            started_at = time.perf_counter()
-            account = signed_account_check(config, environment)
-            # A balance-only check can pass even when the portfolio transport
-            # used by the robot is broken. Verify the two additional signed
-            # reads needed immediately before order routing. This remains a
-            # strictly read-only preflight: no order is created or cancelled.
-            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="kalshi-preflight") as pool:
-                positions_future = pool.submit(
-                    signed_api_request,
-                    config,
-                    environment,
-                    "GET",
-                    "/portfolio/positions",
-                    params={"limit": 1},
+            key_field, private_field = _credential_fields(environment)
+            # Credential verification belongs to the same per-user routing
+            # generation as credential mutation and Real order submission.
+            # Holding the fence across every signed read and the status patch
+            # prevents an old test snapshot from resurrecting deleted or
+            # rotated credentials.
+            with paper_robot._live_routing_lease(user["id"]) as routing_lease:
+                config = load_authoritative_connection(user["id"])
+                started_at = time.perf_counter()
+                account = signed_account_check(config, environment)
+                # A balance-only check can pass even when the portfolio
+                # transport used by the robot is broken. Verify the two
+                # additional signed reads needed immediately before routing.
+                # This remains read-only: no order is created or cancelled.
+                with ThreadPoolExecutor(
+                    max_workers=2,
+                    thread_name_prefix="kalshi-preflight",
+                ) as pool:
+                    positions_future = pool.submit(
+                        signed_api_request,
+                        config,
+                        environment,
+                        "GET",
+                        "/portfolio/positions",
+                        params={"limit": 1},
+                    )
+                    orders_future = pool.submit(
+                        signed_api_request,
+                        config,
+                        environment,
+                        "GET",
+                        "/portfolio/orders",
+                        params={"limit": 1},
+                    )
+                    positions_payload = positions_future.result()
+                    orders_payload = orders_future.result()
+                latency_ms = int(
+                    round((time.perf_counter() - started_at) * 1000)
                 )
-                orders_future = pool.submit(
-                    signed_api_request,
-                    config,
-                    environment,
-                    "GET",
-                    "/portfolio/orders",
-                    params={"limit": 1},
+                paper_robot._renew_live_routing_lease(routing_lease)
+                latest_config = load_authoritative_connection(user["id"])
+                tested_credentials = (
+                    str(config.get(key_field) or ""),
+                    str(config.get(private_field) or ""),
                 )
-                positions_payload = positions_future.result()
-                orders_payload = orders_future.result()
-            latency_ms = int(round((time.perf_counter() - started_at) * 1000))
-            config[f"{environment}_test_status"] = "connected"
-            config[f"{environment}_last_tested_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-            saved, error = save_user_config(user["id"], "kalshi", config)
-            if not saved:
-                raise KalshiApiError("Connection succeeded but its status could not be saved", status=500, code=error or "config_save_failed")
-            remember_connection(user["id"], config)
+                latest_credentials = (
+                    str(latest_config.get(key_field) or ""),
+                    str(latest_config.get(private_field) or ""),
+                )
+                if (
+                    latest_credentials != tested_credentials
+                    or not all(latest_credentials)
+                ):
+                    raise KalshiApiError(
+                        "Kalshi credentials changed during the connection "
+                        "test; run the test again.",
+                        status=409,
+                        code="kalshi_credentials_changed",
+                    )
+                # Patch only test metadata onto the newest durable record.
+                # Never write back the credential snapshot used for signing.
+                latest_config[f"{environment}_test_status"] = "connected"
+                latest_config[f"{environment}_last_tested_at"] = (
+                    datetime.now(timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+                saved, error = save_user_config(
+                    user["id"],
+                    "kalshi",
+                    latest_config,
+                )
+                if not saved:
+                    raise KalshiApiError(
+                        "Connection succeeded but its status could not be saved",
+                        status=500,
+                        code=error or "config_save_failed",
+                    )
+                config = latest_config
+                remember_connection(user["id"], config)
             return ok({
                 "success": True,
                 "environment": environment,
@@ -4709,12 +6950,55 @@ def register_kalshi_api(
             config = normalize_strategy_config(body.get("config") or {})
             mode = _execution_mode(config.get("executionMode") or body.get("mode"))
             config["executionMode"] = mode
-            if body["enabled"]:
-                ensure_real_ready(user["id"], mode)
-            previous = robot_state.get(user["id"], environment=mode)
-            state = robot_state.configure(user["id"], body["enabled"], config)
-            payload = {"success": True, "state": state}
-            if bool(previous.get("enabled")) != bool(body["enabled"]):
+            refresh_state = getattr(robot_state, "refresh", None)
+            previous = (
+                refresh_state(user["id"])
+                if callable(refresh_state)
+                else robot_state.get(user["id"])
+            )
+            previous_mode = _execution_mode(
+                previous.get("activeEnvironment")
+                or (previous.get("config") or {}).get("executionMode")
+            )
+            routing_guard = robot_control_guard(
+                user["id"],
+                mode,
+                previous_mode,
+            )
+            with routing_guard:
+                # Reload after acquiring the fence so mode/arming mutation is
+                # linearized with the final refresh and POST in every worker.
+                previous = (
+                    authoritative_robot_state(user["id"])
+                    if callable(robot_state_loader)
+                    else robot_state.get(user["id"])
+                )
+                current_previous_mode = _execution_mode(
+                    previous.get("activeEnvironment")
+                    or (previous.get("config") or {}).get("executionMode")
+                )
+                if (
+                    mode == "real"
+                    or previous_mode == "real"
+                    or current_previous_mode == "real"
+                ) and previous.get("authoritativeRefresh") is not True:
+                    # A Real mutation in a local-only state store is unsafe
+                    # even when a test double happens to provide a lease.
+                    authoritative_robot_state(user["id"])
+                if body["enabled"]:
+                    ensure_real_ready(user["id"], mode)
+                state = robot_state.configure(
+                    user["id"],
+                    body["enabled"],
+                    config,
+                )
+            actually_enabled = bool(state.get("enabled"))
+            payload = {
+                "success": True,
+                "state": state,
+                "requiresExplicitEnable": bool(body["enabled"]) and not actually_enabled,
+            }
+            if bool(previous.get("enabled")) != actually_enabled:
                 paper_robot._notify(
                     user["id"],
                     "lifecycle",
@@ -4722,24 +7006,24 @@ def register_kalshi_api(
                         "source": "Kalshi Robot",
                         "notificationScope": "kalshi",
                         "assetClass": "kalshi",
-                        "event_id": f"kalshi-robot:{mode}:{'start' if body['enabled'] else 'stop'}:{time.time_ns()}",
+                        "event_id": f"kalshi-robot:{mode}:{'start' if actually_enabled else 'stop'}:{time.time_ns()}",
                         "component": "Kalshi BTC Robot",
-                        "state": "started" if body["enabled"] else "stopped",
+                        "state": "started" if actually_enabled else "stopped",
                         "mode": mode,
                         "trigger": "user",
                         "description": (
                             f"Kalshi {mode} automation is armed."
-                            if body["enabled"]
+                            if actually_enabled
                             else f"Kalshi {mode} automation is stopped."
                         ),
                         "descriptionZh": (
                             f"Kalshi {'实盘' if mode == 'real' else '模拟盘'}自动化已启动。"
-                            if body["enabled"]
+                            if actually_enabled
                             else f"Kalshi {'实盘' if mode == 'real' else '模拟盘'}自动化已停止。"
                         ),
                     },
                 )
-            if body["enabled"]:
+            if actually_enabled:
                 payload.update(paper_robot.tick(user["id"], submit_order=True, mode=mode))
             return ok(payload)
         except Exception as exc:
@@ -4754,9 +7038,42 @@ def register_kalshi_api(
             config = normalize_strategy_config(body.get("config") or {})
             mode = _execution_mode(config.get("executionMode") or body.get("mode"))
             config["executionMode"] = mode
-            ensure_real_ready(user["id"], mode)
-            current = robot_state.get(user["id"], environment=mode)
-            state = robot_state.configure(user["id"], bool(current.get("enabled")), config)
+            refresh_state = getattr(robot_state, "refresh", None)
+            previous = (
+                refresh_state(user["id"])
+                if callable(refresh_state)
+                else robot_state.get(user["id"])
+            )
+            previous_mode = _execution_mode(
+                previous.get("activeEnvironment")
+                or (previous.get("config") or {}).get("executionMode")
+            )
+            routing_guard = robot_control_guard(
+                user["id"],
+                mode,
+                previous_mode,
+            )
+            with routing_guard:
+                current_state = (
+                    authoritative_robot_state(user["id"])
+                    if callable(robot_state_loader)
+                    else robot_state.get(user["id"])
+                )
+                current_mode = _execution_mode(
+                    current_state.get("activeEnvironment")
+                    or (current_state.get("config") or {}).get(
+                        "executionMode"
+                    )
+                )
+                if mode == "real" or previous_mode == "real" or current_mode == "real":
+                    authoritative_robot_state(user["id"])
+                ensure_real_ready(user["id"], mode)
+                current = robot_state.get(user["id"], environment=mode)
+                state = robot_state.configure(
+                    user["id"],
+                    bool(current.get("enabled")),
+                    config,
+                )
             return ok({"success": True, "state": state})
         except Exception as exc:
             return fail(exc)
@@ -4766,8 +7083,23 @@ def register_kalshi_api(
         try:
             user = authenticated_user()
             raw_mode = request.args.get("mode") or request.args.get("environment")
-            state = robot_state.get(user["id"], environment=raw_mode) if raw_mode else robot_state.get(user["id"])
-            mode = request_mode((state.get("config") or {}).get("executionMode") or "paper")
+            active_state = robot_state.get(user["id"])
+            active_mode = _execution_mode(
+                active_state.get("activeEnvironment")
+                or (active_state.get("config") or {}).get("executionMode")
+            )
+            mode = request_mode(active_mode)
+            if raw_mode and mode != active_mode:
+                raise KalshiApiError(
+                    "Select and save the requested Kalshi mode before running a trading tick.",
+                    status=409,
+                    code="kalshi_mode_not_active",
+                )
+            state = (
+                robot_state.get(user["id"], environment=mode)
+                if mode != active_mode
+                else active_state
+            )
             ensure_real_ready(user["id"], mode)
             body = request.get_json(silent=True) or {}
             family = str(request.args.get("family") or body.get("family") or "btc15m").lower()
