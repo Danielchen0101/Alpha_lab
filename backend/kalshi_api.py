@@ -82,6 +82,7 @@ KALSHI_ENVIRONMENTS = {
 }
 KALSHI_ROUTING_LEASE_TTL_SECONDS = 30
 KALSHI_ROUTING_LEASE_TIMEOUT_SECONDS = 5.0
+KALSHI_REAL_ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS = 30.0
 
 
 def _is_btc15_ticker(value: Any) -> bool:
@@ -500,10 +501,18 @@ def _observation_analytics(rows) -> Dict[str, Any]:
 
 
 class KalshiApiError(RuntimeError):
-    def __init__(self, message: str, *, status: int = 502, code: str = "kalshi_data_unavailable"):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int = 502,
+        code: str = "kalshi_data_unavailable",
+        endpoint: Optional[str] = None,
+    ):
         super().__init__(message)
         self.status = status
         self.code = code
+        self.endpoint = endpoint
 
 
 def _finite_number(value: Any, default: float = 0.0) -> float:
@@ -1406,6 +1415,123 @@ def _seconds_since(value: Any) -> Optional[float]:
     if parsed is None:
         return None
     return max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds())
+
+
+def _real_preflight_account_health(
+    state: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+    *,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Describe whether a browser preflight has a current scheduler-owned account view."""
+    current = now or datetime.now(timezone.utc)
+    latest_rows = list(state.get("decisions") or [])
+    latest = dict(latest_rows[0] or {}) if latest_rows else {}
+    latest_account = dict(latest.get("account") or {})
+    snapshot_at = latest.get("generatedAt")
+    parsed = _parse_utc(snapshot_at)
+    age_seconds = (
+        max(0.0, (current - parsed).total_seconds())
+        if parsed is not None
+        else None
+    )
+    account_present = bool(
+        latest_account
+        and latest_account.get("cashAvailable") is not None
+        and latest_account.get("portfolioExposure") is not None
+    )
+    snapshot_fresh = bool(
+        account_present
+        and age_seconds is not None
+        and age_seconds <= KALSHI_REAL_ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS
+    )
+    scheduler_healthy = bool(runtime.get("healthy"))
+    scheduler_running = bool(runtime.get("threadAlive"))
+    scheduler_lease_owned = runtime.get("schedulerLeaseOwned") is True
+    return {
+        "snapshotAt": snapshot_at,
+        "snapshotAgeSeconds": round(age_seconds, 3) if age_seconds is not None else None,
+        "maximumAgeSeconds": KALSHI_REAL_ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS,
+        "accountSnapshotPresent": account_present,
+        "accountSnapshotFresh": snapshot_fresh,
+        "schedulerHealthy": scheduler_healthy,
+        "schedulerRunning": scheduler_running,
+        "schedulerLeaseOwned": scheduler_lease_owned,
+        "schedulerLastError": str(runtime.get("lastError") or "")[:240],
+        "ready": bool(
+            snapshot_fresh
+            and scheduler_healthy
+            and scheduler_running
+            and scheduler_lease_owned
+        ),
+    }
+
+
+def _apply_real_preflight_health_gate(
+    decision: Dict[str, Any],
+    health: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Fail a read-only Real preflight closed when its account/runtime view is stale."""
+    if health.get("ready"):
+        return decision
+
+    reasons = list(decision.get("blockingReasons") or [])
+    gates = list(decision.get("gates") or [])
+    if not health.get("accountSnapshotFresh"):
+        reasons.append("account_snapshot_stale")
+        age = health.get("snapshotAgeSeconds")
+        detail = (
+            f"latest scheduler account snapshot is {age:.1f}s old; "
+            f"maximum {health.get('maximumAgeSeconds', 0):.0f}s"
+            if isinstance(age, (int, float))
+            else "no complete scheduler-owned account snapshot is available"
+        )
+        gates.append({
+            "key": "account_snapshot_fresh",
+            "status": "block",
+            "blocking": True,
+            "severity": "hard",
+            "label": "Fresh Real account snapshot",
+            "labelZh": "实盘账户快照新鲜度",
+            "detail": detail,
+            "category": "account",
+        })
+    if not (
+        health.get("schedulerHealthy")
+        and health.get("schedulerRunning")
+        and health.get("schedulerLeaseOwned")
+    ):
+        reasons.append("robot_scheduler_unhealthy")
+        scheduler_detail = str(
+            health.get("schedulerLastError")
+            or "the cloud scheduler is not healthy and lease-owned"
+        )
+        gates.append({
+            "key": "robot_scheduler_healthy",
+            "status": "block",
+            "blocking": True,
+            "severity": "hard",
+            "label": "Live robot scheduler",
+            "labelZh": "实盘机器人调度器",
+            "detail": scheduler_detail,
+            "category": "account",
+        })
+
+    decision["action"] = "WAIT"
+    decision["executionIntent"] = None
+    decision["blockingReasons"] = list(dict.fromkeys(reasons))
+    decision["gates"] = gates
+    decision["accountPreflight"] = dict(health)
+    sizing = dict(decision.get("sizing") or {})
+    sizing.update({
+        "contracts": 0,
+        "estimatedFee": 0.0,
+        "maximumLoss": 0.0,
+        "expectedValue": 0.0,
+        "microSizingApplied": False,
+    })
+    decision["sizing"] = sizing
+    return decision
 
 
 def _recent_filled_exit_age(state: Mapping[str, Any], ticker: str) -> Optional[float]:
@@ -6160,14 +6286,44 @@ class _PaperRobotController:
         count = int(self._loop_error_counts.get(key, 0)) + 1
         self._loop_error_counts[key] = count
         error_type = type(exc).__name__
+        error_code = (
+            str(exc.code)
+            if isinstance(exc, KalshiApiError)
+            else error_type
+        )
+        error_status = (
+            int(exc.status)
+            if isinstance(exc, KalshiApiError)
+            else None
+        )
+        error_endpoint = (
+            str(exc.endpoint or "")
+            if isinstance(exc, KalshiApiError)
+            else ""
+        )
+        error_message = str(exc).strip()[:180]
+        error_summary = (
+            f"{error_type}:{error_code}"
+            f"{f' status={error_status}' if error_status is not None else ''}"
+            f"{f' endpoint={error_endpoint}' if error_endpoint else ''}"
+            f"{f' message={error_message}' if error_message else ''}"
+        )
         is_version_conflict = error_type == "OperationsVersionConflict"
+        if runtime_lock is None:
+            self._loop_last_error = error_summary
+        else:
+            with runtime_lock:
+                self._loop_last_error = error_summary
         self.safe_print(
             f"[KalshiRobot] {family} tick failed user={user_id} "
-            f"error={error_type} consecutive={count}"
+            f"error={error_summary} consecutive={count}"
         )
         if not is_version_conflict:
             try:
-                self.state.error(user_id, f"{error_type}: background cycle failed")
+                self.state.error(
+                    user_id,
+                    f"{error_summary}: background cycle failed",
+                )
             except Exception as state_exc:
                 self.safe_print(
                     f"[KalshiRobot] state error record skipped user={user_id} "
@@ -6182,8 +6338,19 @@ class _PaperRobotController:
             reason_zh = "状态已被另一后端实例更新；AlphaLab 已重新读取，并将在下一周期重试。"
             severity = "medium"
         else:
-            reason = f"{family} background cycle failed {count} consecutive times ({error_type})."
-            reason_zh = f"{'BTC 小时' if family == 'btchourly' else 'BTC 15 分钟'}后台周期已连续失败 {count} 次（{error_type}）。"
+            error_detail = error_code
+            if error_status is not None:
+                error_detail += f", HTTP {error_status}"
+            if error_endpoint:
+                error_detail += f", {error_endpoint}"
+            reason = (
+                f"{family} background cycle failed {count} consecutive times "
+                f"({error_detail})."
+            )
+            reason_zh = (
+                f"{'BTC 小时' if family == 'btchourly' else 'BTC 15 分钟'}"
+                f"后台周期已连续失败 {count} 次（{error_detail}）。"
+            )
             severity = "high"
         self._notify(
             user_id,
@@ -6192,14 +6359,19 @@ class _PaperRobotController:
                 "source": "Kalshi Robot",
                 "notificationScope": "kalshi",
                 "assetClass": "kalshi",
-                "event_id": f"kalshi-loop:{family}:{error_type}:{datetime.now(timezone.utc).strftime('%Y%m%d%H%M')}",
-                "fingerprint": f"kalshi:{family}:{error_type}",
+                "event_id": f"kalshi-loop:{family}:{error_code}:{datetime.now(timezone.utc).strftime('%Y%m%d%H%M')}",
+                "fingerprint": f"kalshi:{family}:{error_code}",
                 "symbol": BTC_HOURLY_SERIES if family == "btchourly" else BTC_15M_SERIES,
                 "step": "Kalshi Hourly Robot" if family == "btchourly" else "Kalshi BTC15 Robot",
                 "status": "attention",
                 "severity": severity,
                 "reason": reason,
                 "reasonZh": reason_zh,
+                "errorType": error_type,
+                "errorCode": error_code,
+                "httpStatus": error_status,
+                "endpoint": error_endpoint or None,
+                "errorMessage": error_message or None,
                 "action": "The robot remains fail-closed and will keep retrying. Review backend health if it does not recover.",
                 "actionZh": "机器人保持安全关闭并继续重试；若未自动恢复，请检查后端健康状态。",
                 "mode": mode,
@@ -6534,31 +6706,89 @@ def register_kalshi_api(
         if json_body is not None:
             headers["Content-Type"] = "application/json"
         transport = http_request or requests.request
-        try:
-            response = transport(
-                str(method).upper(),
-                KALSHI_ENVIRONMENTS[environment] + endpoint,
-                params=dict(params or {}),
-                json=dict(json_body) if json_body is not None else None,
-                headers=headers,
-                timeout=12.0,
-            )
-            if hasattr(response, "raise_for_status"):
-                response.raise_for_status()
-            payload = response.json() if hasattr(response, "json") else response
-            return dict(payload or {}) if isinstance(payload, Mapping) else {}
-        except Exception as exc:
-            status_code = getattr(response, "status_code", None) if "response" in locals() else None
-            if status_code in (401, 403):
-                raise KalshiApiError(f"Kalshi {environment} rejected the API credentials", status=401, code="kalshi_auth_rejected") from exc
-            if status_code == 429:
-                raise KalshiApiError(f"Kalshi {environment} rate limit reached; the robot will retry", status=429, code="kalshi_rate_limited") from exc
-            detail = ""
+        request_method = str(method).upper()
+        max_attempts = 2 if request_method == "GET" else 1
+        for attempt in range(max_attempts):
+            response = None
             try:
-                detail = str(response.json().get("message") or response.json().get("details") or "")
-            except Exception:
-                pass
-            raise KalshiApiError(detail or f"Kalshi {environment} account request failed", status=502, code="kalshi_account_request_failed") from exc
+                response = transport(
+                    request_method,
+                    KALSHI_ENVIRONMENTS[environment] + endpoint,
+                    params=dict(params or {}),
+                    json=dict(json_body) if json_body is not None else None,
+                    headers=headers,
+                    timeout=12.0,
+                )
+                if hasattr(response, "raise_for_status"):
+                    response.raise_for_status()
+                payload = response.json() if hasattr(response, "json") else response
+                return dict(payload or {}) if isinstance(payload, Mapping) else {}
+            except Exception as exc:
+                status_code = getattr(response, "status_code", None)
+                retryable = bool(
+                    request_method == "GET"
+                    and attempt + 1 < max_attempts
+                    and (
+                        status_code is None
+                        or status_code == 429
+                        or int(status_code) >= 500
+                    )
+                )
+                if retryable:
+                    retry_after = 0.25 * (attempt + 1)
+                    try:
+                        retry_after = float(
+                            (getattr(response, "headers", {}) or {}).get(
+                                "Retry-After",
+                                retry_after,
+                            )
+                        )
+                    except (TypeError, ValueError):
+                        retry_after = 0.25 * (attempt + 1)
+                    retry_after = max(0.05, min(retry_after, 2.0))
+                    safe_print(
+                        f"[KalshiReal] retrying signed GET endpoint={endpoint} "
+                        f"status={status_code or 'transport'} "
+                        f"attempt={attempt + 1}/{max_attempts}"
+                    )
+                    time.sleep(retry_after)
+                    continue
+                if status_code in (401, 403):
+                    raise KalshiApiError(
+                        f"Kalshi {environment} rejected the API credentials",
+                        status=401,
+                        code="kalshi_auth_rejected",
+                        endpoint=endpoint,
+                    ) from exc
+                if status_code == 429:
+                    raise KalshiApiError(
+                        f"Kalshi {environment} rate limit reached; the robot will retry",
+                        status=429,
+                        code="kalshi_rate_limited",
+                        endpoint=endpoint,
+                    ) from exc
+                detail = ""
+                try:
+                    response_payload = response.json()
+                    detail = str(
+                        response_payload.get("message")
+                        or response_payload.get("details")
+                        or ""
+                    )
+                except Exception:
+                    pass
+                raise KalshiApiError(
+                    detail or f"Kalshi {environment} account request failed",
+                    status=int(status_code) if status_code else 502,
+                    code="kalshi_account_request_failed",
+                    endpoint=endpoint,
+                ) from exc
+        raise KalshiApiError(
+            f"Kalshi {environment} account request failed",
+            status=502,
+            code="kalshi_account_request_failed",
+            endpoint=endpoint,
+        )
 
     scheduler_disabled = str(
         os.environ.get("ALPHALAB_DISABLE_KALSHI_SCHEDULER") or ""
@@ -6937,10 +7167,17 @@ def register_kalshi_api(
                 else requested_config
             )
             account_context: Dict[str, Any] = {}
+            account_preflight: Dict[str, Any] = {}
+            robot_runtime: Dict[str, Any] = {}
             if mode == "real":
+                robot_runtime = paper_robot.runtime_snapshot()
                 latest_rows = list(state.get("decisions") or [])
                 latest_account = dict(
                     (latest_rows[0].get("account") if latest_rows else {}) or {}
+                )
+                account_preflight = _real_preflight_account_health(
+                    state,
+                    robot_runtime,
                 )
                 cash_available = _finite_number(
                     latest_account.get("cashAvailable"),
@@ -6958,6 +7195,13 @@ def register_kalshi_api(
                     "currentMarketExposure": _finite_number(
                         latest_account.get("currentMarketExposure"),
                         0.0,
+                    ),
+                    "snapshotAt": account_preflight.get("snapshotAt"),
+                    "snapshotAgeSeconds": account_preflight.get(
+                        "snapshotAgeSeconds"
+                    ),
+                    "snapshotFresh": account_preflight.get(
+                        "accountSnapshotFresh"
                     ),
                 }
             snapshot = client.snapshot(
@@ -6981,6 +7225,12 @@ def register_kalshi_api(
                 if mode == "real"
                 else "paper_research_preflight"
             )
+            if mode == "real":
+                decision["accountPreflight"] = account_preflight
+                _apply_real_preflight_health_gate(
+                    decision,
+                    account_preflight,
+                )
             if account_context:
                 decision["account"] = account_context
             snapshot["reference"].pop("candles", None)
@@ -6989,6 +7239,7 @@ def register_kalshi_api(
                 "snapshot": snapshot,
                 "decision": decision,
                 "robotState": state,
+                "robotRuntime": robot_runtime if mode == "real" else None,
             })
         except Exception as exc:
             return fail(exc)
