@@ -83,6 +83,18 @@ KALSHI_ENVIRONMENTS = {
 KALSHI_ROUTING_LEASE_TTL_SECONDS = 30
 KALSHI_ROUTING_LEASE_TIMEOUT_SECONDS = 5.0
 KALSHI_REAL_ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS = 30.0
+KALSHI_LIVE_ROUTING_STATE_CONFLICTS = frozenset({
+    "kalshi_live_cash_changed",
+    "kalshi_live_exposure_changed",
+    "kalshi_live_open_order_conflict",
+    "kalshi_live_position_ownership_conflict",
+    "kalshi_live_event_position_conflict",
+    "kalshi_live_close_inventory_changed",
+    "kalshi_daily_loss_limit",
+    "kalshi_reversal_cooldown_active",
+    "kalshi_reentry_confirmation_required",
+    "kalshi_stop_loss_reentry_blocked",
+})
 
 
 def _is_btc15_ticker(value: Any) -> bool:
@@ -5021,19 +5033,59 @@ class _PaperRobotController:
                 ),
             ),
         ) / 100.0
+        sizing = dict(decision.get("sizing") or {})
+        edge = dict(decision.get("edge") or {})
+        micro_position_loss_cap = min(
+            _finite_number(
+                config.get("microPositionMaxLossDollars"),
+                1.0,
+            ),
+            equity_dollars
+            * _finite_number(
+                config.get("microPositionMaxLossPct"),
+                5.0,
+            )
+            / 100.0,
+        )
+        micro_position_authorized = bool(
+            sizing.get("microSizingApplied") is True
+            and abs(requested_count - 1.0) <= 1e-9
+            and ticker_exposure <= 1e-9
+            and (not is_hourly or scope_exposure <= 1e-9)
+            and required_cash <= micro_position_loss_cap + 1e-9
+            and portfolio_exposure + required_cash
+            <= portfolio_limit + 1e-9
+            and _finite_number(edge.get("netEdge"), -1.0)
+            >= _finite_number(
+                config.get("microPositionMinNetEdge"),
+                0.02,
+            )
+            and _finite_number(edge.get("conservativeEdge"), -1.0)
+            >= _finite_number(
+                config.get("microPositionMinConservativeEdge"),
+                0.01,
+            )
+        )
         if portfolio_exposure + requested_exposure > portfolio_limit + 1e-9:
             raise KalshiApiError(
                 "Fresh Kalshi portfolio exposure exceeds the Real limit.",
                 status=409,
                 code="kalshi_live_exposure_changed",
             )
-        if ticker_exposure + requested_exposure > market_limit + 1e-9:
+        if (
+            ticker_exposure + requested_exposure > market_limit + 1e-9
+            and not micro_position_authorized
+        ):
             raise KalshiApiError(
                 "Fresh Kalshi ticker exposure exceeds the Real limit.",
                 status=409,
                 code="kalshi_live_exposure_changed",
             )
-        if is_hourly and scope_exposure + requested_exposure > market_limit + 1e-9:
+        if (
+            is_hourly
+            and scope_exposure + requested_exposure > market_limit + 1e-9
+            and not micro_position_authorized
+        ):
             raise KalshiApiError(
                 "Fresh KXBTCD event exposure exceeds the Real limit.",
                 status=409,
@@ -6019,7 +6071,101 @@ class _PaperRobotController:
                     _finite_number((decision.get("market") or {}).get("selectedDepth"), float(order_payload.get("count") or 0)),
                 )
                 if execution_mode == "real":
-                    order = self._submit_live_order(user_id, order_payload, decision)
+                    try:
+                        order = self._submit_live_order(
+                            user_id,
+                            order_payload,
+                            decision,
+                        )
+                    except KalshiApiError as exc:
+                        if (
+                            exc.status != 409
+                            or exc.code
+                            not in KALSHI_LIVE_ROUTING_STATE_CONFLICTS
+                        ):
+                            raise
+                        # A fresh final account read can legitimately differ
+                        # from the evaluation snapshot. Treat that as a
+                        # fail-closed WAIT decision, persist it, and let the
+                        # next five-second cycle recalculate from a newly
+                        # fetched portfolio instead of poisoning scheduler
+                        # health and leaving the last good snapshot to expire.
+                        try:
+                            portfolio = self.portfolio(
+                                user_id,
+                                mode=execution_mode,
+                                mutate=True,
+                            )
+                            refreshed_context = _paper_account_context(
+                                portfolio,
+                                robot_state,
+                                ticker,
+                                bankroll,
+                                event_ticker=(
+                                    str(snapshot.get("eventTicker") or "")
+                                    if family == "btchourly"
+                                    else None
+                                ),
+                            )
+                            decision["account"] = {
+                                **dict(decision.get("account") or {}),
+                                "cashAvailable": refreshed_context.get(
+                                    "cashAvailable"
+                                ),
+                                "portfolioExposure": refreshed_context.get(
+                                    "portfolioExposure"
+                                ),
+                                "currentMarketExposure": refreshed_context.get(
+                                    "currentMarketExposure"
+                                ),
+                                "currentTickerExposure": refreshed_context.get(
+                                    "currentTickerExposure"
+                                ),
+                                "currentEventExposure": refreshed_context.get(
+                                    "currentEventExposure"
+                                ),
+                                "hasOpenOrder": refreshed_context.get(
+                                    "hasOpenOrder"
+                                ),
+                                "openOrderTickers": refreshed_context.get(
+                                    "openOrderTickers"
+                                ),
+                            }
+                        except Exception as refresh_exc:
+                            self.safe_print(
+                                "[KalshiReal] conflict portfolio refresh failed "
+                                f"user={user_id} "
+                                f"error={type(refresh_exc).__name__}"
+                            )
+                        intended_action = str(
+                            decision.get("action") or ""
+                        )
+                        decision["action"] = "WAIT"
+                        decision["executionIntent"] = (
+                            "WAIT_LIVE_ACCOUNT_REFRESH"
+                        )
+                        decision["blockingReasons"] = list(dict.fromkeys(
+                            list(decision.get("blockingReasons") or [])
+                            + [exc.code]
+                        ))
+                        decision["account"] = {
+                            **dict(decision.get("account") or {}),
+                            "executionBlocked": True,
+                            "intendedAction": intended_action,
+                            "preflightConflict": exc.code,
+                        }
+                        decision["gates"] = list(
+                            decision.get("gates") or []
+                        ) + [{
+                            "category": "account",
+                            "name": "Final Real account reconciliation",
+                            "status": "block",
+                            "value": exc.code,
+                            "threshold": (
+                                "evaluation and final account state agree"
+                            ),
+                            "detail": str(exc),
+                        }]
                 elif is_close_order:
                     order = self.paper_accounts.submit_close(
                         user_id,
