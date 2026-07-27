@@ -52856,7 +52856,10 @@ def _kalshi_claim_scheduler_lease():
     return operations_store.claim_worker_lease(
         'kalshi-btc15-robot',
         _KALSHI_WORKER_OWNER,
-        ttl_seconds=15,
+        # A complete Real cycle performs several bounded network reads before
+        # persisting state.  Fifteen seconds allowed a second backend host to
+        # take ownership mid-cycle and caused repeated CAS conflicts.
+        ttl_seconds=120,
         metadata={'component': 'kalshi_robot', 'series': 'KXBTC15M'},
     )
 
