@@ -32,6 +32,7 @@ from kalshi_api import (
     _paper_account_context,
     _paper_order_payload,
     _position_execution_context,
+    _position_market_mark,
     _position_side_and_count,
     _portfolio_analytics_after_reset,
     _protective_exit_state,
@@ -1934,6 +1935,112 @@ def test_live_portfolio_marks_missing_position_value_as_unknown(monkeypatch):
     assert portfolio["positions"][0]["alphaLabUnmanagedCount"] == 3
     assert portfolio["completeness"]["complete"] is True
     assert portfolio["warnings"] == ["kalshi_unmanaged_positions_present"]
+
+
+def test_position_market_mark_uses_outcome_midpoint_and_last_trade_fallback():
+    market = {
+        "yes_bid_dollars": "0.6200",
+        "yes_ask_dollars": "0.6600",
+        "no_bid_dollars": "0.3400",
+        "no_ask_dollars": "0.3800",
+        "updated_time": "2026-07-27T23:00:00Z",
+    }
+
+    yes = _position_market_mark(market, "YES")
+    no = _position_market_mark(market, "NO")
+    last_no = _position_market_mark(
+        {"last_price_dollars": "0.7100"},
+        "NO",
+    )
+
+    assert yes == {
+        "mark": 0.64,
+        "bid": 0.62,
+        "ask": 0.66,
+        "source": "midpoint",
+        "asOf": "2026-07-27T23:00:00Z",
+    }
+    assert no["mark"] == pytest.approx(0.36)
+    assert no["source"] == "midpoint"
+    assert last_no["mark"] == pytest.approx(0.29)
+    assert last_no["source"] == "last_trade"
+
+
+def test_live_portfolio_enriches_position_value_from_current_market_quote(
+    monkeypatch,
+):
+    class State:
+        def get(self, _user_id, *, environment=None):
+            return {
+                "strategy": {},
+                "filledTrades": [],
+                "decisions": [],
+                "modeState": {"real": {"displayBaseline": {}}},
+            }
+
+    class Client:
+        def market(self, ticker):
+            assert ticker == "KXBTC15M-MARK-00"
+            return {
+                "ticker": ticker,
+                "yes_bid_dollars": "0.6200",
+                "yes_ask_dollars": "0.6600",
+                "no_bid_dollars": "0.3400",
+                "no_ask_dollars": "0.3800",
+                "updated_time": "2026-07-27T23:00:00Z",
+            }
+
+    def signed_request(_config, _environment, _method, endpoint, **_kwargs):
+        if endpoint == "/portfolio/balance":
+            return {"balance": 1_807, "portfolio_value": 192}
+        if endpoint == "/portfolio/positions":
+            return {"market_positions": [{
+                "ticker": "KXBTC15M-MARK-00",
+                "position_fp": 3,
+                "market_exposure_dollars": "1.20",
+                "fees_paid_dollars": "0.03",
+            }]}
+        if endpoint == "/portfolio/orders":
+            return {"orders": []}
+        if endpoint == "/portfolio/fills":
+            return {"fills": []}
+        if endpoint == "/portfolio/settlements":
+            return {"settlements": []}
+        raise AssertionError(endpoint)
+
+    controller = _PaperRobotController(
+        Client(),
+        State(),
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        signed_request=signed_request,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_historical_account_rows",
+        lambda *_args: {
+            "orders": [],
+            "fills": [],
+            "complete": True,
+            "warnings": [],
+        },
+    )
+
+    portfolio = controller._live_portfolio("user-1", mutate=False)
+    position = portfolio["positions"][0]
+
+    assert position["yes_mark_dollars"] == pytest.approx(0.64)
+    assert position["no_mark_dollars"] == pytest.approx(0.36)
+    assert position["market_value_dollars"] == pytest.approx(1.92)
+    assert position["unrealized_pnl_dollars"] == pytest.approx(0.69)
+    assert position["markAvailable"] is True
+    assert position["markSource"] == "midpoint"
+    assert position["markBidDollars"] == pytest.approx(0.62)
+    assert position["markAskDollars"] == pytest.approx(0.66)
+    assert position["markAsOf"] == "2026-07-27T23:00:00Z"
 
 
 def test_live_portfolio_paginates_orders_before_marking_account_complete(
