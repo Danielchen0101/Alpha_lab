@@ -3541,6 +3541,73 @@ def test_real_order_submission_uses_current_event_order_endpoint_without_side_re
     assert order["outcome_side"] == "YES"
 
 
+def test_real_preflight_honors_engine_authorized_small_account_contract():
+    calls = []
+
+    def signed_request(config, environment, method, endpoint, **kwargs):
+        calls.append((config, environment, method, endpoint, kwargs))
+        if method == "GET":
+            return _real_preflight_response(
+                endpoint,
+                balance=1_987,
+                portfolio_value=0,
+            )
+        body = kwargs["json_body"]
+        return {"order": {
+            "order_id": "order-micro-1",
+            "ticker": body["ticker"],
+            "client_order_id": body["client_order_id"],
+            "side": body["side"],
+            "count_fp": body["count"],
+            "fill_count_fp": body["count"],
+            "price": body["price"],
+            "status": "filled",
+        }}
+
+    controller = _PaperRobotController(
+        client=None,
+        state=_EnabledRealState(),
+        paper_accounts=None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        authoritative_connection_loader=_test_real_credentials,
+        signed_request=signed_request,
+        worker_lease_store=_FencedLeaseStore(),
+    )
+    decision = {
+        "side": "YES",
+        "action": "BUY_YES",
+        "edge": {
+            "price": 0.89,
+            "netEdge": 0.04,
+            "conservativeEdge": 0.02,
+        },
+        "sizing": {
+            "contracts": 1,
+            "microSizingApplied": True,
+        },
+    }
+    payload = _paper_order_payload(
+        decision,
+        "KXBTCD-27JUL2618-T65000",
+    )
+
+    order = controller._submit_live_order(
+        "user-1",
+        payload,
+        decision,
+    )
+
+    assert order["order_id"] == "order-micro-1"
+    assert order["fill_count_fp"] == 1
+    assert calls[-1][2:4] == (
+        "POST",
+        "/portfolio/events/orders",
+    )
+
+
 @pytest.mark.parametrize(
     ("account_overrides", "expected_code"),
     [
@@ -3931,6 +3998,123 @@ def test_real_preflight_recomputes_account_wide_exposure_before_buy():
 
     assert blocked.value.code == "kalshi_live_exposure_changed"
     assert posts == []
+
+
+def test_real_tick_records_wait_and_refreshes_after_final_account_conflict(
+    monkeypatch,
+):
+    recorded = {}
+    portfolio_reads = []
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    class State:
+        def get(self, _user_id, *, environment=None):
+            return {
+                "enabled": True,
+                "activeEnvironment": "real",
+                "config": {"executionMode": environment or "real"},
+                "strategy": {},
+                "tradedTickers": [],
+                "filledTrades": [],
+            }
+
+        def record(self, _user_id, decision, order):
+            recorded["decision"] = copy.deepcopy(decision)
+            recorded["order"] = order
+            return {"decision": decision, "order": order}
+
+    class Client:
+        def snapshot(self, **_kwargs):
+            return {
+                "market": {"ticker": "KXBTC15M-REFRESH"},
+                "reference": {
+                    "price": 65_000,
+                    "candles": [],
+                    "timestamp": now,
+                },
+                "orderbook": {},
+                "orderbookAsOf": now,
+            }
+
+    decision = {
+        "generatedAt": now,
+        "action": "BUY_YES",
+        "side": "YES",
+        "model": {"fairYesProbability": 0.80},
+        "edge": {
+            "price": 0.50,
+            "netEdge": 0.05,
+            "conservativeEdge": 0.03,
+        },
+        "market": {
+            "yesAskDepth": 20,
+            "selectedDepth": 20,
+        },
+        "sizing": {"contracts": 1, "notional": 0.50},
+        "gates": [],
+        "blockingReasons": [],
+        "config": {"executionMode": "real"},
+    }
+    monkeypatch.setattr(
+        kalshi_api,
+        "evaluate_btc15_contract",
+        lambda *_args, **_kwargs: copy.deepcopy(decision),
+    )
+    controller = _PaperRobotController(
+        Client(),
+        State(),
+        paper_accounts=None,
+    )
+
+    def portfolio(_user_id, *, mode, mutate=True):
+        portfolio_reads.append((mode, mutate))
+        return {
+            "environment": "real",
+            "balance": {
+                "balance": 100_000,
+                "portfolio_value": 0,
+            },
+            "positions": [],
+            "orders": [],
+            "fills": [],
+            "warnings": [],
+            "completeness": {},
+        }
+
+    monkeypatch.setattr(controller, "portfolio", portfolio)
+    monkeypatch.setattr(
+        controller,
+        "_submit_live_order",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            KalshiApiError(
+                "Fresh Kalshi exposure changed.",
+                status=409,
+                code="kalshi_live_exposure_changed",
+            )
+        ),
+    )
+
+    result = controller.tick(
+        "user-1",
+        submit_order=True,
+        mode="real",
+    )
+
+    assert result["orderSubmitted"] is False
+    assert result["decision"]["action"] == "WAIT"
+    assert (
+        result["decision"]["executionIntent"]
+        == "WAIT_LIVE_ACCOUNT_REFRESH"
+    )
+    assert (
+        "kalshi_live_exposure_changed"
+        in result["decision"]["blockingReasons"]
+    )
+    assert recorded["order"] is None
+    assert recorded["decision"]["account"]["preflightConflict"] == (
+        "kalshi_live_exposure_changed"
+    )
+    assert portfolio_reads == [("real", True), ("real", True)]
 
 
 def test_real_reduce_only_close_is_preserved_and_normalised_as_sell():
