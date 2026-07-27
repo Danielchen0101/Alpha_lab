@@ -3703,6 +3703,85 @@ class _PaperRobotController:
             self._historical_cache[cache_key] = (now, copy.deepcopy(result))
         return result
 
+    def _live_account_collection(
+        self,
+        config: Mapping[str, Any],
+        endpoint: str,
+        collection_keys,
+        *,
+        optional: bool = False,
+        max_pages: int = 10,
+    ) -> Dict[str, Any]:
+        """Read a complete cursor-paginated live account collection."""
+        keys = tuple(str(key) for key in collection_keys if str(key))
+        if not keys:
+            raise ValueError("collection_keys are required")
+        rows = []
+        cursor = None
+        seen_cursors = set()
+        warnings = []
+        complete = True
+        page_count = 0
+        last_payload: Dict[str, Any] = {}
+
+        for _ in range(max(1, int(max_pages or 1))):
+            params: Dict[str, Any] = {"limit": 1000, "subaccount": 0}
+            if cursor:
+                params["cursor"] = cursor
+            payload = (
+                self._optional_signed(config, endpoint, params=params)
+                if optional
+                else self._signed(config, "GET", endpoint, params=params)
+            )
+            last_payload = dict(payload or {})
+            page_count += 1
+            if last_payload.get("_alphalabIncomplete"):
+                complete = False
+                warnings.append(
+                    str(
+                        last_payload.get("_alphalabWarning")
+                        or "kalshi_account_history_incomplete"
+                    )
+                )
+                break
+
+            page = []
+            for key in keys:
+                candidate = last_payload.get(key)
+                if isinstance(candidate, list):
+                    page = candidate
+                    break
+            rows.extend(dict(row) for row in page if isinstance(row, Mapping))
+
+            next_cursor = (
+                last_payload.get("cursor")
+                or last_payload.get("next_cursor")
+            )
+            if not next_cursor:
+                cursor = None
+                break
+            next_cursor = str(next_cursor)
+            if next_cursor in seen_cursors:
+                complete = False
+                warnings.append("kalshi_account_pagination_stalled")
+                cursor = next_cursor
+                break
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        else:
+            if cursor:
+                complete = False
+                warnings.append("kalshi_account_pagination_limit")
+
+        result = dict(last_payload)
+        result[keys[0]] = rows
+        result.pop("cursor", None)
+        result.pop("next_cursor", None)
+        result["_alphalabComplete"] = bool(complete and not cursor)
+        result["_alphalabWarnings"] = sorted(set(warnings))
+        result["_alphalabPageCount"] = page_count
+        return result
+
     def _live_portfolio(self, user_id: str, *, mutate: bool = True) -> Dict[str, Any]:
         config = self._real_config(user_id)
         before_state = self.state.get(user_id, environment="real")
@@ -3749,16 +3828,30 @@ class _PaperRobotController:
                 self._signed, config, "GET", "/portfolio/balance", params={"subaccount": 0}
             )
             positions_future = pool.submit(
-                self._signed, config, "GET", "/portfolio/positions", params={"limit": 100, "subaccount": 0}
+                self._live_account_collection,
+                config,
+                "/portfolio/positions",
+                ("market_positions", "positions", "event_positions"),
             )
             orders_future = pool.submit(
-                self._signed, config, "GET", "/portfolio/orders", params={"limit": 100, "subaccount": 0}
+                self._live_account_collection,
+                config,
+                "/portfolio/orders",
+                ("orders",),
             )
             fills_future = pool.submit(
-                self._optional_signed, config, "/portfolio/fills", params={"limit": 1000, "subaccount": 0}
+                self._live_account_collection,
+                config,
+                "/portfolio/fills",
+                ("fills",),
+                optional=True,
             )
             settlements_future = pool.submit(
-                self._optional_signed, config, "/portfolio/settlements", params={"limit": 1000, "subaccount": 0}
+                self._live_account_collection,
+                config,
+                "/portfolio/settlements",
+                ("settlements", "settlement_history", "market_settlements"),
+                optional=True,
             )
             balance_payload = balance_future.result()
             positions_payload = positions_future.result()
@@ -3769,24 +3862,19 @@ class _PaperRobotController:
         warnings = list(historical.get("warnings") or [])
         completeness = {
             "balance": True,
-            "positions": not bool(
-                positions_payload.get("cursor") or positions_payload.get("next_cursor")
-            ),
-            "orders": not bool(
-                orders_payload.get("cursor") or orders_payload.get("next_cursor")
-            ),
-            "fills": not bool(
-                fills_payload.get("_alphalabIncomplete")
-                or fills_payload.get("cursor")
-                or fills_payload.get("next_cursor")
-            ),
-            "settlements": not bool(
-                settlements_payload.get("_alphalabIncomplete")
-                or settlements_payload.get("cursor")
-                or settlements_payload.get("next_cursor")
-            ),
+            "positions": bool(positions_payload.get("_alphalabComplete")),
+            "orders": bool(orders_payload.get("_alphalabComplete")),
+            "fills": bool(fills_payload.get("_alphalabComplete")),
+            "settlements": bool(settlements_payload.get("_alphalabComplete")),
             "history": bool(historical.get("complete", True)),
         }
+        for payload in (
+            positions_payload,
+            orders_payload,
+            fills_payload,
+            settlements_payload,
+        ):
+            warnings.extend(payload.get("_alphalabWarnings") or [])
         if not completeness["positions"]:
             warnings.append("kalshi_account_positions_incomplete")
         if not completeness["orders"]:
