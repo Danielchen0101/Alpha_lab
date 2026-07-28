@@ -801,6 +801,140 @@ def test_reconcile_backfills_reduce_only_fills_into_realized_analytics(tmp_path)
     assert record["fees"] == 0.3
 
 
+def test_settlement_after_full_early_close_is_removed_from_realized_analytics(
+    tmp_path,
+):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    ticker = "KXBTC15M-FULL-CLOSE"
+    settlement = {
+        "ticker": ticker,
+        "market_result": "YES",
+        "settled_time": "2026-07-28T13:00:05Z",
+        # Kalshi history can retain the original acquired count and cost even
+        # after a pre-expiry sale, but no settlement cash is credited.
+        "yes_count_fp": 1,
+        "revenue_dollars": 0.0,
+        "yes_total_cost_dollars": 0.766,
+        "fee_cost_dollars": 0.0133,
+    }
+    entry_fill = {
+        "fill_id": "entry-fill",
+        "order_id": "entry-order",
+        "ticker": ticker,
+        "environment": "real",
+        "action": "BUY",
+        "outcome_side": "YES",
+        "fill_count_fp": 1,
+        "average_price_dollars": 0.76,
+        "fee_cost_dollars": 0.006,
+        "created_time": "2026-07-28T12:47:03Z",
+    }
+
+    stale = store.reconcile_settlements(
+        "user-1",
+        [settlement],
+        [entry_fill],
+        environment="real",
+    )
+    stale_strategy = stale["modeState"]["real"]["strategy"]
+    assert stale_strategy["realizedSamples"] == 1
+    assert stale_strategy["realizedTotalPnl"] == -0.7793
+
+    close_fill = {
+        "fill_id": "close-fill",
+        "order_id": "close-order",
+        "ticker": ticker,
+        "environment": "real",
+        "action": "SELL",
+        "reduce_only": True,
+        "outcome_side": "YES",
+        "fill_count_fp": 1,
+        "average_price_dollars": 0.994,
+        "position_cost_dollars": 0.76,
+        "gross_proceeds_dollars": 0.994,
+        "entry_fee_allocated_dollars": 0.006,
+        "fee_cost_dollars": 0.0073,
+        "realized_pnl_dollars": 0.2207,
+        "created_time": "2026-07-28T12:57:02Z",
+    }
+    repaired = store.reconcile_settlements(
+        "user-1",
+        [settlement],
+        [entry_fill, close_fill],
+        environment="real",
+    )
+    strategy = repaired["modeState"]["real"]["strategy"]
+
+    assert strategy["settlementRecords"] == []
+    assert strategy["realizedSamples"] == 1
+    assert strategy["realizedWins"] == 1
+    assert strategy["realizedLosses"] == 0
+    assert strategy["realizedTotalPnl"] == 0.2207
+    assert strategy["realizedTradeRecords"][0]["exitType"] == "sale"
+    assert strategy["realizedTradeRecords"][0]["orderId"] == "close-order"
+
+
+def test_partial_early_close_keeps_remaining_settlement_outcome(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    ticker = "KXBTC15M-PARTIAL-CLOSE"
+    fills = [
+        {
+            "fill_id": "entry-fill",
+            "order_id": "entry-order",
+            "ticker": ticker,
+            "environment": "real",
+            "action": "BUY",
+            "outcome_side": "YES",
+            "fill_count_fp": 2,
+            "average_price_dollars": 0.60,
+            "fee_cost_dollars": 0.02,
+            "created_time": "2026-07-28T12:40:00Z",
+        },
+        {
+            "fill_id": "partial-close-fill",
+            "order_id": "partial-close-order",
+            "ticker": ticker,
+            "environment": "real",
+            "action": "SELL",
+            "reduce_only": True,
+            "outcome_side": "YES",
+            "fill_count_fp": 1,
+            "average_price_dollars": 0.80,
+            "position_cost_dollars": 0.60,
+            "gross_proceeds_dollars": 0.80,
+            "entry_fee_allocated_dollars": 0.01,
+            "fee_cost_dollars": 0.01,
+            "realized_pnl_dollars": 0.18,
+            "created_time": "2026-07-28T12:50:00Z",
+        },
+    ]
+    settlement = {
+        "ticker": ticker,
+        "market_result": "YES",
+        "settled_time": "2026-07-28T13:00:05Z",
+        "yes_count_fp": 1,
+        "revenue_dollars": 1.0,
+        "yes_total_cost_dollars": 0.60,
+        "fee_cost_dollars": 0.01,
+    }
+
+    state = store.reconcile_settlements(
+        "user-1",
+        [settlement],
+        fills,
+        environment="real",
+    )
+    strategy = state["modeState"]["real"]["strategy"]
+
+    assert len(strategy["settlementRecords"]) == 1
+    assert strategy["realizedSamples"] == 2
+    assert {row["exitType"] for row in strategy["realizedTradeRecords"]} == {
+        "sale",
+        "settlement",
+    }
+    assert strategy["realizedTotalPnl"] == 0.57
+
+
 def test_repeated_settlement_reconciliation_does_not_rewrite_unchanged_state(tmp_path):
     durable = {}
     saves = []
