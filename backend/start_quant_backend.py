@@ -52736,6 +52736,11 @@ def _crypto_ai_status(uid):
 
 def _crypto_discord_notify(uid, event_type, payload):
     """Adapt crypto events to the existing localized notification contract."""
+    # Crypto Discord delivery is execution-only. Periodic recommendations,
+    # lifecycle events, risk status, and cycle digests stay in the application
+    # ledger but do not generate recurring Discord messages.
+    if str(event_type or '').strip().lower() != 'order':
+        return None
     body = dict(payload or {})
     body['assetClass'] = 'crypto'
     if event_type == 'recommendation' and not body.get('recommendations'):

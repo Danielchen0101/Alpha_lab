@@ -69,6 +69,7 @@ ORDER_TIFS = {
     "stop_limit": frozenset({"gtc"}),
 }
 ALLOWED_MODES = frozenset({"paper", "live"})
+CRYPTO_EXECUTION_MODE = "paper"
 ALLOWED_TRADE_HORIZONS = frozenset({"short", "long"})
 SHORT_INTERVALS = frozenset({15})
 LONG_INTERVALS = frozenset({60, 120, 240})
@@ -834,6 +835,19 @@ def _mode(value: Any, default: str = "paper") -> str:
     if normalized not in ALLOWED_MODES:
         raise CryptoApiError("mode must be paper or live", code="invalid_mode")
     return normalized
+
+
+def _paper_only_config(config: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return a crypto mandate that can never authorize live-capital routing."""
+    resolved = deepcopy(dict(config))
+    resolved["mode"] = CRYPTO_EXECUTION_MODE
+    resolved["liveAuthorized"] = False
+    return resolved
+
+
+def _request_mode(_value: Any = None, _default: str = "paper") -> str:
+    """Crypto is intentionally isolated from the workspace-wide live toggle."""
+    return CRYPTO_EXECUTION_MODE
 
 
 def _safe_symbol_key(symbol: str) -> str:
@@ -1642,7 +1656,9 @@ class _CryptoService:
         payload = dict((row or {}).get("payload") or {})
         version = int((row or {}).get("version") or 0)
         try:
-            return _validate_config(payload, base=_default_config()), version
+            return _paper_only_config(
+                _validate_config(payload, base=_default_config())
+            ), version
         except CryptoApiError:
             safe = _default_config()
             safe.update({"killSwitch": True, "enabled": False, "liveAuthorized": False})
@@ -1658,8 +1674,9 @@ class _CryptoService:
         with self._routing_guard(uid):
             if self._scheduler_execution_active():
                 self._require_durable_scheduler_lease()
+            paper_config = _paper_only_config(config)
             return self.store.put_artifact(
-                uid, CONFIG_TYPE, PRIMARY_KEY, payload=_jsonable(dict(config)),
+                uid, CONFIG_TYPE, PRIMARY_KEY, payload=_jsonable(paper_config),
                 idempotency_key=idempotency_key,
             )
 
@@ -1794,6 +1811,12 @@ class _CryptoService:
             return None
 
     def _notify(self, uid: str, event_type: str, payload: Mapping[str, Any]):
+        # Crypto notifications are deliberately execution-only. Strategy
+        # recommendations, lifecycle events, risk status, and periodic cycle
+        # digests remain available in the durable ledger without producing a
+        # Discord message every 15 minutes or every multi-hour cycle.
+        if str(event_type or "").strip().lower() != "order":
+            return None
         if not callable(self.notifier):
             return None
         try:
@@ -1906,8 +1929,11 @@ class _CryptoService:
             return {"configured": False, "status": "unavailable", "provider": "", "model": ""}
 
     def _broker_config(self, uid: str, mode: str) -> Dict[str, Any]:
-        resolver_mode = "paper" if mode == "paper" else "real"
-        value = self.resolve_alpaca(uid, resolver_mode)
+        # Crypto may only resolve the user's Paper credentials. Do not trust a
+        # caller-supplied mode here: this is the final credential boundary used
+        # by account reads, position reads, reconciliation, and order routing.
+        mode = CRYPTO_EXECUTION_MODE
+        value = self.resolve_alpaca(uid, CRYPTO_EXECUTION_MODE)
         if isinstance(value, tuple):
             value = value[0]
         config = dict(value or {})
@@ -2770,6 +2796,12 @@ class _CryptoService:
         expected_config_version: int,
         source: str,
     ) -> Dict[str, Any]:
+        if mode != CRYPTO_EXECUTION_MODE:
+            raise CryptoApiError(
+                "Crypto live order routing is disabled; Paper mode is required",
+                status=403,
+                code="crypto_paper_only",
+            )
         current, current_version = self.get_config_snapshot(uid)
         if current.get("killSwitch"):
             raise CryptoApiError(
@@ -5450,8 +5482,12 @@ def register_crypto_api(
                     status=400,
                     code="lifecycle_control_required",
                 )
-            confirm_live = data.pop("confirmLiveRisk", False)
+            data.pop("confirmLiveRisk", None)
             current, current_version = service.get_config_snapshot(uid)
+            # Crypto is Paper-only even when the workspace header is set to
+            # Real or an older client submits a saved Live mandate.
+            data["mode"] = CRYPTO_EXECUTION_MODE
+            data["liveAuthorized"] = False
             config = _validate_config(data, base=current)
             if "symbols" in data and config["symbols"] != current.get("symbols"):
                 active_assets = {
@@ -5464,14 +5500,6 @@ def register_crypto_api(
                         "These crypto assets are not currently tradable at Alpaca: %s" % ", ".join(unavailable),
                         status=409, code="asset_not_tradable",
                     )
-            if config["liveAuthorized"]:
-                _require_live_release_admitted()
-            if config["liveAuthorized"] and not current.get("liveAuthorized"):
-                if confirm_live is not True:
-                    raise CryptoApiError("Explicit live risk confirmation is required", status=403, code="live_confirmation_required")
-                _, gate = service.account(uid, "live")
-                if not gate["eligible"]:
-                    raise CryptoApiError("Live crypto account is not eligible", status=409, code="crypto_account_ineligible")
             key = str(request.headers.get("X-Idempotency-Key") or f"crypto-config:{uid}:{time.time_ns()}")[:200]
             # Serialize the durable version fence with the final broker-order
             # check/submit section. This prevents a configuration update from
@@ -5520,7 +5548,7 @@ def register_crypto_api(
         try:
             user = service._auth_user()
             config = service.get_config(user["id"])
-            mode = _mode(request.args.get("mode"), config["mode"])
+            mode = _request_mode(request.args.get("mode"), config["mode"])
             return ok({
                 "success": True, "mode": mode,
                 "assets": service.assets(user["id"], mode), "source": "Alpaca Crypto",
@@ -5533,7 +5561,7 @@ def register_crypto_api(
         try:
             user = service._auth_user()
             config = service.get_config(user["id"])
-            mode = _mode(request.args.get("mode"), config["mode"])
+            mode = _request_mode(request.args.get("mode"), config["mode"])
             symbol = _normalize_symbol(request.args.get("symbol") or "BTC/USD")
             timeframe = str(request.args.get("timeframe") or "1Hour")
             try:
@@ -5581,7 +5609,7 @@ def register_crypto_api(
             user = service._auth_user()
             uid = user["id"]
             config = service.get_config(uid)
-            mode = _mode(request.args.get("mode"), config["mode"])
+            mode = _request_mode(request.args.get("mode"), config["mode"])
             runtime = service.get_runtime(uid)
             decisions = list(service.latest_decisions(uid))
             decision_by_symbol = {row.get("symbol"): row for row in decisions if row.get("symbol")}
@@ -5771,7 +5799,7 @@ def register_crypto_api(
             uid = user["id"]
             data = json_object()
             config = service.get_config(uid)
-            mode = _mode(data.get("mode"), config["mode"])
+            mode = _request_mode(data.get("mode"), config["mode"])
             symbol = _normalize_symbol(data.get("symbol") or config["symbols"][0])
             if symbol not in config["symbols"]:
                 raise CryptoApiError(
@@ -5968,7 +5996,7 @@ def register_crypto_api(
             if "order" in data or "timeInForce" in data or "side" in data:
                 raise CryptoApiError("Direct order overrides are not accepted", code="invalid_order_contract")
             config = service.get_config(user["id"])
-            requested_mode = _mode(data.get("mode"), config["mode"])
+            requested_mode = _request_mode(data.get("mode"), config["mode"])
             if requested_mode != config["mode"]:
                 raise CryptoApiError(
                     "Save the selected crypto mode before running a trading cycle",
@@ -6012,7 +6040,7 @@ def register_crypto_api(
                         status=409,
                         code="risk_acknowledgement_required",
                     )
-                requested_mode = _mode(data.get("mode"), config["mode"])
+                requested_mode = _request_mode(data.get("mode"), config["mode"])
                 if requested_mode != config["mode"]:
                     raise CryptoApiError(
                         "Save the selected crypto mode before starting automation",
