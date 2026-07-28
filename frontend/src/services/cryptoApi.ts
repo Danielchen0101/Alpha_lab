@@ -1,6 +1,7 @@
 import api, { scannerApi } from './api';
 
 export type CryptoMode = 'paper' | 'live';
+export const CRYPTO_PAPER_MODE: CryptoMode = 'paper';
 export type CryptoAction = 'BUY' | 'ADD' | 'HOLD' | 'REDUCE' | 'EXIT' | 'WAIT';
 export type CryptoRegime = 'trend_up' | 'trend_down' | 'range' | 'panic' | 'insufficient_data' | string;
 export const CRYPTO_LEDGER_LIMIT = 100;
@@ -290,6 +291,9 @@ export const sanitizeCryptoConfigUpdate = (config: CryptoConfigUpdate): Record<s
   const payload: Record<string, unknown> = { ...config };
   delete payload.enabled;
   delete payload.killSwitch;
+  delete payload.confirmLiveRisk;
+  payload.mode = CRYPTO_PAPER_MODE;
+  payload.liveAuthorized = false;
   return payload;
 };
 
@@ -478,12 +482,12 @@ const SIM_TIMEOUT = 4 * 60 * 1000;
 
 export const cryptoAPI = {
   // ---- Alpaca-account workspace (existing backend contract) ----
-  overview: (mode: CryptoMode) =>
-    api.get<CryptoOverviewResponse>('/crypto/overview', { params: { mode } }),
-  assets: (mode: CryptoMode) =>
-    api.get('/crypto/assets', { params: { mode } }),
-  bars: (symbol: string, timeframe = '1Hour', limit = 720, mode?: CryptoMode) =>
-    api.get('/crypto/bars', { params: { symbol, timeframe, limit, ...(mode ? { mode } : {}) } }),
+  overview: (_mode: CryptoMode) =>
+    api.get<CryptoOverviewResponse>('/crypto/overview', { params: { mode: CRYPTO_PAPER_MODE } }),
+  assets: (_mode: CryptoMode) =>
+    api.get('/crypto/assets', { params: { mode: CRYPTO_PAPER_MODE } }),
+  bars: (symbol: string, timeframe = '1Hour', limit = 720, _mode?: CryptoMode) =>
+    api.get('/crypto/bars', { params: { symbol, timeframe, limit, mode: CRYPTO_PAPER_MODE } }),
   getConfig: () =>
     api.get<{ success: boolean; config: CryptoConfig }>('/crypto/config'),
   saveConfig: (config: CryptoConfigUpdate) =>
@@ -493,8 +497,8 @@ export const cryptoAPI = {
     api.get<CryptoLedgerResponse>('/crypto/ledger', {
       params: { limit: Math.min(CRYPTO_LEDGER_LIMIT, Math.max(1, limit)) },
     }),
-  runCycle: (mode: CryptoMode, dryRun = false) =>
-    scannerApi.post('/crypto/run-cycle', { mode, dryRun }, { timeout: SIM_TIMEOUT }),
+  runCycle: (_mode: CryptoMode, dryRun = false) =>
+    scannerApi.post('/crypto/run-cycle', { mode: CRYPTO_PAPER_MODE, dryRun }, { timeout: SIM_TIMEOUT }),
   backtest: (payload: Record<string, unknown>) =>
     scannerApi.post('/crypto/backtest', payload, { timeout: SIM_TIMEOUT }),
   calibrate: (apply = true) =>
@@ -512,10 +516,9 @@ export const cryptoAPI = {
       method: string;
       guardrail: string;
     }>('/crypto/strategy-library'),
-  startAutomation: (mode: CryptoMode, acknowledgeRisk = false) =>
+  startAutomation: (_mode: CryptoMode, _acknowledgeRisk = false) =>
     api.post('/crypto/automation/start', {
-      mode,
-      ...(acknowledgeRisk ? { acknowledgeRisk: true } : {}),
+      mode: CRYPTO_PAPER_MODE,
     }),
   stopAutomation: () => api.post('/crypto/automation/stop'),
   setKillSwitch: (enabled: boolean, reason = '') =>

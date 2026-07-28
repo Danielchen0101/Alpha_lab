@@ -123,7 +123,7 @@ def test_crypto_routes_require_verified_user(monkeypatch):
         controls["stop"]()
 
 
-def test_live_cycle_fails_closed_before_any_broker_or_data_call(monkeypatch):
+def test_stored_live_config_is_forced_to_paper_before_any_broker_call(monkeypatch):
     store = FakeStore()
     config = crypto_api._default_config()
     config.update({"mode": "live", "liveAuthorized": False, "enabled": True})
@@ -135,15 +135,16 @@ def test_live_cycle_fails_closed_before_any_broker_or_data_call(monkeypatch):
     monkeypatch.setattr(crypto_api.requests, "request", lambda *args, **kwargs: calls.append(args) or None)
     _, client, _, _, controls = make_api(monkeypatch, store=store)
     try:
-        response = client.post("/api/crypto/run-cycle", json={})
-        assert response.status_code == 403
-        assert response.get_json()["reason"] == "live_not_authorized"
+        response = client.get("/api/crypto/config")
+        assert response.status_code == 200
+        assert response.get_json()["config"]["mode"] == "paper"
+        assert response.get_json()["config"]["liveAuthorized"] is False
         assert calls == []
     finally:
         controls["stop"]()
 
 
-def test_read_mode_can_be_selected_but_trading_mode_must_match_saved_config(monkeypatch):
+def test_live_read_request_is_forced_to_paper(monkeypatch):
     calls = []
     monkeypatch.setattr(crypto_api.requests, "request", lambda *args, **kwargs: calls.append(args) or None)
     _, client, _, _, controls = make_api(monkeypatch)
@@ -178,19 +179,39 @@ def test_read_mode_can_be_selected_but_trading_mode_must_match_saved_config(monk
 
         overview = client.get("/api/crypto/overview?mode=live")
         assert overview.status_code == 200
-        assert overview.get_json()["mode"] == "live"
+        assert overview.get_json()["mode"] == "paper"
         assert observed_modes == [
-            ("config", "live"), ("account", "live"),
-            ("positions", "live"), ("snapshots", "live"), ("assets", "live"),
+            ("config", "paper"), ("account", "paper"),
+            ("positions", "paper"), ("snapshots", "paper"), ("assets", "paper"),
         ]
-
-        run = client.post("/api/crypto/run-cycle", json={"mode": "live"})
-        start = client.post("/api/crypto/automation/start", json={"mode": "live"})
-        assert run.status_code == 409
-        assert start.status_code == 409
-        assert run.get_json()["reason"] == "config_mode_mismatch"
-        assert start.get_json()["reason"] == "config_mode_mismatch"
         assert calls == []
+    finally:
+        controls["stop"]()
+
+
+def test_crypto_broker_boundary_only_resolves_paper_credentials(monkeypatch):
+    requested_modes = []
+    _, _, _, _, controls = make_api(
+        monkeypatch,
+        resolver=lambda _uid, mode: requested_modes.append(mode) or {
+            "api_key": "paper-key",
+            "api_secret": "paper-secret",
+            "base_url": "https://paper-api.alpaca.markets",
+        },
+    )
+    service = controls["service"]
+    try:
+        config = service._broker_config("user-a", "live")
+        assert requested_modes == ["paper"]
+        assert config["base_url"] == "https://paper-api.alpaca.markets"
+        with pytest.raises(crypto_api.CryptoApiError) as blocked:
+            service._assert_order_routing_allowed(
+                "user-a",
+                mode="live",
+                expected_config_version=0,
+                source="manual",
+            )
+        assert blocked.value.code == "crypto_paper_only"
     finally:
         controls["stop"]()
 
@@ -624,7 +645,7 @@ def test_sol_experimental_sleeve_is_explicit_paper_only_and_subset_scoped():
     assert live.value.code == "paper_sleeve_live_forbidden"
 
 
-def test_strategy_calibration_route_is_paper_only(monkeypatch):
+def test_stored_live_config_is_migrated_before_calibration_checks(monkeypatch):
     store = FakeStore()
     config = crypto_api._default_config()
     config.update({"mode": "live", "paperLearningEnabled": False})
@@ -634,9 +655,10 @@ def test_strategy_calibration_route_is_paper_only(monkeypatch):
     )
     _, client, _, _, controls = make_api(monkeypatch, store=store)
     try:
-        response = client.post("/api/crypto/calibration/run", json={"apply": True})
-        assert response.status_code == 409
-        assert response.get_json()["reason"] == "paper_calibration_only"
+        response = client.get("/api/crypto/config")
+        assert response.status_code == 200
+        assert response.get_json()["config"]["mode"] == "paper"
+        assert response.get_json()["config"]["liveAuthorized"] is False
     finally:
         controls["stop"]()
 
@@ -1480,7 +1502,7 @@ def test_untrusted_alpaca_trading_origin_is_rejected_before_request(monkeypatch)
         controls["stop"]()
 
 
-def test_live_release_gate_defaults_to_paper_only_and_account_gate_still_applies(monkeypatch):
+def test_live_config_requests_are_downgraded_without_live_account_checks(monkeypatch):
     monkeypatch.delenv("CRYPTO_LIVE_RELEASE_ADMITTED", raising=False)
     _, client, _, _, controls = make_api(monkeypatch)
     service = controls["service"]
@@ -1489,41 +1511,42 @@ def test_live_release_gate_defaults_to_paper_only_and_account_gate_still_applies
         monkeypatch.setattr(service, "account", lambda *_args: account_calls.append(True) or ({}, {
             "eligible": True, "cryptoStatus": "ACTIVE", "reasons": [],
         }))
-        denied = client.put("/api/crypto/config", json={
+        response = client.put("/api/crypto/config", json={
             "mode": "live", "liveAuthorized": True, "confirmLiveRisk": True,
         })
-        assert denied.status_code == 403
-        assert denied.get_json()["reason"] == "strategy_not_admitted"
+        assert response.status_code == 200
+        assert response.get_json()["config"]["mode"] == "paper"
+        assert response.get_json()["config"]["liveAuthorized"] is False
         assert account_calls == []
 
-        monkeypatch.setenv("CRYPTO_LIVE_RELEASE_ADMITTED", "true")
-        monkeypatch.setattr(service, "account", lambda *_args: ({}, {
-            "eligible": False, "cryptoStatus": "INACTIVE", "reasons": ["crypto_status_not_active"],
-        }))
-        inactive = client.put("/api/crypto/config", json={
-            "mode": "live", "liveAuthorized": True, "confirmLiveRisk": True,
-        })
-        assert inactive.status_code == 409
-        assert inactive.get_json()["reason"] == "crypto_account_ineligible"
-
-        monkeypatch.setattr(service, "account", lambda *_args: ({}, {
-            "eligible": True, "cryptoStatus": "ACTIVE", "reasons": [],
-        }))
-        admitted = client.put("/api/crypto/config", json={
-            "mode": "live", "liveAuthorized": True, "confirmLiveRisk": True,
-        })
-        assert admitted.status_code == 200
-        assert admitted.get_json()["config"]["liveAuthorized"] is True
-
-        monkeypatch.setenv("CRYPTO_LIVE_RELEASE_ADMITTED", "false")
-        run = client.post("/api/crypto/run-cycle", json={"mode": "live"})
-        assert run.status_code == 403
-        assert run.get_json()["reason"] == "strategy_not_admitted"
         monkeypatch.setattr(service, "positions", lambda *_args: [])
         monkeypatch.setattr(service, "snapshots", lambda *_args: {})
         overview = client.get("/api/crypto/overview?mode=live")
         assert overview.status_code == 200
+        assert overview.get_json()["mode"] == "paper"
         assert overview.get_json()["liveAdmission"]["admitted"] is False
+    finally:
+        controls["stop"]()
+
+
+def test_crypto_discord_notifications_are_order_only(monkeypatch):
+    _, _, _, _, controls = make_api(monkeypatch)
+    service = controls["service"]
+    delivered = []
+    service.notifier = lambda uid, event_type, payload: delivered.append(
+        (uid, event_type, payload)
+    )
+    try:
+        for event_type in (
+            "recommendation", "cycle_digest", "lifecycle", "risk_alert",
+        ):
+            assert service._notify("user-a", event_type, {"symbol": "BTC/USD"}) is None
+        service._notify("user-a", "order", {
+            "symbol": "BTC/USD", "action": "BUY", "orderId": "paper-1",
+        })
+        assert len(delivered) == 1
+        assert delivered[0][1] == "order"
+        assert delivered[0][2]["notificationScope"] == "crypto"
     finally:
         controls["stop"]()
 
