@@ -31,7 +31,6 @@ describe('crypto API contracts', () => {
     })).toEqual({
       mode: 'paper',
       liveAuthorized: false,
-      confirmLiveRisk: true,
     });
   });
 
@@ -44,8 +43,8 @@ describe('crypto API contracts', () => {
     });
 
     expect(api.put).toHaveBeenCalledWith('/crypto/config', {
-      mode: 'live',
-      confirmLiveRisk: true,
+      mode: 'paper',
+      liveAuthorized: false,
     });
   });
 
@@ -61,13 +60,12 @@ describe('crypto API contracts', () => {
     });
   });
 
-  it('keeps live acknowledgement and cycle mode explicit at API boundaries', () => {
+  it('forces paper mode at every execution API boundary', () => {
     cryptoAPI.startAutomation('live', true);
-    cryptoAPI.runCycle('paper', true);
+    cryptoAPI.runCycle('live', true);
 
     expect(api.post).toHaveBeenCalledWith('/crypto/automation/start', {
-      mode: 'live',
-      acknowledgeRisk: true,
+      mode: 'paper',
     });
     expect(scannerApi.post).toHaveBeenCalledWith(
       '/crypto/run-cycle',

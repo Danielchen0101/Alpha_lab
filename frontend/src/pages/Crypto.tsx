@@ -35,7 +35,6 @@ import cryptoAPI, {
 } from '../services/cryptoApi';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
-import { useTradeMode } from '../contexts/TradeModeContext';
 import '../styles/Crypto.css';
 
 type View = 'desk' | 'strategy' | 'automation' | 'ledger' | 'not-found';
@@ -832,10 +831,11 @@ const Crypto: React.FC = () => {
   const { pathname } = useLocation();
   const view = viewFor(pathname);
   const { language } = useLanguage();
-  const { tradeMode, tradeModeReady } = useTradeMode();
   const { isAuthenticated, loading: authLoading } = useAuth();
   const zh = language === 'zh-CN';
-  const mode: CryptoMode = tradeMode === 'real' ? 'live' : 'paper';
+  // Crypto is intentionally Paper-only and does not inherit the workspace
+  // header's global Paper/Real selection.
+  const mode: CryptoMode = 'paper';
   const mounted = useRef(true);
   const overviewRequestSequence = useRef(0);
 
@@ -854,7 +854,7 @@ const Crypto: React.FC = () => {
     quiet = false,
     preserveError = false,
   ): Promise<CryptoOverviewResponse | null> => {
-    if (!isAuthenticated || !tradeModeReady) return null;
+    if (!isAuthenticated) return null;
     const requestSequence = ++overviewRequestSequence.current;
     if (!quiet) setLoading(true);
     try {
@@ -888,7 +888,7 @@ const Crypto: React.FC = () => {
         && !quiet
       ) setLoading(false);
     }
-  }, [isAuthenticated, mode, tradeModeReady, zh]);
+  }, [isAuthenticated, mode, zh]);
 
   const loadLedger = useCallback(async () => {
     if (!isAuthenticated) return;
@@ -1082,7 +1082,7 @@ const Crypto: React.FC = () => {
   }, [ledgerRows]);
 
   if (view === 'not-found') return <Navigate to="/crypto" replace />;
-  if (authLoading || !tradeModeReady) return <div className="cx-page-state"><LoadingOutlined /></div>;
+  if (authLoading) return <div className="cx-page-state"><LoadingOutlined /></div>;
   if (!isAuthenticated) return <Navigate to="/signin?next=/crypto" replace />;
 
   const positions = (overview?.portfolio?.positions || []) as CryptoPosition[];
@@ -1231,7 +1231,7 @@ const Crypto: React.FC = () => {
           const experimental = experimentalSleeves.has(symbol);
           const allocation = numberOf(config?.assetAllocationsPct?.[symbol]) ?? 0;
           const allocationMaximum = Math.max(numberOf(config?.maxAssetExposurePct) ?? 18, allocation);
-          const liveUnavailable = experimental && mode === 'live';
+          const liveUnavailable = false;
           return <label className={`cx-allocation-control ${experimental ? 'experimental' : ''}`} key={symbol}>
             <span>
               <span className="cx-allocation-name">
@@ -1297,7 +1297,7 @@ const Crypto: React.FC = () => {
         <div className="cx-automation-actions">
           {active
             ? <button className="cx-danger" type="button" onClick={() => void actLifecycle('stop', () => cryptoAPI.stopAutomation(), zh ? '自动交易已停止。' : 'Automation stopped.')} disabled={Boolean(busy)}>{busy === 'stop' ? <LoadingOutlined /> : <PauseCircleOutlined />} {zh ? '停止自动交易' : 'Stop automation'}</button>
-            : <button className="cx-primary" type="button" onClick={() => void actLifecycle('start', () => cryptoAPI.startAutomation(mode, mode === 'live'), zh ? '24/7 自动交易已启动。' : '24/7 automation started.')} disabled={Boolean(busy) || Boolean(automationDisabledReason)}>{busy === 'start' ? <LoadingOutlined /> : <PlayCircleOutlined />} {zh ? '启动 24/7 自动交易' : 'Start 24/7 automation'}</button>}
+            : <button className="cx-primary" type="button" onClick={() => void actLifecycle('start', () => cryptoAPI.startAutomation(mode, false), zh ? '24/7 自动交易已启动。' : '24/7 automation started.')} disabled={Boolean(busy) || Boolean(automationDisabledReason)}>{busy === 'start' ? <LoadingOutlined /> : <PlayCircleOutlined />} {zh ? '启动 24/7 自动交易' : 'Start 24/7 automation'}</button>}
           <button className="cx-secondary" type="button" onClick={() => void act('cycle', () => cryptoAPI.runCycle(mode, false), zh ? '交易周期已完成。' : 'Trading cycle completed.')} disabled={Boolean(busy) || Boolean(automationDisabledReason)}>{busy === 'cycle' ? <LoadingOutlined /> : <ThunderboltOutlined />} {zh ? '立即运行一次' : 'Run one cycle now'}</button>
         </div>
         {automationDisabledReason && <div className="cx-inline-warning"><AlertOutlined /> {automationDisabledReason}</div>}

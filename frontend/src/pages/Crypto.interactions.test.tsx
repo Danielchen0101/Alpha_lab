@@ -639,7 +639,7 @@ describe('Crypto operations workspace', () => {
     expect((container.querySelector('input[aria-label="SOL/USD allocation cap"]') as HTMLInputElement).disabled).toBe(false);
   });
 
-  it('keeps an experimental SOL sleeve visible but explicitly unavailable in Live mode', async () => {
+  it('keeps Crypto in Paper mode when the workspace header is set to Real', async () => {
     mockedUseTradeMode.mockReturnValue({ tradeMode: 'real', tradeModeReady: true });
     api.overview.mockResolvedValue({
       data: {
@@ -658,13 +658,12 @@ describe('Crypto operations workspace', () => {
 
     await renderAt('/crypto');
     expect(container.textContent).toContain('SOL/USD');
-    expect(container.textContent).toContain('FORWARD VALIDATION · LIVE UNAVAILABLE');
-    expect(container.textContent).toContain('Live routing is explicitly disabled');
+    expect(container.textContent).toContain('PAPER EXPERIMENT · FORWARD VALIDATION');
 
     await renderAt('/crypto/strategy');
-    expect(container.textContent).toContain('LIVE UNAVAILABLE');
-    expect((container.querySelector('input[aria-label="SOL/USD allocation cap"]') as HTMLInputElement).disabled).toBe(true);
-    expect(api.overview).toHaveBeenCalledWith('live');
+    expect(container.textContent).toContain('FORWARD VALIDATION');
+    expect((container.querySelector('input[aria-label="SOL/USD allocation cap"]') as HTMLInputElement).disabled).toBe(false);
+    expect(api.overview).toHaveBeenCalledWith('paper');
   });
 
   it('normalizes trades, decisions and system events into a professional ledger', async () => {
