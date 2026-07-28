@@ -1608,6 +1608,47 @@ class KalshiRobotState:
                 if side not in {"YES", "NO"}:
                     fill_side = str((matching_entry_fills[0] if matching_entry_fills else {}).get("outcome_side") or "").upper()
                     side = fill_side if fill_side in {"YES", "NO"} else ""
+                side_entry_fills = [
+                    row for row in matching_entry_fills
+                    if str(row.get("outcome_side") or "").upper() == side
+                ]
+                side_close_fills = [
+                    row for row in matching_fills
+                    if (
+                        str(row.get("outcome_side") or "").upper() == side
+                        and row.get("realized_pnl_dollars") is not None
+                        and (
+                            row.get("reduce_only")
+                            or str(row.get("action") or "").upper() == "SELL"
+                            or str(row.get("action") or "").upper().startswith("SELL_")
+                        )
+                    )
+                ]
+                entry_fill_count = sum(
+                    _order_fill_count(row) for row in side_entry_fills
+                )
+                close_fill_count = sum(
+                    _order_fill_count(row) for row in side_close_fills
+                )
+                # Kalshi settlement history can retain the original contract
+                # count and cost after the position was sold before expiry,
+                # while reporting zero settlement revenue.  A canonical SELL
+                # fill with complete FIFO cost basis is authoritative evidence
+                # that those contracts were already realized.  Do not append a
+                # second settlement outcome, and remove a stale duplicate from
+                # earlier reconciliation runs so portfolio totals self-heal.
+                fully_closed_before_settlement = bool(
+                    side in {"YES", "NO"}
+                    and entry_fill_count > 0
+                    and close_fill_count + 1e-9 >= entry_fill_count
+                )
+                if fully_closed_before_settlement:
+                    if existing_records.pop(settlement_key, None) is not None:
+                        changed = True
+                    if settlement_key not in processed:
+                        processed.add(settlement_key)
+                        changed = True
+                    continue
                 yes_count = _number(settlement.get("yes_count_fp") or settlement.get("yes_count"))
                 no_count = _number(settlement.get("no_count_fp") or settlement.get("no_count"))
                 if side not in {"YES", "NO"}:
