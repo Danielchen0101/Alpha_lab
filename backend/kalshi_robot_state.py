@@ -174,19 +174,6 @@ def _safe_strategy_config(
     configured["addSizeFraction"] = min(
         0.25, _number(configured.get("addSizeFraction"), 0.25)
     )
-    configured["maxDailyLossPct"] = max(
-        0.10,
-        min(
-            2.0,
-            _number(
-                requested.get(
-                    "maxDailyLossPct",
-                    configured.get("maxDailyLossPct", 2.0),
-                ),
-                2.0,
-            ),
-        ),
-    )
     return configured
 
 
@@ -1135,20 +1122,6 @@ class KalshiRobotState:
                     # page changes, and process restarts.
                     bucket["strategy"]["lastExitTicker"] = row.get("ticker")
                     bucket["strategy"]["lastExitAt"] = row.get("generatedAt")
-                    exit_trigger = str(
-                        (decision.get("exitAnalysis") or {}).get("trigger") or ""
-                    )
-                    if exit_trigger in {
-                        "protective_stop_loss",
-                        "emergency_stop_loss",
-                    }:
-                        blocked = list(
-                            bucket["strategy"].get("stopLossReentryTickers") or []
-                        )
-                        if ticker := str(row.get("ticker") or ""):
-                            if ticker not in blocked:
-                                blocked.append(ticker)
-                        bucket["strategy"]["stopLossReentryTickers"] = blocked[-MAX_TRADED_TICKERS:]
             ticker = str(market.get("ticker") or "")
             if _order_fill_count(order) > 0 and ticker and ticker not in bucket["tradedTickers"]:
                 bucket["tradedTickers"].append(ticker)
@@ -1204,9 +1177,6 @@ class KalshiRobotState:
                 str(row.get("orderId") or row.get("clientOrderId") or "")
                 for row in filled_trades
             }
-            blocked = list(
-                (bucket.get("strategy") or {}).get("stopLossReentryTickers") or []
-            )
             for fill in fills or []:
                 if not isinstance(fill, Mapping) or _order_fill_count(fill) <= 0:
                     continue
@@ -1235,21 +1205,8 @@ class KalshiRobotState:
                     filled_trades.append(promoted)
                     known_ids.add(order_id)
                     changed = True
-                action = str(fill.get("action") or evidence.get("action") or "").upper()
-                trigger = str(evidence.get("exitTrigger") or "")
-                ticker = str(fill.get("ticker") or evidence.get("ticker") or "")
-                if (
-                    (action == "SELL" or action.startswith("SELL_"))
-                    and trigger in {"protective_stop_loss", "emergency_stop_loss"}
-                    and ticker
-                    and ticker not in blocked
-                ):
-                    blocked.append(ticker)
-                    changed = True
-
             if changed:
                 bucket["filledTrades"] = filled_trades[-MAX_SETTLEMENT_RECORDS:]
-                bucket["strategy"]["stopLossReentryTickers"] = blocked[-MAX_TRADED_TICKERS:]
                 self._sync_mode_mirror(state, environment)
                 if persist:
                     self._save_user(user_id)

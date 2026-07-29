@@ -52,6 +52,130 @@ def test_entry_ai_overlay_can_only_confirm_or_downgrade():
     assert backend._merge_entry_ai_decision('SKIP', 'WATCH') == ('SKIP', True, 'WATCH')
 
 
+def test_leveraged_alternative_targets_require_confirmed_underlying():
+    targets = backend._pa_leveraged_alternative_scan_targets([
+        {'symbol': 'AAPL', 'verdict': 'Confirmed'},
+        {'symbol': 'NVDA', 'verdict': 'Rejected'},
+        {'symbol': 'AAPL', 'verdict': 'Pass'},
+        {'symbol': 'UNKNOWN', 'verdict': 'Confirmed'},
+    ])
+
+    assert targets == [{
+        'symbol': 'AAPU',
+        'originalSymbol': 'AAPL',
+        'alternativeDirection': 'bull',
+        'isLeveragedAlternativeCandidate': True,
+    }]
+
+
+def test_targeted_leveraged_scanner_requests_etfs_and_fresh_instrument_data(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        backend,
+        '_pa_market_scanner_settings_for_user',
+        lambda uid: {
+            'maxSymbols': 1500,
+            'maxResults': 100,
+            'aiReviewTopN': 100,
+            'historyPeriod': '18mo',
+            'filters': {'minPrice': 5, 'includeETFs': False},
+        },
+    )
+
+    def fake_call(uid, path, view_func, payload):
+        calls.append((uid, path, payload))
+        return {
+            'success': True,
+            'results': [{'symbol': 'AAPU'}],
+            'summary': {'resultsCount': 1},
+            'scan_stats': {'processed': 1},
+        }, 200
+
+    monkeypatch.setattr(backend, '_pa_call_endpoint', fake_call)
+
+    rows, summary, stats = backend._pa_market_scanner_symbols_headless(
+        'user-1',
+        ['aapu', 'AAPU'],
+        trade_mode='real',
+        risk_profile='high',
+        time_horizon='short',
+        pipeline_mode='ai',
+    )
+
+    assert rows == [{'symbol': 'AAPU'}]
+    assert summary['resultsCount'] == 1
+    assert stats['processed'] == 1
+    assert calls[0][1] == '/api/market/scanner'
+    assert calls[0][2]['symbols'] == ['AAPU']
+    assert calls[0][2]['filters']['includeETFs'] is True
+    assert calls[0][2]['leverageEnabled'] is True
+    assert calls[0][2]['alpacaMode'] == 'live'
+
+
+def test_independently_validated_leveraged_plan_replaces_review_placeholder():
+    placeholder = {
+        'symbol': 'AAPU',
+        'isLeveragedAlternative': True,
+        'originalSymbol': 'AAPL',
+        'finalAction': 'READY_REVIEW',
+        'entryTriggerStatus': 'NOT_EVALUATED',
+    }
+    validated = {
+        'symbol': 'AAPU',
+        'finalAction': 'BUY_READY',
+        'tradeReadiness': 'READY',
+        'entryTriggerStatus': 'CONFIRMED',
+        'admissionDecision': 'ADMIT',
+        'dataQuality': 'GOOD',
+    }
+    ordinary = {'symbol': 'MSFT', 'finalAction': 'WAIT_FOR_ENTRY'}
+
+    merged = backend._pa_merge_revalidated_leveraged_plans(
+        [ordinary, placeholder],
+        [validated],
+        [{
+            'symbol': 'AAPU',
+            'originalSymbol': 'AAPL',
+            'alternativeDirection': 'bull',
+        }],
+    )
+
+    assert merged[0] is ordinary
+    replacement = merged[1]
+    assert replacement['finalAction'] == 'BUY_READY'
+    assert replacement['entryTriggerStatus'] == 'CONFIRMED'
+    assert replacement['originalSymbol'] == 'AAPL'
+    assert replacement['underlyingSymbol'] == 'AAPL'
+    assert replacement['isLeveragedAlternative'] is True
+    assert replacement['leveragedAlternativeValidation'] == {
+        'status': 'COMPLETED',
+        'independentInstrument': 'AAPU',
+        'originalSymbol': 'AAPL',
+        'fineScanValidated': True,
+        'deeperValidationConfirmed': True,
+        'admissionDecision': 'ADMIT',
+        'entryTriggerStatus': 'CONFIRMED',
+    }
+
+
+def test_unvalidated_leveraged_placeholder_is_never_promoted():
+    placeholder = {
+        'symbol': 'AAPU',
+        'isLeveragedAlternative': True,
+        'originalSymbol': 'AAPL',
+        'finalAction': 'READY_REVIEW',
+    }
+
+    merged = backend._pa_merge_revalidated_leveraged_plans(
+        [placeholder],
+        [],
+        [{'symbol': 'AAPU', 'originalSymbol': 'AAPL'}],
+    )
+
+    assert merged == [placeholder]
+    assert merged[0]['finalAction'] == 'READY_REVIEW'
+
+
 def test_entry_preflight_uses_executable_ask_and_whole_share_oto_stop():
     result = backend._build_entry_limit_preflight(
         _plan(),

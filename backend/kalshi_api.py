@@ -95,10 +95,8 @@ KALSHI_LIVE_ROUTING_STATE_CONFLICTS = frozenset({
     "kalshi_live_position_ownership_conflict",
     "kalshi_live_event_position_conflict",
     "kalshi_live_close_inventory_changed",
-    "kalshi_daily_loss_limit",
     "kalshi_reversal_cooldown_active",
     "kalshi_reentry_confirmation_required",
-    "kalshi_stop_loss_reentry_blocked",
 })
 
 
@@ -5076,7 +5074,7 @@ class _PaperRobotController:
                     status=409,
                     code="kalshi_live_close_inventory_changed",
                 )
-            # Real exits are never blocked by cash, exposure, or daily loss.
+            # Reduce-only exits are never blocked by entry cash or exposure.
             return None
 
         if exact_opposite:
@@ -5096,13 +5094,6 @@ class _PaperRobotController:
                 code="kalshi_live_event_position_conflict",
             )
 
-        strategy = dict(latest_state.get("strategy") or {})
-        if ticker in set(strategy.get("stopLossReentryTickers") or []):
-            raise KalshiApiError(
-                "This ticker was stopped out and cannot be re-entered.",
-                status=409,
-                code="kalshi_stop_loss_reentry_blocked",
-            )
         config = normalize_strategy_config(
             latest_state.get("config") or {}
         )
@@ -5175,26 +5166,6 @@ class _PaperRobotController:
                 "Kalshi cash changed after the strategy decision.",
                 status=409,
                 code="kalshi_live_cash_changed",
-            )
-
-        today = datetime.now(timezone.utc).date().isoformat()
-        daily_pnl = (
-            _finite_number(strategy.get("dailyPnl"), 0.0)
-            if strategy.get("dailyPnlDate") == today
-            else 0.0
-        )
-        daily_loss_limit = equity_dollars * min(
-            2.0,
-            max(
-                0.10,
-                _finite_number(config.get("maxDailyLossPct"), 2.0),
-            ),
-        ) / 100.0
-        if max(0.0, -daily_pnl) >= daily_loss_limit:
-            raise KalshiApiError(
-                "The durable Real daily realized-loss limit is active.",
-                status=409,
-                code="kalshi_daily_loss_limit",
             )
 
         position_exposure = sum(
@@ -5992,10 +5963,6 @@ class _PaperRobotController:
                 # There is deliberately no per-contract or per-day trade-count
                 # ceiling.  Re-entry is governed by current position/open-order,
                 # cash, Kelly sizing, exposure, and anti-churn timing gates.
-                stop_loss_blocked = ticker in set(
-                    (robot_state.get("strategy") or {}).get("stopLossReentryTickers")
-                    or []
-                )
                 recent_exit_age = _recent_filled_exit_age(robot_state, ticker)
                 reversal_cooldown = max(
                     90,
@@ -6013,13 +5980,7 @@ class _PaperRobotController:
                     strategy_config,
                     recent_exit_age=recent_exit_age,
                 )
-                if stop_loss_blocked:
-                    decision["action"] = "WAIT"
-                    decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + [
-                        "stop_loss_reentry_blocked"
-                    ]
-                    decision["executionIntent"] = "WAIT_STOP_LOSS_REENTRY_BLOCKED"
-                elif recent_exit_age is not None and recent_exit_age < reversal_cooldown:
+                if recent_exit_age is not None and recent_exit_age < reversal_cooldown:
                     decision["action"] = "WAIT"
                     decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["reversal_cooldown"]
                     decision["exitAnalysis"]["recentExitAgeSeconds"] = recent_exit_age

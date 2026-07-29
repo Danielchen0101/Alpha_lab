@@ -507,7 +507,7 @@ def test_official_brti_avoids_single_venue_proxy_uncertainty_penalty():
     )
 
 
-def test_daily_realized_loss_limit_blocks_new_buy_at_threshold():
+def test_daily_realized_loss_never_blocks_new_buy():
     now = datetime.now(timezone.utc)
     candles, spot = _candles()
     common = {
@@ -537,22 +537,17 @@ def test_daily_realized_loss_limit_blocks_new_buy_at_threshold():
 
     assert below_limit["action"] == "BUY_YES"
     assert "daily_loss_limit" not in below_limit["blockingReasons"]
-    assert at_limit["action"] == "WAIT"
-    assert "daily_loss_limit" in at_limit["blockingReasons"]
-    assert at_limit["sizing"]["contracts"] == 0
+    assert at_limit["action"] == "BUY_YES"
+    assert "daily_loss_limit" not in at_limit["blockingReasons"]
+    assert at_limit["sizing"]["contracts"] > 0
     assert at_limit["sizing"]["dailyPnl"] == pytest.approx(-20.0)
     assert at_limit["sizing"]["dailyRealizedLoss"] == pytest.approx(20.0)
-    assert at_limit["sizing"]["dailyLossLimit"] == pytest.approx(20.0)
-    daily_gate = next(
-        gate for gate in at_limit["gates"] if gate["key"] == "daily_loss_limit"
-    )
-    assert daily_gate["status"] == "block"
-    assert daily_gate["scope"] == "new_buy_only"
-    assert daily_gate["realizedLoss"] == pytest.approx(daily_gate["lossLimit"])
-    assert "reduce-only exits remain" in at_limit["methodology"]["dailyLossPolicy"]
+    assert "dailyLossLimit" not in at_limit["sizing"]
+    assert all(gate["key"] != "daily_loss_limit" for gate in at_limit["gates"])
+    assert "never blocks new entries" in at_limit["methodology"]["dailyLossPolicy"]
 
 
-def test_explicit_daily_realized_pnl_takes_precedence_for_loss_gate():
+def test_explicit_daily_realized_pnl_is_reported_without_blocking():
     now = datetime.now(timezone.utc)
     candles, spot = _candles()
 
@@ -573,8 +568,8 @@ def test_explicit_daily_realized_pnl_takes_precedence_for_loss_gate():
         },
     )
 
-    assert result["action"] == "WAIT"
-    assert "daily_loss_limit" in result["blockingReasons"]
+    assert result["action"] == "BUY_YES"
+    assert "daily_loss_limit" not in result["blockingReasons"]
     assert result["sizing"]["dailyPnl"] == pytest.approx(-25.0)
 
 
@@ -650,7 +645,6 @@ def test_user_config_is_bounded_to_research_limits():
     config = normalize_strategy_config({
         "paperBankroll": 5,
         "riskPerTradePct": 50,
-        "maxDailyLossPct": 50,
         "minNetEdge": 0,
         "minModelProbability": 0.2,
         "minimumRiskBudgetScale": -1,
@@ -669,7 +663,7 @@ def test_user_config_is_bounded_to_research_limits():
     assert config["paperBankroll"] == 100.0
     assert config["riskPerTradePct"] == 2.0
     assert "maxContracts" not in config
-    assert config["maxDailyLossPct"] == 2.0
+    assert "maxDailyLossPct" not in config
     assert config["minNetEdge"] == 0.005
     assert config["minModelProbability"] == 0.50
     assert config["minimumRiskBudgetScale"] == 0.10
@@ -688,7 +682,6 @@ def test_user_config_is_bounded_to_research_limits():
 def test_default_quality_floors_and_risk_scale_invariants():
     defaults = normalize_strategy_config()
     constrained = normalize_strategy_config({
-        "maxDailyLossPct": 0,
         "minModelProbability": 0.90,
         "fullRiskModelProbability": 0.65,
         "minConservativeEdge": 0.08,
@@ -707,8 +700,8 @@ def test_default_quality_floors_and_risk_scale_invariants():
     assert defaults["maxSingleMarketExposurePct"] == pytest.approx(2.0)
     assert defaults["minimumAddIntervalSeconds"] == 90
     assert defaults["addSizeFraction"] == pytest.approx(0.25)
-    assert defaults["maxDailyLossPct"] == pytest.approx(2.0)
-    assert constrained["maxDailyLossPct"] == pytest.approx(0.10)
+    assert "maxDailyLossPct" not in defaults
+    assert "maxDailyLossPct" not in constrained
     assert constrained["fullRiskModelProbability"] == pytest.approx(0.91)
     assert constrained["fullRiskConservativeEdge"] == pytest.approx(0.085)
     assert constrained["highPriceRiskStart"] == pytest.approx(0.70)
