@@ -59,6 +59,11 @@ KALSHI_PUBLIC_BASE = "https://external-api.kalshi.com/trade-api/v2"
 KALSHI_PUBLIC_FALLBACK_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 KALSHI_PUBLIC_BASES = (KALSHI_PUBLIC_BASE, KALSHI_PUBLIC_FALLBACK_BASE)
 KALSHI_NO_ACTIVE_HOURLY_MARKET = "kalshi_no_active_hourly_market"
+KALSHI_HOURLY_HELD_MARKET_UNAVAILABLE = "kalshi_hourly_held_market_unavailable"
+KALSHI_HOURLY_STANDBY_CODES = frozenset({
+    KALSHI_NO_ACTIVE_HOURLY_MARKET,
+    KALSHI_HOURLY_HELD_MARKET_UNAVAILABLE,
+})
 KALSHI_EXECUTION_BLOCKING_WARNINGS = frozenset({
     "kalshi_market_stale",
     "hourly_markets_stale",
@@ -525,6 +530,52 @@ class KalshiApiError(RuntimeError):
         self.status = status
         self.code = code
         self.endpoint = endpoint
+
+
+def _kalshi_response_error_detail(response: Any) -> str:
+    """Extract a concise, non-secret diagnostic from a Kalshi error response."""
+    if response is None:
+        return ""
+    try:
+        payload = response.json() if hasattr(response, "json") else response
+    except Exception:
+        payload = None
+
+    def message(value: Any) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, Mapping):
+            code = str(value.get("code") or "").strip()
+            detail = str(
+                value.get("message")
+                or value.get("details")
+                or value.get("detail")
+                or ""
+            ).strip()
+            if code and detail:
+                return f"{code}: {detail}"
+            return detail or code
+        if isinstance(value, (list, tuple)):
+            return "; ".join(filter(None, (message(item) for item in value)))
+        return ""
+
+    detail = ""
+    if isinstance(payload, Mapping):
+        detail = (
+            message(payload.get("error"))
+            or message(payload.get("errors"))
+            or message(payload.get("message"))
+            or message(payload.get("details"))
+            or message(payload.get("detail"))
+        )
+    else:
+        detail = message(payload)
+    if not detail:
+        try:
+            detail = str(getattr(response, "text", "") or "").strip()
+        except Exception:
+            detail = ""
+    return " ".join(detail.split())[:240]
 
 
 def _finite_number(value: Any, default: float = 0.0) -> float:
@@ -5551,7 +5602,7 @@ class _PaperRobotController:
                 raise KalshiApiError(
                     "A managed KXBTCD holding is unavailable in the executable ladder",
                     status=409,
-                    code="kalshi_hourly_held_market_unavailable",
+                    code=KALSHI_HOURLY_HELD_MARKET_UNAVAILABLE,
                 )
             held_management_ranks = {
                 str((item[1] or {}).get("ticker") or ""):
@@ -6573,8 +6624,9 @@ class _PaperRobotController:
 
     def _record_loop_failure(self, user_id: str, family: str, mode: str, exc: Exception) -> None:
         if (
-            isinstance(exc, KalshiApiError)
-            and exc.code == KALSHI_NO_ACTIVE_HOURLY_MARKET
+            family == "btchourly"
+            and isinstance(exc, KalshiApiError)
+            and exc.code in KALSHI_HOURLY_STANDBY_CODES
         ):
             self._record_loop_standby(user_id, family, exc)
             return
@@ -6650,6 +6702,8 @@ class _PaperRobotController:
                 error_detail += f", HTTP {error_status}"
             if error_endpoint:
                 error_detail += f", {error_endpoint}"
+            if error_message:
+                error_detail += f", {error_message}"
             reason = (
                 f"{family} background cycle failed {count} consecutive times "
                 f"({error_detail})."
@@ -7074,16 +7128,7 @@ def register_kalshi_api(
                         code="kalshi_rate_limited",
                         endpoint=endpoint,
                     ) from exc
-                detail = ""
-                try:
-                    response_payload = response.json()
-                    detail = str(
-                        response_payload.get("message")
-                        or response_payload.get("details")
-                        or ""
-                    )
-                except Exception:
-                    pass
+                detail = _kalshi_response_error_detail(response)
                 raise KalshiApiError(
                     detail or f"Kalshi {environment} account request failed",
                     status=int(status_code) if status_code else 502,

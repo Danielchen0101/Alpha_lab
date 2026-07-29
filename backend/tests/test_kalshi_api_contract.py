@@ -27,6 +27,7 @@ from kalshi_api import (
     _hourly_candidate_management_priority,
     _hourly_reference_policy,
     _intent_client_order_id,
+    _kalshi_response_error_detail,
     _market_observation,
     _monotone_ladder_probabilities,
     _paper_account_context,
@@ -433,6 +434,49 @@ def test_hourly_market_gap_is_loop_standby_not_failure_or_alert():
     assert "standby" in logs[0]
 
 
+def test_hourly_held_market_settlement_gap_is_standby_not_failure_or_alert():
+    controller = object.__new__(_PaperRobotController)
+    controller._runtime_lock = threading.RLock()
+    controller._loop_last_error = ""
+    controller._loop_error_counts = {}
+    controller._loop_alerted = set()
+    controller._market_standby = {}
+    controller.safe_print = lambda *_args, **_kwargs: None
+
+    controller._record_loop_failure(
+        "user-1",
+        "btchourly",
+        "real",
+        KalshiApiError(
+            "Held hourly market is closed pending settlement",
+            status=409,
+            code=kalshi_api.KALSHI_HOURLY_HELD_MARKET_UNAVAILABLE,
+        ),
+    )
+
+    assert controller._loop_error_counts == {}
+    assert controller._loop_last_error == ""
+    assert controller._market_standby["user-1:btchourly"]["reason"] == (
+        kalshi_api.KALSHI_HOURLY_HELD_MARKET_UNAVAILABLE
+    )
+
+
+def test_kalshi_nested_error_detail_preserves_exchange_reason():
+    response = _StatusResponse(
+        {
+            "error": {
+                "code": "invalid_order",
+                "message": "market is not open for orders",
+            },
+        },
+        400,
+    )
+
+    assert _kalshi_response_error_detail(response) == (
+        "invalid_order: market is not open for orders"
+    )
+
+
 def test_real_read_only_preflight_blocks_stale_scheduler_account_snapshot():
     now = datetime(2026, 7, 27, 22, 5, tzinfo=timezone.utc)
     state = {
@@ -530,6 +574,7 @@ def test_loop_failure_persists_and_alerts_with_kalshi_error_details():
     assert alert["httpStatus"] == 502
     assert alert["endpoint"] == "/portfolio/orders"
     assert "HTTP 502" in alert["reason"]
+    assert "upstream timeout" in alert["reason"]
 
 
 def test_venue_quote_rejects_empty_or_crossed_without_last():
