@@ -1,4 +1,5 @@
 import {
+  activeKalshiBlockingReasons,
   actionSummary,
   isAlphaLabManagedLedgerRecord,
   kalshiAccountEquityDollars,
@@ -258,5 +259,15 @@ describe('Kalshi workspace routing', () => {
       ...decision,
       blockingReasons: ['account_snapshot_stale'],
     }, false, true)).toContain('stale (183s)');
+  });
+
+  it('hides the retired daily loss blocker from cached and historical rows', () => {
+    expect(activeKalshiBlockingReasons([
+      'depth',
+      'daily_loss_limit',
+      'conservative_edge',
+    ])).toEqual(['depth', 'conservative_edge']);
+    expect(activeKalshiBlockingReasons(['daily_loss_limit'])).toEqual([]);
+    expect(activeKalshiBlockingReasons(null)).toEqual([]);
   });
 });
