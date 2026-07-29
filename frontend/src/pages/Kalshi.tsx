@@ -1389,6 +1389,7 @@ const Kalshi: React.FC = () => {
         : startingBalance;
     const unrealizedPnl = positionRows.reduce((sum: number, item: any) => sum + Number(item.unrealized_pnl_dollars || 0), 0);
     const openExposure = positionRows.reduce((sum: number, item: any) => sum + Number(item.market_exposure_dollars || 0), 0);
+    const totalProfit = returnBase > 0 ? accountEquity - returnBase : null;
     const totalReturnPct = returnBase > 0 ? (accountEquity - returnBase) / returnBase : null;
     const pnlValues = realizedRecords.map((record: any) => Number(record.pnl || 0));
     const bestTrade = portfolioMode === 'real'
@@ -1526,7 +1527,7 @@ const Kalshi: React.FC = () => {
             <strong>{money(accountEquity)}</strong>
             <small>{totalReturnPct === null
               ? copy('Cash plus open-position value', '现金加未结持仓市值')
-              : <>{visiblePeriodActive ? copy('Visible-period return', '当前周期回报') : copy('Total return', '总回报')} <em className={returnClass}>{totalReturnPct >= 0 ? '+' : ''}{(totalReturnPct * 100).toFixed(2)}%</em>{returnBase > 0 ? ` · ${copy('from', '基准')} ${money(returnBase)}` : ''}</>}</small>
+              : <>{visiblePeriodActive ? copy('Visible-period profit', '当前周期盈利') : copy('Total profit', '总盈利')} <em className={returnClass}>{Number(totalProfit) >= 0 ? '+' : ''}{money(Number(totalProfit))} · {totalReturnPct >= 0 ? '+' : ''}{(totalReturnPct * 100).toFixed(2)}%</em>{returnBase > 0 ? ` · ${copy('from', '起始资金')} ${money(returnBase)}` : ''}</>}</small>
           </div>
           <div><span>{isRealMode ? copy('REAL CASH', '实盘现金') : copy('PAPER CASH', '模拟现金')}</span><strong>{money(cash)}</strong><small>{copy('Available buying power', '可用购买力')}</small></div>
           <div><span>{copy('UNREALIZED P/L', '未实现盈亏')}</span><strong className={unrealizedPnl >= 0 ? 'is-profit' : 'is-loss'}>{unrealizedPnl >= 0 ? '+' : ''}{money(unrealizedPnl)}</strong><small>{positionRows.length} {copy('open · exposure', '持仓 · 敞口')} {money(openExposure)}</small></div>
