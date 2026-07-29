@@ -19,7 +19,6 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "executionMode": "paper",
     "paperBankroll": 1000.0,
     "riskPerTradePct": 0.50,
-    "maxDailyLossPct": 2.0,
     # These are policy floors, not an asserted win rate. They must be
     # recalibrated against genuinely out-of-sample contract outcomes.
     "minNetEdge": 0.010,
@@ -136,7 +135,6 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
     bounds: Dict[str, Tuple[float, float]] = {
         "paperBankroll": (100.0, 1_000_000.0),
         "riskPerTradePct": (0.10, 2.0),
-        "maxDailyLossPct": (0.10, 2.0),
         "minNetEdge": (0.005, 0.15),
         "minConservativeEdge": (0.0, 0.08),
         "maxSpread": (0.01, 0.20),
@@ -861,8 +859,6 @@ def evaluate_btc15_contract(
     if daily_pnl is None:
         daily_pnl = _number(account.get("dailyPnl"), 0.0) or 0.0
     daily_realized_loss = max(0.0, -daily_pnl)
-    daily_loss_limit = bankroll * settings["maxDailyLossPct"] / 100.0
-    daily_loss_ok = daily_realized_loss < daily_loss_limit
 
     if account:
         exposure = max(0.0, _number(account.get("portfolioExposure"), 0.0) or 0.0)
@@ -880,24 +876,6 @@ def evaluate_btc15_contract(
                 category="account",
             ),
             _gate("open_order", not bool(account.get("hasOpenOrder")), "No open order", "无未完成订单", "no resting order for this contract" if not account.get("hasOpenOrder") else "open order already exists", category="account"),
-            {
-                **_gate(
-                    "daily_loss_limit",
-                    daily_loss_ok,
-                    "Daily realized loss",
-                    "日内已实现亏损",
-                    (
-                        f"realized loss {daily_realized_loss:.2f} / "
-                        f"entry stop {daily_loss_limit:.2f} "
-                        f"({settings['maxDailyLossPct']:.2f}% of bankroll)"
-                    ),
-                    category="account",
-                ),
-                "scope": "new_buy_only",
-                "dailyPnl": daily_pnl,
-                "realizedLoss": daily_realized_loss,
-                "lossLimit": daily_loss_limit,
-            },
             _gate("portfolio_exposure", exposure_pct < settings["maxPortfolioExposurePct"], "Portfolio exposure", "组合总敞口", f"{exposure_pct:.1f}% / max {settings['maxPortfolioExposurePct']:.1f}%", category="account"),
             _gate("market_exposure", market_exposure_pct < settings["maxSingleMarketExposurePct"], "Single-market exposure", "单市场敞口", f"{market_exposure_pct:.1f}% / max {settings['maxSingleMarketExposurePct']:.1f}%", category="account"),
         ]
@@ -1165,10 +1143,8 @@ def evaluate_btc15_contract(
         "sizing": {
             "paperBankroll": bankroll,
             "riskPerTradePct": settings["riskPerTradePct"],
-            "maxDailyLossPct": settings["maxDailyLossPct"],
             "dailyPnl": daily_pnl,
             "dailyRealizedLoss": daily_realized_loss,
-            "dailyLossLimit": daily_loss_limit,
             "riskBudget": max_loss_budget,
             "standardRiskBudget": standard_risk_budget,
             "hardRiskBudget": hard_risk_budget,
@@ -1206,8 +1182,8 @@ def evaluate_btc15_contract(
             "directionMode": "normal",
             "samplePolicy": "deterministic fee-adjusted entry; no AI or random exploration overrides",
             "dailyLossPolicy": (
-                "Entry-only realized-loss stop; reduce-only exits remain "
-                "available to the position-management controller"
+                "Realized profit and loss is informational and never blocks "
+                "new entries"
             ),
             "orderPolicy": (
                 "Kalshi Real IOC limit order signed and submitted by the backend only after every deterministic gate passes"

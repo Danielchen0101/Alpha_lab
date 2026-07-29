@@ -46,7 +46,6 @@ describe('Kalshi workspace routing', () => {
   it('defaults to official-BRTI v6 position-management controls', () => {
     expect(DEFAULT_KALSHI_BOT_CONFIG.paperBankroll).toBe(1000);
     expect(DEFAULT_KALSHI_BOT_CONFIG.riskPerTradePct).toBe(0.5);
-    expect(DEFAULT_KALSHI_BOT_CONFIG.maxDailyLossPct).toBe(2);
     expect(DEFAULT_KALSHI_BOT_CONFIG.fractionalKelly).toBe(0.15);
     expect(DEFAULT_KALSHI_BOT_CONFIG.maxBookParticipation).toBeLessThanOrEqual(0.2);
     expect(DEFAULT_KALSHI_BOT_CONFIG.minPrice).toBeGreaterThanOrEqual(0.47);

@@ -11,7 +11,6 @@ export interface KalshiBotConfig {
   executionMode: KalshiExecutionMode;
   paperBankroll: number;
   riskPerTradePct: number;
-  maxDailyLossPct: number;
   minNetEdge: number;
   minConservativeEdge: number;
   maxSpread: number;
@@ -64,7 +63,6 @@ export const DEFAULT_KALSHI_BOT_CONFIG: KalshiBotConfig = {
   executionMode: 'paper',
   paperBankroll: 1000,
   riskPerTradePct: 0.50,
-  maxDailyLossPct: 2.0,
   minNetEdge: 0.010,
   minConservativeEdge: 0.0075,
   maxSpread: 0.06,
