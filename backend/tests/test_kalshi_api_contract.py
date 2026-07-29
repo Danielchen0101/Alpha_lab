@@ -4054,7 +4054,16 @@ def test_real_preflight_recomputes_official_fee_when_decision_omits_it():
     assert posts == []
 
 
-def test_real_preflight_allows_buy_despite_durable_daily_loss():
+@pytest.mark.parametrize(
+    "ticker",
+    [
+        "KXBTC15M-29JUL261330-DAILY-LOSS",
+        "KXBTCD-29JUL2614-T65000",
+    ],
+)
+def test_real_preflight_allows_btc15m_and_hourly_buy_despite_durable_daily_loss(
+    ticker,
+):
     today = datetime.now(timezone.utc).date().isoformat()
     posts = []
     state = _EnabledRealState(strategy={
@@ -4087,7 +4096,7 @@ def test_real_preflight_allows_buy_despite_durable_daily_loss():
             "edge": {"price": 0.42},
             "sizing": {"contracts": 1},
         },
-        "KXBTC15M-DAILY-LOSS",
+        ticker,
     )
 
     controller._submit_live_order(
