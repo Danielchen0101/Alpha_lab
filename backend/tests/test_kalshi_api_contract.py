@@ -2413,6 +2413,36 @@ def test_analytics_exposes_per_family_opportunity_funnels(tmp_path):
             },
         },
         {
+            "ticker": "KXBTCD-26JUL2515-T64000",
+            "environment": "paper",
+            "observed_at": "2026-07-25T12:00:00Z",
+            "action": "WAIT",
+            "side": "YES",
+            "seconds_to_close": 600,
+            "net_edge": 0.03,
+            "conservative_edge": 0.02,
+            "blocked_reasons": ["daily_loss_limit"],
+            "features": {
+                "model": {"referenceModel": "kalshi_cf_benchmarks_brti"},
+                "dataQuality": {"snapshotLatencyMs": 350},
+            },
+        },
+        {
+            "ticker": "KXBTCD-26JUL2515-T64500",
+            "environment": "paper",
+            "observed_at": "2026-07-25T12:00:00Z",
+            "action": "WAIT",
+            "side": "YES",
+            "seconds_to_close": 600,
+            "net_edge": 0.025,
+            "conservative_edge": 0.015,
+            "blocked_reasons": ["depth", "daily_loss_limit"],
+            "features": {
+                "model": {"referenceModel": "kalshi_cf_benchmarks_brti"},
+                "dataQuality": {"snapshotLatencyMs": 375},
+            },
+        },
+        {
             "ticker": "KXBTCD-26JUL2515-T65000",
             "environment": "paper",
             "observed_at": "2026-07-25T12:00:01Z",
@@ -2448,6 +2478,19 @@ def test_analytics_exposes_per_family_opportunity_funnels(tmp_path):
         {"key": "depth", "count": 1}
     ]
     assert payload["analytics"]["families"]["btchourly"]["funnel"]["orders"] == 1
+    assert payload["analytics"]["families"]["btchourly"]["blockers"] == [
+        {"key": "depth", "count": 1}
+    ]
+    assert payload["analytics"]["families"]["btchourly"]["nearMisses"] == [{
+        "at": "2026-07-25T12:00:00Z",
+        "ticker": "KXBTCD-26JUL2515-T64500",
+        "side": "YES",
+        "price": None,
+        "netEdge": 0.025,
+        "conservativeEdge": 0.015,
+        "secondsToClose": 600,
+        "blockingReasons": ["depth"],
+    }]
 
 
 def test_paper_order_payload_uses_yes_book_shape():

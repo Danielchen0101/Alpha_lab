@@ -98,6 +98,9 @@ KALSHI_LIVE_ROUTING_STATE_CONFLICTS = frozenset({
     "kalshi_reversal_cooldown_active",
     "kalshi_reentry_confirmation_required",
 })
+RETIRED_KALSHI_BLOCKING_REASONS = frozenset({
+    "daily_loss_limit",
+})
 
 
 def _is_btc15_ticker(value: Any) -> bool:
@@ -405,7 +408,24 @@ def _portfolio_analytics_after_reset(
 
 def _observation_analytics(rows) -> Dict[str, Any]:
     """Build a compact, auditable opportunity funnel for both strategy families."""
-    clean = [dict(row) for row in rows or [] if isinstance(row, Mapping)]
+    clean = []
+    for raw_row in rows or []:
+        if not isinstance(raw_row, Mapping):
+            continue
+        row = dict(raw_row)
+        raw_blockers = [
+            str(reason) for reason in (row.get("blocked_reasons") or [])
+            if str(reason)
+        ]
+        active_blockers = [
+            reason for reason in raw_blockers
+            if reason not in RETIRED_KALSHI_BLOCKING_REASONS
+        ]
+        row["blocked_reasons"] = active_blockers
+        row["_retired_blockers_only"] = bool(
+            raw_blockers and not active_blockers
+        )
+        clean.append(row)
     result: Dict[str, Any] = {"generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "families": {}}
     for family, prefix, label in (
         ("btc15m", str(BTC_15M_SERIES), "BTC 15-minute"),
@@ -449,6 +469,7 @@ def _observation_analytics(rows) -> Dict[str, Any]:
             row for row in selected
             if str(row.get("action") or "") == "WAIT"
             and _finite_number(row.get("conservative_edge"), -99.0) > 0
+            and not row.get("_retired_blockers_only")
         ]
         near_misses.sort(
             key=lambda row: _finite_number(row.get("conservative_edge"), -99.0),

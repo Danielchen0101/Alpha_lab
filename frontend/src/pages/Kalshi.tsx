@@ -31,6 +31,17 @@ import '../styles/Kalshi.css';
 
 const MARKET_REFRESH_MS = 5_000;
 const PORTFOLIO_REFRESH_MS = 10_000;
+const RETIRED_KALSHI_BLOCKING_REASONS = new Set([
+  'daily_loss_limit',
+]);
+
+export const activeKalshiBlockingReasons = (reasons: unknown): string[] => (
+  Array.isArray(reasons)
+    ? reasons
+      .map((reason) => String(reason || ''))
+      .filter((reason) => reason && !RETIRED_KALSHI_BLOCKING_REASONS.has(reason))
+    : []
+);
 
 export type KalshiView =
   | 'desk'
@@ -432,19 +443,20 @@ const actionLabel = (decision: KalshiDecision | null, chinese: boolean, isRealMo
 export const actionSummary = (decision: KalshiDecision | null, chinese: boolean, isRealMode: boolean) => {
   if (!decision) return chinese ? '正在等待首个完整快照。' : 'Waiting for the first complete snapshot.';
   if (decision.action === 'WAIT') {
-    if (decision.blockingReasons.includes('robot_scheduler_unhealthy')) {
+    const activeReasons = activeKalshiBlockingReasons(decision.blockingReasons);
+    if (activeReasons.includes('robot_scheduler_unhealthy')) {
       return chinese
         ? '后台实盘机器人当前不健康；页面只展示行情，不会把预筛候选标记为可下单。'
         : 'The live background robot is unhealthy; the page shows market evidence but will not mark this preflight as order-ready.';
     }
-    if (decision.blockingReasons.includes('account_snapshot_stale')) {
+    if (activeReasons.includes('account_snapshot_stale')) {
       const age = decision.accountPreflight?.snapshotAgeSeconds;
       const ageLabel = Number.isFinite(Number(age)) ? `${Math.round(Number(age))}s` : '—';
       return chinese
         ? `后台账户快照已过期（${ageLabel}）；必须等机器人取得新的余额、持仓和订单数据后才能下单。`
         : `The scheduler-owned account snapshot is stale (${ageLabel}); fresh balance, position, and order data are required before routing.`;
     }
-    const count = decision.blockingReasons.length;
+    const count = activeReasons.length;
     const accountLabel = isRealMode ? (chinese ? 'Kalshi 实盘账户' : 'Kalshi Real account') : (chinese ? 'AlphaLab 模拟账户' : 'AlphaLab Paper account');
     return chinese
       ? `${count} 道门控尚未通过；本轮不向${accountLabel}提交订单。`
@@ -1280,7 +1292,8 @@ const Kalshi: React.FC = () => {
       account_snapshot_stale: copy('The scheduler-owned Real account snapshot is stale', '后台实盘账户快照已过期'),
       robot_scheduler_unhealthy: copy('The live robot scheduler is unhealthy', '实盘机器人调度器当前不健康'),
     };
-    const reasons = (item?.blockingReasons || []).map((reason: string) => reasonLabels[reason] || reason.replace(/_/g, ' '));
+    const reasons = activeKalshiBlockingReasons(item?.blockingReasons)
+      .map((reason: string) => reasonLabels[reason] || reason.replace(/_/g, ' '));
     return (
       <section className="kalshi-current-decision">
         <div className="kalshi-section-head"><div><span>{copy('DECISION AUDIT', '决策审计')}</span><h2>{copy('What the robot is doing now', '机器人现在在做什么')}</h2><small>{copy('Up to 250 compact decisions are retained per mode; orders and fills remain in their execution ledgers.', '每个模式最多保留 250 条精简决策；订单与成交长期保留在执行账本中。')}</small></div><strong>{retainedDecisions.length}</strong></div>
@@ -1298,7 +1311,7 @@ const Kalshi: React.FC = () => {
             <span>{row.ticker || '--'}</span>
             <span>{row.side || '--'} · {cents(row.price)}</span>
             <em>{probability(row.conservativeEdge)}</em>
-            <small>{(row.blockingReasons || []).length ? `${(row.blockingReasons || []).length} ${copy('hard blocks', '项硬阻断')}` : row.orderFilled ? copy('FILLED', '已成交') : copy('CLEAR', '通过')}</small>
+            <small>{activeKalshiBlockingReasons(row.blockingReasons).length ? `${activeKalshiBlockingReasons(row.blockingReasons).length} ${copy('hard blocks', '项硬阻断')}` : row.orderFilled ? copy('FILLED', '已成交') : copy('CLEAR', '通过')}</small>
           </div>)}
         </div>}
       </section>
@@ -1624,6 +1637,14 @@ const Kalshi: React.FC = () => {
       if (label) return copy(label[0], label[1]);
       return key.replace(/_/g, ' ');
     };
+    const visibleDiagnosticBlockers = (diagnostics?.blockers || [])
+      .filter((item) => activeKalshiBlockingReasons([item.key]).length > 0);
+    const visibleNearMisses = (diagnostics?.nearMisses || [])
+      .map((item) => ({
+        ...item,
+        blockingReasons: activeKalshiBlockingReasons(item.blockingReasons),
+      }))
+      .filter((item) => item.blockingReasons.length > 0);
     const officialNow = Boolean(decision?.dataQuality?.officialBrti || referenceFeed?.fresh);
     return (
       <section className="kalshi-diagnostics-section">
@@ -1666,14 +1687,14 @@ const Kalshi: React.FC = () => {
           <article className="kalshi-blocker-panel">
             <div className="kalshi-diagnostic-title"><span>{copy('TOP BLOCKERS', '主要阻断原因')}</span><small>{copy('Used to tune gates from evidence.', '用于根据证据校准门槛。')}</small></div>
             <div className="kalshi-blocker-list">
-              {(diagnostics?.blockers || []).slice(0, 7).map((item) => <div key={item.key}><span>{blockerName(item.key)}</span><strong>{item.count}</strong></div>)}
-              {!diagnostics?.blockers?.length && <p>{copy('No blockers recorded in this window.', '本时间窗尚无阻断记录。')}</p>}
+              {visibleDiagnosticBlockers.slice(0, 7).map((item) => <div key={item.key}><span>{blockerName(item.key)}</span><strong>{item.count}</strong></div>)}
+              {!visibleDiagnosticBlockers.length && <p>{copy('No blockers recorded in this window.', '本时间窗尚无阻断记录。')}</p>}
             </div>
           </article>
         </div>
-        {!!diagnostics?.nearMisses?.length && <div className="kalshi-near-miss-table">
+        {!!visibleNearMisses.length && <div className="kalshi-near-miss-table">
           <div className="kalshi-near-miss-head"><span>{copy('NEAR-MISS TIME', '接近成交时间')}</span><span>{copy('CONTRACT', '合约')}</span><span>{copy('SIDE / PRICE', '方向 / 价格')}</span><span>{copy('NET / CONS. EDGE', '净 / 保守边际')}</span><span>{copy('REMAINING BLOCKS', '剩余阻断')}</span></div>
-          {diagnostics.nearMisses.slice(0, 5).map((item: any, index) => <div className="kalshi-near-miss-row" key={`${item.at}-${item.ticker}-${index}`}>
+          {visibleNearMisses.slice(0, 5).map((item: any, index) => <div className="kalshi-near-miss-row" key={`${item.at}-${item.ticker}-${index}`}>
             <time>{item.at ? new Date(item.at).toLocaleTimeString() : '--'}</time>
             <b>{item.ticker || '--'}</b>
             <span>{item.side || '--'} / {cents(item.price)}</span>
@@ -1741,7 +1762,7 @@ const Kalshi: React.FC = () => {
         <div className="kalshi-hourly-grid">
           {candidates.slice(0, 9).map((item: any) => {
             const selected = item.ticker === decision?.market.ticker;
-            const blocked = Array.isArray(item.blockingReasons) ? item.blockingReasons.length : 0;
+            const blocked = activeKalshiBlockingReasons(item.blockingReasons).length;
             return (
               <article key={item.ticker} className={selected ? 'is-selected' : ''}>
                 <span>{money(item.strike, 0)}</span>
