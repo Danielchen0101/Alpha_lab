@@ -2664,7 +2664,6 @@ class _EnabledRealState:
                 "executionMode": environment or "real",
                 "maxPortfolioExposurePct": 10,
                 "maxSingleMarketExposurePct": 2,
-                "maxDailyLossPct": 2,
             },
             "strategy": copy.deepcopy(self.strategy),
             "filledTrades": copy.deepcopy(self.filled_trades),
@@ -4055,7 +4054,7 @@ def test_real_preflight_recomputes_official_fee_when_decision_omits_it():
     assert posts == []
 
 
-def test_real_preflight_blocks_buy_at_durable_daily_loss_limit():
+def test_real_preflight_allows_buy_despite_durable_daily_loss():
     today = datetime.now(timezone.utc).date().isoformat()
     posts = []
     state = _EnabledRealState(strategy={
@@ -4091,15 +4090,13 @@ def test_real_preflight_blocks_buy_at_durable_daily_loss_limit():
         "KXBTC15M-DAILY-LOSS",
     )
 
-    with pytest.raises(KalshiApiError) as blocked:
-        controller._submit_live_order(
-            "user-1",
-            payload,
-            {"side": "YES", "action": "BUY_YES"},
-        )
+    controller._submit_live_order(
+        "user-1",
+        payload,
+        {"side": "YES", "action": "BUY_YES"},
+    )
 
-    assert blocked.value.code == "kalshi_daily_loss_limit"
-    assert posts == []
+    assert posts == [1]
 
 
 def test_real_preflight_recomputes_account_wide_exposure_before_buy():
@@ -4435,7 +4432,7 @@ def test_real_order_refreshes_durable_state_and_blocks_stale_worker_after_stop()
     assert transport_calls == []
 
 
-def test_real_order_refresh_rechecks_durable_stop_loss_reentry_block():
+def test_real_order_allows_reentry_after_durable_stop_loss():
     transport_calls = []
 
     class StoppedTickerState:
@@ -4456,9 +4453,21 @@ def test_real_order_refresh_rechecks_durable_stop_loss_reentry_block():
         _environment,
         method,
         endpoint,
-        **_kwargs,
+        **kwargs,
     ):
         transport_calls.append((method, endpoint))
+        if method == "POST":
+            body = kwargs["json_body"]
+            return {"order": {
+                "order_id": "reentry-after-stop",
+                "client_order_id": body["client_order_id"],
+                "ticker": body["ticker"],
+                "side": body["side"],
+                "count_fp": body["count"],
+                "fill_count_fp": body["count"],
+                "price": body["price"],
+                "status": "filled",
+            }}
         return _real_preflight_response(endpoint)
 
     controller = _PaperRobotController(
@@ -4483,18 +4492,17 @@ def test_real_order_refresh_rechecks_durable_stop_loss_reentry_block():
         "KXBTC15M-STOPPED",
     )
 
-    with pytest.raises(KalshiApiError) as stopped:
-        controller._submit_live_order(
-            "user-1",
-            payload,
-            {"side": "YES", "action": "BUY_YES"},
-        )
+    controller._submit_live_order(
+        "user-1",
+        payload,
+        {"side": "YES", "action": "BUY_YES"},
+    )
 
-    assert stopped.value.code == "kalshi_stop_loss_reentry_blocked"
     assert [endpoint for _method, endpoint in transport_calls] == [
         "/portfolio/balance",
         "/portfolio/positions",
         "/portfolio/orders",
+        "/portfolio/events/orders",
     ]
 
 

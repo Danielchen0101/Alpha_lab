@@ -164,7 +164,6 @@ def test_every_configure_enforces_safety_floors_and_preserves_stricter_values(tm
         "addMinProbabilityImprovement": 0.0,
         "addMinEdgeImprovement": 0.0,
         "addSizeFraction": 1.0,
-        "maxDailyLossPct": 8.0,
     })
     assert floored["config"]["minModelProbability"] == 0.64
     assert floored["config"]["minNetEdge"] == 0.01
@@ -184,7 +183,7 @@ def test_every_configure_enforces_safety_floors_and_preserves_stricter_values(tm
     assert floored["config"]["addMinProbabilityImprovement"] == 0.01
     assert floored["config"]["addMinEdgeImprovement"] == 0.001
     assert floored["config"]["addSizeFraction"] == 0.25
-    assert floored["config"]["maxDailyLossPct"] == 2.0
+    assert "maxDailyLossPct" not in floored["config"]
 
     stricter = store.configure("user-1", False, {
         **floored["config"],
@@ -336,7 +335,7 @@ def test_refresh_reports_whether_it_reloaded_a_durable_source(tmp_path):
     assert durable_refresh["durableStateLoaderAvailable"] is True
 
 
-def test_filled_stop_loss_persists_same_ticker_reentry_block(tmp_path):
+def test_filled_stop_loss_does_not_persist_same_ticker_reentry_block(tmp_path):
     store = KalshiRobotState(str(tmp_path / "state.json"))
     state = store.record(
         "user-1",
@@ -357,12 +356,10 @@ def test_filled_stop_loss_persists_same_ticker_reentry_block(tmp_path):
         },
     )
 
-    assert state["modeState"]["paper"]["strategy"]["stopLossReentryTickers"] == [
-        "KXBTC15M-STOP"
-    ]
+    assert "stopLossReentryTickers" not in state["modeState"]["paper"]["strategy"]
 
 
-def test_delayed_live_fill_promotes_provenance_and_stop_loss_block(tmp_path):
+def test_delayed_live_fill_promotes_provenance_without_reentry_block(tmp_path):
     store = KalshiRobotState(str(tmp_path / "state.json"))
     store.configure("user-1", False, {"executionMode": "real"})
     store.record(
@@ -396,9 +393,7 @@ def test_delayed_live_fill_promotes_provenance_and_stop_loss_block(tmp_path):
 
     assert real["filledTrades"][-1]["orderFilled"] is True
     assert real["filledTrades"][-1]["orderId"] == "delayed-order"
-    assert real["strategy"]["stopLossReentryTickers"] == [
-        "KXBTC15M-DELAYED"
-    ]
+    assert "stopLossReentryTickers" not in real["strategy"]
 
 
 def test_pre_v6_trade_and_learning_data_is_removed_during_upgrade(tmp_path):

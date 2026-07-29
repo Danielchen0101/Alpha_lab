@@ -327,7 +327,9 @@ const compact = (value: unknown) => {
 const readStoredConfig = (): KalshiBotConfig => {
   try {
     const parsed = JSON.parse(localStorage.getItem(KALSHI_CONFIG_STORAGE_KEY) || '{}');
-    return { ...DEFAULT_KALSHI_BOT_CONFIG, ...(parsed && typeof parsed === 'object' ? parsed : {}) };
+    const stored = parsed && typeof parsed === 'object' ? { ...parsed } : {};
+    delete stored.maxDailyLossPct;
+    return { ...DEFAULT_KALSHI_BOT_CONFIG, ...stored };
   } catch {
     return { ...DEFAULT_KALSHI_BOT_CONFIG };
   }
@@ -1184,7 +1186,6 @@ const Kalshi: React.FC = () => {
       scale?: number;
     }> = [
       { key: 'riskPerTradePct', label: ['Risk per order', '每次下单风险'], unit: ['%', '%'], min: 0.1, max: 0.5, step: 0.05 },
-      { key: 'maxDailyLossPct', label: ['Daily realized-loss stop', '单日已实现亏损停止线'], unit: ['%', '%'], min: 0.1, max: 2, step: 0.1 },
       { key: 'minModelProbability', label: ['Model probability floor', '模型概率下限'], unit: ['%', '%'], min: 64, max: 90, step: 1, scale: 100 },
       { key: 'minPrice', label: ['Entry price floor', '进场价格下限'], unit: ['cents', '美分'], min: 47, max: 60, step: 1, scale: 100 },
       { key: 'maxPrice', label: ['Entry price ceiling', '进场价格上限'], unit: ['cents', '美分'], min: 60, max: 92, step: 1, scale: 100 },
@@ -1269,7 +1270,6 @@ const Kalshi: React.FC = () => {
       net_edge: copy('Net edge is below the minimum', '净边际低于最低要求'),
       conservative_edge: copy('Conservative edge is below the minimum', '保守边际低于最低要求'),
       portfolio_exposure: copy('Portfolio exposure limit reached', '组合敞口已达上限'),
-      loss_cooldown: copy('Loss-streak cooldown is active', '连败冷却中'),
       market_exposure: copy('Single-market exposure limit reached', '单一市场敞口已达上限'),
       add_order_pending: copy('An add-on order is still pending', '加仓订单仍在处理中'),
       add_interval: copy('Minimum add-on interval has not elapsed', '尚未达到最短加仓间隔'),
