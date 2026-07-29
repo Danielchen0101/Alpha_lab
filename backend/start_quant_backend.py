@@ -35709,6 +35709,22 @@ APPROVED_LONG_LEVERAGED_ETPS = frozenset({
     'MSFU', 'NFXL', 'NVDL', 'NVDU', 'QLD', 'SPXL', 'SSO', 'TNA',
     'TQQQ', 'TSLL', 'TSLR', 'UPRO', 'UWM',
 })
+LONG_LEVERAGED_ETP_ALTERNATIVES = {
+    'TSLA': ('TSLL', 'TSLR'),
+    'NVDA': ('NVDL', 'NVDU'),
+    'AAPL': ('AAPU',),
+    'AMZN': ('AMZU',),
+    'META': ('FBL',),
+    'GOOGL': ('GOOX',),
+    'MSFT': ('MSFU',),
+    'AMD': ('AMDL',),
+    'NFLX': ('NFXL',),
+    'COIN': ('CONL',),
+    'MSTR': ('MSTU', 'MSTX'),
+    'QQQ': ('TQQQ', 'QLD'),
+    'SPY': ('SPXL', 'UPRO', 'SSO'),
+    'IWM': ('TNA', 'UWM'),
+}
 KNOWN_INVERSE_ETPS = frozenset({
     'DOG', 'DRV', 'DXD', 'FAZ', 'LABD', 'PSQ', 'QID', 'RWM', 'SDOW',
     'SDS', 'SH', 'SOXS', 'SPXU', 'SPXS', 'SQQQ', 'SRTY', 'TECS',
@@ -37127,6 +37143,9 @@ def _call_ai_entry_final_decision(plans, execution_mode, account_mode, risk_prof
             f"Data: {p.get('dataQuality','?')} | "
             f"Readiness: {p.get('tradeReadiness','?')} | "
             f"Verdict: {p.get('sourceVerdict','?')} | "
+            f"Leveraged: {p.get('isLeveraged',False)} / "
+            f"IndependentValidation: {(p.get('leveragedAlternativeValidation') or {}).get('status','N/A')} / "
+            f"Admission: {p.get('admissionDecision','?')} | "
             f"Strategy: {p.get('strategy','?')}"
         )
 
@@ -37163,7 +37182,7 @@ RULES (you MUST follow):
 1. BUY means "no qualitative objection" only. The deterministic engine still requires market open, fresh executable ask inside the zone, CONFIRMED setup-specific trigger, GOOD data, PASS gate, valid geometry, attached protection, and account capacity.
 2. WATCH if the trigger is not ready, market is closed, quote is stale, evidence conflicts, event/regime risk needs monitoring, or a REVIEW warning is material.
 3. SKIP if Gate is BLOCK, data is POOR/need_data, geometry is invalid, setup is Watch Only/No Trade, verdict is rejected, or the thesis conflicts with validated evidence.
-4. Never promote READY_REVIEW, WAIT_FOR_ENTRY, BLOCKED, Watch Only, an unconfirmed trigger, leveraged alternatives, or incomplete data to execution-ready.
+4. Never promote READY_REVIEW, WAIT_FOR_ENTRY, BLOCKED, Watch Only, an unconfirmed trigger, an unvalidated leveraged alternative, or incomplete data to execution-ready. A leveraged product that carries its own completed Fine Scan, Deeper Validation, Admission, and confirmed setup trigger may only be confirmed or downgraded from its deterministic decision.
 5. confidence 0-100: how confident you are in this decision.
 6. decisionReason: 1-2 sentences explaining WHY this decision, what's the key factor. Mention how risk profile / time horizon influenced the decision if applicable.
 7. nextStep: very specific — what exact price level or condition to wait for. For BUY, where to place order. For WATCH, what trigger to monitor. For SKIP, what would need to change.
@@ -39230,11 +39249,25 @@ def ai_entry_plan():
                 'estimatedRoundTripCostBps': candidate_cost_bps,
                 'quotedSpreadBps': candidate_spread_bps,
                 'entryPlanInputSource': candidate_entry_source,
+                'admissionDecision': candidate.get('admissionDecision'),
                 'geometrySource': geometry_source,
                 'targetSource': geometry_source,
                 'capacityCapped': _capacity_capped,
                 'isLeveraged': bool(_product_profile.get('isLeveraged')),
                 'isInverse': bool(_product_profile.get('isInverse')),
+                'isLeveragedAlternativeCandidate': bool(
+                    candidate.get('isLeveragedAlternativeCandidate')
+                ),
+                'originalSymbol': (
+                    candidate.get('originalSymbol')
+                    if candidate.get('isLeveragedAlternativeCandidate')
+                    else symbol
+                ),
+                'leveragedAlternativeValidation': (
+                    candidate.get('leveragedAlternativeValidation')
+                    if candidate.get('isLeveragedAlternativeCandidate')
+                    else None
+                ),
                 'gearedProductProfile': _product_profile,
                 'leverageReason': (
                     'Server-classified approved long leveraged ETP with a 5% single-product, '
@@ -39615,23 +39648,6 @@ def ai_entry_plan():
 
         # ── 14. Leveraged ETF Alternative Lookup (per riskProfile allocation caps) ──
         if _lev_allowed:
-            LEVERAGED_ETF_MAP = {
-                'TSLA': ['TSLL', 'TSLR'],
-                'NVDA': ['NVDL', 'NVDU'],
-                'AAPL': ['AAPU'],
-                'AMZN': ['AMZU'],
-                'META': ['FBL'],
-                'GOOGL': ['GOOX'],
-                'MSFT': ['MSFU'],
-                'AMD': ['AMDL'],
-                'NFLX': ['NFXL'],
-                'COIN': ['CONL'],
-                'MSTR': ['MSTU', 'MSTX'],
-                'QQQ': ['TQQQ', 'QLD'],
-                'SPY': ['SPXL', 'UPRO', 'SSO'],
-                'IWM': ['TNA', 'UWM'],
-            }
-
             def _is_soft_blocker(blocker_text):
                 text = str(blocker_text).lower()
                 soft_kw = ['buying power', 'position', 'share', 'below minimum', 'exceeds max',
@@ -39656,7 +39672,7 @@ def ai_entry_plan():
                     continue
 
                 sym = plan['symbol'].upper()
-                mapping = LEVERAGED_ETF_MAP.get(sym)
+                mapping = LONG_LEVERAGED_ETP_ALTERNATIVES.get(sym)
                 if not mapping:
                     continue
 
@@ -39832,7 +39848,7 @@ def ai_entry_plan():
                         alt_warnings.append(f'Position capped by allocation limit ({alt_pos_pct:.1f}% of portfolio)')
 
                     alt_warnings.append(
-                        'Leveraged alternative requires its own Fine Scan, DV, and setup-trigger validation; it is never auto-promoted.'
+                        'Leveraged alternative requires its own Fine Scan, DV, Admission, and setup-trigger validation before auto-promotion.'
                     )
 
                     alt_gate = 'BLOCK' if (not alt_passed or alt_blockers) else ('REVIEW' if alt_warnings else 'PASS')
@@ -43994,6 +44010,149 @@ def _pa_market_scanner_headless(uid, trade_mode='paper', risk_profile='medium',
     scanner_summary = response.get('summary') if isinstance(response.get('summary'), dict) else {}
     scanner_stats = response.get('scan_stats') if isinstance(response.get('scan_stats'), dict) else {}
     return rows, scanner_summary, scanner_stats
+
+
+def _pa_market_scanner_symbols_headless(uid, symbols, trade_mode='paper',
+                                        risk_profile='medium', time_horizon='mid',
+                                        pipeline_mode='hybrid'):
+    """Run the institutional scanner for an explicit leveraged-ETP symbol set."""
+    normalized_symbols = list(dict.fromkeys(
+        _inst_clean_symbol(symbol) for symbol in (symbols or [])
+        if _inst_clean_symbol(symbol)
+    ))
+    if not normalized_symbols:
+        return [], {}, {}
+    scanner_settings = _pa_market_scanner_settings_for_user(uid)
+    payload = {
+        **scanner_settings,
+        'symbols': normalized_symbols,
+        'maxSymbols': max(25, len(normalized_symbols)),
+        'maxResults': max(5, len(normalized_symbols)),
+        'aiReviewTopN': min(len(normalized_symbols), _INST_SCANNER_AI_REVIEW_MAX_N),
+        'filters': {
+            **dict(scanner_settings['filters']),
+            'includeETFs': True,
+        },
+        'alpacaMode': 'live' if str(trade_mode).lower() in ('real', 'live') else 'paper',
+        'riskProfile': risk_profile,
+        'timeHorizon': time_horizon,
+        'pipelineMode': pipeline_mode,
+        'leverageEnabled': True,
+        'suppressDiscord': True,
+    }
+    response, status = _pa_call_endpoint(
+        uid,
+        '/api/market/scanner',
+        institutional_market_scanner,
+        payload,
+    )
+    if status >= 400 or not isinstance(response, dict) or not response.get('success'):
+        message = (response or {}).get('message') or (response or {}).get('error') or 'Targeted leveraged scanner failed'
+        raise RuntimeError('Leveraged alternative Market Scanner failed: %s' % str(message)[:300])
+    rows = response.get('results') if isinstance(response.get('results'), list) else []
+    scanner_summary = response.get('summary') if isinstance(response.get('summary'), dict) else {}
+    scanner_stats = response.get('scan_stats') if isinstance(response.get('scan_stats'), dict) else {}
+    return rows, scanner_summary, scanner_stats
+
+
+def _pa_leveraged_alternative_scan_targets(dv_results, max_underlyings=8):
+    """Return unique approved long leveraged alternatives for confirmed underlyings."""
+    targets = []
+    seen_alternatives = set()
+    used_underlyings = 0
+    for result in (dv_results or []):
+        if not _pa_is_dv_confirmed(result):
+            continue
+        underlying = str(result.get('symbol') or '').upper().strip()
+        alternatives = LONG_LEVERAGED_ETP_ALTERNATIVES.get(underlying) or ()
+        if not alternatives:
+            continue
+        used_underlyings += 1
+        for alternative in alternatives:
+            symbol = str(alternative or '').upper().strip()
+            if (
+                not symbol
+                or symbol in seen_alternatives
+                or symbol not in APPROVED_LONG_LEVERAGED_ETPS
+            ):
+                continue
+            seen_alternatives.add(symbol)
+            targets.append({
+                'symbol': symbol,
+                'originalSymbol': underlying,
+                'alternativeDirection': 'bull',
+                'isLeveragedAlternativeCandidate': True,
+            })
+        if used_underlyings >= max(1, int(max_underlyings or 1)):
+            break
+    return targets
+
+
+def _pa_entry_candidate_from_admission(admission):
+    candidate = dict((admission or {}).get('sourceCandidate') or {})
+    candidate['admission'] = {
+        key: value for key, value in (admission or {}).items()
+        if key != 'sourceCandidate'
+    }
+    candidate['signalSnapshot'] = (admission or {}).get('signalSnapshot')
+    candidate['admissionDecision'] = (admission or {}).get('admissionDecision')
+    candidate['entryIntent'] = (admission or {}).get('entryIntent') or 'NEW_POSITION'
+    candidate['scaleInAssessment'] = (admission or {}).get('scaleInAssessment')
+    if candidate.get('isLeveragedAlternativeCandidate'):
+        candidate['leveragedAlternativeValidation'] = {
+            'status': 'COMPLETED',
+            'independentInstrument': candidate.get('symbol'),
+            'originalSymbol': candidate.get('originalSymbol'),
+            'fineScanValidated': True,
+            'deeperValidationConfirmed': _pa_is_dv_confirmed(candidate),
+            'admissionDecision': (admission or {}).get('admissionDecision'),
+        }
+    return candidate
+
+
+def _pa_merge_revalidated_leveraged_plans(entry_plans, revalidated_plans, targets):
+    """Replace review-only leveraged placeholders with independently validated plans."""
+    target_by_symbol = {
+        str(row.get('symbol') or '').upper(): row
+        for row in (targets or []) if row.get('symbol')
+    }
+    validated_by_symbol = {
+        str(row.get('symbol') or '').upper(): row
+        for row in (revalidated_plans or []) if row.get('symbol')
+    }
+    merged = []
+    for plan in (entry_plans or []):
+        symbol = str(plan.get('symbol') or '').upper()
+        target = target_by_symbol.get(symbol)
+        validated = validated_by_symbol.get(symbol)
+        if not (plan.get('isLeveragedAlternative') and target and validated):
+            merged.append(plan)
+            continue
+        replacement = dict(validated)
+        replacement.update({
+            'isLeveragedAlternative': True,
+            'isLeveragedAlternativeCandidate': True,
+            'originalSymbol': target.get('originalSymbol'),
+            'underlyingSymbol': target.get('originalSymbol'),
+            'alternativeDirection': target.get('alternativeDirection') or 'bull',
+            'alternativeFailed': False,
+            'alternativeReason': (
+                '%s was blocked by position/capital limits; %s completed its own '
+                'Market Scan, Fine Scan, Deeper Validation, Admission, and entry-trigger evaluation.'
+                % (target.get('originalSymbol'), symbol)
+            ),
+            'leveragedAlternativeValidation': {
+                'status': 'COMPLETED',
+                'independentInstrument': symbol,
+                'originalSymbol': target.get('originalSymbol'),
+                'fineScanValidated': True,
+                'deeperValidationConfirmed': True,
+                'admissionDecision': replacement.get('admissionDecision'),
+                'entryTriggerStatus': replacement.get('entryTriggerStatus'),
+            },
+        })
+        merged.append(replacement)
+    return merged
 
 
 def _pa_continue_scan_headless(scanner_results,
@@ -48270,9 +48429,13 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
     STAGE_TIMEOUTS = {
         'market_scanner': 900,  # 15 min for scanner with 50 symbols + AI analysis
         'fine_scan': 120,
-        'deeper_validation': 120,
+        # Leveraged alternatives that may replace a capital-blocked underlying
+        # receive their own targeted scanner, Fine Scan, and DV pass here.
+        'deeper_validation': 240,
         'admission': 90,
-        'entry_plan': 60,
+        # A capital-blocked underlying may trigger one additional Entry Plan
+        # pass for an independently validated leveraged alternative.
+        'entry_plan': 120,
         'execution': 60,
         # Exit protection may need broker positions/orders/account, cold market
         # history, news context, and one bounded AI challenge.  Sixty seconds
@@ -48745,7 +48908,140 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                                 message='Deeper Validation: skipped (%s)' % _skip_reason,
                                 step_data={'total': 0, 'processed': 0, 'input_count': _dv_input_count, 'dq_blocked': _dv_dq_blocked})
         dv_results = dv_results or []
+
+        # A leveraged alternative is a different instrument and therefore cannot
+        # inherit the underlying's research. Pre-validate approved alternatives
+        # for confirmed underlyings now; they remain quarantined from Admission
+        # until Entry Plan proves the underlying was actually blocked by capital.
+        leveraged_alt_targets = (
+            _pa_leveraged_alternative_scan_targets(dv_results)
+            if leverage_enabled else []
+        )
+        leveraged_market_results = []
+        leveraged_fine_results = []
+        leveraged_dv_results = []
+        leveraged_alt_validation_error = ''
+        if leveraged_alt_targets:
+            try:
+                _target_by_alt_symbol = {
+                    row['symbol']: row for row in leveraged_alt_targets
+                }
+                _target_symbols = [row['symbol'] for row in leveraged_alt_targets]
+                _pa_log(
+                    '[AutoPipeline] leveraged_revalidation start targets=%s'
+                    % str(_target_symbols)
+                )
+                leveraged_market_results, _, _ = _pa_market_scanner_symbols_headless(
+                    uid,
+                    _target_symbols,
+                    trade_mode=trade_mode,
+                    risk_profile=risk_profile,
+                    time_horizon=time_horizon,
+                    pipeline_mode=mode,
+                )
+                for row in leveraged_market_results:
+                    target = _target_by_alt_symbol.get(
+                        str(row.get('symbol') or '').upper()
+                    )
+                    if target:
+                        row.update(target)
+
+                if leveraged_market_results:
+                    with headless_user_context(uid):
+                        leveraged_fine_results = _pa_fine_scan_headless(
+                            uid,
+                            leveraged_market_results,
+                            risk_profile=risk_profile,
+                            time_horizon=time_horizon,
+                            pipeline_mode=mode,
+                            trade_mode=trade_mode,
+                        ) or []
+                for row in leveraged_fine_results:
+                    target = _target_by_alt_symbol.get(
+                        str(row.get('symbol') or '').upper()
+                    )
+                    if target:
+                        row.update(target)
+
+                _leveraged_fine_candidates = []
+                for row in leveraged_fine_results:
+                    decision = row.get('decision', '')
+                    blockers = row.get('decisionBlockers') or []
+                    has_critical = any(
+                        re.search(_critical_blocker_pattern, str(blocker), re.IGNORECASE)
+                        for blocker in blockers
+                    )
+                    confidence = float(row.get('matchConfidence') or 0)
+                    data_quality = str(row.get('dataQuality') or '').lower()
+                    decision_ok = (
+                        decision == 'Continue'
+                        or (
+                            decision == 'Watch'
+                            and not has_critical
+                            and confidence >= 50
+                        )
+                    )
+                    if decision_ok and data_quality not in (
+                        'unavailable', 'need_data', 'failed', 'partial'
+                    ):
+                        _leveraged_fine_candidates.append(row)
+
+                if _leveraged_fine_candidates:
+                    alt_dv_resp, alt_dv_status = _pa_call_endpoint(
+                        uid,
+                        '/api/ai/deeper-validation',
+                        deeper_validation,
+                        {
+                            'candidates': _leveraged_fine_candidates[:8],
+                            'period': '2y',
+                            'initialCapital': 100000,
+                            'riskProfile': risk_profile,
+                            'timeHorizon': time_horizon,
+                            'pipelineMode': mode,
+                            'tradeMode': trade_mode,
+                        },
+                    )
+                    if alt_dv_status < 400 and alt_dv_resp.get('success'):
+                        leveraged_dv_results = alt_dv_resp.get('results') or []
+                    else:
+                        raise RuntimeError(
+                            alt_dv_resp.get('message')
+                            or 'Leveraged alternative Deeper Validation failed'
+                        )
+                for row in leveraged_dv_results:
+                    target = _target_by_alt_symbol.get(
+                        str(row.get('symbol') or '').upper()
+                    )
+                    if target:
+                        row.update(target)
+                _pa_log(
+                    '[AutoPipeline] leveraged_revalidation done market=%d fine=%d dv=%d confirmed=%d'
+                    % (
+                        len(leveraged_market_results),
+                        len(leveraged_fine_results),
+                        len(leveraged_dv_results),
+                        sum(
+                            1 for row in leveraged_dv_results
+                            if _pa_is_dv_confirmed(row)
+                        ),
+                    )
+                )
+            except _BackendScanCancelled:
+                raise
+            except Exception as alt_validation_error:
+                leveraged_alt_validation_error = str(alt_validation_error)[:300]
+                _pa_log_error(
+                    '[AutoPipeline] leveraged_revalidation unavailable: %s'
+                    % leveraged_alt_validation_error
+                )
+            _check_stopped()
+            _check_timeout('deeper_validation')
+
         run_context['validation_results'] = dv_results
+        run_context['leveraged_alternative_targets'] = leveraged_alt_targets
+        run_context['leveraged_market_results'] = leveraged_market_results
+        run_context['leveraged_fine_results'] = leveraged_fine_results
+        run_context['leveraged_validation_results'] = leveraged_dv_results
         # Verdict breakdown for stats
         _dv_verdicts = {'Confirmed': 0, 'Watch': 0, 'Review': 0, 'Rejected': 0, 'Reject': 0, 'Blocked': 0, 'Pass': 0}
         _dv_failed = 0
@@ -48765,10 +49061,33 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
             'failed': _dv_failed,
             'top_confirmed': _dv_top_confirmed[:10],
             'top_candidates': [_fc.get('symbol') for _fc in (_dv_candidates or [])[:12]],
+            'leveragedAlternatives': {
+                'targets': leveraged_alt_targets,
+                'marketScanCount': len(leveraged_market_results),
+                'fineScanCount': len(leveraged_fine_results),
+                'deeperValidationCount': len(leveraged_dv_results),
+                'confirmedSymbols': [
+                    row.get('symbol') for row in leveraged_dv_results
+                    if _pa_is_dv_confirmed(row)
+                ],
+                'error': leveraged_alt_validation_error or None,
+                'policy': 'independent_instrument_revalidation',
+            },
         }
-        summary['validation_count'] = len(dv_results)
+        _fs_stats['leveragedAlternatives'] = {
+            'targetCount': len(leveraged_alt_targets),
+            'marketScanCount': len(leveraged_market_results),
+            'fineScanCount': len(leveraged_fine_results),
+        }
+        summary['fine_count'] = len(fine_results) + len(leveraged_fine_results)
+        summary['validation_count'] = len(dv_results) + len(leveraged_dv_results)
         summary['validation_stats'] = _dv_stats
-        summary['steps'].append({'step': 'deeper_validation', 'status': 'completed', 'count': len(dv_results), 'stats': _dv_stats})
+        summary['steps'].append({
+            'step': 'deeper_validation',
+            'status': 'completed',
+            'count': len(dv_results) + len(leveraged_dv_results),
+            'stats': _dv_stats,
+        })
         _pa_log('[AutoPipeline] stage=deeper_validation done total=%d confirmed=%d watch=%d review=%d rejected=%d blocked=%d failed=%d dq_blocked=%d top=%s' % (
             len(dv_results), _dv_verdicts.get('Confirmed', 0), _dv_verdicts.get('Watch', 0),
             _dv_verdicts.get('Review', 0), _dv_verdicts.get('Rejected', 0),
@@ -48927,15 +49246,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         for admission in admission_results:
             if admission.get('admissionDecision') != 'ADMIT':
                 continue
-            candidate = dict(admission.get('sourceCandidate') or {})
-            candidate['admission'] = {
-                key: value for key, value in admission.items() if key != 'sourceCandidate'
-            }
-            candidate['signalSnapshot'] = admission.get('signalSnapshot')
-            candidate['admissionDecision'] = 'ADMIT'
-            candidate['entryIntent'] = admission.get('entryIntent') or 'NEW_POSITION'
-            candidate['scaleInAssessment'] = admission.get('scaleInAssessment')
-            ep_candidates.append(candidate)
+            ep_candidates.append(_pa_entry_candidate_from_admission(admission))
         ep_candidates = ep_candidates[:ENTRY_PLAN_MAX_CANDIDATES]
 
         _ep_verdict_counts = {}
@@ -49005,6 +49316,156 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                                 message='Entry Plan: skipped (no validation candidates — all symbols were filtered before DV)',
                                 step_data={'total': 0, 'processed': 0, 'buy': 0, 'watch': 0, 'skip': 0})
         entry_plans = entry_plans or []
+
+        # The initial Entry Plan may discover that an otherwise valid underlying
+        # cannot be bought because of capital/position constraints. Only then do
+        # we release the already independently validated alternative into its own
+        # Admission + Entry Plan pass. The fresh plan replaces the review-only
+        # placeholder and may become BUY_READY only through the normal trigger gate.
+        leveraged_alt_admission_results = []
+        leveraged_alt_admission_stats = {}
+        leveraged_revalidated_plans = []
+        _leveraged_placeholder_symbols = {
+            str(plan.get('symbol') or '').upper()
+            for plan in entry_plans
+            if plan.get('isLeveragedAlternative')
+            and plan.get('finalAction') == 'READY_REVIEW'
+        }
+        _leveraged_confirmed_results = [
+            row for row in leveraged_dv_results
+            if (
+                str(row.get('symbol') or '').upper()
+                in _leveraged_placeholder_symbols
+                and _pa_is_dv_confirmed(row)
+            )
+        ]
+        if _leveraged_confirmed_results:
+            leveraged_alt_admission_results, leveraged_alt_admission_stats = _pa_run_admission(
+                uid,
+                _leveraged_confirmed_results,
+                fine_results=leveraged_fine_results,
+                market_results=leveraged_market_results,
+                account_state=pipeline_account_state,
+                risk_profile=risk_profile,
+                time_horizon=time_horizon,
+                pipeline_mode=mode,
+                ai_enabled=True,
+            )
+            _check_timeout('entry_plan')
+            _leveraged_ep_candidates = [
+                _pa_entry_candidate_from_admission(admission)
+                for admission in leveraged_alt_admission_results
+                if admission.get('admissionDecision') == 'ADMIT'
+            ]
+            if _leveraged_ep_candidates:
+                _pa_log(
+                    '[AutoPipeline] leveraged_entry_plan start symbols=%s'
+                    % str([
+                        row.get('symbol') for row in _leveraged_ep_candidates
+                    ])
+                )
+                leveraged_ep_resp, leveraged_ep_status = _pa_call_endpoint(
+                    uid,
+                    '/api/ai/entry-plan',
+                    ai_entry_plan,
+                    {
+                        'candidates': _leveraged_ep_candidates,
+                        'accountSize': pipeline_account_size,
+                        'riskPerTradePct': _ep_risk_pct,
+                        'maxPositionPct': strategy_policy['maxSinglePositionPct'],
+                        'existingPositions': pipeline_holdings,
+                        'dailyLoss': 0,
+                        'holdingSymbols': pipeline_holdings,
+                        'executionMode': _ep_exec_mode,
+                        'accountMode': trade_mode,
+                        'riskProfile': risk_profile,
+                        'timeHorizon': time_horizon,
+                        'pipelineMode': mode,
+                        'leverageEnabled': True,
+                        'suppressDiscord': True,
+                    },
+                )
+                _check_stopped()
+                _check_timeout('entry_plan')
+                if leveraged_ep_status < 400 and leveraged_ep_resp.get('success'):
+                    leveraged_revalidated_plans = leveraged_ep_resp.get('plans') or []
+                    _leveraged_admission_by_symbol = {
+                        str(row.get('symbol') or '').upper(): row
+                        for row in leveraged_alt_admission_results
+                        if row.get('symbol')
+                    }
+                    for plan in leveraged_revalidated_plans:
+                        admission = _leveraged_admission_by_symbol.get(
+                            str(plan.get('symbol') or '').upper()
+                        )
+                        if not admission:
+                            continue
+                        plan['admissionDecision'] = admission.get('admissionDecision')
+                        plan['admissionScore'] = admission.get('admissionScore')
+                        plan['admissionSnapshot'] = admission.get('signalSnapshot')
+                        plan['admissionWarnings'] = admission.get('warnings') or []
+                        plan['admissionAiReview'] = admission.get('aiAdmissionReview')
+                else:
+                    leveraged_alt_validation_error = (
+                        leveraged_ep_resp.get('message')
+                        or 'Leveraged alternative Entry Plan failed'
+                    )
+
+        entry_plans = _pa_merge_revalidated_leveraged_plans(
+            entry_plans,
+            leveraged_revalidated_plans,
+            leveraged_alt_targets,
+        )
+        _revalidated_symbols = {
+            str(plan.get('symbol') or '').upper()
+            for plan in leveraged_revalidated_plans
+        }
+        _alt_admission_by_symbol = {
+            str(row.get('symbol') or '').upper(): row
+            for row in leveraged_alt_admission_results
+            if row.get('symbol')
+        }
+        for plan in entry_plans:
+            symbol = str(plan.get('symbol') or '').upper()
+            if (
+                not plan.get('isLeveragedAlternative')
+                or symbol in _revalidated_symbols
+                or symbol not in _leveraged_placeholder_symbols
+            ):
+                continue
+            admission = _alt_admission_by_symbol.get(symbol)
+            if leveraged_alt_validation_error:
+                reason = (
+                    'Independent leveraged-instrument validation was unavailable: %s'
+                    % leveraged_alt_validation_error
+                )
+            elif not any(
+                str(row.get('symbol') or '').upper() == symbol
+                and _pa_is_dv_confirmed(row)
+                for row in leveraged_dv_results
+            ):
+                reason = (
+                    '%s did not pass its independent Fine Scan and Deeper Validation.'
+                    % symbol
+                )
+            elif admission and admission.get('admissionDecision') != 'ADMIT':
+                reason = (
+                    '%s independent Admission decision is %s: %s'
+                    % (
+                        symbol,
+                        admission.get('admissionDecision'),
+                        admission.get('decisionReason') or 'portfolio gate held the candidate',
+                    )
+                )
+            else:
+                reason = '%s independent Entry Plan was not execution-ready.' % symbol
+            plan['entryReadiness'] = 'Independent Validation Required'
+            plan['readyReviewReason'] = reason
+            plan['decisionReason'] = reason
+
+        run_context['leveraged_admission_results'] = leveraged_alt_admission_results
+        run_context['leveraged_admission_stats'] = leveraged_alt_admission_stats
+        run_context['leveraged_revalidated_plans'] = leveraged_revalidated_plans
         run_context['entry_plans'] = entry_plans
         # Comprehensive action counts
         buy_count = sum(1 for p in entry_plans if p.get('finalAction') == 'BUY_READY')
