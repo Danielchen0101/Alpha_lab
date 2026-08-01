@@ -24,3 +24,11 @@ condition = "AND"
 regexTarget = "line"
 paths = ['''backend/tests/test_kalshi_api_contract\.py$''']
 regexes = ['''monkeypatch\.setattr\(kalshi_api,\s*['"]evaluate_btc15_contract['"]''']
+
+[[allowlists]]
+description = "Ignore the stable Discord retry artifact type, which is an internal queue label rather than a client secret."
+targetRules = ["discord-client-secret"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''backend/start_quant_backend\.py$''']
+regexes = ['''_DISCORD_RETRY_ARTIFACT_TYPE\s*=\s*['"]discord_notification_retry_queue['"]''']
