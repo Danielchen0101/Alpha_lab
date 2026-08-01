@@ -723,6 +723,70 @@ def test_cycle_digest_keeps_scheduled_noop_quiet_but_reports_run_now(monkeypatch
     assert sent[0][1]["universeScanned"] == 1500
 
 
+def test_cycle_digest_counts_only_new_fills_and_preserves_final_plan_reason(monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        backend,
+        "_pa_discord_send_once",
+        lambda uid, run_id, event_type, payload: sent.append((event_type, payload)) or {"sent": True},
+    )
+    summary = {
+        "errors": 0,
+        "scannedTotal": 1500,
+        "scanned": 100,
+        "fine_count": 30,
+        "entry_plan_count": 1,
+        "orders_submitted": 0,
+        "durationSeconds": 394.4,
+        "order_lifecycle_before": {"checked": 162, "filled": 40, "failed": 122},
+        "order_lifecycle_after": {"checked": 162, "filled": 40, "failed": 122},
+    }
+    context = {
+        "validation_results": [{"verdict": "Confirmed"}],
+        "entry_plans": [{
+            "symbol": "CSX",
+            "finalAction": "SKIP",
+            "setup": "Watch Only",
+            "entryReadiness": "Watch Only",
+            "entryTriggerStatus": "NOT_ELIGIBLE",
+            "entryTriggerMet": False,
+            "entryTriggerReasons": ["The selected setup is research-only."],
+            "setupAutoEligible": False,
+            "hardRiskGate": {"status": "PASS", "blockers": [], "warnings": []},
+            "dataQuality": "GOOD",
+            "aiDecision": "WATCH",
+            "decisionReason": "Do not submit an order without an eligible trigger.",
+        }],
+        "exit_results": {"holdingsScanned": 0, "submitted": []},
+    }
+
+    quiet = backend._pa_send_cycle_digest(
+        "user-1", "scheduled-1", "market_auto_run", "ai", "real", summary, context
+    )
+    reported = backend._pa_send_cycle_digest(
+        "user-1", "manual-now-1", "auto_run_now", "ai", "real", summary, context
+    )
+
+    assert quiet == {"sent": False, "reason": "scheduled_no_material_action"}
+    assert reported["sent"] is True
+    assert len(sent) == 1
+    payload = sent[0][1]
+    assert payload["brokerFills"] == 0
+    assert payload["entryPlanCounts"] == {
+        "buyReady": 0, "review": 0, "wait": 0, "skipped": 1, "blocked": 0,
+    }
+    assert payload["planOutcomes"][0]["symbol"] == "CSX"
+    assert payload["planOutcomes"][0]["finalAction"] == "SKIP"
+    assert payload["planOutcomes"][0]["reason"] == "The selected setup is research-only."
+
+    summary["order_lifecycle_after"]["filled"] = 41
+    material = backend._pa_send_cycle_digest(
+        "user-1", "scheduled-2", "market_auto_run", "ai", "real", summary, context
+    )
+    assert material["sent"] is True
+    assert sent[-1][1]["brokerFills"] == 1
+
+
 def test_auto_run_now_executes_backend_chain_without_frontend_claim(monkeypatch):
     executions = []
     releases = []

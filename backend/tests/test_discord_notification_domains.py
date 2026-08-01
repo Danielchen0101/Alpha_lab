@@ -359,3 +359,33 @@ def test_crypto_cycle_digest_has_domain_specific_fields():
     assert embed["title"] == "Crypto 周期已完成"
     assert "研究流程" not in names
     assert "已处理交易对" in names
+
+
+def test_equity_cycle_digest_explains_why_a_plan_did_not_submit():
+    embed = backend._discord_embed(
+        "cycle_digest",
+        {
+            "_language": "zh-CN",
+            "notificationScope": "research",
+            "mode": "AI / REAL",
+            "universeScanned": 1500,
+            "rankedCandidates": 100,
+            "fineScanned": 30,
+            "dvPassed": 1,
+            "entryPlans": 1,
+            "ordersSubmitted": 0,
+            "brokerFills": 0,
+            "holdingsScanned": 0,
+            "protectionActions": 0,
+            "planOutcomes": [{
+                "symbol": "CSX",
+                "finalAction": "SKIP",
+                "reason": "The selected setup is research-only.",
+            }],
+            "durationSeconds": 394.4,
+        },
+    )
+
+    decision = next(field for field in embed["fields"] if field["name"] == "最终计划决策")
+    assert "CSX · 跳过" in decision["value"]
+    assert "research-only" in decision["value"]

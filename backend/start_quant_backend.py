@@ -1663,6 +1663,33 @@ def _discord_embed(event_type, payload):
             {'name': cp('Position Protection', '持仓保护'), 'value': cp('%s scanned | %s actions', '%s 个持仓已检查 | %s 个保护操作') % (
                 _fmt(payload.get('holdingsScanned'), 0), _fmt(payload.get('protectionActions'), 0)), 'inline': True},
         ]
+        plan_outcomes = payload.get('planOutcomes') or []
+        if plan_outcomes:
+            action_labels = {
+                'BUY_READY': cp('Ready to buy', '可自动买入'),
+                'READY_REVIEW': cp('Review', '需要复核'),
+                'WAIT_FOR_ENTRY': cp('Wait for entry', '等待入场'),
+                'WATCH': cp('Watch', '观察'),
+                'SKIP': cp('Skip', '跳过'),
+                'BLOCKED_BY_RISK': cp('Risk blocked', '风控拦截'),
+            }
+            outcome_lines = []
+            for row in plan_outcomes[:8]:
+                if not isinstance(row, dict):
+                    continue
+                symbol = str(row.get('symbol') or '-').upper()
+                action = str(row.get('finalAction') or 'UNKNOWN').upper()
+                reason = str(row.get('reason') or '').strip()
+                line = '%s · %s' % (symbol, action_labels.get(action, action.replace('_', ' ')))
+                if reason:
+                    line += ' — ' + reason[:220]
+                outcome_lines.append(line)
+            if outcome_lines:
+                fields.append({
+                    'name': cp('Final Plan Decisions', '最终计划决策'),
+                    'value': '\n'.join(outcome_lines)[:1024],
+                    'inline': False,
+                })
         recommendations = (payload.get('recommendationsZh') if zh else payload.get('recommendations')) or []
         if recommendations:
             fields.append({
@@ -48293,6 +48320,69 @@ def _pa_pipeline_count_decisions(items, field, values):
     return counts
 
 
+def _pa_entry_plan_outcomes(entry_plans, limit=8):
+    """Return the durable, human-readable part of each final plan decision.
+
+    A generated plan is not necessarily executable: it can finish as
+    BUY_READY, WAIT_FOR_ENTRY, READY_REVIEW, SKIP, or BLOCKED_BY_RISK.  Keep
+    the final gate evidence in the run summary so a later diagnosis does not
+    depend on an ephemeral in-process debug dump.
+    """
+    outcomes = []
+    for plan in (entry_plans or [])[:max(0, int(limit or 0))]:
+        if not isinstance(plan, dict):
+            continue
+        action = str(plan.get('finalAction') or 'UNKNOWN').strip().upper()
+        hard_gate = plan.get('hardRiskGate') if isinstance(plan.get('hardRiskGate'), dict) else {}
+        blockers = [str(value)[:240] for value in (hard_gate.get('blockers') or plan.get('blockers') or []) if value][:3]
+        warnings = [str(value)[:240] for value in (hard_gate.get('warnings') or []) if value][:3]
+        trigger_reasons = [str(value)[:240] for value in (plan.get('entryTriggerReasons') or []) if value][:3]
+        reason = ''
+        if action == 'BLOCKED_BY_RISK' and blockers:
+            reason = blockers[0]
+        elif action == 'SKIP' and plan.get('setupAutoEligible') is False:
+            reason = trigger_reasons[0] if trigger_reasons else 'The validated setup is not eligible for automatic entry.'
+        elif action == 'SKIP' and str(plan.get('aiDecision') or '').upper() == 'SKIP':
+            reason = str(plan.get('aiDecisionReason') or plan.get('decisionReason') or '').strip()
+        elif action in ('WAIT_FOR_ENTRY', 'READY_REVIEW') and trigger_reasons:
+            reason = trigger_reasons[0]
+        if not reason:
+            reason = str(
+                plan.get('readyReviewReason')
+                or plan.get('decisionReason')
+                or plan.get('reason')
+                or ''
+            ).strip()
+        outcomes.append({
+            'symbol': str(plan.get('symbol') or '').upper(),
+            'finalAction': action,
+            'setup': str(plan.get('setup') or ''),
+            'entryReadiness': str(plan.get('entryReadiness') or ''),
+            'entryTriggerStatus': str(plan.get('entryTriggerStatus') or ''),
+            'entryTriggerMet': bool(plan.get('entryTriggerMet')),
+            'setupAutoEligible': bool(plan.get('setupAutoEligible')),
+            'riskGateStatus': str(hard_gate.get('status') or ''),
+            'dataQuality': str(plan.get('dataQuality') or ''),
+            'aiDecision': str(plan.get('aiDecision') or ''),
+            'reason': reason[:500],
+            'blockers': blockers,
+            'warnings': warnings,
+        })
+    return outcomes
+
+
+def _pa_new_broker_fill_count(lifecycle_before, lifecycle_after):
+    """Count fills first observed during this cycle, not historical totals."""
+    before = lifecycle_before if isinstance(lifecycle_before, dict) else {}
+    after = lifecycle_after if isinstance(lifecycle_after, dict) else {}
+    try:
+        before_filled = max(0, int(before.get('filled') or 0))
+        after_filled = max(0, int(after.get('filled') or 0))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, after_filled - before_filled)
+
+
 def _pa_send_cycle_digest(uid, run_id, trigger, mode, trade_mode, summary, run_context):
     """Send one compact cycle result; scheduled no-op cycles intentionally stay quiet."""
     if trigger in ('manual', 'headless_test') or not isinstance(summary, dict):
@@ -48301,7 +48391,7 @@ def _pa_send_cycle_digest(uid, run_id, trigger, mode, trade_mode, summary, run_c
     exit_summary = exit_summary if isinstance(exit_summary, dict) else {}
     lifecycle_before = summary.get('order_lifecycle_before') if isinstance(summary.get('order_lifecycle_before'), dict) else {}
     lifecycle_after = summary.get('order_lifecycle_after') if isinstance(summary.get('order_lifecycle_after'), dict) else {}
-    broker_fills = int(lifecycle_before.get('filled') or 0) + int(lifecycle_after.get('filled') or 0)
+    broker_fills = _pa_new_broker_fill_count(lifecycle_before, lifecycle_after)
     protection_actions = len(exit_summary.get('submitted') or [])
     emergency_actions = int(exit_summary.get('sellNowCount') or 0)
     orders_submitted = int(summary.get('orders_submitted') or 0)
@@ -48310,6 +48400,8 @@ def _pa_send_cycle_digest(uid, run_id, trigger, mode, trade_mode, summary, run_c
         return {'sent': False, 'reason': 'scheduled_no_material_action'}
 
     dv_results = run_context.get('validation_results') or []
+    entry_plans = run_context.get('entry_plans') or []
+    plan_outcomes = _pa_entry_plan_outcomes(entry_plans)
     dv_passed = sum(1 for row in dv_results if _pa_is_dv_confirmed(row))
     need_data = int(summary.get('needData') or 0)
     universe_scanned = int(summary.get('scannedTotal') or 0)
@@ -48328,6 +48420,14 @@ def _pa_send_cycle_digest(uid, run_id, trigger, mode, trade_mode, summary, run_c
         'fineScanned': int(summary.get('fine_count') or 0),
         'dvPassed': dv_passed,
         'entryPlans': int(summary.get('entry_plan_count') or 0),
+        'entryPlanCounts': {
+            'buyReady': sum(1 for row in plan_outcomes if row.get('finalAction') == 'BUY_READY'),
+            'review': sum(1 for row in plan_outcomes if row.get('finalAction') == 'READY_REVIEW'),
+            'wait': sum(1 for row in plan_outcomes if row.get('finalAction') in ('WAIT_FOR_ENTRY', 'WATCH')),
+            'skipped': sum(1 for row in plan_outcomes if row.get('finalAction') == 'SKIP'),
+            'blocked': sum(1 for row in plan_outcomes if row.get('finalAction') == 'BLOCKED_BY_RISK'),
+        },
+        'planOutcomes': plan_outcomes,
         'ordersSubmitted': orders_submitted,
         'brokerFills': broker_fills,
         'holdingsScanned': int(exit_summary.get('holdingsScanned') or summary.get('exit_scan_count') or 0),
@@ -49686,9 +49786,12 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         summary['watch_count'] = watch_count
         summary['skip_count'] = skip_count
         summary['need_data_count'] = need_data_count
+        entry_plan_outcomes = _pa_entry_plan_outcomes(entry_plans, limit=15)
+        summary['entry_plan_outcomes'] = entry_plan_outcomes
         summary['steps'].append({'step': 'entry_plan', 'status': 'completed' if entry_plans else 'completed_no_candidates',
                                  'count': len(entry_plans), 'buy': buy_count, 'review': review_count, 'watch': watch_count, 'skip': skip_count,
-                                 'need_data': need_data_count, 'empty_reason': _ep_empty_reason})
+                                 'need_data': need_data_count, 'empty_reason': _ep_empty_reason,
+                                 'outcomes': entry_plan_outcomes})
         _pa_log('[AutoPipeline] stage=entry_plan done buy=%d watch=%d skip=%d need_data=%d total=%d' % (buy_count, watch_count, skip_count, need_data_count, len(entry_plans)))
         _pa_active_run_step(uid, 'entry_plan', 5, _PA_PIPELINE_TOTAL_STEPS, 'completed',
                             message='Entry Plan: %d plans (buy=%d watch=%d skip=%d need_data=%d)' % (len(entry_plans), buy_count, watch_count, skip_count, need_data_count),
