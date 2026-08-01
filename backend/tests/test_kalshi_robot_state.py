@@ -2,7 +2,98 @@ import json
 import copy
 from datetime import datetime, timezone
 
-from kalshi_robot_state import KalshiRobotState
+from kalshi_robot_state import (
+    KalshiRobotState,
+    _order_fill_count,
+    _settlement_result,
+)
+
+
+def test_realized_analytics_exposes_payoff_asymmetry_and_drawdown():
+    pnls = [1.0, -0.5, 0.25, -0.75, 2.0]
+    strategy = {
+        "settlementRecords": [
+            {
+                "environment": "paper",
+                "ticker": f"KXBTC15M-{index}",
+                "settledAt": f"2026-07-2{index}T00:00:00Z",
+                "pnl": pnl,
+            }
+            for index, pnl in enumerate(pnls, start=1)
+        ],
+        "closedTradeRecords": [],
+    }
+
+    KalshiRobotState._sync_realized_analytics(strategy, "paper")
+
+    assert strategy["realizedAverageWin"] == 1.0833
+    assert strategy["realizedAverageLoss"] == 0.625
+    assert strategy["realizedProfitFactor"] == 2.6
+    assert strategy["realizedRecoveryMultiple"] == 0.5769
+    assert strategy["realizedMaxDrawdown"] == 1.0
+
+
+def test_fixed_point_fill_count_is_authoritative_including_zero():
+    assert _order_fill_count({
+        "status": "filled",
+        "fill_count_fp": "0.30",
+        "fill_count": 1,
+    }) == 0.30
+    assert _order_fill_count({
+        "status": "filled",
+        "fill_count_fp": "0.00",
+        "fill_count": 1,
+        "count_fp": "0.30",
+        "count": 1,
+    }) == 0.0
+    assert _order_fill_count({
+        "status": "filled",
+        "count_fp": "0.30",
+        "count": 1,
+    }) == 0.30
+    assert _order_fill_count({
+        "status": "filled",
+        "fill_count_fp": "nan",
+        "fill_count": 1,
+    }) == 0.0
+    assert _order_fill_count({
+        "status": "filled",
+        "count_fp": "Infinity",
+        "count": 1,
+    }) == 0.0
+
+
+def test_non_finite_settlement_outcome_fails_closed():
+    assert _settlement_result({"value": "nan"}) == ""
+    assert _settlement_result({"value": "Infinity"}) == ""
+
+
+def test_realized_records_sort_mixed_offsets_by_utc():
+    strategy = {
+        "settlementRecords": [
+            {
+                "environment": "paper",
+                "ticker": "late",
+                "settledAt": "2026-07-21T01:00:00Z",
+                "pnl": -2.0,
+            },
+            {
+                "environment": "paper",
+                "ticker": "early",
+                "settledAt": "2026-07-21T02:00:00+02:00",
+                "pnl": 1.0,
+            },
+        ],
+        "closedTradeRecords": [],
+    }
+
+    KalshiRobotState._sync_realized_analytics(strategy, "paper")
+
+    assert [row["ticker"] for row in strategy["equityCurve"]] == [
+        "early",
+        "late",
+    ]
+    assert strategy["realizedMaxDrawdown"] == 2.0
 
 
 def test_decision_log_survives_process_restart(tmp_path):
@@ -482,6 +573,43 @@ def test_settlement_calibration_is_idempotent(tmp_path):
     assert first["strategy"]["settledSamples"] == 1
     assert first["strategy"]["winRate"] == 1.0
     assert second["strategy"]["settledSamples"] == 1
+
+
+def test_explicit_zero_fp_settlement_count_never_revives_legacy_position(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    ticker = "KXBTC15M-ZERO-FP"
+    store.record("user-1", {
+        "generatedAt": "2026-07-21T00:00:00Z",
+        "action": "BUY_YES",
+        "side": "YES",
+        "blockingReasons": [],
+        "market": {"ticker": ticker},
+        "edge": {"fairProbability": 0.70, "price": 0.55},
+    }, {
+        "order_id": "zero-fp-order",
+        "status": "filled",
+        "fill_count_fp": "1.00",
+        "fill_count": 1,
+    })
+    settlement = {
+        "ticker": ticker,
+        "settled_time": "2026-07-21T00:15:00Z",
+        "market_result": "yes",
+        "yes_count_fp": "0.00",
+        "yes_count": 5,
+        "no_count_fp": "0.00",
+        "no_count": 0,
+        "revenue_dollars": 5,
+        "yes_total_cost_dollars": 4,
+        "fee_cost_dollars": 0.1,
+    }
+
+    state = store.reconcile_settlements("user-1", [settlement])
+
+    assert state["strategy"]["settlementRecords"] == []
+    assert state["strategy"]["realizedTradeRecords"] == []
+    assert state["strategy"]["settledSamples"] == 0
+    assert state["strategy"]["realizedTotalPnl"] == 0.0
 
 
 def test_settlement_record_exposes_weighted_entry_and_resolution_exit_prices(tmp_path):

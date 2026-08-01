@@ -205,6 +205,9 @@ export interface KalshiDecision {
     conservativeEdge?: number | null;
     minimumNetEdge?: number;
     minimumConservativeEdge?: number;
+    recoveryMultiple?: number | null;
+    payoffIfWin?: number | null;
+    lossIfWrong?: number | null;
   };
   sizing: {
     paperBankroll: number;
@@ -218,8 +221,11 @@ export interface KalshiDecision {
     microSizingApplied?: boolean;
     microPositionLossCap?: number;
     contracts: number;
+    plannedContracts?: number;
     estimatedFee: number;
     maximumLoss: number;
+    maxLoss?: number;
+    maxLossPct?: number | null;
     expectedValue: number;
   };
   gates: KalshiGate[];
@@ -301,6 +307,8 @@ export interface KalshiFamilyDiagnostics {
   latestAt?: string | null;
   funnel: Record<'observations' | 'dataReady' | 'entryWindow' | 'liquidityReady' | 'positiveNetEdge' | 'positiveConservativeEdge' | 'routable' | 'orders', number>;
   blockers: Array<{ key: string; count: number }>;
+  primaryBlocker?: string | { key: string; count?: number; share?: number | null } | null;
+  primaryBlockers?: Array<string | { key: string; count?: number; share?: number | null }>;
   referenceSources: Array<{ key: string; count: number }>;
   officialBrtiSamples: number;
   averageSnapshotLatencyMs?: number | null;
@@ -436,6 +444,11 @@ export interface KalshiPortfolioAnalytics {
   realizedAveragePnl?: number;
   realizedBestTrade?: number | null;
   realizedWorstTrade?: number | null;
+  realizedAverageWin?: number | null;
+  realizedAverageLoss?: number | null;
+  realizedProfitFactor?: number | null;
+  realizedRecoveryMultiple?: number | null;
+  realizedMaxDrawdown?: number | null;
   equityCurve?: KalshiEquityPoint[];
   lifetime?: {
     realizedSamples?: number;
@@ -463,7 +476,14 @@ export interface KalshiPortfolioAnalytics {
     losses: number;
     winRate: number | null;
     realizedPnl: number;
+    totalPnl?: number;
     averagePnl: number;
+    averageWin?: number | null;
+    averageLoss?: number | null;
+    profitFactor?: number | null;
+    recoveryMultiple?: number | null;
+    maxDrawdown?: number | null;
+    worstTrade?: number | null;
     records: KalshiSettlementRecord[];
     equityCurve: KalshiEquityPoint[];
   }>;

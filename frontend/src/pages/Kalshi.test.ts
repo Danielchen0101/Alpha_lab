@@ -1,6 +1,7 @@
 import {
   activeKalshiBlockingReasons,
   actionSummary,
+  deriveKalshiStabilityMetrics,
   isAlphaLabManagedLedgerRecord,
   kalshiAccountEquityDollars,
   kalshiRequiresExplicitEnable,
@@ -8,6 +9,7 @@ import {
   kalshiResponseStateMatchesMode,
   portfolioEnvironmentMatchesMode,
   positionSideLabel,
+  primaryKalshiNoTradeReason,
   resolveKalshiView,
   shouldAcceptKalshiOperationResponse,
   shouldStartKalshiPortfolioRequest,
@@ -290,5 +292,117 @@ describe('Kalshi workspace routing', () => {
     ])).toEqual(['depth', 'conservative_edge']);
     expect(activeKalshiBlockingReasons(['daily_loss_limit'])).toEqual([]);
     expect(activeKalshiBlockingReasons(null)).toEqual([]);
+  });
+
+  it('derives stable-return metrics from realized records when the backend fields are absent', () => {
+    const metrics = deriveKalshiStabilityMetrics({}, [
+      { pnl: 0.20, settledAt: '2026-07-27T12:00:00.000Z' },
+      { pnl: 0.30, settledAt: '2026-07-27T12:15:00.000Z' },
+      { pnl: -0.60, settledAt: '2026-07-27T12:30:00.000Z' },
+      { pnl: 0.10, settledAt: '2026-07-27T12:45:00.000Z' },
+    ]);
+
+    expect(metrics).toMatchObject({
+      samples: 4,
+      wins: 3,
+      losses: 1,
+      averageLoss: 0.60,
+      profitFactor: 1,
+      recoveryMultiple: 3,
+      maxDrawdown: 0.60,
+      worstTrade: -0.60,
+    });
+    expect(metrics.averageWin).toBeCloseTo(0.20, 10);
+    expect(metrics.totalPnl).toBeCloseTo(0, 10);
+  });
+
+  it('normalizes backend average-loss signs and prefers explicit stability analytics', () => {
+    expect(deriveKalshiStabilityMetrics({
+      samples: 42,
+      wins: 34,
+      losses: 8,
+      averageWin: 0.2177,
+      averageLoss: -0.5965,
+      profitFactor: 1.55,
+      recoveryMultiple: 2.74,
+      maxDrawdown: -1.12,
+      worstTrade: -0.91,
+      totalPnl: 2.63,
+    })).toMatchObject({
+      samples: 42,
+      wins: 34,
+      losses: 8,
+      averageWin: 0.2177,
+      averageLoss: 0.5965,
+      profitFactor: 1.55,
+      recoveryMultiple: 2.74,
+      maxDrawdown: 1.12,
+      worstTrade: -0.91,
+      totalPnl: 2.63,
+    });
+  });
+
+  it('does not mix truncated records with full-period stability aggregates', () => {
+    const metrics = deriveKalshiStabilityMetrics({
+      samples: 10,
+      wins: 8,
+      losses: 2,
+      averageWin: 0.25,
+      averageLoss: 0.50,
+      records: [
+        { pnl: 0.25, settledAt: '2026-07-27T12:00:00.000Z' },
+        { pnl: -0.50, settledAt: '2026-07-27T12:15:00.000Z' },
+      ],
+    });
+
+    expect(metrics).toMatchObject({
+      samples: 10,
+      wins: 8,
+      losses: 2,
+      averageWin: 0.25,
+      averageLoss: 0.50,
+      profitFactor: 2,
+      totalPnl: 1,
+      maxDrawdown: null,
+      worstTrade: null,
+    });
+  });
+
+  it('collapses correlated blockers into one causal no-trade reason', () => {
+    expect(primaryKalshiNoTradeReason(undefined, {
+      action: 'WAIT',
+      blockingReasons: ['depth', 'net_edge', 'conservative_edge'],
+    } as any)).toMatchObject({ key: 'conservative_edge', source: 'current' });
+
+    expect(primaryKalshiNoTradeReason(undefined, {
+      action: 'WAIT',
+      blockingReasons: ['conservative_edge', 'entry_window'],
+    } as any)).toMatchObject({ key: 'entry_window', source: 'current' });
+
+    expect(primaryKalshiNoTradeReason({
+      primaryBlocker: { key: 'model_probability', count: 18 },
+    }, null)).toEqual({ key: 'model_probability', count: 18, source: 'backend' });
+
+    expect(primaryKalshiNoTradeReason({
+      primaryBlocker: { key: 'model_probability', count: 18 },
+    }, {
+      action: 'WAIT',
+      blockingReasons: ['conservative_edge', 'robot_scheduler_unhealthy'],
+    } as any)).toEqual({ key: 'robot_scheduler_unhealthy', source: 'current' });
+
+    expect(primaryKalshiNoTradeReason({
+      primaryBlocker: { key: 'model_probability', count: 18 },
+    }, {
+      action: 'WAIT',
+      blockingReasons: ['conservative_edge', 'entry_window'],
+    } as any)).toEqual({ key: 'model_probability', count: 18, source: 'backend' });
+
+    expect(primaryKalshiNoTradeReason({
+      blockers: [
+        { key: 'depth', count: 100 },
+        { key: 'conservative_edge', count: 90 },
+        { key: 'net_edge', count: 80 },
+      ],
+    }, null)).toEqual({ key: 'conservative_edge', count: 90, source: 'aggregate' });
   });
 });

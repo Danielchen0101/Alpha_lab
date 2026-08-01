@@ -1,8 +1,8 @@
 """AlphaLab-owned Kalshi paper-trading ledger.
 
 The ledger consumes Kalshi's production public quotes but never submits an
-order to Kalshi.  Money is stored in integer cents and contracts are whole
-units, matching the account-level behaviour users see on Kalshi.
+order to Kalshi. Money is stored in integer cents and contract quantities in
+hundredths, matching Kalshi V2 fixed-point counts and account-level rounding.
 """
 
 from __future__ import annotations
@@ -18,9 +18,10 @@ from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 
-PAPER_ACCOUNT_VERSION = 3
+PAPER_ACCOUNT_VERSION = 4
 DEFAULT_STARTING_BALANCE_CENTS = 1_000_000  # $10,000.00
 MAX_LEDGER_ROWS = 500
+CONTRACT_QUANTUM = Decimal("0.01")
 
 
 def _now() -> str:
@@ -39,6 +40,21 @@ def _ceil(value: Decimal, quantum: Decimal) -> Decimal:
     return value.quantize(quantum, rounding=ROUND_CEILING)
 
 
+def _quantity_units(value: Any) -> int:
+    """Return non-negative hundredth-contract units without rounding up risk."""
+    try:
+        parsed = Decimal(str(value))
+    except Exception:
+        return 0
+    if not parsed.is_finite() or parsed <= 0:
+        return 0
+    return int((parsed / CONTRACT_QUANTUM).to_integral_value(rounding=ROUND_FLOOR))
+
+
+def _quantity_from_units(units: int) -> float:
+    return float(Decimal(max(0, int(units))) * CONTRACT_QUANTUM)
+
+
 def _market_fee_multiplier(market: Optional[Mapping[str, Any]]) -> float:
     """Read an explicit market multiplier, otherwise use Kalshi's general 1x fee."""
     source = dict(market or {})
@@ -55,7 +71,7 @@ def _market_fee_multiplier(market: Optional[Mapping[str, Any]]) -> float:
 
 def taker_fill_amounts(
     price: float,
-    contracts: int,
+    contracts: float,
     *,
     fee_multiplier: float = 1.0,
 ) -> Dict[str, float]:
@@ -65,14 +81,15 @@ def taker_fill_amounts(
     $0.0001.  The total account debit is then rounded up to a whole cent;
     that final alignment is reported as part of the effective fill fee.
     """
-    count = int(contracts)
+    count_units = _quantity_units(contracts)
+    count = Decimal(count_units) * CONTRACT_QUANTUM
     p = Decimal(str(price))
-    if count <= 0 or p <= 0 or p >= 1:
+    if count_units <= 0 or p <= 0 or p >= 1:
         raise ValueError("price must be between 0 and 1 and contracts must be positive")
-    cost = p * Decimal(count)
+    cost = p * count
     multiplier = Decimal(str(max(0.0, _number(fee_multiplier, 1.0))))
     trade_fee = _ceil(
-        multiplier * Decimal("0.07") * Decimal(count) * p * (Decimal(1) - p),
+        multiplier * Decimal("0.07") * count * p * (Decimal(1) - p),
         Decimal("0.0001"),
     )
     debit = _ceil(cost + trade_fee, Decimal("0.01"))
@@ -86,19 +103,19 @@ def taker_fill_amounts(
     }
 
 
-def _normalize_book_levels(raw: Any) -> List[Tuple[float, int]]:
-    levels: List[Tuple[float, int]] = []
+def _normalize_book_levels(raw: Any) -> List[Tuple[float, float]]:
+    levels: List[Tuple[float, float]] = []
     for level in raw or []:
         if not isinstance(level, Sequence) or isinstance(level, (str, bytes)) or len(level) < 2:
             continue
         price = _number(level[0])
-        size = int(math.floor(_number(level[1])))
-        if 0.0 < price < 1.0 and size > 0:
-            levels.append((price, size))
+        size_units = _quantity_units(level[1])
+        if 0.0 < price < 1.0 and size_units > 0:
+            levels.append((price, _quantity_from_units(size_units)))
     return sorted(levels, key=lambda item: item[0])
 
 
-def executable_ask_levels(side: str, orderbook: Optional[Mapping[str, Any]]) -> List[Tuple[float, int]]:
+def executable_ask_levels(side: str, orderbook: Optional[Mapping[str, Any]]) -> List[Tuple[float, float]]:
     """Return Paper-executable user-side ask levels from Kalshi's YES book.
 
     Kalshi's public book exposes YES and NO bid ladders. Buying YES consumes the
@@ -113,7 +130,7 @@ def executable_ask_levels(side: str, orderbook: Optional[Mapping[str, Any]]) -> 
     return []
 
 
-def executable_bid_levels(side: str, orderbook: Optional[Mapping[str, Any]]) -> List[Tuple[float, int]]:
+def executable_bid_levels(side: str, orderbook: Optional[Mapping[str, Any]]) -> List[Tuple[float, float]]:
     """Return executable bids for selling an existing Paper position."""
     book = dict(orderbook or {})
     key = "yes" if str(side).upper() == "YES" else "no" if str(side).upper() == "NO" else None
@@ -123,24 +140,25 @@ def executable_bid_levels(side: str, orderbook: Optional[Mapping[str, Any]]) -> 
 
 
 def _aggregate_fill(
-    levels: Sequence[Tuple[float, int]],
-    requested: int,
+    levels: Sequence[Tuple[float, float]],
+    requested: float,
     limit_price: float,
     cash_cents: int,
     *,
     fee_multiplier: float = 1.0,
 ) -> Dict[str, Any]:
     fills: List[Dict[str, Any]] = []
-    remaining = max(0, int(requested))
+    requested_units = _quantity_units(requested)
+    remaining_units = requested_units
     total_cost = Decimal("0")
     total_trade_fee = Decimal("0")
     total_debit_cents = 0
     rounding_accumulator = Decimal("0")
     multiplier = Decimal(str(max(0.0, _number(fee_multiplier, 1.0))))
 
-    def level_amounts(level_price: float, count: int, accumulator: Decimal):
+    def level_amounts(level_price: float, count_units: int, accumulator: Decimal):
         p = Decimal(str(level_price))
-        count_decimal = Decimal(count)
+        count_decimal = Decimal(max(0, count_units)) * CONTRACT_QUANTUM
         cost = p * count_decimal
         trade_fee = _ceil(
             multiplier * Decimal("0.07") * count_decimal * p * (Decimal(1) - p),
@@ -166,23 +184,34 @@ def _aggregate_fill(
         }
 
     for level_price, level_size in levels:
-        if remaining <= 0 or level_price > limit_price + 1e-9:
+        if remaining_units <= 0 or level_price > limit_price + 1e-9:
             break
-        count = min(remaining, int(level_size))
-        while count > 0:
-            amounts = level_amounts(level_price, count, rounding_accumulator)
-            debit_cents = int(amounts["netDebit"] * 100)
-            if total_debit_cents + debit_cents <= cash_cents:
-                break
-            count -= 1
-        if count <= 0:
+        count_units = min(remaining_units, _quantity_units(level_size))
+        if count_units <= 0:
+            continue
+        amounts = level_amounts(level_price, count_units, rounding_accumulator)
+        debit_cents = int(amounts["netDebit"] * 100)
+        if total_debit_cents + debit_cents > cash_cents:
+            # Debit is monotone in quantity. Find the largest affordable 0.01
+            # contract slice without a potentially unbounded decrement loop.
+            low, high = 0, count_units
+            while low < high:
+                middle = (low + high + 1) // 2
+                candidate = level_amounts(level_price, middle, rounding_accumulator)
+                candidate_cents = int(candidate["netDebit"] * 100)
+                if total_debit_cents + candidate_cents <= cash_cents:
+                    low = middle
+                else:
+                    high = middle - 1
+            count_units = low
+        if count_units <= 0:
             break
-        amounts = level_amounts(level_price, count, rounding_accumulator)
+        amounts = level_amounts(level_price, count_units, rounding_accumulator)
         debit_cents = int(amounts["netDebit"] * 100)
         net_fee = amounts["tradeFee"] + amounts["roundingFee"] - amounts["rebate"]
         fills.append({
             "price_dollars": round(level_price, 4),
-            "count_fp": count,
+            "count_fp": _quantity_from_units(count_units),
             "position_cost_dollars": float(amounts["cost"]),
             "trade_fee_dollars": float(amounts["tradeFee"]),
             "rounding_fee_dollars": float(amounts["roundingFee"]),
@@ -194,13 +223,18 @@ def _aggregate_fill(
         total_trade_fee += amounts["tradeFee"]
         total_debit_cents += debit_cents
         rounding_accumulator = amounts["accumulator"]
-        remaining -= count
-    fill_count = sum(int(item["count_fp"]) for item in fills)
-    average_price = float(total_cost / Decimal(fill_count)) if fill_count else 0.0
+        remaining_units -= count_units
+    fill_units = sum(_quantity_units(item["count_fp"]) for item in fills)
+    fill_count = _quantity_from_units(fill_units)
+    average_price = (
+        float(total_cost / (Decimal(fill_units) * CONTRACT_QUANTUM))
+        if fill_units
+        else 0.0
+    )
     return {
         "fills": fills,
         "fill_count": fill_count,
-        "remaining_count": max(0, requested - fill_count),
+        "remaining_count": _quantity_from_units(max(0, requested_units - fill_units)),
         "average_price": average_price,
         "position_cost": float(total_cost),
         "trade_fee": float(total_trade_fee),
@@ -211,25 +245,26 @@ def _aggregate_fill(
 
 
 def _aggregate_sale(
-    levels: Sequence[Tuple[float, int]],
-    requested: int,
+    levels: Sequence[Tuple[float, float]],
+    requested: float,
     limit_price: float,
     *,
     fee_multiplier: float = 1.0,
 ) -> Dict[str, Any]:
     """Fill a reduce-only sale against bids and conservatively round proceeds."""
     fills: List[Dict[str, Any]] = []
-    remaining = max(0, int(requested))
+    requested_units = _quantity_units(requested)
+    remaining_units = requested_units
     gross = Decimal("0")
     trade_fee = Decimal("0")
     for level_price, level_size in levels:
-        if remaining <= 0 or level_price + 1e-9 < limit_price:
+        if remaining_units <= 0 or level_price + 1e-9 < limit_price:
             break
-        count = min(remaining, int(level_size))
-        if count <= 0:
+        count_units = min(remaining_units, _quantity_units(level_size))
+        if count_units <= 0:
             continue
         p = Decimal(str(level_price))
-        count_decimal = Decimal(count)
+        count_decimal = Decimal(count_units) * CONTRACT_QUANTUM
         level_gross = p * count_decimal
         level_fee = _ceil(
             Decimal(str(max(0.0, _number(fee_multiplier, 1.0))))
@@ -238,21 +273,26 @@ def _aggregate_sale(
         )
         fills.append({
             "price_dollars": round(level_price, 4),
-            "count_fp": count,
+            "count_fp": _quantity_from_units(count_units),
             "gross_proceeds_dollars": float(level_gross),
             "trade_fee_dollars": float(level_fee),
         })
         gross += level_gross
         trade_fee += level_fee
-        remaining -= count
-    fill_count = sum(int(item["count_fp"]) for item in fills)
+        remaining_units -= count_units
+    fill_units = sum(_quantity_units(item["count_fp"]) for item in fills)
+    fill_count = _quantity_from_units(fill_units)
     net_credit = max(Decimal("0"), gross - trade_fee).quantize(Decimal("0.01"), rounding=ROUND_FLOOR)
     effective_fee = gross - net_credit
     return {
         "fills": fills,
         "fill_count": fill_count,
-        "remaining_count": max(0, requested - fill_count),
-        "average_price": float(gross / Decimal(fill_count)) if fill_count else 0.0,
+        "remaining_count": _quantity_from_units(max(0, requested_units - fill_units)),
+        "average_price": (
+            float(gross / (Decimal(fill_units) * CONTRACT_QUANTUM))
+            if fill_units
+            else 0.0
+        ),
         "gross_proceeds": float(gross),
         "trade_fee": float(trade_fee),
         "fee_cost": float(effective_fee),
@@ -494,7 +534,7 @@ class KalshiPaperAccountStore:
         ticker: str,
         side: str,
         price: float,
-        contracts: int,
+        contracts: float,
         available_depth: Optional[float] = None,
         limit_price: Optional[float] = None,
         orderbook: Optional[Mapping[str, Any]] = None,
@@ -504,7 +544,7 @@ class KalshiPaperAccountStore:
         """Immediately simulate a Paper IOC against production Kalshi book levels."""
         side = str(side or "").upper()
         ticker = str(ticker or "").strip()
-        requested = max(0, int(contracts))
+        requested = _quantity_from_units(_quantity_units(contracts))
         base_price = float(price)
         limit = float(limit_price if limit_price is not None else price)
         order_id = f"paper-order-{uuid.uuid4()}"
@@ -529,7 +569,10 @@ class KalshiPaperAccountStore:
             if not levels:
                 depth = requested
                 if available_depth is not None and _number(available_depth) >= 0:
-                    depth = min(depth, int(math.floor(_number(available_depth))))
+                    depth = min(
+                        depth,
+                        _quantity_from_units(_quantity_units(available_depth)),
+                    )
                 if depth > 0 and base_price <= limit + 1e-9:
                     levels = [(base_price, depth)]
             execution = _aggregate_fill(
@@ -539,10 +582,20 @@ class KalshiPaperAccountStore:
                 int(account.get("cashCents") or 0),
                 fee_multiplier=fee_multiplier,
             )
-            fill_count = int(execution["fill_count"])
+            fill_count = _quantity_from_units(
+                _quantity_units(execution["fill_count"])
+            )
             avg_price = float(execution["average_price"] or 0.0)
-            remaining_count = int(execution["remaining_count"])
-            status = "filled" if fill_count == requested else "partially_filled" if fill_count > 0 else "rejected"
+            remaining_count = _quantity_from_units(
+                _quantity_units(execution["remaining_count"])
+            )
+            status = (
+                "filled"
+                if abs(fill_count - requested) < 0.005
+                else "partially_filled"
+                if fill_count > 0
+                else "rejected"
+            )
             top_depth = sum(size for price_level, size in levels if price_level <= limit + 1e-9)
             rejection_reason = None
             if fill_count <= 0:
@@ -629,7 +682,10 @@ class KalshiPaperAccountStore:
             count_key = "yesCount" if side == "YES" else "noCount"
             cost_key = "yesCost" if side == "YES" else "noCost"
             fee_key = "yesEntryFee" if side == "YES" else "noEntryFee"
-            position[count_key] = int(position.get(count_key) or 0) + fill_count
+            position[count_key] = round(
+                _number(position.get(count_key)) + fill_count,
+                2,
+            )
             position[cost_key] = round(_number(position.get(cost_key)) + float(execution["position_cost"]), 4)
             position[fee_key] = round(_number(position.get(fee_key)) + float(execution["fee_cost"]), 4)
             position["feeCost"] = round(_number(position.get("feeCost")) + float(execution["fee_cost"]), 4)
@@ -647,7 +703,7 @@ class KalshiPaperAccountStore:
         ticker: str,
         side: str,
         price: float,
-        contracts: int,
+        contracts: float,
         limit_price: Optional[float] = None,
         orderbook: Optional[Mapping[str, Any]] = None,
         client_order_id: Optional[str] = None,
@@ -660,7 +716,7 @@ class KalshiPaperAccountStore:
         """
         side = str(side or "").upper()
         ticker = str(ticker or "").strip()
-        requested = max(0, int(contracts))
+        requested = _quantity_from_units(_quantity_units(contracts))
         base_price = float(price)
         limit = float(limit_price if limit_price is not None else price)
         order_id = f"paper-order-{uuid.uuid4()}"
@@ -684,7 +740,9 @@ class KalshiPaperAccountStore:
             count_key = "yesCount" if side == "YES" else "noCount"
             cost_key = "yesCost" if side == "YES" else "noCost"
             fee_key = "yesEntryFee" if side == "YES" else "noEntryFee"
-            held_count = int((position or {}).get(count_key) or 0)
+            held_count = _quantity_from_units(
+                _quantity_units((position or {}).get(count_key))
+            )
             reduce_count = min(requested, held_count)
             fee_multiplier = _number((position or {}).get("feeMultiplier"), 1.0)
             levels = executable_bid_levels(side, orderbook)
@@ -700,10 +758,20 @@ class KalshiPaperAccountStore:
                 "average_price": 0.0, "gross_proceeds": 0.0, "trade_fee": 0.0,
                 "fee_cost": 0.0, "credit_cents": 0,
             }
-            fill_count = int(execution["fill_count"])
-            remaining_count = max(0, requested - fill_count)
+            fill_count = _quantity_from_units(
+                _quantity_units(execution["fill_count"])
+            )
+            remaining_count = _quantity_from_units(
+                max(0, _quantity_units(requested) - _quantity_units(fill_count))
+            )
             avg_price = float(execution["average_price"] or 0.0)
-            status = "filled" if fill_count == requested else "partially_filled" if fill_count > 0 else "rejected"
+            status = (
+                "filled"
+                if abs(fill_count - requested) < 0.005
+                else "partially_filled"
+                if fill_count > 0
+                else "rejected"
+            )
             rejection_reason = None
             if held_count <= 0:
                 rejection_reason = "no_position_to_reduce"
@@ -766,14 +834,17 @@ class KalshiPaperAccountStore:
             account["fills"].insert(0, fill)
             account["fills"] = account["fills"][:MAX_LEDGER_ROWS]
 
-            position[count_key] = held_count - fill_count
+            position[count_key] = round(max(0.0, held_count - fill_count), 2)
             position[cost_key] = round(max(0.0, held_cost - allocated_cost), 4)
             position[fee_key] = round(max(0.0, held_entry_fee - allocated_entry_fee), 4)
             position["feeCost"] = round(max(0.0, _number(position.get("feeCost")) - allocated_entry_fee), 4)
             position["realizedPnl"] = round(_number(position.get("realizedPnl")) + realized_pnl, 4)
             position["lastTradeAt"] = created
             account["realizedPnlDollars"] = round(_number(account.get("realizedPnlDollars")) + realized_pnl, 4)
-            if int(position.get("yesCount") or 0) <= 0 and int(position.get("noCount") or 0) <= 0:
+            if (
+                _number(position.get("yesCount")) < 0.005
+                and _number(position.get("noCount")) < 0.005
+            ):
                 account["positions"].pop(ticker, None)
             account["updatedAt"] = created
             self._save_user(user_id)
@@ -796,13 +867,18 @@ class KalshiPaperAccountStore:
             position = (account.get("positions") or {}).pop(str(ticker), None)
             if not isinstance(position, Mapping):
                 return None
-            yes_count = int(position.get("yesCount") or 0)
-            no_count = int(position.get("noCount") or 0)
-            revenue = float(yes_count if result == "YES" else no_count)
+            yes_count = _quantity_from_units(_quantity_units(position.get("yesCount")))
+            no_count = _quantity_from_units(_quantity_units(position.get("noCount")))
+            raw_revenue = Decimal(str(yes_count if result == "YES" else no_count))
+            credited_revenue = raw_revenue.quantize(
+                Decimal("0.01"),
+                rounding=ROUND_FLOOR,
+            )
+            revenue = float(credited_revenue)
             yes_cost = _number(position.get("yesCost"))
             no_cost = _number(position.get("noCost"))
             entry_fees = _number(position.get("feeCost"))
-            settlement_fee = 0.0
+            settlement_fee = float(raw_revenue - credited_revenue)
             realized_pnl = (
                 revenue
                 - yes_cost
@@ -810,7 +886,10 @@ class KalshiPaperAccountStore:
                 - entry_fees
                 - settlement_fee
             )
-            account["cashCents"] = int(account.get("cashCents") or 0) + int(round(revenue * 100))
+            account["cashCents"] = (
+                int(account.get("cashCents") or 0)
+                + int(credited_revenue * 100)
+            )
             row = {
                 "settlement_id": f"paper-settlement-{uuid.uuid4()}",
                 "ticker": str(ticker),
@@ -847,8 +926,12 @@ class KalshiPaperAccountStore:
             positions = []
             portfolio_value = 0.0
             for position in (account.get("positions") or {}).values():
-                yes_count = int(position.get("yesCount") or 0)
-                no_count = int(position.get("noCount") or 0)
+                yes_count = _quantity_from_units(
+                    _quantity_units(position.get("yesCount"))
+                )
+                no_count = _quantity_from_units(
+                    _quantity_units(position.get("noCount"))
+                )
                 value = self._position_value(position)
                 portfolio_value += value
                 yes_cost = _number(position.get("yesCost"))

@@ -72,10 +72,221 @@ const number = (value: unknown): number | null => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+const metricNumber = (source: Record<string, any>, keys: string[]): number | null => {
+  for (const key of keys) {
+    const parsed = number(source?.[key]);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+};
+
+export interface KalshiStabilityMetrics {
+  samples: number;
+  wins: number;
+  losses: number;
+  totalPnl: number | null;
+  averageWin: number | null;
+  averageLoss: number | null;
+  profitFactor: number | null;
+  recoveryMultiple: number | null;
+  maxDrawdown: number | null;
+  worstTrade: number | null;
+}
+
+/**
+ * Normalizes the evolving backend analytics contract and remains useful while
+ * older deployments only expose realized records. Loss values are always
+ * returned as positive magnitudes so the recovery multiple reads naturally.
+ */
+export const deriveKalshiStabilityMetrics = (
+  rawSource: unknown,
+  fallbackRecords: Array<Record<string, any>> = [],
+): KalshiStabilityMetrics => {
+  const source = rawSource && typeof rawSource === 'object'
+    ? rawSource as Record<string, any>
+    : {};
+  const sourceRecords = Array.isArray(source.records)
+    ? source.records
+    : Array.isArray(source.realizedTradeRecords)
+      ? source.realizedTradeRecords
+      : Array.isArray(source.settlementRecords)
+        ? source.settlementRecords
+        : fallbackRecords;
+  const records = sourceRecords
+    .filter((record) => number(record?.pnl) !== null);
+  const explicitSamples = metricNumber(source, ['samples', 'realizedSamples', 'settledSamples']);
+  const recordsCoverSamples = explicitSamples === null
+    || records.length >= Math.max(0, Math.trunc(explicitSamples));
+  const completeRecords = recordsCoverSamples ? records : [];
+  const pnlValues = completeRecords.map((record) => Number(record.pnl));
+  const positive = pnlValues.filter((value) => value > 0);
+  const negative = pnlValues.filter((value) => value < 0);
+  const explicitWins = metricNumber(source, ['wins', 'realizedWins']);
+  const explicitLosses = metricNumber(source, ['losses', 'realizedLosses']);
+  const samples = Math.max(0, Math.trunc(explicitSamples ?? pnlValues.length));
+  const wins = Math.max(0, Math.trunc(explicitWins ?? positive.length));
+  const losses = Math.max(0, Math.trunc(explicitLosses ?? negative.length));
+  const grossWin = positive.reduce((sum, value) => sum + value, 0);
+  const grossLoss = negative.reduce((sum, value) => sum + Math.abs(value), 0);
+  const explicitAverageWin = metricNumber(source, ['averageWin', 'realizedAverageWin']);
+  const explicitAverageLoss = metricNumber(source, ['averageLoss', 'realizedAverageLoss']);
+  const averageWin = explicitAverageWin !== null
+    ? Math.abs(explicitAverageWin)
+    : positive.length
+      ? grossWin / positive.length
+      : null;
+  const averageLoss = explicitAverageLoss !== null
+    ? Math.abs(explicitAverageLoss)
+    : negative.length
+      ? grossLoss / negative.length
+      : null;
+  const factorGrossWin = grossWin > 0 ? grossWin : (averageWin ?? 0) * wins;
+  const factorGrossLoss = grossLoss > 0 ? grossLoss : (averageLoss ?? 0) * losses;
+  const explicitProfitFactor = metricNumber(source, ['profitFactor', 'realizedProfitFactor']);
+  const profitFactor = explicitProfitFactor !== null
+    ? Math.max(0, explicitProfitFactor)
+    : factorGrossLoss > 0
+      ? factorGrossWin / factorGrossLoss
+      : factorGrossWin > 0
+        ? Infinity
+        : null;
+  const explicitRecovery = metricNumber(source, ['recoveryMultiple', 'realizedRecoveryMultiple']);
+  const recoveryMultiple = explicitRecovery !== null
+    ? Math.max(0, explicitRecovery)
+    : averageWin !== null && averageWin > 0 && averageLoss !== null
+      ? averageLoss / averageWin
+      : null;
+  const explicitTotal = metricNumber(source, ['totalPnl', 'realizedPnl', 'realizedTotalPnl']);
+  const totalPnl = explicitTotal ?? (pnlValues.length
+    ? pnlValues.reduce((sum, value) => sum + value, 0)
+    : averageWin !== null || averageLoss !== null
+      ? factorGrossWin - factorGrossLoss
+      : null);
+  const explicitWorst = metricNumber(source, ['worstTrade', 'realizedWorstTrade']);
+  const worstTrade = explicitWorst ?? (pnlValues.length ? Math.min(...pnlValues) : null);
+  const explicitDrawdown = metricNumber(source, ['maxDrawdown', 'realizedMaxDrawdown']);
+  let derivedDrawdown: number | null = null;
+  if (pnlValues.length) {
+    const ordered = [...completeRecords].sort((left, right) => {
+      const leftAt = Date.parse(String(left?.settledAt || left?.settled_at || left?.at || ''));
+      const rightAt = Date.parse(String(right?.settledAt || right?.settled_at || right?.at || ''));
+      if (!Number.isFinite(leftAt) || !Number.isFinite(rightAt)) return 0;
+      return leftAt - rightAt;
+    });
+    let cumulative = 0;
+    let peak = 0;
+    let maxDrawdown = 0;
+    ordered.forEach((record) => {
+      cumulative += Number(record.pnl);
+      peak = Math.max(peak, cumulative);
+      maxDrawdown = Math.max(maxDrawdown, peak - cumulative);
+    });
+    derivedDrawdown = maxDrawdown;
+  }
+
+  return {
+    samples,
+    wins,
+    losses,
+    totalPnl,
+    averageWin,
+    averageLoss,
+    profitFactor,
+    recoveryMultiple,
+    maxDrawdown: explicitDrawdown !== null ? Math.abs(explicitDrawdown) : derivedDrawdown,
+    worstTrade,
+  };
+};
+
+export interface KalshiPrimaryWaitReason {
+  key: string;
+  count?: number;
+  source: 'backend' | 'current' | 'aggregate';
+}
+
+const normalizedPrimaryBlocker = (value: unknown): { key: string; count?: number } | null => {
+  if (typeof value === 'string') {
+    const key = activeKalshiBlockingReasons([value])[0];
+    return key ? { key } : null;
+  }
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const key = activeKalshiBlockingReasons([record.key ?? record.reason])[0];
+  const count = number(record.count);
+  return key ? { key, ...(count === null ? {} : { count }) } : null;
+};
+
+/** Picks one causal wait reason instead of presenting correlated gate failures. */
+export const primaryKalshiNoTradeReason = (
+  diagnostics: Partial<KalshiFamilyDiagnostics> | null | undefined,
+  currentDecision: Partial<KalshiDecision> | null | undefined,
+): KalshiPrimaryWaitReason | null => {
+  const currentReasons = activeKalshiBlockingReasons(currentDecision?.blockingReasons);
+  if (currentDecision?.action === 'WAIT' && currentReasons.length) {
+    const operationalPriority = [
+      'robot_scheduler_unhealthy',
+      'account_snapshot_stale',
+      'reference_ready',
+      'data_freshness',
+    ];
+    const operationalReason = operationalPriority.find((key) => currentReasons.includes(key));
+    if (operationalReason) return { key: operationalReason, source: 'current' };
+  }
+
+  const backendPrimary = normalizedPrimaryBlocker(diagnostics?.primaryBlocker)
+    || (diagnostics?.primaryBlockers || []).map(normalizedPrimaryBlocker).find(Boolean)
+    || null;
+  if (backendPrimary) return { ...backendPrimary, source: 'backend' };
+
+  if (currentDecision?.action === 'WAIT' && currentReasons.length) {
+    const systemPriority = [
+      'entry_window',
+    ];
+    const systemReason = systemPriority.find((key) => currentReasons.includes(key));
+    if (systemReason) return { key: systemReason, source: 'current' };
+    if (currentReasons.includes('conservative_edge') || currentReasons.includes('net_edge')) {
+      return {
+        key: currentReasons.includes('conservative_edge') ? 'conservative_edge' : 'net_edge',
+        source: 'current',
+      };
+    }
+    const causalPriority = [
+      'model_probability',
+      'price_band',
+      'spread',
+      'relative_spread',
+      'depth',
+      'position_size',
+      'single_market_exposure',
+      'portfolio_exposure',
+    ];
+    return {
+      key: causalPriority.find((key) => currentReasons.includes(key)) || currentReasons[0],
+      source: 'current',
+    };
+  }
+
+  const aggregate = (diagnostics?.blockers || [])
+    .filter((item) => activeKalshiBlockingReasons([item.key]).length > 0);
+  const hasEdgeBlock = aggregate.some((item) => ['conservative_edge', 'net_edge'].includes(item.key));
+  const independent = aggregate
+    .filter((item) => !(item.key === 'depth' && hasEdgeBlock))
+    .sort((left, right) => Number(right.count || 0) - Number(left.count || 0));
+  return independent[0]
+    ? { key: independent[0].key, count: Number(independent[0].count || 0), source: 'aggregate' }
+    : null;
+};
+
 const money = (value: unknown, digits = 2) => {
   const parsed = number(value);
   if (parsed === null) return '--';
   return parsed.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: digits });
+};
+
+const ratio = (value: unknown, digits = 2) => {
+  if (value === Infinity) return '∞';
+  const parsed = number(value);
+  return parsed === null ? '--' : parsed.toFixed(digits);
 };
 
 const probability = (value: unknown, digits = 1) => {
@@ -1415,6 +1626,10 @@ const Kalshi: React.FC = () => {
     const totalProfit = returnBase > 0 ? accountEquity - returnBase : null;
     const totalReturnPct = returnBase > 0 ? (accountEquity - returnBase) / returnBase : null;
     const pnlValues = realizedRecords.map((record: any) => Number(record.pnl || 0));
+    const stability = deriveKalshiStabilityMetrics(
+      portfolioMode === 'real' ? { records: realizedRecords } : analytics,
+      realizedRecords,
+    );
     const bestTrade = portfolioMode === 'real'
       ? (pnlValues.length ? Math.max(...pnlValues) : null)
       : analytics.realizedBestTrade ?? (pnlValues.length ? Math.max(...pnlValues) : null);
@@ -1422,9 +1637,7 @@ const Kalshi: React.FC = () => {
       ? (pnlValues.length ? Math.min(...pnlValues) : null)
       : analytics.realizedWorstTrade ?? (pnlValues.length ? Math.min(...pnlValues) : null);
     const losses = Math.max(0, realizedSamples - Number(wins || 0));
-    const grossWin = pnlValues.filter((value) => value > 0).reduce((sum, value) => sum + value, 0);
-    const grossLoss = pnlValues.filter((value) => value < 0).reduce((sum, value) => sum + Math.abs(value), 0);
-    const profitFactor = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? Infinity : null);
+    const profitFactor = stability.profitFactor;
     const familyPerformance = (
       portfolioMode === 'real' && !visibleLedger.baselineReady
         ? {}
@@ -1533,13 +1746,31 @@ const Kalshi: React.FC = () => {
             ['btchourly', copy('BTC hourly strikes', 'BTC 整点执行价')],
           ] as const).map(([family, label]) => {
             const performance = familyPerformance[family];
-            const pnl = Number(performance?.realizedPnl || 0);
+            const metrics = deriveKalshiStabilityMetrics(performance);
+            const pnl = metrics.totalPnl;
             return (
-              <article key={family}>
-                <span>{label}</span>
-                <strong className={pnl >= 0 ? 'is-profit' : 'is-loss'}>{pnl >= 0 ? '+' : ''}{money(pnl)}</strong>
-                <small>{performance?.uniqueMarkets || 0} {copy('markets', '个市场')} · {performance?.samples || 0} {copy('realized events', '笔已实现事件')} · {copy('event win rate', '事件胜率')} {performance?.winRate == null ? '--' : probability(performance.winRate)}</small>
-                <div><i style={{ width: `${Math.min(100, Math.max(0, Number(performance?.winRate || 0) * 100))}%` }} /></div>
+              <article key={family} data-testid={`kalshi-stability-${family}`}>
+                <header>
+                  <span>{label}</span>
+                  <strong className={pnl === null ? '' : pnl >= 0 ? 'is-profit' : 'is-loss'}>{pnl === null ? '--' : <>{pnl >= 0 ? '+' : ''}{money(pnl)}</>}</strong>
+                  <small>{performance?.uniqueMarkets || 0} {copy('markets', '个市场')} · {metrics.samples} {copy('realized events', '笔已实现事件')} · {copy('win rate', '胜率')} {metrics.samples ? probability(metrics.wins / metrics.samples) : '--'}</small>
+                </header>
+                <dl>
+                  <div><dt>{copy('AVG WIN', '平均盈利')}</dt><dd className="is-profit">{money(metrics.averageWin)}</dd></div>
+                  <div><dt>{copy('AVG LOSS', '平均亏损')}</dt><dd className="is-loss">{metrics.averageLoss === null ? '--' : `-${money(metrics.averageLoss)}`}</dd></div>
+                  <div><dt>{copy('PROFIT FACTOR', '收益因子')}</dt><dd>{ratio(metrics.profitFactor)}</dd></div>
+                  <div><dt>{copy('MAX DRAWDOWN', '最大回撤')}</dt><dd>{metrics.maxDrawdown === null ? '--' : money(metrics.maxDrawdown)}</dd></div>
+                  <div><dt>{copy('WORST TRADE', '最差单笔')}</dt><dd className="is-loss">{metrics.worstTrade === null ? '--' : money(metrics.worstTrade)}</dd></div>
+                </dl>
+                <div className={`kalshi-recovery-band${metrics.recoveryMultiple !== null && metrics.recoveryMultiple > 2 ? ' is-elevated' : ''}`}>
+                  <span>{copy('LOSS RECOVERY', '亏损回补')}</span>
+                  <strong>{metrics.recoveryMultiple === null
+                    ? '--'
+                    : copy(
+                      `${ratio(metrics.recoveryMultiple)} average wins needed`,
+                      `回本需 ${ratio(metrics.recoveryMultiple)} 次平均盈利`,
+                    )}</strong>
+                </div>
               </article>
             );
           })}
@@ -1559,8 +1790,9 @@ const Kalshi: React.FC = () => {
         <section className="kalshi-performance-section">
           <div className="kalshi-performance-summary">
             <div><span>{copy('REALIZED EVENT WIN RATE', '已实现事件胜率')}</span><strong>{winRate === null ? '--' : probability(winRate)}</strong><small><em className="is-profit">{wins}{copy('W', ' 胜')}</em> · <em className="is-loss">{losses}{copy('L', ' 负')}</em> / {realizedSamples} {copy('events', '笔事件')}</small></div>
-            <div><span>{copy('AVERAGE / TRADE', '单笔平均')}</span><strong className={Number(averagePnl) >= 0 ? 'is-profit' : Number(averagePnl) < 0 ? 'is-loss' : ''}>{averagePnl === null ? '--' : money(averagePnl)}</strong><small>{copy('Profit factor', '盈亏比')} {profitFactor === null ? '--' : profitFactor === Infinity ? '∞' : profitFactor.toFixed(2)}</small></div>
-            <div><span>{copy('BEST / WORST', '最佳 / 最差')}</span><strong>{bestTrade === null ? '--' : <><em className="is-profit">{money(bestTrade)}</em></>}</strong><small>{copy('Worst', '最差')} {worstTrade === null ? '--' : <em className="is-loss">{money(worstTrade)}</em>}</small></div>
+            <div><span>{copy('AVERAGE WIN / LOSS', '平均盈利 / 亏损')}</span><strong><em className="is-profit">{money(stability.averageWin)}</em> / <em className="is-loss">{stability.averageLoss === null ? '--' : `-${money(stability.averageLoss)}`}</em></strong><small>{copy('Average per realized event', '按已实现事件统计')} {averagePnl === null ? '--' : money(averagePnl)}</small></div>
+            <div><span>{copy('LOSS RECOVERY', '亏损回补')}</span><strong className={stability.recoveryMultiple !== null && stability.recoveryMultiple > 2 ? 'is-loss' : ''}>{stability.recoveryMultiple === null ? '--' : `${ratio(stability.recoveryMultiple)}×`}</strong><small>{stability.recoveryMultiple === null ? copy('Needs both wins and losses', '需要同时积累盈利与亏损样本') : copy('Average wins needed after one average loss', `一次平均亏损需 ${ratio(stability.recoveryMultiple)} 次平均盈利回补`)}</small></div>
+            <div><span>{copy('PROFIT FACTOR / DRAWDOWN', '收益因子 / 最大回撤')}</span><strong>{ratio(profitFactor)} / {money(stability.maxDrawdown)}</strong><small>{copy('Best / worst trade', '最佳 / 最差单笔')} <em className="is-profit">{money(bestTrade)}</em> / <em className="is-loss">{money(worstTrade)}</em></small></div>
           </div>
           <div className="kalshi-performance-chart">
             <div><span>{copy('CUMULATIVE REALIZED P/L', '累计已实现盈亏')}</span><small>{copy('Trade-by-trade realized account curve', '逐笔已实现交易账户曲线')}</small></div>
@@ -1641,18 +1873,69 @@ const Kalshi: React.FC = () => {
       relative_spread: ['Relative spread', '相对点差'],
       data_freshness: ['Data freshness', '数据新鲜度'],
       reference_ready: ['BRTI reference', 'BRTI 参考价'],
+      robot_scheduler_unhealthy: ['Automation health', '自动化运行状态'],
+      account_snapshot_stale: ['Account snapshot', '账户快照'],
+      position_size: ['Risk-sized position', '风险仓位数量'],
+      single_market_exposure: ['Single-market exposure', '单市场敞口'],
+      portfolio_exposure: ['Portfolio exposure', '组合敞口'],
     };
     const blockerName = (key: string) => {
       const label = blockerLabels[key];
       if (label) return copy(label[0], label[1]);
       return key.replace(/_/g, ' ');
     };
-    const visibleDiagnosticBlockers = (diagnostics?.blockers || [])
-      .filter((item) => activeKalshiBlockingReasons([item.key]).length > 0);
+    const primaryReason = primaryKalshiNoTradeReason(diagnostics, decision);
+    const primaryReasonDetails: Record<string, [string, string]> = {
+      conservative_edge: [
+        'The price does not leave enough expected return after fees and model uncertainty.',
+        '当前价格扣除手续费并计入模型不确定性后，预期收益空间不足。',
+      ],
+      net_edge: [
+        'The apparent probability advantage is consumed by executable price and fees.',
+        '表面概率优势已被可成交价格和手续费消耗。',
+      ],
+      entry_window: [
+        'The contract is outside the approved entry window; the strategy is waiting for its tested timing regime.',
+        '合约尚未进入已验证的进场时窗，策略正在等待合适时段。',
+      ],
+      model_probability: [
+        'The favored side is not yet reliable enough to justify its asymmetric loss.',
+        '优势方向置信度尚不足以覆盖输掉合约时的不对称损失。',
+      ],
+      depth: [
+        'Not enough contracts are executable at a price that preserves the required return.',
+        '能够在不破坏预期收益的价格成交的合约数量不足。',
+      ],
+      price_band: [
+        'The executable price is outside the strategy’s stable payoff range.',
+        '可成交价格超出策略当前允许的稳定盈亏区间。',
+      ],
+      spread: ['The spread is too wide for a fee-adjusted entry.', '点差过宽，扣费后不适合进场。'],
+      relative_spread: ['The spread is too large relative to the contract price.', '相对合约价格而言，点差过大。'],
+      data_freshness: ['Market evidence is not fresh enough for a safe order.', '行情证据不够新鲜，暂不允许安全下单。'],
+      reference_ready: ['The official BRTI reference is not ready.', '官方 BRTI 参考数据尚未就绪。'],
+      robot_scheduler_unhealthy: ['The 24/7 scheduler is not healthy, so routing is blocked safely.', '24/7 调度器当前不健康，系统已安全阻止下单。'],
+      account_snapshot_stale: ['Account buying power or exposure is stale.', '账户购买力或敞口快照已过期。'],
+      position_size: ['The risk budget cannot support an economically valid contract size.', '当前风险预算不足以支持经济上合理的合约数量。'],
+      single_market_exposure: ['This market has reached its exposure ceiling.', '该市场已经达到单市场敞口上限。'],
+      portfolio_exposure: ['The Kalshi portfolio has reached its exposure ceiling.', 'Kalshi 组合已经达到总敞口上限。'],
+    };
+    const primaryDetail = primaryReason
+      ? primaryReasonDetails[primaryReason.key]?.[chinese ? 1 : 0]
+        || copy('The leading independent control did not pass.', '最主要的独立交易条件尚未通过。')
+      : copy('No independent wait reason is available in this window.', '本时间窗尚无可确认的独立等待原因。');
+    const plannedContracts = metricNumber(decision?.sizing || {}, ['plannedContracts', 'contracts']);
+    const plannedMaxLoss = metricNumber(decision?.sizing || {}, ['maxLoss', 'maximumLoss']);
+    const riskBudget = metricNumber(decision?.sizing || {}, ['riskBudget', 'scaledHardRiskBudget', 'hardRiskBudget']);
+    const maxLossPct = number(decision?.sizing?.maxLossPct);
     const visibleNearMisses = (diagnostics?.nearMisses || [])
       .map((item) => ({
         ...item,
         blockingReasons: activeKalshiBlockingReasons(item.blockingReasons),
+        primaryBlockingReason: primaryKalshiNoTradeReason(undefined, {
+          action: 'WAIT',
+          blockingReasons: activeKalshiBlockingReasons(item.blockingReasons),
+        } as Partial<KalshiDecision>)?.key,
       }))
       .filter((item) => item.blockingReasons.length > 0);
     const officialNow = Boolean(decision?.dataQuality?.officialBrti || referenceFeed?.fresh);
@@ -1695,21 +1978,31 @@ const Kalshi: React.FC = () => {
             <EdgeTimelineChart points={diagnostics?.edgeTimeline || []} emptyLabel={copy('Waiting for durable edge samples.', '正在等待持久化边际样本。')} />
           </article>
           <article className="kalshi-blocker-panel">
-            <div className="kalshi-diagnostic-title"><span>{copy('TOP BLOCKERS', '主要阻断原因')}</span><small>{copy('Used to tune gates from evidence.', '用于根据证据校准门槛。')}</small></div>
-            <div className="kalshi-blocker-list">
-              {visibleDiagnosticBlockers.slice(0, 7).map((item) => <div key={item.key}><span>{blockerName(item.key)}</span><strong>{item.count}</strong></div>)}
-              {!visibleDiagnosticBlockers.length && <p>{copy('No blockers recorded in this window.', '本时间窗尚无阻断记录。')}</p>}
+            <div className="kalshi-diagnostic-title"><span>{copy('PRIMARY NO-TRADE REASON', '今日未交易主因')}</span><small>{copy('Correlated gates are collapsed.', '重复关联门控已合并。')}</small></div>
+            <div className="kalshi-primary-wait" data-testid="kalshi-primary-wait-reason">
+              <WarningOutlined />
+              <span>
+                <small>{primaryReason?.source === 'current' ? copy('CURRENT DECISION', '当前决策') : copy('OBSERVATION WINDOW', '观察时间窗')}</small>
+                <strong>{primaryReason ? blockerName(primaryReason.key) : '--'}</strong>
+                <p>{primaryDetail}</p>
+                {primaryReason?.count != null && <em>{primaryReason.count.toLocaleString()} {copy('affected observations', '次受影响评估')}</em>}
+              </span>
             </div>
+            <dl className="kalshi-live-risk-grid">
+              <div><dt>{copy('PLANNED SIZE', '计划数量')}</dt><dd>{plannedContracts === null ? '--' : plannedContracts}</dd><small>{copy('current family', '当前市场类型')}</small></div>
+              <div><dt>{copy('SINGLE-TRADE RISK', '单笔风险')}</dt><dd>{money(plannedMaxLoss)}</dd><small>{copy('planned maximum loss', '计划最大损失')}</small></div>
+              <div><dt>{copy('RISK LIMIT', '风险上限')}</dt><dd>{money(riskBudget)}</dd><small>{maxLossPct === null ? copy('current risk budget', '当前风险预算') : `${maxLossPct.toFixed(2)}% ${copy('of equity', '账户权益')}`}</small></div>
+            </dl>
           </article>
         </div>
         {!!visibleNearMisses.length && <div className="kalshi-near-miss-table">
-          <div className="kalshi-near-miss-head"><span>{copy('NEAR-MISS TIME', '接近成交时间')}</span><span>{copy('CONTRACT', '合约')}</span><span>{copy('SIDE / PRICE', '方向 / 价格')}</span><span>{copy('NET / CONS. EDGE', '净 / 保守边际')}</span><span>{copy('REMAINING BLOCKS', '剩余阻断')}</span></div>
+          <div className="kalshi-near-miss-head"><span>{copy('NEAR-MISS TIME', '接近成交时间')}</span><span>{copy('CONTRACT', '合约')}</span><span>{copy('SIDE / PRICE', '方向 / 价格')}</span><span>{copy('NET / CONS. EDGE', '净 / 保守边际')}</span><span>{copy('PRIMARY REMAINING BLOCK', '主要剩余阻断')}</span></div>
           {visibleNearMisses.slice(0, 5).map((item: any, index) => <div className="kalshi-near-miss-row" key={`${item.at}-${item.ticker}-${index}`}>
             <time>{item.at ? new Date(item.at).toLocaleTimeString() : '--'}</time>
             <b>{item.ticker || '--'}</b>
             <span>{item.side || '--'} / {cents(item.price)}</span>
             <span>{probability(item.netEdge)} / {probability(item.conservativeEdge)}</span>
-            <small>{(item.blockingReasons || []).map(blockerName).join(' · ') || copy('None', '无')}</small>
+            <small>{item.primaryBlockingReason ? blockerName(item.primaryBlockingReason) : copy('None', '无')}</small>
           </div>)}
         </div>}
       </section>
