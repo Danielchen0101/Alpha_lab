@@ -222,7 +222,7 @@ const PortfolioInsights: React.FC<Props> = ({
               return (
                 <div className="portfolio-insights__holding" key={position.symbol}>
                   <span>{position.symbol}</span>
-                  <Progress percent={Math.min(weight ?? 0, 100)} showInfo={false} strokeColor="#2d64a9" trailColor="var(--app-border-soft)" />
+                  <Progress percent={Math.min(weight ?? 0, 100)} showInfo={false} strokeColor="var(--portfolio-blue, var(--app-accent))" trailColor="var(--app-border-soft)" />
                   <strong>{percent(weight, locale)}</strong>
                 </div>
               );

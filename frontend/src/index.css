@@ -183,6 +183,10 @@ input[type="number"],
   --app-positive: #3d704d;
   --app-warning: #9a6b16;
   --app-danger: #ad4934;
+  --app-info-surface: #eff6ff;
+  --app-positive-surface: #f0f8f4;
+  --app-warning-surface: #fff8e8;
+  --app-danger-surface: #fff2f0;
   --app-risk-reward-bg: #f0f9ff;
   --app-risk-reward-border: #e0f2fe;
   --app-risk-reward-value: #0c4a6e;
@@ -211,6 +215,10 @@ input[type="number"],
   --app-positive: #9db58c;
   --app-warning: #d6a45f;
   --app-danger: #df7b68;
+  --app-info-surface: rgba(182, 160, 201, 0.11);
+  --app-positive-surface: rgba(157, 181, 140, 0.11);
+  --app-warning-surface: rgba(214, 164, 95, 0.11);
+  --app-danger-surface: rgba(223, 123, 104, 0.11);
   --app-header-shadow: 0 1px 4px rgba(0,0,0,0.48);
   --app-card-shadow: 0 1px 3px rgba(0,0,0,0.45);
   --app-shadow-sm: 0 2px 8px rgba(0,0,0,0.32);
@@ -330,6 +338,79 @@ input[type="number"],
 :root[data-theme="dark"] .ant-input::placeholder,
 :root[data-theme="dark"] .ant-picker-input > input::placeholder {
   color: var(--app-text-muted) !important;
+}
+
+/* Dark component surfaces: eliminate bright Ant Design islands inside workspaces. */
+:root[data-theme="dark"] .ant-alert,
+:root[data-theme="dark"] .ant-message-notice-content,
+:root[data-theme="dark"] .ant-notification-notice,
+:root[data-theme="dark"] .ant-popconfirm-inner-content,
+:root[data-theme="dark"] .ant-modal-footer,
+:root[data-theme="dark"] .ant-drawer-header,
+:root[data-theme="dark"] .ant-drawer-footer,
+:root[data-theme="dark"] .ant-transfer-list,
+:root[data-theme="dark"] .ant-upload-list-item,
+:root[data-theme="dark"] .ant-collapse,
+:root[data-theme="dark"] .ant-collapse-content {
+  color: var(--app-text) !important;
+  background: var(--app-card-bg) !important;
+  border-color: var(--app-border) !important;
+}
+
+:root[data-theme="dark"] .ant-alert-info { background: var(--app-info-surface) !important; border-color: rgba(182, 160, 201, 0.34) !important; }
+:root[data-theme="dark"] .ant-alert-success { background: var(--app-positive-surface) !important; border-color: rgba(157, 181, 140, 0.34) !important; }
+:root[data-theme="dark"] .ant-alert-warning { background: var(--app-warning-surface) !important; border-color: rgba(214, 164, 95, 0.36) !important; }
+:root[data-theme="dark"] .ant-alert-error { background: var(--app-danger-surface) !important; border-color: rgba(223, 123, 104, 0.36) !important; }
+:root[data-theme="dark"] .ant-alert-message,
+:root[data-theme="dark"] .ant-alert-description,
+:root[data-theme="dark"] .ant-message-notice-content,
+:root[data-theme="dark"] .ant-notification-notice-message,
+:root[data-theme="dark"] .ant-notification-notice-description,
+:root[data-theme="dark"] .ant-collapse-header,
+:root[data-theme="dark"] .ant-collapse-content-box { color: var(--app-text) !important; }
+
+:root[data-theme="dark"] .ant-skeleton-title,
+:root[data-theme="dark"] .ant-skeleton-paragraph > li,
+:root[data-theme="dark"] .ant-skeleton-avatar,
+:root[data-theme="dark"] .ant-skeleton-button,
+:root[data-theme="dark"] .ant-skeleton-input {
+  background: color-mix(in srgb, var(--app-text-muted) 18%, transparent) !important;
+}
+:root[data-theme="dark"] .ant-skeleton.ant-skeleton-active .ant-skeleton-title,
+:root[data-theme="dark"] .ant-skeleton.ant-skeleton-active .ant-skeleton-paragraph > li,
+:root[data-theme="dark"] .ant-skeleton.ant-skeleton-active .ant-skeleton-avatar,
+:root[data-theme="dark"] .ant-skeleton.ant-skeleton-active .ant-skeleton-button,
+:root[data-theme="dark"] .ant-skeleton.ant-skeleton-active .ant-skeleton-input {
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--app-text-muted) 12%, transparent) 25%,
+    color-mix(in srgb, var(--app-text-muted) 24%, transparent) 37%,
+    color-mix(in srgb, var(--app-text-muted) 12%, transparent) 63%) !important;
+  background-size: 400% 100% !important;
+}
+
+:root[data-theme="dark"] .ant-empty-description,
+:root[data-theme="dark"] .ant-result-title,
+:root[data-theme="dark"] .ant-result-subtitle,
+:root[data-theme="dark"] .ant-select-arrow,
+:root[data-theme="dark"] .ant-pagination,
+:root[data-theme="dark"] .ant-spin-text { color: var(--app-text-muted) !important; }
+:root[data-theme="dark"] .ant-empty-normal .ant-empty-image,
+:root[data-theme="dark"] .ant-empty-small .ant-empty-image { opacity: 0.58; filter: saturate(0.55) brightness(0.78); }
+:root[data-theme="dark"] .ant-progress-inner,
+:root[data-theme="dark"] .ant-progress-bg::after { background-color: var(--app-border-soft) !important; }
+:root[data-theme="dark"] .ant-checkbox-inner,
+:root[data-theme="dark"] .ant-radio-inner,
+:root[data-theme="dark"] .ant-switch:not(.ant-switch-checked) { background-color: var(--app-input-bg) !important; border-color: var(--app-border) !important; }
+:root[data-theme="dark"] .ant-table-container,
+:root[data-theme="dark"] .ant-table-content,
+:root[data-theme="dark"] .ant-table-body,
+:root[data-theme="dark"] .ant-table-placeholder > td { background: var(--app-table-row-bg) !important; }
+:root[data-theme="dark"] .ant-table-ping-left:not(.ant-table-has-fix-left) .ant-table-container::before,
+:root[data-theme="dark"] .ant-table-ping-right:not(.ant-table-has-fix-right) .ant-table-container::after {
+  box-shadow: inset 10px 0 8px -8px rgba(0, 0, 0, 0.72) !important;
+}
+:root[data-theme="dark"] .ant-table-ping-right:not(.ant-table-has-fix-right) .ant-table-container::after {
+  box-shadow: inset -10px 0 8px -8px rgba(0, 0, 0, 0.72) !important;
 }
 
 /* ── Mobile / Small Screen Overrides (390px–768px) ── */

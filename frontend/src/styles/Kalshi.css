@@ -135,7 +135,7 @@
 .kalshi-hourly-ladder,
 .kalshi-family-performance {
   border: 1px solid var(--kalshi-border, #dfe3dc);
-  background: rgba(255, 255, 252, 0.92);
+  background: color-mix(in srgb, var(--kalshi-surface) 92%, transparent);
 }
 
 .kalshi-display-baseline {
@@ -172,8 +172,8 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px;
   margin-top: 18px;
-  background: #dfe3dc;
-  border: 1px solid #dfe3dc;
+  background: var(--kalshi-rule);
+  border: 1px solid var(--kalshi-rule);
 }
 
 .kalshi-hourly-grid article {
@@ -181,14 +181,14 @@
   gap: 6px;
   min-height: 92px;
   padding: 16px 18px;
-  background: #fbfcf8;
+  background: var(--kalshi-surface);
   transition: background 160ms ease, box-shadow 160ms ease;
 }
 
 .kalshi-hourly-grid article.is-selected {
   position: relative;
   z-index: 1;
-  background: #f1f6ef;
+  background: color-mix(in srgb, var(--kalshi-green) 8%, var(--kalshi-surface));
   box-shadow: inset 3px 0 0 #2f7659;
 }
 
@@ -215,14 +215,14 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1px;
-  background: #dfe3dc;
+  background: var(--kalshi-rule);
 }
 
 .kalshi-family-performance article {
   display: grid;
   gap: 8px;
   padding: 24px 26px;
-  background: #fbfcf8;
+  background: var(--kalshi-surface);
 }
 
 .kalshi-family-performance article > strong {
