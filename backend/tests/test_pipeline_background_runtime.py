@@ -2123,6 +2123,11 @@ def test_background_services_start_after_fork_and_are_periodically_rechecked(
         "_pa_ensure_scheduler",
         lambda: starts.append(("equity", process_id[0])),
     )
+    monkeypatch.setattr(
+        backend,
+        "_ensure_discord_retry_scheduler",
+        lambda: starts.append(("discord", process_id[0])),
+    )
     monkeypatch.setattr(backend.os, "getpid", lambda: process_id[0])
     monkeypatch.setattr(backend.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(backend, "_BACKGROUND_SERVICES_PID", None)
@@ -2134,23 +2139,26 @@ def test_background_services_start_after_fork_and_are_periodically_rechecked(
         ("crypto", 101),
         ("kalshi", 101),
         ("equity", 101),
+        ("discord", 101),
     ]
 
     clock[0] += backend._BACKGROUND_SERVICES_CHECK_INTERVAL_SECONDS
     backend.start_background_services()
-    assert starts[-3:] == [
+    assert starts[-4:] == [
         ("crypto", 101),
         ("kalshi", 101),
         ("equity", 101),
+        ("discord", 101),
     ]
-    assert len(starts) == 6
+    assert len(starts) == 8
 
     process_id[0] = 202
     backend.start_background_services()
-    assert starts[-3:] == [
+    assert starts[-4:] == [
         ("crypto", 202),
         ("kalshi", 202),
         ("equity", 202),
+        ("discord", 202),
     ]
 
 
@@ -2176,6 +2184,11 @@ def test_background_services_explicit_disable_prevents_every_scheduler(
         backend,
         "_pa_ensure_scheduler",
         lambda: starts.append("equity"),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_ensure_discord_retry_scheduler",
+        lambda: starts.append("discord"),
     )
     monkeypatch.setattr(backend, "_BACKGROUND_SERVICES_PID", None)
     monkeypatch.setattr(backend, "_BACKGROUND_SERVICES_LAST_CHECK", 0.0)

@@ -119,6 +119,7 @@
 }
 
 .kalshi-monitor-state.is-on i { background: #20a358; box-shadow: 0 0 0 4px rgba(32, 163, 88, 0.1); }
+.kalshi-monitor-state.needs-enable i { background: var(--kalshi-orange); box-shadow: 0 0 0 4px color-mix(in srgb, var(--kalshi-orange) 14%, transparent); }
 .kalshi-monitor-state span { font: 750 10.5px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.4px; }
 .kalshi-monitor-state small { margin-top: 3px; color: var(--kalshi-muted); font-size: 10.5px; }
 
@@ -270,6 +271,7 @@
 .kalshi-context-rail strong.is-real { color: var(--kalshi-orange); }
 
 .kalshi-safety-banner,
+.kalshi-rearm-banner,
 .kalshi-error,
 .kalshi-loading,
 .kalshi-policy-note {
@@ -287,8 +289,14 @@
 }
 
 .kalshi-safety-banner b,
+.kalshi-rearm-banner b,
 .kalshi-error b,
 .kalshi-policy-note b { color: var(--kalshi-ink); }
+.kalshi-rearm-banner {
+  border-left-color: var(--kalshi-orange);
+  background: color-mix(in srgb, var(--kalshi-orange) 9%, var(--kalshi-surface));
+}
+.kalshi-rearm-banner > svg { flex: 0 0 auto; color: var(--kalshi-orange); font-size: 17px; }
 .kalshi-error { border-left-color: var(--kalshi-red); }
 .kalshi-error span { display: grid; gap: 2px; }
 .kalshi-error button { min-height: 30px; margin-left: auto; }

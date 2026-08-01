@@ -345,6 +345,17 @@ export interface KalshiEvaluationResponse {
 
 export interface KalshiPaperRobotState {
   enabled: boolean;
+  activeEnvironment?: KalshiExecutionMode;
+  selectedEnvironment?: KalshiExecutionMode;
+  modeState?: Partial<Record<KalshiExecutionMode, {
+    arming?: {
+      armed?: boolean;
+      awaitingExplicitEnable?: boolean;
+      requestedEnableOnSwitch?: boolean;
+      updatedAt?: string;
+      reason?: string;
+    };
+  }>>;
   intervalSeconds: number;
   lastRunAt?: string | null;
   lastError?: string | null;

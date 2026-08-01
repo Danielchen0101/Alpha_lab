@@ -2128,7 +2128,201 @@ def _discord_post_with_retry(webhook_url, body, *, max_attempts=3):
     }
 
 
-def send_discord_notification(user_id, event_type, payload):
+_DISCORD_RETRY_ARTIFACT_TYPE = 'discord_notification_retry_queue'
+_DISCORD_RETRY_ARTIFACT_KEY = 'current'
+_DISCORD_RETRY_MAX_ENTRIES = 100
+_DISCORD_RETRY_LOCK = threading.RLock()
+_DISCORD_RETRY_THREAD = None
+_DISCORD_RETRY_OWNER = '%s:%s' % (
+    os.environ.get('RENDER_INSTANCE_ID') or os.environ.get('HOSTNAME') or 'local',
+    hashlib.sha256(str(time.time_ns()).encode('utf-8')).hexdigest()[:20],
+)
+
+
+def _discord_retry_iso_after(seconds):
+    delay = max(1.0, min(float(seconds or 30.0), 7 * 24 * 60 * 60))
+    return (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
+
+
+def _discord_retry_queue_event_id(user_id, event_type, payload):
+    supplied = str((payload or {}).get('event_id') or (payload or {}).get('eventId') or '').strip()
+    if supplied:
+        seed = '%s:%s:%s' % (user_id, event_type, supplied)
+    else:
+        seed = '%s:%s:%s' % (user_id, event_type, time.time_ns())
+    return hashlib.sha256(seed.encode('utf-8')).hexdigest()
+
+
+def _discord_retry_put(user_id, entries, *, expected_version):
+    durable_entries = [dict(item) for item in entries][-_DISCORD_RETRY_MAX_ENTRIES:]
+    payload = {
+        'pending': bool(durable_entries),
+        'entries': durable_entries,
+        'updatedAt': datetime.now(timezone.utc).isoformat(),
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(',', ':'), default=str)
+    return operations_store.put_artifact(
+        user_id,
+        _DISCORD_RETRY_ARTIFACT_TYPE,
+        _DISCORD_RETRY_ARTIFACT_KEY,
+        payload=payload,
+        idempotency_key=hashlib.sha256(
+            ('discord-retry:%s:%s' % (user_id, serialized)).encode('utf-8')
+        ).hexdigest(),
+        expected_version=expected_version,
+    )
+
+
+def _enqueue_discord_retry(user_id, event_type, payload, retry_after_seconds):
+    """Durably defer a provider-limited notification without blocking trading."""
+    queue_id = _discord_retry_queue_event_id(user_id, event_type, payload)
+    entry = {
+        'queueId': queue_id,
+        'eventType': str(event_type or 'unknown')[:100],
+        'payload': dict(payload or {}),
+        'attempts': 0,
+        'createdAt': datetime.now(timezone.utc).isoformat(),
+        'nextAttemptAt': _discord_retry_iso_after(retry_after_seconds),
+    }
+    with _DISCORD_RETRY_LOCK:
+        for _attempt in range(3):
+            row = operations_store.get_artifact(
+                user_id, _DISCORD_RETRY_ARTIFACT_TYPE, _DISCORD_RETRY_ARTIFACT_KEY,
+            )
+            current = (row or {}).get('payload') or {}
+            entries = [dict(item) for item in (current.get('entries') or []) if isinstance(item, dict)]
+            if any(str(item.get('queueId') or '') == queue_id for item in entries):
+                return True
+            entries.append(entry)
+            try:
+                _discord_retry_put(
+                    user_id,
+                    entries,
+                    expected_version=int((row or {}).get('version') or 0),
+                )
+                return True
+            except OperationsVersionConflict:
+                continue
+    return False
+
+
+def _discord_retry_due(value, now):
+    try:
+        parsed = datetime.fromisoformat(str(value or '').replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed <= now
+    except (TypeError, ValueError):
+        return True
+
+
+def _process_discord_retry_queue(user_id):
+    """Deliver due queue entries and merge outcomes without losing new writes."""
+    row = operations_store.get_artifact(
+        user_id, _DISCORD_RETRY_ARTIFACT_TYPE, _DISCORD_RETRY_ARTIFACT_KEY,
+    )
+    current = (row or {}).get('payload') or {}
+    entries = [dict(item) for item in (current.get('entries') or []) if isinstance(item, dict)]
+    now = datetime.now(timezone.utc)
+    # Keep one lease-owned pass well below the lease TTL even when every HTTP
+    # attempt consumes the full timeout budget.
+    due = [item for item in entries if _discord_retry_due(item.get('nextAttemptAt'), now)][:5]
+    if not due:
+        return 0
+
+    outcomes = {}
+    terminal_reasons = {
+        'disabled_or_missing', 'event_disabled', 'deduped',
+        'workspace_discord_disabled', 'workspace_event_disabled',
+        'workspace_digest_mode', 'workspace_quiet_hours', 'discord_client_error',
+    }
+    for item in due:
+        queue_id = str(item.get('queueId') or '')
+        result = send_discord_notification(
+            user_id,
+            item.get('eventType'),
+            item.get('payload') or {},
+            defer_on_rate_limit=False,
+        )
+        attempts = int(item.get('attempts') or 0) + 1
+        if result.get('sent') or result.get('reason') in terminal_reasons or attempts >= 48:
+            outcomes[queue_id] = None
+            continue
+        wait_seconds = result.get('retryAfterSeconds')
+        if wait_seconds is None:
+            wait_seconds = min(3600, 30 * (2 ** min(attempts, 7)))
+        outcomes[queue_id] = {
+            **item,
+            'attempts': attempts,
+            'lastReason': str(result.get('reason') or 'delivery_failed')[:100],
+            'nextAttemptAt': _discord_retry_iso_after(wait_seconds),
+        }
+
+    with _DISCORD_RETRY_LOCK:
+        for _attempt in range(3):
+            latest = operations_store.get_artifact(
+                user_id, _DISCORD_RETRY_ARTIFACT_TYPE, _DISCORD_RETRY_ARTIFACT_KEY,
+            )
+            latest_payload = (latest or {}).get('payload') or {}
+            merged = []
+            for item in (latest_payload.get('entries') or []):
+                if not isinstance(item, dict):
+                    continue
+                queue_id = str(item.get('queueId') or '')
+                if queue_id not in outcomes:
+                    merged.append(dict(item))
+                elif outcomes[queue_id] is not None:
+                    merged.append(outcomes[queue_id])
+            try:
+                _discord_retry_put(
+                    user_id,
+                    merged,
+                    expected_version=int((latest or {}).get('version') or 0),
+                )
+                return len(due)
+            except OperationsVersionConflict:
+                continue
+    return 0
+
+
+def _discord_retry_scheduler_loop():
+    while True:
+        try:
+            owner_id = '%s:%s' % (_DISCORD_RETRY_OWNER, os.getpid())
+            owns_lease = operations_store.claim_worker_lease(
+                'discord-notification-retry',
+                owner_id,
+                ttl_seconds=300,
+                metadata={'component': 'discord_notification_retry'},
+            )
+            if owns_lease:
+                users = operations_store.list_scheduler_artifact_user_ids(
+                    _DISCORD_RETRY_ARTIFACT_TYPE,
+                    _DISCORD_RETRY_ARTIFACT_KEY,
+                    payload_contains={'pending': True},
+                    limit=500,
+                )
+                for user_id in users:
+                    _process_discord_retry_queue(user_id)
+        except Exception as exc:
+            safe_print('[DiscordRetry] scheduler error=%s' % type(exc).__name__)
+        time.sleep(15)
+
+
+def _ensure_discord_retry_scheduler():
+    global _DISCORD_RETRY_THREAD
+    with _DISCORD_RETRY_LOCK:
+        if _DISCORD_RETRY_THREAD and _DISCORD_RETRY_THREAD.is_alive():
+            return
+        _DISCORD_RETRY_THREAD = threading.Thread(
+            target=_discord_retry_scheduler_loop,
+            daemon=True,
+            name='discord-notification-retry',
+        )
+        _DISCORD_RETRY_THREAD.start()
+
+
+def send_discord_notification(user_id, event_type, payload, *, defer_on_rate_limit=True):
     """Best-effort Discord webhook notification. Never raises into trading/pipeline flows."""
     original_payload = dict(payload or {})
 
@@ -2168,6 +2362,17 @@ def send_discord_notification(user_id, event_type, payload):
         result = _discord_post_with_retry(webhook_url, body)
         if not result.get('sent'):
             _discord_forget_dedupe(user_id, event_type, payload or {})
+            if (
+                defer_on_rate_limit
+                and result.get('reason') == 'rate_limited'
+                and _enqueue_discord_retry(
+                    user_id,
+                    event_type,
+                    original_payload,
+                    result.get('retryAfterSeconds'),
+                )
+            ):
+                result = {**result, 'deferred': True}
             safe_print(
                 f'[DiscordNotify] failed user={_discord_user_label(user_id)} '
                 f'event={event_type} status={result.get("status")} '
@@ -50918,7 +51123,7 @@ def _record_notification_delivery(user_id, event_type, result, payload=None):
         'workspace_discord_disabled', 'workspace_event_disabled',
         'workspace_digest_mode', 'workspace_quiet_hours',
     }
-    status = 'sent' if result.get('sent') else (
+    status = 'sent' if result.get('sent') else 'deferred' if result.get('deferred') else (
         'skipped' if result.get('reason') in skipped_reasons else 'failed'
     )
     key_seed = (
@@ -50936,6 +51141,7 @@ def _record_notification_delivery(user_id, event_type, result, payload=None):
             'httpStatus': result.get('status'),
             'retryAfterSeconds': result.get('retryAfterSeconds'),
             'scope': _discord_notification_scope(event_type, payload),
+            'deferred': bool(result.get('deferred')),
         }
         return operations_store.append_notification(
             user_id,
@@ -53426,6 +53632,7 @@ def start_background_services():
         crypto_start()
         kalshi_start()
         _pa_ensure_scheduler()
+        _ensure_discord_retry_scheduler()
 
         process_changed = _BACKGROUND_SERVICES_PID != current_pid
         _BACKGROUND_SERVICES_PID = current_pid

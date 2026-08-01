@@ -3,6 +3,7 @@ import {
   actionSummary,
   isAlphaLabManagedLedgerRecord,
   kalshiAccountEquityDollars,
+  kalshiRequiresExplicitEnable,
   kalshiPortfolioWarnings,
   kalshiResponseStateMatchesMode,
   portfolioEnvironmentMatchesMode,
@@ -140,6 +141,26 @@ describe('Kalshi workspace routing', () => {
     expect(kalshiResponseStateMatchesMode({
       config: { executionMode: 'real' },
     }, 'real')).toBe(false);
+  });
+
+  it('requires an explicit Real enable after a safe mode switch', () => {
+    const state = {
+      enabled: false,
+      intervalSeconds: 5,
+      runs: 0,
+      config: { executionMode: 'real' as const },
+      decisions: [],
+      strategy: {
+        name: 'BTC15', version: 7, philosophy: '', components: [], changes: [],
+      },
+      modeState: {
+        real: { arming: { armed: false, awaitingExplicitEnable: true } },
+      },
+    };
+
+    expect(kalshiRequiresExplicitEnable(state, 'real')).toBe(true);
+    expect(kalshiRequiresExplicitEnable({ ...state, enabled: true }, 'real')).toBe(false);
+    expect(kalshiRequiresExplicitEnable(state, 'paper')).toBe(false);
   });
 
   it('rejects a Paper response captured before a Paper-to-Real epoch change', () => {
