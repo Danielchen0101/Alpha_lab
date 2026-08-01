@@ -33,6 +33,7 @@ class RecordingQuery:
         self.ordering = None
         self.limit_value = None
         self.range_value = None
+        self.retry_enabled = None
 
     def select(self, projection):
         self.action = "select"
@@ -75,6 +76,10 @@ class RecordingQuery:
 
     def range(self, start, end):
         self.range_value = (start, end)
+        return self
+
+    def retry(self, enabled):
+        self.retry_enabled = enabled
         return self
 
     def execute(self):
@@ -640,6 +645,7 @@ def test_scheduler_user_scan_filters_json_server_side_and_projects_only_user_id(
     assert ("contains", "payload", {"enabled": True}) in query.filters
     assert query.ordering == ("updated_at", {"desc": True})
     assert query.limit_value == 500
+    assert query.retry_enabled is False
 
 
 def test_local_scheduler_user_scan_preserves_json_boolean_types(tmp_path):

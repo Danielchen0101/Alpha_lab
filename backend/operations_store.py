@@ -138,6 +138,19 @@ class OperationsStore:
                 "%s failed: %s" % (label, type(exc).__name__)
             ) from exc
 
+    def _execute_read(self, query, label: str):
+        """Execute one bounded read without the SDK's exponential retries.
+
+        Production uses a short outer queue budget and lets fail-closed
+        schedulers retry on their next cycle. Retrying again inside postgrest-py
+        can otherwise turn one five-second outage into tens of seconds while a
+        shared worker remains occupied.
+        """
+        retry = getattr(query, "retry", None)
+        if callable(retry):
+            query = retry(False)
+        return self._execute(query.execute, label)
+
     def _load_local(self):
         if not self._fallback_path or not self._fallback_path.exists():
             return
@@ -510,10 +523,10 @@ class OperationsStore:
             with self._lock:
                 item = self._local["artifacts"].get(local_key)
                 return deepcopy(item) if item else None
-        response = self._execute(
-            lambda: self._client.table(self.ARTIFACT_TABLE).select("*").eq(
+        response = self._execute_read(
+            self._client.table(self.ARTIFACT_TABLE).select("*").eq(
                 "user_id", uid
-            ).eq("artifact_type", kind).eq("artifact_key", key).limit(1).execute(),
+            ).eq("artifact_type", kind).eq("artifact_key", key).limit(1),
             "artifact read",
         )
         rows = self._data(response)
@@ -574,12 +587,12 @@ class OperationsStore:
             rows.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
             return rows[:safe_limit]
 
-        response = self._execute(
-            lambda: self._client.table(self.ARTIFACT_TABLE).select(
+        response = self._execute_read(
+            self._client.table(self.ARTIFACT_TABLE).select(
                 "user_id,payload,version,updated_at"
             ).eq("artifact_type", kind).eq("artifact_key", key).order(
                 "updated_at", desc=True
-            ).limit(safe_limit).execute(),
+            ).limit(safe_limit),
             "scheduler artifact list",
         )
         return [dict(row) for row in self._data(response)]
@@ -617,12 +630,12 @@ class OperationsStore:
             rows.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
             return [str(row.get("user_id") or "") for row in rows[:safe_limit]]
 
-        response = self._execute(
-            lambda: self._client.table(self.ARTIFACT_TABLE).select(
+        response = self._execute_read(
+            self._client.table(self.ARTIFACT_TABLE).select(
                 "user_id"
             ).eq("artifact_type", kind).eq("artifact_key", key).contains(
                 "payload", payload_contains
-            ).order("updated_at", desc=True).limit(safe_limit).execute(),
+            ).order("updated_at", desc=True).limit(safe_limit),
             "scheduler artifact user list",
         )
         return [

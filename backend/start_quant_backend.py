@@ -163,9 +163,14 @@ def _validate_production_secrets(environ=None):
 _validate_production_secrets()
 
 supabase_admin = None
+supabase_operations_client = None
+supabase_readiness_client = None
 fernet = None
 _SUPABASE_IO_LOCK = threading.RLock()
+_SUPABASE_OPERATIONS_IO_LOCK = threading.RLock()
 _SUPABASE_HTTP_CLIENT = None
+_SUPABASE_OPERATIONS_HTTP_CLIENT = None
+_SUPABASE_READINESS_HTTP_CLIENT = None
 _SUPABASE_HEALTH_LOCK = threading.RLock()
 _SUPABASE_LAST_SUCCESS_AT = 0.0
 _SUPABASE_LAST_FAILURE_AT = 0.0
@@ -173,6 +178,11 @@ _SUPABASE_CONSECUTIVE_FAILURES = 0
 _SUPABASE_LAST_FAILURE_LABEL = ''
 _SUPABASE_LAST_FAILURE_TYPE = ''
 _SUPABASE_READINESS_LOCK = threading.Lock()
+_SUPABASE_READINESS_PROBE_LOCK = threading.Lock()
+_SUPABASE_READINESS_MONITOR_LOCK = threading.RLock()
+_SUPABASE_READINESS_MONITOR_THREAD = None
+_SUPABASE_READINESS_MONITOR_STOP = None
+_SUPABASE_READINESS_MONITOR_PID = None
 _SUPABASE_READINESS_CACHE = {
     'checkedAt': 0.0,
     'probeOk': None,
@@ -223,6 +233,12 @@ SUPABASE_HTTP_TIMEOUT_SECONDS = _bounded_float_env(
 SUPABASE_CONNECT_TIMEOUT_SECONDS = _bounded_float_env(
     'SUPABASE_CONNECT_TIMEOUT_SECONDS', 2.5, 1, 5,
 )
+SUPABASE_OPERATIONS_LOCK_TIMEOUT_SECONDS = _bounded_float_env(
+    'SUPABASE_OPERATIONS_LOCK_TIMEOUT_SECONDS', 1.0, 0.1, 2.0,
+)
+SUPABASE_READINESS_INTERVAL_SECONDS = _bounded_float_env(
+    'SUPABASE_READINESS_INTERVAL_SECONDS', 15.0, 5.0, 60.0,
+)
 
 
 def _supabase_execute(operation, label='query', attempts=3, lock_timeout=None):
@@ -265,6 +281,41 @@ def _supabase_execute(operation, label='query', attempts=3, lock_timeout=None):
             time.sleep(0.15 * (2 ** attempt))
     raise last_error
 
+
+def _operations_supabase_execute(operation, label='operations query'):
+    """Bound durable-state queueing so schedulers cannot starve HTTP workers.
+
+    The current Supabase Python client already retries idempotent PostgREST
+    reads. OperationsStore also performs explicit conflict recovery for writes,
+    so another outer retry layer only lengthens an outage and can replay an
+    ambiguous mutation. A busy shared client therefore fails fast and the
+    fail-closed scheduler retries on its next cycle.
+    """
+    acquired = _SUPABASE_OPERATIONS_IO_LOCK.acquire(
+        timeout=SUPABASE_OPERATIONS_LOCK_TIMEOUT_SECONDS
+    )
+    if not acquired:
+        exc = TimeoutError('Operations Supabase I/O queue is busy')
+        _supabase_note_health(False, label, exc)
+        raise exc
+    try:
+        result = operation()
+        _supabase_note_health(True, label)
+        return result
+    except Exception as exc:
+        _supabase_note_health(False, label, exc)
+        raise
+    finally:
+        _SUPABASE_OPERATIONS_IO_LOCK.release()
+
+
+def _execute_postgrest_probe(query):
+    """Execute one probe without the SDK's multi-second GET retry backoff."""
+    retry = getattr(query, 'retry', None)
+    if callable(retry):
+        query = retry(False)
+    return query.execute()
+
 try:
     import httpx
     from supabase import ClientOptions as SupabaseClientOptions
@@ -290,6 +341,47 @@ try:
             storage_client_timeout=SUPABASE_HTTP_TIMEOUT_SECONDS,
             function_client_timeout=SUPABASE_HTTP_TIMEOUT_SECONDS,
             httpx_client=_SUPABASE_HTTP_CLIENT,
+        ),
+    )
+    _SUPABASE_OPERATIONS_HTTP_CLIENT = httpx.Client(
+        timeout=httpx.Timeout(
+            min(SUPABASE_HTTP_TIMEOUT_SECONDS, 4.0),
+            connect=min(SUPABASE_CONNECT_TIMEOUT_SECONDS, 2.0),
+        ),
+        limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
+    )
+    supabase_operations_client = create_supabase_client(
+        SUPABASE_URL,
+        SUPABASE_SERVICE_ROLE_KEY,
+        options=SupabaseClientOptions(
+            auto_refresh_token=False,
+            persist_session=False,
+            postgrest_client_timeout=min(SUPABASE_HTTP_TIMEOUT_SECONDS, 4.0),
+            storage_client_timeout=min(SUPABASE_HTTP_TIMEOUT_SECONDS, 4.0),
+            function_client_timeout=min(SUPABASE_HTTP_TIMEOUT_SECONDS, 4.0),
+            httpx_client=_SUPABASE_OPERATIONS_HTTP_CLIENT,
+        ),
+    )
+    # Dependency probes must never queue behind application traffic or mutate
+    # the shared service-role client's request state. They use a tiny dedicated
+    # pool and update only the readiness cache consumed by HTTP endpoints.
+    _SUPABASE_READINESS_HTTP_CLIENT = httpx.Client(
+        timeout=httpx.Timeout(
+            min(SUPABASE_HTTP_TIMEOUT_SECONDS, 3.0),
+            connect=min(SUPABASE_CONNECT_TIMEOUT_SECONDS, 2.0),
+        ),
+        limits=httpx.Limits(max_connections=2, max_keepalive_connections=1),
+    )
+    supabase_readiness_client = create_supabase_client(
+        SUPABASE_URL,
+        SUPABASE_SERVICE_ROLE_KEY,
+        options=SupabaseClientOptions(
+            auto_refresh_token=False,
+            persist_session=False,
+            postgrest_client_timeout=min(SUPABASE_HTTP_TIMEOUT_SECONDS, 3.0),
+            storage_client_timeout=min(SUPABASE_HTTP_TIMEOUT_SECONDS, 3.0),
+            function_client_timeout=min(SUPABASE_HTTP_TIMEOUT_SECONDS, 3.0),
+            httpx_client=_SUPABASE_READINESS_HTTP_CLIENT,
         ),
     )
     print(f"[Supabase] Service role client initialized (URL: {SUPABASE_URL[:40]}...)")
@@ -320,204 +412,159 @@ if not os.getenv('FERNET_KEY'):
     print("[WARNING] FERNET_KEY not set — using ephemeral key. Encrypted config values will be "
           "unreadable after backend restart. Set FERNET_KEY in Render environment variables.")
 
-# 导入技术指标模块
-def _supabase_dependency_snapshot(force_probe=False, now_ts=None):
-    """Return a cached, bounded persistence readiness snapshot.
-
-    One failed probe receives a grace interval so a transient packet loss does
-    not restart an otherwise healthy service. Two consecutive readiness-probe
-    failures make production readiness fail closed until a probe succeeds.
-    Ordinary application queries are reported separately and cannot mask a
-    broken probe by resetting its failure streak.
-    """
-    now_ts = time.time() if now_ts is None else float(now_ts)
-    required = _strict_production_runtime()
-    configured = bool(
+def _supabase_is_configured():
+    return bool(
         supabase_admin is not None
         and str(SUPABASE_URL or '').strip()
         and str(SUPABASE_SERVICE_ROLE_KEY or '').strip()
     )
-    probe_ok = None
-    checked_at = 0.0
-    probe_failures = 0
-    probe_last_success = 0.0
-    probe_last_failure = 0.0
-    probe_failure_type = ''
-    migration_ok = None
-    lease_rpc_ok = None
-    pipeline_config_merge_rpc_ok = None
-    migration_contract_failure = False
-    if configured:
+
+
+def _run_supabase_readiness_probe(*, force=False, now_ts=None):
+    """Refresh dependency state outside request threads and the shared I/O lock."""
+    if not _supabase_is_configured():
+        return False
+    now_ts = time.time() if now_ts is None else float(now_ts)
+    if not _SUPABASE_READINESS_PROBE_LOCK.acquire(blocking=False):
+        return False
+    try:
+        probe_client = supabase_readiness_client or supabase_admin
         with _SUPABASE_READINESS_LOCK:
-            checked_at = float(_SUPABASE_READINESS_CACHE.get('checkedAt') or 0)
-            probe_ok = _SUPABASE_READINESS_CACHE.get('probeOk')
-            probe_failures = int(
-                _SUPABASE_READINESS_CACHE.get('consecutiveFailures') or 0
+            previous = dict(_SUPABASE_READINESS_CACHE)
+        checked_at = float(previous.get('checkedAt') or 0)
+        if not force and now_ts - checked_at < SUPABASE_READINESS_INTERVAL_SECONDS:
+            return False
+
+        probe_ok = previous.get('probeOk')
+        probe_failures = int(previous.get('consecutiveFailures') or 0)
+        probe_last_success = float(previous.get('lastSuccessAt') or 0)
+        probe_last_failure = float(previous.get('lastFailureAt') or 0)
+        probe_failure_type = str(previous.get('lastFailureType') or '')[:80]
+        migration_ok = previous.get('migrationOk')
+        lease_rpc_ok = previous.get('leaseRpcOk')
+        pipeline_config_merge_rpc_ok = previous.get('pipelineConfigMergeRpcOk')
+        migration_contract_failure = bool(previous.get('migrationContractFailure'))
+        probe_stage = 'base'
+        try:
+            for table_name in ('user_pipeline_auto_configs', 'user_api_configs'):
+                _execute_postgrest_probe(
+                    probe_client.table(table_name).select('user_id').limit(1)
+                )
+            _execute_postgrest_probe(
+                probe_client.table('app_worker_leases').select(
+                    'lease_name,owner_id,fencing_token,lease_expires_at'
+                ).limit(1)
             )
-            probe_last_success = float(
-                _SUPABASE_READINESS_CACHE.get('lastSuccessAt') or 0
+            # A nonexistent generation returns false without mutating a lease.
+            _execute_postgrest_probe(
+                probe_client.rpc(
+                    'renew_app_worker_lease',
+                    {
+                        'p_lease_name': 'runtime-readiness-contract',
+                        'p_owner_id': 'runtime-readiness-contract',
+                        'p_fencing_token': 1,
+                        'p_ttl_seconds': 5,
+                        'p_metadata': {'component': 'runtime_readiness'},
+                    },
+                )
             )
-            probe_last_failure = float(
-                _SUPABASE_READINESS_CACHE.get('lastFailureAt') or 0
+            migration_ok = True
+            lease_rpc_ok = True
+            probe_stage = 'pipeline_config_merge'
+            pipeline_config_merge_rpc_ok = False
+            merge_contract_response = _execute_postgrest_probe(
+                probe_client.rpc('probe_pipeline_config_atomic_merge', {})
             )
-            probe_failure_type = str(
-                _SUPABASE_READINESS_CACHE.get('lastFailureType') or ''
-            )[:80]
-            migration_ok = _SUPABASE_READINESS_CACHE.get('migrationOk')
-            lease_rpc_ok = _SUPABASE_READINESS_CACHE.get('leaseRpcOk')
-            pipeline_config_merge_rpc_ok = _SUPABASE_READINESS_CACHE.get(
-                'pipelineConfigMergeRpcOk'
+            merge_contract_data = (
+                merge_contract_response.get('data')
+                if isinstance(merge_contract_response, dict)
+                else getattr(merge_contract_response, 'data', None)
             )
-            migration_contract_failure = bool(
-                _SUPABASE_READINESS_CACHE.get('migrationContractFailure')
+            if merge_contract_data != '20260726060000_v2':
+                raise RuntimeError('pipeline config merge RPC contract mismatch')
+            pipeline_config_merge_rpc_ok = True
+            migration_contract_failure = False
+            probe_ok = True
+            probe_failures = 0
+            probe_last_success = time.time()
+            probe_failure_type = ''
+        except Exception as probe_error:
+            probe_ok = False
+            if probe_stage == 'pipeline_config_merge':
+                pipeline_config_merge_rpc_ok = False
+            else:
+                migration_ok = False
+                lease_rpc_ok = False
+            probe_error_text = (
+                '%s %s' % (type(probe_error).__name__, probe_error)
+            ).lower()
+            migration_contract_failure = any(
+                marker in probe_error_text
+                for marker in (
+                    'pgrst202', 'pgrst204', 'pgrst205',
+                    'could not find the function', 'does not exist',
+                    'schema cache', 'pipeline config merge rpc contract mismatch',
+                )
             )
-            if force_probe or now_ts - checked_at >= 15:
-                probe_stage = 'base'
-                try:
-                    _supabase_execute(
-                        lambda: [
-                            supabase_admin.table(table_name).select(
-                                'user_id'
-                            ).limit(1).execute()
-                            for table_name in (
-                                'user_pipeline_auto_configs',
-                                'user_api_configs',
-                            )
-                        ],
-                        'readiness probe',
-                        attempts=1,
-                        lock_timeout=1.0,
-                    )
-                    # Selecting the new column catches a partially applied
-                    # worker-lease migration. Calling renew against a guaranteed
-                    # nonexistent generation is non-mutating and verifies that
-                    # PostgREST has loaded the new fenced RPC contract.
-                    _supabase_execute(
-                        lambda: supabase_admin.table(
-                            'app_worker_leases'
-                        ).select(
-                            'lease_name,owner_id,fencing_token,lease_expires_at'
-                        ).limit(1).execute(),
-                        'worker lease migration probe',
-                        attempts=1,
-                        lock_timeout=1.0,
-                    )
-                    # False is the expected value because this generation can
-                    # never exist; a clean response proves the RPC is callable.
-                    _supabase_execute(
-                        lambda: supabase_admin.rpc(
-                            'renew_app_worker_lease',
-                            {
-                                'p_lease_name': 'runtime-readiness-contract',
-                                'p_owner_id': 'runtime-readiness-contract',
-                                'p_fencing_token': 1,
-                                'p_ttl_seconds': 5,
-                                'p_metadata': {
-                                    'component': 'runtime_readiness',
-                                },
-                            },
-                        ).execute(),
-                        'worker lease RPC probe',
-                        attempts=1,
-                        lock_timeout=1.0,
-                    )
-                    migration_ok = True
-                    lease_rpc_ok = True
-                    probe_stage = 'pipeline_config_merge'
-                    pipeline_config_merge_rpc_ok = False
-                    merge_contract_response = _supabase_execute(
-                        lambda: supabase_admin.rpc(
-                            'probe_pipeline_config_atomic_merge',
-                            {},
-                        ).execute(),
-                        'pipeline config merge RPC probe',
-                        attempts=1,
-                        lock_timeout=1.0,
-                    )
-                    merge_contract_data = (
-                        merge_contract_response.get('data')
-                        if isinstance(merge_contract_response, dict)
-                        else getattr(merge_contract_response, 'data', None)
-                    )
-                    if merge_contract_data != '20260726060000_v2':
-                        raise RuntimeError(
-                            'pipeline config merge RPC contract mismatch'
-                        )
-                    pipeline_config_merge_rpc_ok = True
-                    migration_contract_failure = False
-                    probe_ok = True
-                    probe_failures = 0
-                    probe_last_success = time.time()
-                    probe_failure_type = ''
-                except Exception as probe_error:
-                    probe_ok = False
-                    if probe_stage == 'pipeline_config_merge':
-                        pipeline_config_merge_rpc_ok = False
-                    else:
-                        migration_ok = False
-                        lease_rpc_ok = False
-                    probe_error_text = (
-                        '%s %s' % (type(probe_error).__name__, probe_error)
-                    ).lower()
-                    migration_contract_failure = any(
-                        marker in probe_error_text
-                        for marker in (
-                            'pgrst202',
-                            'pgrst204',
-                            'pgrst205',
-                            'could not find the function',
-                            'does not exist',
-                            'schema cache',
-                            'pipeline config merge rpc contract mismatch',
-                        )
-                    )
-                    probe_failures += 1
-                    probe_last_failure = time.time()
-                    probe_failure_type = type(probe_error).__name__[:80]
-                checked_at = time.time()
-                _SUPABASE_READINESS_CACHE.update({
-                    'checkedAt': checked_at,
-                    'probeOk': probe_ok,
-                    'migrationOk': migration_ok,
-                    'leaseRpcOk': lease_rpc_ok,
-                    'pipelineConfigMergeRpcOk': pipeline_config_merge_rpc_ok,
-                    'migrationContractFailure': migration_contract_failure,
-                    'consecutiveFailures': probe_failures,
-                    'lastSuccessAt': probe_last_success,
-                    'lastFailureAt': probe_last_failure,
-                    'lastFailureType': probe_failure_type,
-                })
+            probe_failures += 1
+            probe_last_failure = time.time()
+            probe_failure_type = type(probe_error).__name__[:80]
+
+        with _SUPABASE_READINESS_LOCK:
+            _SUPABASE_READINESS_CACHE.update({
+                'checkedAt': time.time(),
+                'probeOk': probe_ok,
+                'migrationOk': migration_ok,
+                'leaseRpcOk': lease_rpc_ok,
+                'pipelineConfigMergeRpcOk': pipeline_config_merge_rpc_ok,
+                'migrationContractFailure': migration_contract_failure,
+                'consecutiveFailures': probe_failures,
+                'lastSuccessAt': probe_last_success,
+                'lastFailureAt': probe_last_failure,
+                'lastFailureType': probe_failure_type,
+            })
+        return True
+    finally:
+        _SUPABASE_READINESS_PROBE_LOCK.release()
+
+
+def _supabase_dependency_snapshot(force_probe=False, now_ts=None):
+    """Read cached persistence state; only explicit callers may run a probe."""
+    if force_probe:
+        _run_supabase_readiness_probe(force=True, now_ts=now_ts)
+    required = _strict_production_runtime()
+    configured = _supabase_is_configured()
+    with _SUPABASE_READINESS_LOCK:
+        cached = dict(_SUPABASE_READINESS_CACHE)
+    checked_at = float(cached.get('checkedAt') or 0)
+    probe_ok = cached.get('probeOk')
+    probe_failures = int(cached.get('consecutiveFailures') or 0)
+    probe_last_success = float(cached.get('lastSuccessAt') or 0)
+    probe_last_failure = float(cached.get('lastFailureAt') or 0)
+    probe_failure_type = str(cached.get('lastFailureType') or '')[:80]
+    migration_ok = cached.get('migrationOk')
+    lease_rpc_ok = cached.get('leaseRpcOk')
+    pipeline_config_merge_rpc_ok = cached.get('pipelineConfigMergeRpcOk')
+    migration_contract_failure = bool(cached.get('migrationContractFailure'))
 
     with _SUPABASE_HEALTH_LOCK:
         io_consecutive_failures = int(_SUPABASE_CONSECUTIVE_FAILURES or 0)
         io_failure_label = _SUPABASE_LAST_FAILURE_LABEL
         io_failure_type = _SUPABASE_LAST_FAILURE_TYPE
 
-    healthy = bool(
-        configured
-        and (probe_ok is True or probe_failures < 2)
-    )
+    healthy = bool(configured and (probe_ok is True or probe_failures < 2))
     migration_healthy = bool(
         configured
         and (
-            (
-                migration_ok is True
-                and pipeline_config_merge_rpc_ok is True
-            )
-            or (
-                not migration_contract_failure
-                and probe_failures < 2
-            )
+            (migration_ok is True and pipeline_config_merge_rpc_ok is True)
+            or (not migration_contract_failure and probe_failures < 2)
         )
     )
     lease_healthy = bool(
         configured
         and (
             lease_rpc_ok is True
-            or (
-                not migration_contract_failure
-                and probe_failures < 2
-            )
+            or (not migration_contract_failure and probe_failures < 2)
         )
     )
     return {
@@ -535,17 +582,14 @@ def _supabase_dependency_snapshot(force_probe=False, now_ts=None):
             round(max(0.0, time.time() - checked_at), 1)
             if checked_at else None
         ),
+        'probeInFlight': _SUPABASE_READINESS_PROBE_LOCK.locked(),
         'consecutiveFailures': probe_failures,
         'lastSuccessAt': (
-            datetime.fromtimestamp(
-                probe_last_success, timezone.utc
-            ).isoformat()
+            datetime.fromtimestamp(probe_last_success, timezone.utc).isoformat()
             if probe_last_success else ''
         ),
         'lastFailureAt': (
-            datetime.fromtimestamp(
-                probe_last_failure, timezone.utc
-            ).isoformat()
+            datetime.fromtimestamp(probe_last_failure, timezone.utc).isoformat()
             if probe_last_failure else ''
         ),
         'lastFailureLabel': 'readiness probe' if probe_last_failure else '',
@@ -587,6 +631,49 @@ def _supabase_dependency_snapshot(force_probe=False, now_ts=None):
     }
 
 
+def _supabase_readiness_monitor_loop(stop_event):
+    while not stop_event.is_set():
+        try:
+            _run_supabase_readiness_probe(force=True)
+        except Exception as exc:
+            safe_print(
+                '[Supabase] readiness monitor error=%s'
+                % type(exc).__name__
+            )
+        stop_event.wait(SUPABASE_READINESS_INTERVAL_SECONDS)
+
+
+def _ensure_supabase_readiness_monitor():
+    """Start one daemon probe thread in the serving worker after Gunicorn fork."""
+    global _SUPABASE_READINESS_MONITOR_THREAD
+    global _SUPABASE_READINESS_MONITOR_STOP
+    global _SUPABASE_READINESS_MONITOR_PID
+    if not _supabase_is_configured():
+        return
+    current_pid = os.getpid()
+    with _SUPABASE_READINESS_MONITOR_LOCK:
+        if (
+            _SUPABASE_READINESS_MONITOR_PID == current_pid
+            and _SUPABASE_READINESS_MONITOR_THREAD is not None
+            and _SUPABASE_READINESS_MONITOR_THREAD.is_alive()
+        ):
+            return
+        if _SUPABASE_READINESS_MONITOR_STOP is not None:
+            _SUPABASE_READINESS_MONITOR_STOP.set()
+        stop_event = threading.Event()
+        monitor = threading.Thread(
+            target=_supabase_readiness_monitor_loop,
+            args=(stop_event,),
+            name='supabase-readiness-monitor',
+            daemon=True,
+        )
+        _SUPABASE_READINESS_MONITOR_STOP = stop_event
+        _SUPABASE_READINESS_MONITOR_THREAD = monitor
+        _SUPABASE_READINESS_MONITOR_PID = current_pid
+        monitor.start()
+
+
+# 导入技术指标模块
 try:
     from technical_indicators import calculate_simple_technical_indicators, generate_technical_summary
     print("[导入] 技术指标模块导入成功")
@@ -655,8 +742,8 @@ _operations_allow_local = (
     and (_operations_environment in {'development', 'test', 'testing'} or _operations_local_requested)
 )
 operations_store = OperationsStore(
-    supabase_admin,
-    _supabase_execute,
+    supabase_operations_client or supabase_admin,
+    _operations_supabase_execute,
     allow_local_fallback=_operations_allow_local,
     fallback_path=os.path.join(os.path.dirname(__file__), 'operations_store.local.json'),
 )
@@ -53732,6 +53819,7 @@ def start_background_services():
         if not callable(crypto_start) or not callable(kalshi_start):
             raise RuntimeError('Background scheduler lifecycle controls are unavailable')
 
+        _ensure_supabase_readiness_monitor()
         crypto_start()
         kalshi_start()
         _pa_ensure_scheduler()
