@@ -61,6 +61,22 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "fullRiskConservativeEdge": 0.030,
     "highPriceRiskStart": 0.75,
     "highPriceRiskFloor": 0.50,
+    # A high-priced favorite can preserve a high headline win rate while one
+    # loss consumes several ordinary wins.  Charge that asymmetric payoff an
+    # explicit conservative-edge premium instead of banning the price tail.
+    "recoveryMultipleTarget": 2.0,
+    "recoveryPremiumPerUnit": 0.003,
+    "maxRecoveryEdgePremium": 0.020,
+    # Live results are materially stronger in the first part of the 15-minute
+    # entry window than in its final minutes.  The raw uncertainty and edge
+    # floors therefore become progressively more conservative as expiry nears.
+    # These premiums apply only to KXBTC15M, never to the hourly strike ladder.
+    "btc15MiddleStageSeconds": 420,
+    "btc15LateStageSeconds": 180,
+    "btc15MiddleEdgePremium": 0.0025,
+    "btc15LateEdgePremium": 0.0050,
+    "btc15MiddleUncertaintyPremium": 0.0050,
+    "btc15LateUncertaintyPremium": 0.0100,
     "maxPortfolioExposurePct": 10.0,
     "maxSingleMarketExposurePct": 2.0,
     # Percentage-only sizing can round every valid setup to zero on a small
@@ -71,6 +87,25 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "microPositionMaxLossPct": 5.0,
     "microPositionMinNetEdge": 0.020,
     "microPositionMinConservativeEdge": 0.010,
+    # Kalshi V2 count_fp supports 0.01 contracts.  Risk-equal fractional
+    # sizing is the default, while the legacy integer/micro path remains
+    # available behind an explicit compatibility switch.
+    "fractionalContractSizingEnabled": True,
+    "contractStep": 0.01,
+    "minimumEconomicContracts": 0.10,
+    # A small account may use a still-bounded 1.5% target only for signals that
+    # clear the existing stronger micro-edge floors.  Validation hard-caps the
+    # setting at 2%; Kelly, cash, book and exposure limits remain authoritative.
+    "smallAccountRiskTargetPct": 1.50,
+    # Per-order cash debit is rounded up to the next cent.  Tiny orders whose
+    # all-in fee consumes too much of the possible binary payout fail closed.
+    "maxAllInFeeToPotentialProfitPct": 20.0,
+    "takerFeeRate": 0.07,
+    "entryConfirmationSnapshots": 2,
+    "entryConfirmationMaxGapSeconds": 15,
+    "protectiveExitConfirmations": 3,
+    "protectiveExitConfirmationMaxGapSeconds": 20,
+    "hourlyCandidatePenaltyWeight": 0.10,
     "executionPriceTolerance": 0.01,
     "exitProbabilityThreshold": 0.35,
     # Exit orders are governed by executable value, not by the model
@@ -161,12 +196,31 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
         "fullRiskConservativeEdge": (0.01, 0.15),
         "highPriceRiskStart": (0.60, 0.90),
         "highPriceRiskFloor": (0.25, 1.0),
+        "recoveryMultipleTarget": (1.0, 6.0),
+        "recoveryPremiumPerUnit": (0.0, 0.03),
+        "maxRecoveryEdgePremium": (0.0, 0.05),
+        "btc15MiddleStageSeconds": (180.0, 900.0),
+        "btc15LateStageSeconds": (60.0, 360.0),
+        "btc15MiddleEdgePremium": (0.0, 0.03),
+        "btc15LateEdgePremium": (0.0, 0.05),
+        "btc15MiddleUncertaintyPremium": (0.0, 0.05),
+        "btc15LateUncertaintyPremium": (0.0, 0.08),
         "maxPortfolioExposurePct": (2.0, 50.0),
         "maxSingleMarketExposurePct": (1.0, 20.0),
         "microPositionMaxLossDollars": (0.25, 5.0),
         "microPositionMaxLossPct": (1.0, 10.0),
         "microPositionMinNetEdge": (0.01, 0.10),
         "microPositionMinConservativeEdge": (0.005, 0.08),
+        "contractStep": (0.01, 1.0),
+        "minimumEconomicContracts": (0.01, 5.0),
+        "smallAccountRiskTargetPct": (0.50, 2.0),
+        "maxAllInFeeToPotentialProfitPct": (5.0, 50.0),
+        "takerFeeRate": (0.0, 0.20),
+        "entryConfirmationSnapshots": (1.0, 5.0),
+        "entryConfirmationMaxGapSeconds": (5.0, 60.0),
+        "protectiveExitConfirmations": (2.0, 6.0),
+        "protectiveExitConfirmationMaxGapSeconds": (10.0, 60.0),
+        "hourlyCandidatePenaltyWeight": (0.0, 0.50),
         "executionPriceTolerance": (0.0, 0.03),
         "exitProbabilityThreshold": (0.10, 0.49),
         "minimumHoldSeconds": (0.0, 300.0),
@@ -193,8 +247,24 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
 
     requested_mode = str(raw.get("executionMode") or raw.get("mode") or value.get("executionMode") or "paper").strip().lower()
     value["executionMode"] = "real" if requested_mode in {"real", "live", "production"} else "paper"
+    requested_fractional = raw.get(
+        "fractionalContractSizingEnabled",
+        value["fractionalContractSizingEnabled"],
+    )
+    if isinstance(requested_fractional, str):
+        normalized_fractional = requested_fractional.strip().lower()
+        if normalized_fractional in {"1", "true", "yes", "on"}:
+            value["fractionalContractSizingEnabled"] = True
+        elif normalized_fractional in {"0", "false", "no", "off"}:
+            value["fractionalContractSizingEnabled"] = False
+    else:
+        value["fractionalContractSizingEnabled"] = bool(requested_fractional)
     value["minSecondsToClose"] = int(value["minSecondsToClose"])
+    value["btc15MiddleStageSeconds"] = int(value["btc15MiddleStageSeconds"])
+    value["btc15LateStageSeconds"] = int(value["btc15LateStageSeconds"])
     value["minimumHoldSeconds"] = int(value["minimumHoldSeconds"])
+    value["entryConfirmationSnapshots"] = int(round(value["entryConfirmationSnapshots"]))
+    value["protectiveExitConfirmations"] = int(round(value["protectiveExitConfirmations"]))
     value["reversalCooldownSeconds"] = int(value["reversalCooldownSeconds"])
     value["minimumAddIntervalSeconds"] = int(value["minimumAddIntervalSeconds"])
     value["maxSingleMarketExposurePct"] = min(
@@ -229,6 +299,26 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
     value["highPriceRiskStart"] = min(
         value["highPriceRiskStart"],
         value["maxPrice"],
+    )
+    value["btc15LateStageSeconds"] = min(
+        value["btc15LateStageSeconds"],
+        value["btc15MiddleStageSeconds"],
+    )
+    value["btc15MiddleStageSeconds"] = max(
+        value["btc15MiddleStageSeconds"],
+        value["btc15LateStageSeconds"] + 30,
+    )
+    value["btc15LateEdgePremium"] = max(
+        value["btc15LateEdgePremium"],
+        value["btc15MiddleEdgePremium"],
+    )
+    value["btc15LateUncertaintyPremium"] = max(
+        value["btc15LateUncertaintyPremium"],
+        value["btc15MiddleUncertaintyPremium"],
+    )
+    value["minimumEconomicContracts"] = max(
+        value["minimumEconomicContracts"],
+        value["contractStep"],
     )
     return value
 
@@ -374,6 +464,117 @@ def kalshi_fee(price: float, contracts: float = 1.0, rate: float = 0.07) -> floa
     return math.ceil((raw - 1e-12) * 10_000.0) / 10_000.0
 
 
+def kalshi_order_cost(
+    price: float,
+    contracts: float = 1.0,
+    rate: float = 0.07,
+) -> Dict[str, float]:
+    """Return a conservative, cash-debit-aware Kalshi buy cost.
+
+    Kalshi computes the probability-weighted trade fee to four decimals, then
+    a buy order's aggregate cash debit is rounded up to the next cent.  The
+    latter is economically material for fractional orders, so sizing and EV
+    must use the actual debit rather than ``contracts * fee_per_contract``.
+    """
+    normalized_price = _clamp(float(price), 0.0, 1.0)
+    normalized_contracts = max(0.0, float(contracts))
+    position_cost = normalized_price * normalized_contracts
+    trade_fee = kalshi_fee(normalized_price, normalized_contracts, rate)
+    pre_round_debit = position_cost + trade_fee
+    cash_debit = (
+        math.ceil((pre_round_debit - 1e-12) * 100.0) / 100.0
+        if pre_round_debit > 0.0
+        else 0.0
+    )
+    rounding_fee = max(0.0, cash_debit - pre_round_debit)
+    all_in_fee = max(0.0, cash_debit - position_cost)
+    return {
+        "contracts": normalized_contracts,
+        "price": normalized_price,
+        "positionCost": round(position_cost, 10),
+        "tradeFee": round(trade_fee, 10),
+        "preRoundDebit": round(pre_round_debit, 10),
+        "roundingFee": round(rounding_fee, 10),
+        "allInFee": round(all_in_fee, 10),
+        "cashDebit": round(cash_debit, 10),
+    }
+
+
+def _floor_contracts(value: float, step: float) -> float:
+    """Floor a non-negative contract count to a fixed-point increment."""
+    normalized_step = max(0.01, float(step))
+    units = math.floor((max(0.0, float(value)) + 1e-12) / normalized_step)
+    return round(units * normalized_step, 8)
+
+
+def _ceil_contracts(value: float, step: float) -> float:
+    """Ceil a non-negative contract count to a fixed-point increment."""
+    normalized_step = max(0.01, float(step))
+    units = math.ceil((max(0.0, float(value)) - 1e-12) / normalized_step)
+    return round(units * normalized_step, 8)
+
+
+def _recovery_profile(
+    price: float,
+    settings: Mapping[str, Any],
+    contracts: float = 1.0,
+) -> Dict[str, float]:
+    """Describe fee-adjusted binary payoff asymmetry for an order size."""
+    cost = kalshi_order_cost(
+        price,
+        contracts,
+        float(settings["takerFeeRate"]),
+    )
+    payout = max(0.0, float(contracts))
+    maximum_loss = cost["cashDebit"]
+    win_profit = max(0.0, payout - maximum_loss)
+    # Keep the payload valid strict JSON even when cent rounding consumes the
+    # entire possible payout.
+    recovery_multiple = min(
+        1_000_000.0,
+        maximum_loss / max(win_profit, 1e-9),
+    )
+    target = float(settings["recoveryMultipleTarget"])
+    premium = min(
+        float(settings["maxRecoveryEdgePremium"]),
+        max(0.0, recovery_multiple - target)
+        * float(settings["recoveryPremiumPerUnit"]),
+    )
+    return {
+        **cost,
+        "maximumLoss": maximum_loss,
+        "winProfitAfterFees": round(win_profit, 10),
+        "recoveryMultiple": recovery_multiple,
+        "breakEvenProbability": (
+            maximum_loss / payout if payout > 0.0 else 1.0
+        ),
+        "recoveryEdgePremium": premium,
+    }
+
+
+def _btc15_time_stage(
+    ticker: Any,
+    seconds_to_close: float,
+    settings: Mapping[str, Any],
+) -> Tuple[str, float, float]:
+    """Return the BTC15-only stage and its additive safety premiums."""
+    if not str(ticker or "").upper().startswith(f"{BTC_15M_SERIES}-"):
+        return "not_applicable", 0.0, 0.0
+    if seconds_to_close <= float(settings["btc15LateStageSeconds"]):
+        return (
+            "late",
+            float(settings["btc15LateEdgePremium"]),
+            float(settings["btc15LateUncertaintyPremium"]),
+        )
+    if seconds_to_close <= float(settings["btc15MiddleStageSeconds"]):
+        return (
+            "middle",
+            float(settings["btc15MiddleEdgePremium"]),
+            float(settings["btc15MiddleUncertaintyPremium"]),
+        )
+    return "early", 0.0, 0.0
+
+
 def _normal_cdf(value: float) -> float:
     return 0.5 * (1.0 + math.erf(value / math.sqrt(2.0)))
 
@@ -464,6 +665,9 @@ def evaluate_btc15_contract(
     opened = _parse_time(market.get("open_time"))
     closes = _parse_time(market.get("close_time"))
     seconds_to_close = (closes - now).total_seconds() if closes else -1.0
+    time_stage, time_stage_edge_premium, time_stage_uncertainty_premium = (
+        _btc15_time_stage(market.get("ticker"), seconds_to_close, settings)
+    )
     status = str(market.get("status") or "").lower()
     is_active = bool(opened and closes and opened <= now < closes and status in {"active", "open"})
 
@@ -661,6 +865,13 @@ def evaluate_btc15_contract(
             0.14,
         )
 
+    base_uncertainty = uncertainty
+    uncertainty = _clamp(
+        base_uncertainty + time_stage_uncertainty_premium,
+        0.02,
+        0.22,
+    )
+
     side: Optional[str] = None
     selected_price: Optional[float] = None
     selected_depth = 0.0
@@ -668,6 +879,8 @@ def evaluate_btc15_contract(
     selected_fair: Optional[float] = None
     gross_edge: Optional[float] = None
     fee_per_contract: Optional[float] = None
+    all_in_fee_per_contract: Optional[float] = None
+    rounding_fee_per_contract: Optional[float] = None
     net_edge: Optional[float] = None
     conservative_probability: Optional[float] = None
     conservative_edge: Optional[float] = None
@@ -676,6 +889,11 @@ def evaluate_btc15_contract(
     eligible_levels: List[Tuple[float, float]] = []
     edge_eligible_depth = 0.0
     execution_limit_price: Optional[float] = None
+    maximum_loss_per_contract: Optional[float] = None
+    win_profit_per_contract: Optional[float] = None
+    recovery_multiple: Optional[float] = None
+    break_even_probability: Optional[float] = None
+    recovery_edge_premium = 0.0
     if fair_yes is not None and quotes_valid:
         # Favorite-carry selection: trade only the side the blended forecast
         # says is MORE likely to settle in the money. The old max-edge rule
@@ -707,10 +925,20 @@ def evaluate_btc15_contract(
                 key=lambda level: level[0],
             )
         selected_model_probability = model_yes if side == "YES" else 1.0 - model_yes
-        fee_per_contract = kalshi_fee(selected_price)
-        net_edge = gross_edge - fee_per_contract
+        recovery = _recovery_profile(selected_price, settings)
+        fee_per_contract = recovery["tradeFee"]
+        all_in_fee_per_contract = recovery["allInFee"]
+        rounding_fee_per_contract = recovery["roundingFee"]
+        maximum_loss_per_contract = recovery["maximumLoss"]
+        win_profit_per_contract = recovery["winProfitAfterFees"]
+        recovery_multiple = recovery["recoveryMultiple"]
+        break_even_probability = recovery["breakEvenProbability"]
+        recovery_edge_premium = recovery["recoveryEdgePremium"]
+        net_edge = gross_edge - all_in_fee_per_contract
         conservative_probability = max(0.0, selected_fair - uncertainty * 0.50)
-        conservative_edge = conservative_probability - selected_price - fee_per_contract
+        conservative_edge = (
+            conservative_probability - selected_price - all_in_fee_per_contract
+        )
         if not selected_levels and selected_price is not None and selected_depth > 0:
             selected_levels = [(selected_price, selected_depth)]
 
@@ -775,20 +1003,39 @@ def evaluate_btc15_contract(
     # should make entry more expensive, not veto an otherwise liquid,
     # fee-adjusted opportunity. This avoids the old "every signal must agree"
     # deadlock while still charging a 0.25-0.50pp confirmation premium.
-    adaptive_edge_premium = (0.0025 if not trend_ok else 0.0) + (
+    confirmation_edge_premium = (0.0025 if not trend_ok else 0.0) + (
         0.0025 if not book_pressure_ok else 0.0
     )
-    effective_min_net_edge = settings["minNetEdge"] + adaptive_edge_premium
+    adaptive_edge_premium = confirmation_edge_premium
+    effective_min_net_edge = (
+        settings["minNetEdge"]
+        + confirmation_edge_premium
+        + time_stage_edge_premium
+    )
     effective_min_conservative_edge = (
-        settings["minConservativeEdge"] + adaptive_edge_premium
+        settings["minConservativeEdge"]
+        + confirmation_edge_premium
+        + time_stage_edge_premium
+        + recovery_edge_premium
     )
     if selected_fair is not None and conservative_probability is not None:
-        eligible_levels = [
-            (price, size) for price, size in selected_levels
-            if effective_min_price <= price <= settings["maxPrice"]
-            and selected_fair - price - kalshi_fee(price) >= effective_min_net_edge
-            and conservative_probability - price - kalshi_fee(price) >= effective_min_conservative_edge
-        ]
+        for price, size in selected_levels:
+            if not effective_min_price <= price <= settings["maxPrice"]:
+                continue
+            level_recovery = _recovery_profile(price, settings)
+            level_fee = level_recovery["allInFee"]
+            level_min_conservative_edge = (
+                settings["minConservativeEdge"]
+                + confirmation_edge_premium
+                + time_stage_edge_premium
+                + level_recovery["recoveryEdgePremium"]
+            )
+            if (
+                selected_fair - price - level_fee >= effective_min_net_edge
+                and conservative_probability - price - level_fee
+                >= level_min_conservative_edge
+            ):
+                eligible_levels.append((price, size))
         edge_eligible_depth = sum(size for _, size in eligible_levels)
         execution_limit_price = max((price for price, _ in eligible_levels), default=selected_price)
     depth_ok = edge_eligible_depth >= settings["minDepthContracts"]
@@ -813,6 +1060,33 @@ def evaluate_btc15_contract(
     )
 
     gates = [
+        _gate(
+            "time_stage_stability",
+            time_stage_edge_premium <= 0.0 and time_stage_uncertainty_premium <= 0.0,
+            "BTC15 time-stage stability",
+            "BTC15 分阶段稳定性",
+            (
+                f"{time_stage} / edge +{time_stage_edge_premium * 100:.2f}pp / "
+                f"uncertainty +{time_stage_uncertainty_premium * 100:.2f}pp"
+            ),
+            severity="adaptive",
+            category="signal",
+        ),
+        _gate(
+            "recovery_asymmetry",
+            recovery_multiple is not None
+            and recovery_multiple <= settings["recoveryMultipleTarget"],
+            "Fee-adjusted recovery multiple",
+            "手续费后回本倍数",
+            (
+                f"{recovery_multiple:.2f} wins / target {settings['recoveryMultipleTarget']:.2f} / "
+                f"edge +{recovery_edge_premium * 100:.2f}pp"
+                if recovery_multiple is not None
+                else "payoff unavailable"
+            ),
+            severity="adaptive",
+            category="signal",
+        ),
         _gate("contract_active", is_active, "Active contract", "合约交易中", f"status={status or 'unknown'}", category="data"),
         _gate("entry_window", timing_ok, "Entry window", "进场时段", f"{max(0, int(seconds_to_close))}s / {settings['minSecondsToClose']}-{settings['maxSecondsToClose']}s", category="data"),
         _gate("reference_ready", strike_ok, "Reference price", "参考价格", "BRTI strike and BTC reference available" if strike_ok else "missing strike or reference", category="data"),
@@ -854,22 +1128,31 @@ def evaluate_btc15_contract(
         _gate("conservative_edge", conservative_edge_ok, "Uncertainty-adjusted edge", "不确定性后边际", f"{conservative_edge * 100:.1f}pp / adaptive min {effective_min_conservative_edge * 100:.2f}pp" if conservative_edge is not None else "edge unavailable", category="signal"),
     ]
 
-    bankroll = _number(account.get("bankroll"), settings["paperBankroll"]) or settings["paperBankroll"]
+    is_real_execution = settings.get("executionMode") == "real"
+    account_bankroll = _number(account.get("bankroll"))
+    if account_bankroll is None:
+        bankroll = 0.0 if is_real_execution else settings["paperBankroll"]
+    else:
+        bankroll = max(0.0, account_bankroll)
     daily_pnl = _number(account.get("dailyRealizedPnl"))
     if daily_pnl is None:
         daily_pnl = _number(account.get("dailyPnl"), 0.0) or 0.0
     daily_realized_loss = max(0.0, -daily_pnl)
 
-    if account:
+    if account or is_real_execution:
         exposure = max(0.0, _number(account.get("portfolioExposure"), 0.0) or 0.0)
         market_exposure = max(0.0, _number(account.get("currentMarketExposure"), 0.0) or 0.0)
         exposure_pct = exposure / max(bankroll, 1.0) * 100.0
         market_exposure_pct = market_exposure / max(bankroll, 1.0) * 100.0
-        is_real_execution = settings.get("executionMode") == "real"
+        cash_evidence = _number(account.get("cashAvailable"))
+        account_ready = bool(
+            bankroll > 0
+            and (not is_real_execution or cash_evidence is not None)
+        )
         account_gates = [
             _gate(
                 "account_ready",
-                bankroll > 0,
+                account_ready,
                 "Kalshi Real account ready" if is_real_execution else "AlphaLab Paper account ready",
                 "Kalshi 实盘账户可用" if is_real_execution else "AlphaLab 模拟账户可用",
                 f"portfolio {bankroll:.2f}",
@@ -944,26 +1227,61 @@ def evaluate_btc15_contract(
     applied_risk_scale = quality_risk_scale * price_risk_scale
     scaled_hard_risk_budget = hard_risk_budget * applied_risk_scale
     full_kelly = 0.0
-    if conservative_probability is not None and selected_price is not None and fee_per_contract is not None:
-        unit_cost = selected_price + fee_per_contract
+    if (
+        conservative_probability is not None
+        and maximum_loss_per_contract is not None
+    ):
+        unit_cost = maximum_loss_per_contract
         full_kelly = max(0.0, (conservative_probability - unit_cost) / max(1.0 - unit_cost, 0.01))
     kelly_budget = bankroll * full_kelly * settings["fractionalKelly"]
     max_loss_budget = min(scaled_hard_risk_budget, kelly_budget) if kelly_budget > 0 else 0.0
-    contracts = 0
+    contracts = 0.0
     estimated_fee = 0.0
+    estimated_trade_fee = 0.0
+    rounding_fee = 0.0
     max_loss = 0.0
     expected_value = 0.0
+    expected_loss = 0.0
+    expected_win_profit = 0.0
+    planned_recovery_multiple: Optional[float] = None
+    fee_to_potential_profit_pct: Optional[float] = None
     standard_risk_budget = max_loss_budget
     micro_sizing_applied = False
+    fractional_sizing_enabled = bool(settings["fractionalContractSizingEnabled"])
+    contract_step = float(settings["contractStep"]) if fractional_sizing_enabled else 1.0
+    minimum_economic_contracts = (
+        _ceil_contracts(settings["minimumEconomicContracts"], contract_step)
+        if fractional_sizing_enabled
+        else 1.0
+    )
+    fractional_sizing_applied = False
+    small_account_sizing_applied = False
+    small_account_risk_budget = 0.0
+    risk_budget_utilization = 0.0
+    planned_contracts_fp = 0.0
     micro_position_loss_cap = min(
         settings["microPositionMaxLossDollars"],
         bankroll * settings["microPositionMaxLossPct"] / 100.0,
     )
-    if not blocking and selected_price is not None and fee_per_contract is not None:
-        unit_cost = selected_price + fee_per_contract
-        depth_cap = int(edge_eligible_depth * settings["maxBookParticipation"])
-        cash_available = _number(account.get("cashAvailable"), bankroll) or bankroll
-        cash_cap = int(cash_available // max(unit_cost, 0.01))
+    if (
+        not blocking
+        and selected_price is not None
+        and maximum_loss_per_contract is not None
+        and conservative_probability is not None
+    ):
+        unit_cost = maximum_loss_per_contract
+        depth_cap = _floor_contracts(
+            edge_eligible_depth * settings["maxBookParticipation"],
+            contract_step,
+        )
+        account_cash = _number(account.get("cashAvailable"))
+        cash_available = (
+            bankroll if account_cash is None else max(0.0, account_cash)
+        )
+        cash_cap = _floor_contracts(
+            cash_available / max(unit_cost, 0.01),
+            contract_step,
+        )
         portfolio_exposure = max(0.0, _number(account.get("portfolioExposure"), 0.0) or 0.0)
         market_exposure = max(0.0, _number(account.get("currentMarketExposure"), 0.0) or 0.0)
         portfolio_room = max(
@@ -974,15 +1292,64 @@ def evaluate_btc15_contract(
             0.0,
             bankroll * settings["maxSingleMarketExposurePct"] / 100.0 - market_exposure,
         )
-        exposure_cap = int(min(portfolio_room, market_room) // max(unit_cost, 0.01))
-        contracts = min(
+        exposure_cap = _floor_contracts(
+            min(portfolio_room, market_room) / max(unit_cost, 0.01),
+            contract_step,
+        )
+        strong_small_account_edge = bool(
+            net_edge is not None
+            and net_edge >= settings["microPositionMinNetEdge"]
+            and conservative_edge is not None
+            and conservative_edge >= settings["microPositionMinConservativeEdge"]
+        )
+        small_account_eligible = bool(
+            fractional_sizing_enabled
+            and strong_small_account_edge
+            and market_exposure <= 0.0
+            and standard_risk_budget > 0.0
+            and standard_risk_budget < unit_cost
+        )
+        if small_account_eligible:
+            small_account_risk_budget = min(
+                bankroll * settings["smallAccountRiskTargetPct"] / 100.0,
+                kelly_budget,
+                micro_position_loss_cap,
+            )
+            if small_account_risk_budget > max_loss_budget:
+                max_loss_budget = small_account_risk_budget
+                small_account_sizing_applied = True
+
+        risk_cap = _floor_contracts(
+            max_loss_budget / max(unit_cost, 0.01),
+            contract_step,
+        )
+        contracts = _floor_contracts(min(
             depth_cap,
             cash_cap,
             exposure_cap,
-            int(max_loss_budget // max(unit_cost, 0.01)),
+            risk_cap,
+        ), contract_step)
+        # The one-contract estimate is not sufficient for fractional orders:
+        # aggregate cash debit rounds up to a cent.  Re-check the exact order
+        # cost and step down until every monetary cap is truly respected.
+        exact_dollar_cap = min(
+            cash_available,
+            portfolio_room,
+            market_room,
+            max_loss_budget,
         )
+        while contracts > 0.0:
+            candidate_cost = kalshi_order_cost(
+                selected_price,
+                contracts,
+                settings["takerFeeRate"],
+            )
+            if candidate_cost["cashDebit"] <= exact_dollar_cap + 1e-12:
+                break
+            contracts = _floor_contracts(contracts - contract_step, contract_step)
         micro_position_eligible = bool(
-            contracts <= 0
+            not fractional_sizing_enabled
+            and contracts <= 0
             and depth_cap >= 1
             and cash_cap >= 1
             and portfolio_room >= unit_cost
@@ -995,9 +1362,15 @@ def evaluate_btc15_contract(
             and conservative_edge >= settings["microPositionMinConservativeEdge"]
         )
         if micro_position_eligible:
-            contracts = 1
+            contracts = 1.0
             micro_sizing_applied = True
             max_loss_budget = unit_cost
+            exact_dollar_cap = min(
+                cash_available,
+                portfolio_room,
+                market_room,
+                max_loss_budget,
+            )
             gates.append(_gate(
                 "micro_position_size",
                 True,
@@ -1010,6 +1383,12 @@ def evaluate_btc15_contract(
                 severity="review",
                 category="account",
             ))
+        if (
+            fractional_sizing_enabled
+            and contracts < minimum_economic_contracts
+        ):
+            contracts = 0.0
+        planned_contracts_fp = contracts
         if contracts <= 0:
             blocking.append("position_size")
             gates.append(_gate(
@@ -1018,15 +1397,67 @@ def evaluate_btc15_contract(
                 "Executable position size",
                 "可执行仓位",
                 (
-                    "Kelly/risk/depth caps are below one contract; "
+                    "Kelly/risk/depth caps are below the minimum economic size; "
+                    f"min {minimum_economic_contracts:.2f} / "
                     f"small-account loss cap {micro_position_loss_cap:.2f}"
                 ),
                 category="account",
             ))
         else:
-            estimated_fee = kalshi_fee(selected_price, contracts)
-            max_loss = selected_price * contracts + estimated_fee
-            expected_value = (conservative_edge or 0.0) * contracts
+            order_cost = kalshi_order_cost(
+                selected_price,
+                contracts,
+                settings["takerFeeRate"],
+            )
+            estimated_trade_fee = order_cost["tradeFee"]
+            rounding_fee = order_cost["roundingFee"]
+            estimated_fee = order_cost["allInFee"]
+            max_loss = order_cost["cashDebit"]
+            gross_potential_profit = contracts * (1.0 - selected_price)
+            fee_to_potential_profit_pct = (
+                estimated_fee / gross_potential_profit * 100.0
+                if gross_potential_profit > 1e-12
+                else 100.0
+            )
+            expected_loss = (1.0 - conservative_probability) * max_loss
+            expected_win_profit = conservative_probability * max(
+                0.0,
+                contracts - max_loss,
+            )
+            expected_value = expected_win_profit - expected_loss
+            planned_recovery = _recovery_profile(
+                selected_price,
+                settings,
+                contracts,
+            )
+            planned_recovery_multiple = planned_recovery["recoveryMultiple"]
+            risk_budget_utilization = (
+                max_loss / max_loss_budget if max_loss_budget > 0.0 else 0.0
+            )
+            fractional_sizing_applied = bool(
+                fractional_sizing_enabled
+                and abs(contracts - round(contracts)) > 1e-9
+            )
+            order_economics_ok = bool(
+                expected_value > 0.0
+                and fee_to_potential_profit_pct
+                <= settings["maxAllInFeeToPotentialProfitPct"]
+                and max_loss <= exact_dollar_cap + 1e-12
+            )
+            gates.append(_gate(
+                "order_economics",
+                order_economics_ok,
+                "Rounding-aware order economics",
+                "计入取整后的订单经济性",
+                (
+                    f"EV {expected_value:.4f} / all-in fee {estimated_fee:.4f} / "
+                    f"fee {fee_to_potential_profit_pct:.1f}% of possible profit"
+                ),
+                category="execution",
+            ))
+            if not order_economics_ok:
+                blocking.append("order_economics")
+                contracts = 0.0
 
     action = f"BUY_{side}" if side and not blocking and contracts > 0 else "WAIT"
     # Favorite confidence drives the headline score; net edge and execution
@@ -1050,7 +1481,7 @@ def evaluate_btc15_contract(
     distance_bps = ((spot / strike) - 1.0) * 10_000.0 if spot and strike else None
     is_real_execution = settings.get("executionMode") == "real"
     return {
-        "engine": "btc15_settlement_aligned_v7",
+        "engine": "btc15_settlement_aligned_v8",
         "generatedAt": _iso(now),
         "paperOnly": not is_real_execution,
         "executionEnvironment": "kalshi_real" if is_real_execution else "alphalab_paper",
@@ -1117,7 +1548,11 @@ def evaluate_btc15_contract(
             "fairYesProbability": fair_yes,
             "selectedModelProbability": selected_model_probability,
             "marketWeight": market_weight,
+            "baseUncertainty": base_uncertainty,
             "uncertainty": uncertainty,
+            "timeStage": time_stage,
+            "timeStageEdgePremium": time_stage_edge_premium,
+            "timeStageUncertaintyPremium": time_stage_uncertainty_premium,
             "referenceAgeSeconds": reference_age,
             "sampleSize": len(returns),
         },
@@ -1131,14 +1566,25 @@ def evaluate_btc15_contract(
             "effectiveMinimumPrice": effective_min_price,
             "grossEdge": gross_edge,
             "feePerContract": fee_per_contract,
+            "tradeFeePerContract": fee_per_contract,
+            "roundingFeePerContract": rounding_fee_per_contract,
+            "allInFeePerContract": all_in_fee_per_contract,
             "netEdge": net_edge,
             "conservativeProbability": conservative_probability,
             "conservativeEdge": conservative_edge,
             "minimumNetEdge": settings["minNetEdge"],
             "minimumConservativeEdge": settings["minConservativeEdge"],
             "adaptiveEdgePremium": adaptive_edge_premium,
+            "confirmationEdgePremium": confirmation_edge_premium,
+            "timeStageEdgePremium": time_stage_edge_premium,
+            "recoveryEdgePremium": recovery_edge_premium,
             "effectiveMinimumNetEdge": effective_min_net_edge,
             "effectiveMinimumConservativeEdge": effective_min_conservative_edge,
+            "maximumLossPerContract": maximum_loss_per_contract,
+            "winProfitPerContract": win_profit_per_contract,
+            "recoveryMultiple": recovery_multiple,
+            "recoveryMultipleTarget": settings["recoveryMultipleTarget"],
+            "breakEvenProbability": break_even_probability,
         },
         "sizing": {
             "paperBankroll": bankroll,
@@ -1160,10 +1606,28 @@ def evaluate_btc15_contract(
             "bookParticipationPct": settings["maxBookParticipation"] * 100.0,
             "microSizingApplied": micro_sizing_applied,
             "microPositionLossCap": micro_position_loss_cap,
+            "fractionalSizingEnabled": fractional_sizing_enabled,
+            "fractionalSizingApplied": fractional_sizing_applied,
+            "smallAccountSizingApplied": small_account_sizing_applied,
+            "smallAccountRiskTargetPct": settings["smallAccountRiskTargetPct"],
+            "smallAccountRiskBudget": small_account_risk_budget,
+            "contractStep": contract_step,
+            "minimumEconomicContracts": minimum_economic_contracts,
             "contracts": contracts,
+            "contractsFp": contracts,
+            "plannedContractsFp": planned_contracts_fp,
+            "integerCompatibilityContracts": int(math.floor(contracts)),
+            "estimatedTradeFee": estimated_trade_fee,
+            "roundingFee": rounding_fee,
+            "allInFee": estimated_fee,
             "estimatedFee": estimated_fee,
             "maximumLoss": max_loss,
+            "expectedLoss": expected_loss,
+            "expectedWinProfit": expected_win_profit,
             "expectedValue": expected_value,
+            "plannedRecoveryMultiple": planned_recovery_multiple,
+            "feeToPotentialProfitPct": fee_to_potential_profit_pct,
+            "riskBudgetUtilization": risk_budget_utilization,
         },
         "gates": gates,
         "config": settings,
@@ -1174,7 +1638,10 @@ def evaluate_btc15_contract(
                 if official_reference
                 else "BRTI constituent-exchange proxy; official BRTI is the target settlement reference"
             ),
-            "feeModel": "Kalshi general taker fee estimate",
+            "feeModel": (
+                "Kalshi general taker fee plus conservative aggregate cash-debit "
+                "rounding to the next cent"
+            ),
             "probabilityModel": (
                 "favorite-carry: normal digital probability on distance-to-strike, "
                 "bounded momentum shift, market microprice blend, and monotone ladder prior"
@@ -1199,6 +1666,7 @@ __all__ = [
     "DEFAULT_STRATEGY_CONFIG",
     "evaluate_btc15_contract",
     "kalshi_fee",
+    "kalshi_order_cost",
     "minute_return_series",
     "normalize_strategy_config",
     "realized_minute_volatility",

@@ -5,6 +5,7 @@ import pytest
 from kalshi_engine import (
     evaluate_btc15_contract,
     kalshi_fee,
+    kalshi_order_cost,
     normalize_strategy_config,
     select_btc15_market,
 )
@@ -38,6 +39,15 @@ def _market(now, **overrides):
     }
     value.update(overrides)
     return value
+
+
+def _early_market(now, **overrides):
+    return _market(
+        now,
+        open_time=(now - timedelta(minutes=5)).isoformat(),
+        close_time=(now + timedelta(minutes=10)).isoformat(),
+        **overrides,
+    )
 
 
 def _sizing_candidate(now, *, strike, yes_ask):
@@ -101,6 +111,11 @@ def test_fee_uses_current_probability_weighted_formula():
     assert kalshi_fee(0.50) == pytest.approx(0.0175)
     assert kalshi_fee(0.50, 10) == pytest.approx(0.175)
     assert kalshi_fee(0.10) == pytest.approx(0.0063)
+    fractional = kalshi_order_cost(0.50, 0.30)
+    assert fractional["tradeFee"] == pytest.approx(0.0053)
+    assert fractional["cashDebit"] == pytest.approx(0.16)
+    assert fractional["roundingFee"] == pytest.approx(0.0047)
+    assert fractional["allInFee"] == pytest.approx(0.01)
 
 
 def test_confirmed_favorite_can_pass_all_paper_gates():
@@ -108,7 +123,7 @@ def test_confirmed_favorite_can_pass_all_paper_gates():
     candles, spot = _candles()
 
     result = evaluate_btc15_contract(
-        _market(now, floor_strike=64_650.0),
+        _early_market(now, floor_strike=64_625.0),
         spot_price=spot,
         candles=candles,
         now=now,
@@ -181,13 +196,13 @@ def test_mirrored_favorite_can_buy_no():
     spot = candles[-1][4]
 
     result = evaluate_btc15_contract(
-        _market(
+        _early_market(
             now,
             floor_strike=65_400.0,
-            yes_bid_dollars="0.1000",
-            yes_ask_dollars="0.1200",
-            no_bid_dollars="0.8800",
-            no_ask_dollars="0.9000",
+            yes_bid_dollars="0.2000",
+            yes_ask_dollars="0.2200",
+            no_bid_dollars="0.7800",
+            no_ask_dollars="0.8000",
         ),
         spot_price=spot,
         candles=candles,
@@ -248,9 +263,9 @@ def test_position_size_is_not_capped_by_legacy_max_contracts():
     candles, spot = _candles()
 
     result = evaluate_btc15_contract(
-        _market(
+        _early_market(
             now,
-            floor_strike=64_650.0,
+            floor_strike=64_600.0,
             yes_ask_size_fp="1000.0",
             no_ask_size_fp="1000.0",
         ),
@@ -283,12 +298,12 @@ def test_position_size_is_not_capped_by_legacy_max_contracts():
     assert result["sizing"]["contracts"] > 20
 
 
-def test_small_real_account_can_route_one_bounded_contract():
+def test_small_real_account_uses_risk_equal_fractional_contracts():
     now = datetime.now(timezone.utc)
     candles, spot = _candles()
 
     result = evaluate_btc15_contract(
-        _market(now, floor_strike=64_650.0),
+        _early_market(now, floor_strike=64_600.0),
         spot_price=spot,
         candles=candles,
         now=now,
@@ -305,10 +320,15 @@ def test_small_real_account_can_route_one_bounded_contract():
 
     assert result["action"] == "BUY_YES"
     assert result["blockingReasons"] == []
-    assert result["sizing"]["contracts"] == 1
-    assert result["sizing"]["microSizingApplied"] is True
+    assert 0.10 <= result["sizing"]["contracts"] < 1
+    assert result["sizing"]["contractsFp"] == result["sizing"]["contracts"]
+    assert result["sizing"]["fractionalSizingApplied"] is True
+    assert result["sizing"]["smallAccountSizingApplied"] is True
+    assert result["sizing"]["microSizingApplied"] is False
     assert result["sizing"]["standardRiskBudget"] < result["sizing"]["maximumLoss"]
-    assert result["sizing"]["maximumLoss"] <= result["sizing"]["microPositionLossCap"]
+    assert result["sizing"]["maximumLoss"] <= 19.87 * 0.015 + 1e-9
+    assert result["sizing"]["maximumLoss"] <= result["sizing"]["riskBudget"] + 1e-9
+    assert result["sizing"]["expectedValue"] > 0
     assert result["edge"]["netEdge"] >= result["config"]["microPositionMinNetEdge"]
     assert (
         result["edge"]["conservativeEdge"]
@@ -321,7 +341,7 @@ def test_small_account_override_still_respects_relative_loss_cap():
     candles, spot = _candles()
 
     result = evaluate_btc15_contract(
-        _market(now, floor_strike=64_650.0),
+        _early_market(now, floor_strike=64_600.0),
         spot_price=spot,
         candles=candles,
         now=now,
@@ -329,8 +349,8 @@ def test_small_account_override_still_respects_relative_loss_cap():
         book_time=now,
         config={"executionMode": "real"},
         account_context={
-            "bankroll": 10.0,
-            "cashAvailable": 10.0,
+            "bankroll": 5.0,
+            "cashAvailable": 5.0,
             "portfolioExposure": 0,
             "currentMarketExposure": 0,
         },
@@ -340,13 +360,192 @@ def test_small_account_override_still_respects_relative_loss_cap():
     assert "position_size" in result["blockingReasons"]
     assert result["sizing"]["contracts"] == 0
     assert result["sizing"]["microSizingApplied"] is False
-    assert result["sizing"]["microPositionLossCap"] == pytest.approx(0.50)
+    assert result["sizing"]["microPositionLossCap"] == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize(
+    ("account_context", "expected_blocker"),
+    [
+        ({}, "account_ready"),
+        ({"bankroll": 0.0, "cashAvailable": 100.0}, "account_ready"),
+        ({"bankroll": 100.0, "cashAvailable": 0.0}, "position_size"),
+    ],
+)
+def test_real_account_missing_or_zero_funds_fail_closed(
+    account_context,
+    expected_blocker,
+):
+    now = datetime.now(timezone.utc)
+    candles, spot = _candles()
+    result = evaluate_btc15_contract(
+        _early_market(now, floor_strike=64_600.0),
+        spot_price=spot,
+        candles=candles,
+        now=now,
+        reference_time=now,
+        book_time=now,
+        config={"executionMode": "real"},
+        account_context=account_context,
+    )
+
+    assert result["action"] == "WAIT"
+    assert expected_blocker in result["blockingReasons"]
+    assert result["sizing"]["contractsFp"] == 0
+    assert result["sizing"]["plannedContractsFp"] == 0
+
+
+def test_paper_without_account_context_keeps_configured_bankroll_fallback():
+    now = datetime.now(timezone.utc)
+    candles, spot = _candles()
+    result = evaluate_btc15_contract(
+        _early_market(now, floor_strike=64_600.0),
+        spot_price=spot,
+        candles=candles,
+        now=now,
+        reference_time=now,
+        book_time=now,
+    )
+
+    assert result["action"] == "BUY_YES"
+    assert result["sizing"]["paperBankroll"] == pytest.approx(1000.0)
+
+
+def test_legacy_integer_compatibility_path_keeps_bounded_micro_contract():
+    now = datetime.now(timezone.utc)
+    candles, spot = _candles()
+    result = evaluate_btc15_contract(
+        _early_market(now, floor_strike=64_600.0),
+        spot_price=spot,
+        candles=candles,
+        now=now,
+        reference_time=now,
+        book_time=now,
+        config={
+            "executionMode": "real",
+            "fractionalContractSizingEnabled": False,
+        },
+        account_context={
+            "bankroll": 50.0,
+            "cashAvailable": 50.0,
+            "portfolioExposure": 0,
+            "currentMarketExposure": 0,
+        },
+    )
+
+    assert result["action"] == "BUY_YES"
+    assert result["sizing"]["contracts"] == 1
+    assert result["sizing"]["contractStep"] == 1
+    assert result["sizing"]["microSizingApplied"] is True
+    assert result["sizing"]["fractionalSizingApplied"] is False
+
+
+def test_rounding_economics_blocks_fractional_order_with_negative_ev():
+    now = datetime.now(timezone.utc)
+    candles, spot = _candles()
+    result = evaluate_btc15_contract(
+        _early_market(now, floor_strike=64_625.0),
+        spot_price=spot,
+        candles=candles,
+        now=now,
+        reference_time=now,
+        book_time=now,
+        config={"executionMode": "real"},
+        account_context={
+            "bankroll": 19.87,
+            "cashAvailable": 19.87,
+            "portfolioExposure": 0,
+            "currentMarketExposure": 0,
+        },
+    )
+
+    assert result["action"] == "WAIT"
+    assert result["blockingReasons"] == ["order_economics"]
+    assert result["sizing"]["plannedContractsFp"] >= 0.10
+    assert result["sizing"]["contractsFp"] == 0
+    assert result["sizing"]["expectedValue"] <= 0
+
+
+def test_btc15_time_stage_premiums_only_tighten_later_windows():
+    now = datetime.now(timezone.utc)
+    candles, spot = _candles()
+
+    def decision(ticker, seconds):
+        return evaluate_btc15_contract(
+            _market(
+                now,
+                ticker=ticker,
+                floor_strike=64_600.0,
+                open_time=(now - timedelta(minutes=15)).isoformat(),
+                close_time=(now + timedelta(seconds=seconds)).isoformat(),
+            ),
+            spot_price=spot,
+            candles=candles,
+            now=now,
+            reference_time=now,
+            book_time=now,
+        )
+
+    early = decision("KXBTC15M-EARLY", 600)
+    middle = decision("KXBTC15M-MIDDLE", 300)
+    late = decision("KXBTC15M-LATE", 120)
+    hourly = decision("KXBTCD-HOURLY-T65000", 300)
+
+    assert early["model"]["timeStage"] == "early"
+    assert middle["model"]["timeStage"] == "middle"
+    assert late["model"]["timeStage"] == "late"
+    assert hourly["model"]["timeStage"] == "not_applicable"
+    assert early["edge"]["timeStageEdgePremium"] == 0
+    assert (
+        early["edge"]["effectiveMinimumConservativeEdge"]
+        < middle["edge"]["effectiveMinimumConservativeEdge"]
+        < late["edge"]["effectiveMinimumConservativeEdge"]
+    )
+    assert hourly["edge"]["timeStageEdgePremium"] == 0
+
+
+def test_recovery_multiple_adds_soft_edge_premium_without_hard_block():
+    now = datetime.now(timezone.utc)
+    candles, spot = _candles()
+    low = evaluate_btc15_contract(
+        _early_market(
+            now,
+            floor_strike=64_400.0,
+            yes_bid_dollars="0.58",
+            yes_ask_dollars="0.60",
+            no_bid_dollars="0.40",
+            no_ask_dollars="0.42",
+        ),
+        spot_price=spot,
+        candles=candles,
+        now=now,
+        reference_time=now,
+        book_time=now,
+    )
+    high = evaluate_btc15_contract(
+        _early_market(
+            now,
+            floor_strike=64_400.0,
+            yes_bid_dollars="0.83",
+            yes_ask_dollars="0.85",
+            no_bid_dollars="0.15",
+            no_ask_dollars="0.17",
+        ),
+        spot_price=spot,
+        candles=candles,
+        now=now,
+        reference_time=now,
+        book_time=now,
+    )
+
+    assert high["edge"]["recoveryMultiple"] > low["edge"]["recoveryMultiple"]
+    assert high["edge"]["recoveryEdgePremium"] > low["edge"]["recoveryEdgePremium"]
+    assert "recovery_asymmetry" not in high["blockingReasons"]
 
 
 def test_weak_signal_receives_less_than_full_hard_risk_budget():
     now = datetime.now(timezone.utc)
     strong = _sizing_candidate(now, strike=64_625.0, yes_ask=0.74)
-    weak = _sizing_candidate(now, strike=64_650.0, yes_ask=0.74)
+    weak = _sizing_candidate(now, strike=64_640.0, yes_ask=0.74)
 
     assert strong["action"] == "BUY_YES"
     assert weak["action"] == "BUY_YES"
@@ -511,7 +710,7 @@ def test_daily_realized_loss_never_blocks_new_buy():
     now = datetime.now(timezone.utc)
     candles, spot = _candles()
     common = {
-        "market": _market(now, floor_strike=64_650.0),
+        "market": _early_market(now, floor_strike=64_600.0),
         "spot_price": spot,
         "candles": candles,
         "now": now,
@@ -552,7 +751,7 @@ def test_explicit_daily_realized_pnl_is_reported_without_blocking():
     candles, spot = _candles()
 
     result = evaluate_btc15_contract(
-        _market(now, floor_strike=64_650.0),
+        _early_market(now, floor_strike=64_600.0),
         spot_price=spot,
         candles=candles,
         now=now,
@@ -658,6 +857,11 @@ def test_user_config_is_bounded_to_research_limits():
         "minimumExitProfit": 1,
         "stopLossPct": 0,
         "emergencyStopLossPct": 1,
+        "entryConfirmationSnapshots": 99,
+        "entryConfirmationMaxGapSeconds": 1,
+        "protectiveExitConfirmations": 0,
+        "protectiveExitConfirmationMaxGapSeconds": 999,
+        "hourlyCandidatePenaltyWeight": 5,
     })
 
     assert config["paperBankroll"] == 100.0
@@ -677,10 +881,18 @@ def test_user_config_is_bounded_to_research_limits():
     assert config["minimumExitProfit"] == 0.10
     assert config["stopLossPct"] == 0.15
     assert config["emergencyStopLossPct"] == 0.15
+    assert config["entryConfirmationSnapshots"] == 5
+    assert config["entryConfirmationMaxGapSeconds"] == 5
+    assert config["protectiveExitConfirmations"] == 2
+    assert config["protectiveExitConfirmationMaxGapSeconds"] == 60
+    assert config["hourlyCandidatePenaltyWeight"] == pytest.approx(0.50)
 
 
 def test_default_quality_floors_and_risk_scale_invariants():
     defaults = normalize_strategy_config()
+    malformed_fractional = normalize_strategy_config({
+        "fractionalContractSizingEnabled": "malformed",
+    })
     constrained = normalize_strategy_config({
         "minModelProbability": 0.90,
         "fullRiskModelProbability": 0.65,
@@ -696,6 +908,15 @@ def test_default_quality_floors_and_risk_scale_invariants():
     assert defaults["maxPrice"] == pytest.approx(0.92)
     assert defaults["riskPerTradePct"] == pytest.approx(0.50)
     assert defaults["fractionalKelly"] == pytest.approx(0.15)
+    assert defaults["fractionalContractSizingEnabled"] is True
+    assert defaults["contractStep"] == pytest.approx(0.01)
+    assert defaults["minimumEconomicContracts"] == pytest.approx(0.10)
+    assert defaults["smallAccountRiskTargetPct"] == pytest.approx(1.50)
+    assert defaults["recoveryMultipleTarget"] == pytest.approx(2.0)
+    assert defaults["entryConfirmationSnapshots"] == 2
+    assert defaults["protectiveExitConfirmations"] == 3
+    assert defaults["hourlyCandidatePenaltyWeight"] == pytest.approx(0.10)
+    assert malformed_fractional["fractionalContractSizingEnabled"] is True
     assert defaults["maxPortfolioExposurePct"] == pytest.approx(10.0)
     assert defaults["maxSingleMarketExposurePct"] == pytest.approx(2.0)
     assert defaults["minimumAddIntervalSeconds"] == 90

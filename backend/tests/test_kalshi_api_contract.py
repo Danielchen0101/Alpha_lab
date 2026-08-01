@@ -14,6 +14,9 @@ from kalshi_api import (
     _PaperRobotController,
     _account_equity_cents,
     _brti_proxy,
+    _contract_quantity,
+    _entry_confirmation,
+    _fee_reconciliation,
     _live_order_payload,
     _live_position_direction,
     _normalise_live_fill,
@@ -25,10 +28,12 @@ from kalshi_api import (
     _estimate_reduce_only_sale,
     _exit_economic_state,
     _hourly_candidate_management_priority,
+    _hourly_candidate_diagnostic,
     _hourly_reference_policy,
     _intent_client_order_id,
     _kalshi_response_error_detail,
     _market_observation,
+    _maker_shadow_diagnostic,
     _monotone_ladder_probabilities,
     _paper_account_context,
     _paper_order_payload,
@@ -36,7 +41,9 @@ from kalshi_api import (
     _position_market_mark,
     _position_side_and_count,
     _portfolio_analytics_after_reset,
+    _pnl_stability_metrics,
     _protective_exit_state,
+    _protective_exit_confirmation,
     _recent_filled_entry_age,
     _recent_filled_exit_age,
     _real_preflight_account_health,
@@ -1034,10 +1041,10 @@ def test_hourly_tick_manages_held_strike_and_suppresses_higher_edge_sibling(
                 "enabled": True,
                 "activeEnvironment": "paper",
                 "config": {"executionMode": environment or "paper"},
-                "strategy": {},
-                "tradedTickers": [],
-                "filledTrades": [],
-            }
+                    "strategy": {},
+                    "tradedTickers": [],
+                    "filledTrades": [],
+                }
 
     class Client:
         def hourly_snapshot(self, **kwargs):
@@ -4217,6 +4224,17 @@ def test_real_tick_records_wait_and_refreshes_after_final_account_conflict(
                 "strategy": {},
                 "tradedTickers": [],
                 "filledTrades": [],
+                "decisions": [{
+                    "generatedAt": (
+                        datetime.now(timezone.utc)
+                        - timedelta(seconds=5)
+                    ).isoformat(),
+                    "ticker": "KXBTC15M-REFRESH",
+                    "action": "WAIT",
+                    "side": "YES",
+                    "blockingReasons": ["entry_confirmation"],
+                    "executionIntent": "WAIT_ENTRY_CONFIRMATION",
+                }],
             }
 
         def record(self, _user_id, decision, order):
@@ -5171,3 +5189,499 @@ def test_reset_clears_builtin_paper_ledger(tmp_path):
     assert payload["success"] is True
     assert payload["portfolio"]["balance"]["balance"] == 1_000_000
     assert payload["state"]["strategy"]["settledSamples"] == 0
+
+
+def test_fractional_contract_quantity_reaches_v2_order_payload_without_truncation():
+    payload = _paper_order_payload(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {"price": 0.42, "conservativeEdge": 0.03},
+            "sizing": {
+                "contracts": 0,
+                "contractsFp": 0.37,
+                "plannedContractsFp": 0.37,
+            },
+        },
+        "KXBTC15M-FRACTIONAL",
+    )
+
+    assert _contract_quantity(0.379) == 0.37
+    assert payload["count"] == "0.37"
+
+
+def test_fractional_position_and_reduce_estimate_preserve_fixed_point_count():
+    portfolio = {
+        "environment": "paper",
+        "positions": [{
+            "ticker": "KXBTC15M-FP",
+            "yes_count_fp": "0.37",
+            "no_count_fp": "0.00",
+        }],
+    }
+
+    assert _position_side_and_count(portfolio, "KXBTC15M-FP") == ("YES", 0.37)
+    estimate = _estimate_reduce_only_sale(
+        "YES",
+        0.37,
+        {"yes": [[0.60, 2.0]], "no": []},
+    )
+    assert estimate["requestedCount"] == 0.37
+    assert estimate["fillableCount"] == 0.37
+
+
+def test_hourly_candidate_score_penalizes_uncertain_ladder_winner():
+    uncertain = _hourly_candidate_diagnostic(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {
+                "netEdge": 0.04,
+                "conservativeEdge": 0.03,
+                "minimumConservativeEdge": 0.0075,
+            },
+            "model": {"uncertainty": 0.20},
+        },
+        {"ticker": "KXBTCD-E-T65000", "floor_strike": 65_000},
+        32,
+    )
+    stable = _hourly_candidate_diagnostic(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {
+                "netEdge": 0.025,
+                "conservativeEdge": 0.018,
+                "minimumConservativeEdge": 0.0075,
+            },
+            "model": {"uncertainty": 0.005},
+        },
+        {"ticker": "KXBTCD-E-T65100", "floor_strike": 65_100},
+        32,
+    )
+
+    assert uncertain["multipleCandidatePenalty"] > stable["multipleCandidatePenalty"]
+    assert uncertain["penaltyCleared"] is False
+    assert stable["penaltyCleared"] is True
+    assert stable["shrunkenScore"] > uncertain["shrunkenScore"]
+
+
+def test_protective_exit_requires_durable_streak_but_emergency_is_immediate():
+    now = datetime.now(timezone.utc)
+    state = {
+        "decisions": [
+            {
+                "generatedAt": (now - timedelta(seconds=5)).isoformat(),
+                "ticker": "KXBTC15M-EXIT",
+                "account": {"heldSide": "YES"},
+                "blockingReasons": ["protective_exit_confirmation"],
+            },
+            {
+                "generatedAt": (now - timedelta(seconds=10)).isoformat(),
+                "ticker": "KXBTC15M-EXIT",
+                "account": {"heldSide": "YES"},
+                "blockingReasons": ["protective_exit_confirmation"],
+            },
+        ],
+    }
+    confirmed = _protective_exit_confirmation(
+        state,
+        "KXBTC15M-EXIT",
+        "YES",
+        {"protectiveLossExit": True, "emergencyLossExit": False},
+        {},
+        generated_at=now,
+    )
+    emergency = _protective_exit_confirmation(
+        {},
+        "KXBTC15M-EXIT",
+        "YES",
+        {"protectiveLossExit": True, "emergencyLossExit": True},
+        {},
+        generated_at=now,
+    )
+
+    assert confirmed["streak"] == 3
+    assert confirmed["confirmed"] is True
+    assert emergency["confirmed"] is True
+    assert emergency["emergencyBypass"] is True
+
+
+def test_protective_exit_streak_rejects_persisted_stale_marker():
+    now = datetime.now(timezone.utc)
+    stale_row = {
+        "generatedAt": (now - timedelta(seconds=5)).isoformat(),
+        "ticker": "KXBTC15M-STALE-EXIT",
+        "account": {"heldSide": "YES"},
+        "blockingReasons": ["protective_exit_confirmation"],
+        "protectiveConfirmation": {"dataQualityEligible": False},
+    }
+    eligible_row = {
+        **stale_row,
+        "protectiveConfirmation": {"dataQualityEligible": True},
+    }
+    economics = {
+        "protectiveLossExit": True,
+        "emergencyLossExit": False,
+    }
+
+    rejected = _protective_exit_confirmation(
+        {"decisions": [stale_row]},
+        "KXBTC15M-STALE-EXIT",
+        "YES",
+        economics,
+        {},
+        generated_at=now,
+    )
+    accepted = _protective_exit_confirmation(
+        {"decisions": [eligible_row]},
+        "KXBTC15M-STALE-EXIT",
+        "YES",
+        economics,
+        {},
+        generated_at=now,
+    )
+
+    assert rejected["streak"] == 1
+    assert rejected["confirmed"] is False
+    assert accepted["streak"] == 2
+
+
+def test_entry_confirmation_resets_when_hourly_selected_strike_changes():
+    now = datetime.now(timezone.utc)
+    current = {
+        "generatedAt": now.isoformat(),
+        "action": "BUY_YES",
+    }
+    same = _entry_confirmation(
+        {"decisions": [{
+            "generatedAt": (now - timedelta(seconds=5)).isoformat(),
+            "ticker": "KXBTCD-E-T65000",
+            "side": "YES",
+            "blockingReasons": ["entry_confirmation"],
+        }]},
+        "KXBTCD-E-T65000",
+        "YES",
+        current,
+        {},
+    )
+    switched = _entry_confirmation(
+        {"decisions": [{
+            "generatedAt": (now - timedelta(seconds=5)).isoformat(),
+            "ticker": "KXBTCD-E-T65100",
+            "side": "YES",
+            "blockingReasons": ["entry_confirmation"],
+        }]},
+        "KXBTCD-E-T65000",
+        "YES",
+        current,
+        {},
+    )
+
+    assert same["confirmed"] is True
+    assert same["streak"] == 2
+    assert switched["confirmed"] is False
+    assert switched["streak"] == 1
+
+
+def test_series_fee_policy_reads_current_and_scheduled_fee_metadata():
+    calls = []
+
+    def fake_get(url, params=None, **_kwargs):
+        calls.append((url, dict(params or {})))
+        if url.endswith("/series/KXBTCD"):
+            return _Response({"series": {
+                "ticker": "KXBTCD",
+                "fee_type": "quadratic_with_maker_fees",
+                "fee_multiplier": 1,
+            }})
+        if url.endswith("/series/fee_changes"):
+            return _Response({"series_fee_change_arr": [{
+                "id": "future-1",
+                "series_ticker": "KXBTCD",
+                "fee_type": "quadratic",
+                "fee_multiplier": 2,
+                "scheduled_ts": "2026-08-02T00:00:00Z",
+            }]})
+        raise AssertionError(url)
+
+    policy = _PublicDataClient(http_get=fake_get).series_fee_policy("KXBTCD")
+
+    assert policy["available"] is True
+    assert policy["takerFeeCoefficient"] == 0.07
+    assert policy["makerFeeCoefficient"] == 0.0175
+    assert policy["scheduledChanges"][0]["feeMultiplier"] == 2
+    assert any(url.endswith("/series/fee_changes") for url, _params in calls)
+
+
+def test_maker_shadow_is_fail_closed_without_fee_rate_and_never_routes():
+    decision = {
+        "side": "YES",
+        "market": {"yesBid": 0.40},
+        "model": {"fairYesProbability": 0.70, "uncertainty": 0.01},
+    }
+    unavailable = _maker_shadow_diagnostic(decision, {}, {})
+    available = _maker_shadow_diagnostic(
+        decision,
+        {
+            "available": True,
+            "makerRateKnown": True,
+            "makerFeeCoefficient": 0.0175,
+            "feeType": "quadratic_with_maker_fees",
+            "feeMultiplier": 1,
+        },
+        {"minConservativeEdge": 0.0075, "minModelProbability": 0.64},
+    )
+
+    assert unavailable["opportunity"] is False
+    assert unavailable["reason"] == "maker_fee_rate_unavailable"
+    assert available["opportunity"] is True
+    assert available["routeAllowed"] is False
+
+
+def test_observation_persists_candidate_ladder_hold_counterfactual_and_fee_delta():
+    decision = {
+        "generatedAt": "2026-08-01T00:00:00Z",
+        "action": "SELL_YES",
+        "side": "YES",
+        "market": {"ticker": "KXBTCD-E-T65000", "secondsToClose": 600},
+        "model": {"fairYesProbability": 0.60},
+        "edge": {"price": 0.55, "feePerContract": 0.02},
+        "sizing": {"plannedContractsFp": 0.50},
+        "candidateDiagnostics": {
+            "candidateCount": 16,
+            "selectedRank": 2,
+            "topCandidates": [{"ticker": "KXBTCD-E-T65000"}],
+        },
+        "exitAnalysis": {
+            "heldProbability": 0.60,
+            "netExitValuePerContract": 0.54,
+            "expectedHoldValuePerContract": 0.60,
+            "holdVsExitExpectedDeltaPerContract": 0.06,
+            "counterfactualPolicy": "hold_to_settlement_vs_executable_exit_v1",
+            "fillableCount": 0.50,
+            "estimatedExitFee": 0.01,
+        },
+    }
+    order = {
+        "count_fp": 0.50,
+        "fill_count_fp": 0.50,
+        "average_price_dollars": 0.55,
+        "fee_cost_dollars": 0.02,
+    }
+
+    observation = _market_observation("real", decision, order)
+
+    assert observation["features"]["candidateLadder"]["selectedRank"] == 2
+    assert observation["features"]["exitAnalysis"][
+        "holdVsExitExpectedDeltaPerContract"
+    ] == 0.06
+    assert observation["features"]["feeReconciliation"][
+        "actualFeeDollars"
+    ] == 0.02
+
+
+def test_stability_metrics_expose_payoff_recovery_and_drawdown():
+    metrics = _pnl_stability_metrics([0.20, 0.30, -0.60, 0.25])
+
+    assert metrics["averageWin"] == 0.25
+    assert metrics["averageLoss"] == 0.60
+    assert metrics["profitFactor"] == 1.25
+    assert metrics["recoveryMultiple"] == 2.4
+    assert metrics["maxDrawdown"] == 0.60
+
+
+def test_fractional_hourly_holding_keeps_executable_exit_management_priority():
+    ticker = "KXBTCD-E-T65000"
+    rank = _hourly_candidate_management_priority(
+        {
+            "action": "WAIT",
+            "side": "YES",
+            "model": {"fairYesProbability": 0.10},
+            "edge": {"conservativeEdge": -0.02, "netEdge": -0.01},
+        },
+        {"ticker": ticker},
+        {"yes": [[0.50, 0.40]], "no": [[0.48, 1.0]]},
+        {
+            "environment": "paper",
+            "positions": [{
+                "ticker": ticker,
+                "position_fp": 0.40,
+                "yes_count_fp": 0.40,
+                "yes_average_price_dollars": 0.80,
+                "last_trade_at": "2026-07-27T00:00:00Z",
+            }],
+        },
+        {},
+        {
+            "minimumHoldSeconds": 0,
+            "exitProbabilityThreshold": 0.35,
+            "stopLossPct": 0.35,
+            "emergencyStopLossPct": 0.20,
+            "takerFeeRate": 0.07,
+        },
+    )
+
+    assert rank[0] == 7
+
+
+def test_fixed_point_order_fields_outrank_conflicting_legacy_counts():
+    order = _normalise_live_order(
+        {
+            "order_id": "fixed-order",
+            "ticker": "KXBTC15M-FIXED",
+            "count": 1,
+            "count_fp": "1.55",
+            "fill_count": 1,
+            "fill_count_fp": "1.25",
+            "status": "partially_filled",
+        },
+        {"count": "1.55", "side": "bid", "price": "0.5000"},
+        {"side": "YES", "action": "BUY_YES"},
+    )
+
+    assert order["count_fp"] == 1.55
+    assert order["fill_count_fp"] == 1.25
+
+
+def test_live_portfolio_prefers_fractional_position_over_legacy_integer(
+    monkeypatch,
+):
+    class State:
+        def get(self, _user_id, *, environment=None):
+            return {
+                "strategy": {},
+                "filledTrades": [],
+                "decisions": [],
+                "modeState": {"real": {"displayBaseline": {}}},
+            }
+
+    def signed_request(_config, _environment, _method, endpoint, **_kwargs):
+        if endpoint == "/portfolio/balance":
+            return {"balance": 1_000, "portfolio_value": 100}
+        if endpoint == "/portfolio/positions":
+            return {"market_positions": [{
+                "ticker": "KXBTC15M-FIXED-POS",
+                "position": 1,
+                "position_fp": "1.55",
+                "yes_count": 1,
+                "yes_count_fp": "1.55",
+                "market_exposure_dollars": "0.70",
+            }]}
+        if endpoint == "/portfolio/orders":
+            return {"orders": []}
+        if endpoint == "/portfolio/fills":
+            return {"fills": []}
+        if endpoint == "/portfolio/settlements":
+            return {"settlements": []}
+        raise AssertionError(endpoint)
+
+    controller = _PaperRobotController(
+        None,
+        State(),
+        None,
+        connection_loader=lambda _uid: {
+            "production_api_key_id": "key-id-12345678",
+            "production_private_key": "private-key-present",
+        },
+        signed_request=signed_request,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_historical_account_rows",
+        lambda *_args: {
+            "orders": [], "fills": [], "complete": True, "warnings": []
+        },
+    )
+
+    portfolio = controller._live_portfolio("user-1", mutate=False)
+
+    assert portfolio["positions"][0]["net_count_fp"] == 1.55
+    assert portfolio["positions"][0]["alphaLabUnmanagedCount"] == 1.55
+
+
+def test_real_preflight_uses_cent_rounded_fractional_cash_debit():
+    controller = _PaperRobotController(None, None, None)
+    payload = _paper_order_payload(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {"price": 0.50, "conservativeEdge": 0.03},
+            "sizing": {"plannedContractsFp": 0.30},
+        },
+        "KXBTC15M-CASH-ROUNDING",
+    )
+
+    with pytest.raises(KalshiApiError) as blocked:
+        controller._validate_live_order_preflight(
+            {
+                "config": {"executionMode": "real", "takerFeeRate": 0.07},
+                "strategy": {},
+                "filledTrades": [],
+            },
+            {
+                "balance": {"balance": 15, "portfolio_value": 0},
+                "positions": [],
+                "orders": [],
+            },
+            payload,
+            _live_order_payload(payload),
+            {
+                "action": "BUY_YES",
+                "side": "YES",
+                "edge": {"price": 0.50},
+                "config": {"takerFeeRate": 0.07},
+            },
+        )
+
+    assert blocked.value.code == "kalshi_live_cash_changed"
+
+
+def test_fee_reconciliation_includes_fractional_cent_rounding():
+    reconciliation = _fee_reconciliation({
+        "action": "BUY_YES",
+        "side": "YES",
+        "edge": {"price": 0.50},
+        "sizing": {"plannedContractsFp": 0.30},
+        "config": {"takerFeeRate": 0.07},
+    })
+
+    assert reconciliation["tradeFeeDollars"] == 0.0053
+    assert reconciliation["roundingFeeDollars"] == pytest.approx(0.0047)
+    assert reconciliation["expectedFeeDollars"] == 0.01
+    assert reconciliation["expectedCashDebitDollars"] == 0.16
+
+
+def test_reduce_exit_fee_estimate_uses_dynamic_taker_rate():
+    normal = _estimate_reduce_only_sale(
+        "YES", 1.0, {"yes": [[0.50, 1.0]], "no": []},
+        taker_fee_rate=0.07,
+    )
+    doubled = _estimate_reduce_only_sale(
+        "YES", 1.0, {"yes": [[0.50, 1.0]], "no": []},
+        taker_fee_rate=0.14,
+    )
+
+    assert doubled["estimatedExitFee"] > normal["estimatedExitFee"]
+    assert doubled["takerFeeRate"] == 0.14
+
+
+def test_hourly_shrink_uses_effective_conservative_edge_floor():
+    diagnostic = _hourly_candidate_diagnostic(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "edge": {
+                "conservativeEdge": 0.020,
+                "netEdge": 0.025,
+                "minimumConservativeEdge": 0.0075,
+                "effectiveMinimumConservativeEdge": 0.019,
+            },
+            "model": {"uncertainty": 0.01},
+        },
+        {"ticker": "KXBTCD-E-T65000", "floor_strike": 65_000},
+        32,
+    )
+
+    assert diagnostic["minimumShrunkenScore"] == 0.019
+    assert diagnostic["penaltyCleared"] is False

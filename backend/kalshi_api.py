@@ -29,7 +29,7 @@ try:
     from kalshi_engine import (
         BTC_15M_SERIES,
         evaluate_btc15_contract,
-        kalshi_fee,
+        kalshi_order_cost,
         normalize_strategy_config,
         select_btc15_market,
     )
@@ -37,7 +37,7 @@ except ImportError:  # pragma: no cover - package-style test imports
     from .kalshi_engine import (
         BTC_15M_SERIES,
         evaluate_btc15_contract,
-        kalshi_fee,
+        kalshi_order_cost,
         normalize_strategy_config,
         select_btc15_market,
     )
@@ -97,6 +97,7 @@ KALSHI_LIVE_ROUTING_STATE_CONFLICTS = frozenset({
     "kalshi_live_close_inventory_changed",
     "kalshi_reversal_cooldown_active",
     "kalshi_reentry_confirmation_required",
+    "kalshi_entry_confirmation_required",
 })
 RETIRED_KALSHI_BLOCKING_REASONS = frozenset({
     "daily_loss_limit",
@@ -154,6 +155,39 @@ def _tag_market_family(row: Mapping[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _pnl_stability_metrics(values: Any) -> Dict[str, Any]:
+    """Describe payoff asymmetry and peak-to-trough realized drawdown."""
+    pnl_values = [_finite_number(value, 0.0) for value in (values or [])]
+    positive = [value for value in pnl_values if value > 0.0]
+    negative = [abs(value) for value in pnl_values if value < 0.0]
+    average_win = sum(positive) / len(positive) if positive else 0.0
+    average_loss = sum(negative) / len(negative) if negative else 0.0
+    gross_profit = sum(positive)
+    gross_loss = sum(negative)
+    peak = 0.0
+    cumulative = 0.0
+    max_drawdown = 0.0
+    for value in pnl_values:
+        cumulative += value
+        peak = max(peak, cumulative)
+        max_drawdown = max(max_drawdown, peak - cumulative)
+    return {
+        "averageWin": round(average_win, 4),
+        "averageLoss": round(average_loss, 4),
+        "profitFactor": (
+            round(gross_profit / gross_loss, 4)
+            if gross_loss > 1e-12
+            else None
+        ),
+        "recoveryMultiple": (
+            round(average_loss / average_win, 4)
+            if average_win > 1e-12 and average_loss > 0.0
+            else None
+        ),
+        "maxDrawdown": round(max_drawdown, 4),
+    }
+
+
 def _family_performance(strategy: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
     records = [
         dict(row) for row in (strategy.get("realizedTradeRecords") or [])
@@ -164,6 +198,14 @@ def _family_performance(strategy: Mapping[str, Any]) -> Dict[str, Dict[str, Any]
         selected = [row for row in records if _market_family(row.get("ticker")) == family]
         pnl_values = [_finite_number(row.get("pnl"), 0.0) for row in selected]
         wins = sum(1 for value in pnl_values if value > 0)
+        chronological_rows = sorted(
+            selected,
+            key=lambda row: _portfolio_record_timestamp(row) or 0.0,
+        )
+        stability = _pnl_stability_metrics([
+            _finite_number(row.get("pnl"), 0.0)
+            for row in chronological_rows
+        ])
         cumulative = 0.0
         curve = []
         for row, pnl in reversed(list(zip(selected, pnl_values))):
@@ -194,6 +236,7 @@ def _family_performance(strategy: Mapping[str, Any]) -> Dict[str, Dict[str, Any]
             "winRate": round(wins / len(selected), 4) if selected else None,
             "realizedPnl": round(sum(pnl_values), 4),
             "averagePnl": round(sum(pnl_values) / len(selected), 4) if selected else 0.0,
+            **stability,
             "records": [_tag_market_family(row) for row in selected],
             "equityCurve": curve,
         }
@@ -202,11 +245,15 @@ def _family_performance(strategy: Mapping[str, Any]) -> Dict[str, Dict[str, Any]
 
 _PORTFOLIO_ANALYTICS_KEYS = (
     "settledSamples", "wins", "losses", "winRate", "totalPnl",
-    "averagePnl", "bestTrade", "worstTrade", "settlementRecords",
+    "averagePnl", "averageWin", "averageLoss", "profitFactor",
+    "recoveryMultiple", "maxDrawdown", "bestTrade", "worstTrade",
+    "settlementRecords",
     "closedTradeRecords", "realizedTradeRecords", "realizedSamples",
     "realizedWins", "realizedLosses", "realizedWinRate",
     "realizedTotalPnl", "realizedAveragePnl", "realizedBestTrade",
-    "realizedWorstTrade", "equityCurve",
+    "realizedWorstTrade", "realizedAverageWin", "realizedAverageLoss",
+    "realizedProfitFactor", "realizedRecoveryMultiple",
+    "realizedMaxDrawdown", "equityCurve",
 )
 
 
@@ -301,6 +348,9 @@ def _portfolio_realized_summary(records: Any, *, baseline_at: Optional[str] = No
         clean,
         key=lambda row: _portfolio_record_timestamp(row) or 0.0,
     )
+    stability = _pnl_stability_metrics([
+        _finite_number(row.get("pnl"), 0.0) for row in chronological
+    ])
     cumulative = 0.0
     curve = []
     if baseline_at:
@@ -331,6 +381,7 @@ def _portfolio_realized_summary(records: Any, *, baseline_at: Optional[str] = No
         "winRate": round(wins / len(clean), 4) if clean else None,
         "totalPnl": total,
         "averagePnl": round(total / len(clean), 4) if clean else 0.0,
+        **stability,
         "bestTrade": round(max(pnl_values), 4) if pnl_values else None,
         "worstTrade": round(min(pnl_values), 4) if pnl_values else None,
         "equityCurve": curve,
@@ -376,6 +427,11 @@ def _portfolio_analytics_after_reset(
         "winRate": settled["winRate"],
         "totalPnl": settled["totalPnl"],
         "averagePnl": settled["averagePnl"],
+        "averageWin": settled["averageWin"],
+        "averageLoss": settled["averageLoss"],
+        "profitFactor": settled["profitFactor"],
+        "recoveryMultiple": settled["recoveryMultiple"],
+        "maxDrawdown": settled["maxDrawdown"],
         "bestTrade": settled["bestTrade"],
         "worstTrade": settled["worstTrade"],
         "settlementRecords": visible_settlements,
@@ -387,6 +443,11 @@ def _portfolio_analytics_after_reset(
         "realizedWinRate": realized["winRate"],
         "realizedTotalPnl": realized["totalPnl"],
         "realizedAveragePnl": realized["averagePnl"],
+        "realizedAverageWin": realized["averageWin"],
+        "realizedAverageLoss": realized["averageLoss"],
+        "realizedProfitFactor": realized["profitFactor"],
+        "realizedRecoveryMultiple": realized["recoveryMultiple"],
+        "realizedMaxDrawdown": realized["maxDrawdown"],
         "realizedBestTrade": realized["bestTrade"],
         "realizedWorstTrade": realized["worstTrade"],
         "equityCurve": realized["equityCurve"],
@@ -877,6 +938,206 @@ def _hourly_reference_policy(
     }
 
 
+def _fee_reconciliation(
+    decision: Mapping[str, Any],
+    order: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Compare the decision-time fee estimate with the returned order fee."""
+    edge = dict(decision.get("edge") or {})
+    sizing = dict(decision.get("sizing") or {})
+    action = str(decision.get("action") or "").upper()
+    requested = _contract_quantity(
+        _first_present(order or {}, "count_fp", "count")
+        if _first_present(order or {}, "count_fp", "count") is not None
+        else _first_present(
+            sizing,
+            "plannedContractsFp",
+            "contractsFp",
+            "contracts",
+        )
+        if _first_present(
+            sizing,
+            "plannedContractsFp",
+            "contractsFp",
+            "contracts",
+        ) is not None
+        else (decision.get("exitAnalysis") or {}).get("fillableCount")
+    )
+    filled = _contract_quantity(
+        _first_present(
+            order or {},
+            "fill_count_fp",
+            "filled_count_fp",
+            "fill_count",
+            "filled_count",
+        )
+    )
+    price = _finite_number(edge.get("price"), None)
+    count_for_estimate = filled if filled > 0 else requested
+    fee_policy = dict(decision.get("feePolicy") or {})
+    taker_fee_rate = _finite_number(
+        (decision.get("config") or {}).get("takerFeeRate"),
+        _finite_number(fee_policy.get("takerFeeCoefficient"), 0.07),
+    )
+    order_cost = (
+        kalshi_order_cost(price, count_for_estimate, taker_fee_rate)
+        if price is not None and 0.0 < price < 1.0 and count_for_estimate > 0
+        else {}
+    )
+    formula_fee = _finite_number(order_cost.get("allInFee"), None)
+    model_fee = (
+        max(
+            0.0,
+            _finite_number(
+                _first_present(sizing, "allInFee", "estimatedFee"),
+                0.0,
+            ),
+        )
+        if requested > 0
+        and (filled <= 0 or abs(filled - requested) <= 1e-9)
+        else None
+    )
+    exit_analysis = dict(decision.get("exitAnalysis") or {})
+    exit_fee = _finite_number(exit_analysis.get("estimatedExitFee"), None)
+    exit_fillable = _finite_number(exit_analysis.get("fillableCount"), 0.0)
+    prorated_exit_fee = (
+        exit_fee * count_for_estimate / exit_fillable
+        if action.startswith("SELL_")
+        and exit_fee is not None
+        and exit_fillable > 0
+        and count_for_estimate > 0
+        else None
+    )
+    estimates = [
+        value
+        for value in (formula_fee, model_fee, prorated_exit_fee)
+        if value is not None and value >= 0.0
+    ]
+    expected = max(estimates) if estimates else None
+    actual = (
+        max(0.0, _finite_number((order or {}).get("fee_cost_dollars"), 0.0))
+        if order
+        else None
+    )
+    delta = actual - expected if actual is not None and expected is not None else None
+    return {
+        "action": action or "WAIT",
+        "requestedCountFp": requested,
+        "filledCountFp": filled,
+        "expectedPrice": price,
+        "takerFeeRate": taker_fee_rate,
+        "actualAveragePrice": (
+            (order or {}).get("average_price_dollars") if order else None
+        ),
+        "formulaFeeDollars": formula_fee,
+        "tradeFeeDollars": order_cost.get("tradeFee"),
+        "roundingFeeDollars": order_cost.get("roundingFee"),
+        "expectedCashDebitDollars": order_cost.get("cashDebit"),
+        "modelFeeDollars": model_fee,
+        "estimatedExitFeeDollars": prorated_exit_fee,
+        "expectedFeeDollars": expected,
+        "actualFeeDollars": actual,
+        "feeVarianceDollars": delta,
+        "feeVariancePct": (
+            delta / expected
+            if delta is not None and expected is not None and expected > 1e-12
+            else None
+        ),
+    }
+
+
+def _maker_shadow_diagnostic(
+    decision: Mapping[str, Any],
+    fee_policy: Mapping[str, Any],
+    strategy_config: Mapping[str, Any],
+    *,
+    has_position: bool = False,
+) -> Dict[str, Any]:
+    """Evaluate a resting-price opportunity without ever creating an order."""
+    policy = dict(fee_policy or {})
+    if not policy.get("available") or not policy.get("makerRateKnown"):
+        return {
+            "enabled": False,
+            "routeAllowed": False,
+            "opportunity": False,
+            "reason": "maker_fee_rate_unavailable",
+            "feePolicy": policy,
+        }
+    side = str(decision.get("side") or "").upper()
+    market = dict(decision.get("market") or {})
+    model = dict(decision.get("model") or {})
+    maker_price = _finite_number(
+        market.get("yesBid") if side == "YES" else market.get("noBid"),
+        None,
+    )
+    fair_yes = _finite_number(model.get("fairYesProbability"), None)
+    fair = (
+        fair_yes
+        if side == "YES"
+        else 1.0 - fair_yes
+        if side == "NO" and fair_yes is not None
+        else None
+    )
+    coefficient = _finite_number(policy.get("makerFeeCoefficient"), None)
+    if (
+        side not in {"YES", "NO"}
+        or maker_price is None
+        or fair is None
+        or coefficient is None
+        or not 0.0 < maker_price < 1.0
+    ):
+        return {
+            "enabled": False,
+            "routeAllowed": False,
+            "opportunity": False,
+            "reason": "maker_shadow_inputs_unavailable",
+            "feePolicy": policy,
+        }
+    maker_fee = math.ceil(
+        max(0.0, coefficient * maker_price * (1.0 - maker_price))
+        * 10_000.0
+        - 1e-9
+    ) / 10_000.0
+    uncertainty = max(0.0, _finite_number(model.get("uncertainty"), 0.0))
+    net_edge = fair - maker_price - maker_fee
+    conservative_edge = net_edge - uncertainty
+    minimum = _finite_number(
+        strategy_config.get("minConservativeEdge"),
+        0.0075,
+    )
+    model_floor = _finite_number(
+        strategy_config.get("minModelProbability"),
+        0.64,
+    )
+    opportunity = bool(
+        not has_position
+        and fair >= model_floor
+        and conservative_edge >= minimum
+    )
+    return {
+        "enabled": True,
+        "routeAllowed": False,
+        "opportunity": opportunity,
+        "reason": (
+            "shadow_only_candidate"
+            if opportunity
+            else "shadow_edge_or_probability_below_floor"
+        ),
+        "side": side,
+        "makerPrice": maker_price,
+        "fairProbability": fair,
+        "makerFeeCoefficient": coefficient,
+        "estimatedMakerFeePerContract": maker_fee,
+        "netEdge": net_edge,
+        "conservativeEdge": conservative_edge,
+        "minimumConservativeEdge": minimum,
+        "minimumModelProbability": model_floor,
+        "feeType": policy.get("feeType"),
+        "feeMultiplier": policy.get("feeMultiplier"),
+        "source": policy.get("source"),
+    }
+
+
 def _market_observation(
     environment: str,
     decision: Mapping[str, Any],
@@ -941,6 +1202,18 @@ def _market_observation(
                 "marginalLimitPrice": edge.get("executionLimitPrice"),
                 "feePerContract": edge.get("feePerContract"),
                 "adaptiveEdgePremium": edge.get("adaptiveEdgePremium"),
+                "plannedContractsFp": (
+                    decision.get("sizing") or {}
+                ).get("plannedContractsFp"),
+                "contractsFp": (decision.get("sizing") or {}).get(
+                    "contractsFp"
+                ),
+                "contractStep": (decision.get("sizing") or {}).get(
+                    "contractStep"
+                ),
+                "fractionalSizingApplied": (
+                    decision.get("sizing") or {}
+                ).get("fractionalSizingApplied"),
             },
             "account": {
                 key: account.get(key)
@@ -956,8 +1229,17 @@ def _market_observation(
                 for key in (
                     "heldProbability", "netExitValuePerContract", "exitValueEdge",
                     "netExitPnlPerContract", "exitLossFraction", "trigger",
+                    "breakEvenExitValuePerContract", "estimatedExitFee",
+                    "expectedHoldValuePerContract", "expectedHoldPnlPerContract",
+                    "holdVsExitExpectedDeltaPerContract", "counterfactualPolicy",
+                    "protectiveConfirmation", "lossExitAuthorizedAfterConfirmation",
                 )
             },
+            "candidateLadder": dict(decision.get("candidateDiagnostics") or {}),
+            "entryConfirmation": dict(decision.get("entryConfirmation") or {}),
+            "feeReconciliation": _fee_reconciliation(decision, order),
+            "feePolicy": dict(decision.get("feePolicy") or {}),
+            "makerShadow": dict(decision.get("makerShadow") or {}),
         },
         "order_result": ({
             key: order.get(key)
@@ -965,7 +1247,8 @@ def _market_observation(
                 "order_id", "client_order_id", "status", "action",
                 "outcome_side", "count_fp", "fill_count_fp",
                 "average_price_dollars", "fee_cost_dollars",
-                "realized_pnl_dollars",
+                "trade_fee_dollars", "rounding_fee_dollars",
+                "rounding_rebate_dollars", "realized_pnl_dollars",
             )
         } if order else None),
     }
@@ -978,14 +1261,17 @@ def _open_order_remaining(row: Mapping[str, Any]) -> float:
     if explicit not in (None, ""):
         return max(0.0, _finite_number(explicit, 0.0))
     requested = _finite_number(
-        row.get("count_fp") or row.get("count") or row.get("contracts"),
+        _first_present(row, "count_fp", "count", "contracts"),
         0.0,
     )
     filled = _finite_number(
-        row.get("fill_count_fp")
-        or row.get("fill_count")
-        or row.get("filled_count_fp")
-        or row.get("filled_count"),
+        _first_present(
+            row,
+            "fill_count_fp",
+            "filled_count_fp",
+            "fill_count",
+            "filled_count",
+        ),
         0.0,
     )
     return max(0.0, requested - filled)
@@ -1049,17 +1335,20 @@ def _paper_account_context(
     exact_positions = [
         row for row in positions
         if str(row.get("ticker") or row.get("market_ticker") or "") == ticker
-        and abs(_finite_number(row.get("position_fp") or row.get("position"))) > 1e-9
+        and abs(_finite_number(_first_present(row, "position_fp", "position"))) > 1e-9
     ]
     event_positions = [
         row for row in positions
         if in_risk_scope(row)
         and abs(_finite_number(
-            row.get("position_fp")
-            or row.get("position")
-            or row.get("net_count_fp")
-            or row.get("yes_count_fp")
-            or row.get("no_count_fp")
+            _first_present(
+                row,
+                "position_fp",
+                "net_count_fp",
+                "yes_count_fp",
+                "no_count_fp",
+                "position",
+            )
         )) > 1e-9
     ]
     terminal_order_states = {
@@ -1134,7 +1423,13 @@ def _paper_account_context(
     }
 
 
-def _position_side_and_count(portfolio: Mapping[str, Any], ticker: str) -> Tuple[Optional[str], int]:
+def _contract_quantity(value: Any, default: float = 0.0) -> float:
+    """Floor a contract quantity to Kalshi's 0.01 fixed-point quantum."""
+    parsed = max(0.0, _finite_number(value, default))
+    return math.floor(parsed * 100.0 + 1e-9) / 100.0
+
+
+def _position_side_and_count(portfolio: Mapping[str, Any], ticker: str) -> Tuple[Optional[str], float]:
     for row in list(portfolio.get("positions") or []):
         if str(row.get("ticker") or row.get("market_ticker") or "") != ticker:
             continue
@@ -1149,24 +1444,30 @@ def _position_side_and_count(portfolio: Mapping[str, Any], ticker: str) -> Tuple
                 0.0,
             )
             if managed_side in {"YES", "NO"} and managed_count > 0:
-                return managed_side, int(math.ceil(managed_count))
-            return None, 0
-        yes_count = _finite_number(row.get("yes_count_fp") or row.get("yes_count"), 0.0)
-        no_count = _finite_number(row.get("no_count_fp") or row.get("no_count"), 0.0)
+                return managed_side, _contract_quantity(managed_count)
+            return None, 0.0
+        yes_count = _finite_number(
+            _first_present(row, "yes_count_fp", "yes_count"), 0.0
+        )
+        no_count = _finite_number(
+            _first_present(row, "no_count_fp", "no_count"), 0.0
+        )
         # Older Paper ledgers may contain complementary YES/NO hedges from the
         # pre-sell close implementation. Treat only their residual as current
         # directional exposure; all new exits are reduce-only sales.
         net_count = yes_count - no_count
         if abs(net_count) > 1e-9:
-            return ("YES" if net_count > 0 else "NO"), int(math.ceil(abs(net_count)))
+            return ("YES" if net_count > 0 else "NO"), _contract_quantity(abs(net_count))
         if yes_count > 0 or no_count > 0:
-            return None, 0
-        position = _finite_number(row.get("position_fp") or row.get("position"), 0.0)
+            return None, 0.0
+        position = _finite_number(
+            _first_present(row, "position_fp", "position"), 0.0
+        )
         if position > 0:
-            return "YES", int(math.ceil(abs(position)))
+            return "YES", _contract_quantity(abs(position))
         if position < 0:
-            return "NO", int(math.ceil(abs(position)))
-    return None, 0
+            return "NO", _contract_quantity(abs(position))
+    return None, 0.0
 
 
 def _managed_open_tickers(
@@ -1210,18 +1511,18 @@ def _position_execution_context(
     for row in list(portfolio.get("positions") or []):
         if str(row.get("ticker") or row.get("market_ticker") or "") != ticker:
             continue
-        result["accountPositionCount"] = int(math.ceil(abs(_finite_number(
+        result["accountPositionCount"] = _contract_quantity(abs(_finite_number(
             row.get("net_count_fp")
             if row.get("net_count_fp") not in (None, "")
             else row.get("position_fp")
             if row.get("position_fp") not in (None, "")
             else row.get("position"),
             count,
-        ))))
-        result["unmanagedCount"] = int(math.ceil(max(
+        )))
+        result["unmanagedCount"] = _contract_quantity(max(
             0.0,
             _finite_number(row.get("alphaLabUnmanagedCount"), 0.0),
-        )))
+        ))
         if not side or count <= 0:
             break
         prefix = side.lower()
@@ -1246,38 +1547,52 @@ def _position_execution_context(
 
 def _estimate_reduce_only_sale(
     side: str,
-    requested: int,
+    requested: float,
     orderbook: Mapping[str, Any],
+    *,
+    taker_fee_rate: float = 0.07,
 ) -> Dict[str, Any]:
     """Estimate a full-depth reduce-only fill, including the official taker fee."""
-    remaining = max(0, int(requested))
+    requested_count = _contract_quantity(requested)
+    remaining = requested_count
     gross = 0.0
     fee = 0.0
-    fill_count = 0
+    fill_count = 0.0
     worst_price = None
     for price, depth in executable_bid_levels(side, orderbook):
-        if remaining <= 0:
+        if remaining <= 1e-9:
             break
-        count = min(remaining, int(depth))
+        count = _contract_quantity(min(remaining, _finite_number(depth, 0.0)))
         if count <= 0:
             continue
-        amounts = taker_fill_amounts(price, count)
+        amounts = taker_fill_amounts(
+            price,
+            count,
+            fee_multiplier=max(
+                0.0,
+                _finite_number(taker_fee_rate, 0.07),
+            ) / 0.07,
+        )
         gross += float(amounts["positionCost"])
-        fee += float(amounts["tradeFee"])
+        fee += float(amounts.get("fee", amounts["tradeFee"]))
         fill_count += count
         remaining -= count
         worst_price = price
     average = gross / fill_count if fill_count else None
     net_proceeds = math.floor(max(0.0, gross - fee) * 100.0 + 1e-9) / 100.0
     return {
-        "requestedCount": max(0, int(requested)),
-        "fillableCount": fill_count,
+        "requestedCount": requested_count,
+        "fillableCount": _contract_quantity(fill_count),
         "averageBid": average,
         "worstBid": worst_price,
         "grossProceeds": gross,
         "estimatedExitFee": fee,
+        "takerFeeRate": max(
+            0.0,
+            _finite_number(taker_fee_rate, 0.07),
+        ),
         "netProceeds": net_proceeds,
-        "fullDepthAvailable": fill_count >= max(0, int(requested)),
+        "fullDepthAvailable": fill_count + 1e-9 >= requested_count,
     }
 
 
@@ -1307,7 +1622,7 @@ def _exit_economic_state(
     *,
     average_entry_price: Optional[float],
     allocated_entry_fee: float,
-    held_count: int,
+    held_count: float,
     net_exit_value_per_contract: Optional[float],
     held_probability: Optional[float],
     strategy_config: Mapping[str, Any],
@@ -1322,7 +1637,7 @@ def _exit_economic_state(
     collapse uses a lower loss threshold but still needs an executable bid.
     """
     probability_state = _protective_exit_state(held_probability, strategy_config)
-    count = max(0, int(held_count or 0))
+    count = _contract_quantity(held_count)
     entry_price = _finite_number(average_entry_price, -1.0)
     entry_fee_per_contract = (
         max(0.0, _finite_number(allocated_entry_fee, 0.0)) / count
@@ -1385,6 +1700,262 @@ def _exit_economic_state(
     }
 
 
+def _protective_exit_confirmation(
+    robot_state: Mapping[str, Any],
+    ticker: str,
+    held_side: str,
+    economics: Mapping[str, Any],
+    strategy_config: Mapping[str, Any],
+    *,
+    generated_at: Any = None,
+    data_quality_ok: bool = True,
+) -> Dict[str, Any]:
+    """Confirm an ordinary loss exit across durable scheduler decisions.
+
+    ``KalshiRobotState.record`` persists every lease-owning cycle's blocking
+    reasons.  Reusing those rows makes the confirmation survive a worker
+    restart without introducing a second, process-local stop-loss state.  A
+    true emergency remains immediate and therefore cannot be delayed by this
+    hysteresis guard.
+    """
+    required = max(
+        2,
+        min(
+            6,
+            int(
+                round(
+                    _finite_number(
+                        strategy_config.get("protectiveExitConfirmations"),
+                        3.0,
+                    )
+                )
+            ),
+        ),
+    )
+    max_gap = max(
+        10.0,
+        min(
+            60.0,
+            _finite_number(
+                strategy_config.get("protectiveExitConfirmationMaxGapSeconds"),
+                20.0,
+            ),
+        ),
+    )
+    emergency = bool(economics.get("emergencyLossExit"))
+    ordinary = bool(economics.get("protectiveLossExit")) and not emergency
+    if emergency:
+        return {
+            "required": False,
+            "requiredSnapshots": required,
+            "streak": required,
+            "confirmed": True,
+            "emergencyBypass": True,
+            "dataQualityEligible": bool(data_quality_ok),
+            "maxGapSeconds": max_gap,
+        }
+    if not ordinary or not data_quality_ok:
+        return {
+            "required": ordinary,
+            "requiredSnapshots": required,
+            "streak": 0,
+            "confirmed": False,
+            "emergencyBypass": False,
+            "dataQualityEligible": bool(data_quality_ok),
+            "maxGapSeconds": max_gap,
+        }
+
+    streak = 1
+    previous_time = _parse_utc(generated_at) or datetime.now(timezone.utc)
+    normalized_side = str(held_side or "").upper()
+    for row in list(robot_state.get("decisions") or []):
+        if str(row.get("ticker") or "") != str(ticker or ""):
+            continue
+        row_side = str(((row.get("account") or {}).get("heldSide") or "")).upper()
+        if row_side and normalized_side and row_side != normalized_side:
+            break
+        row_time = _parse_utc(row.get("generatedAt"))
+        if row_time is None:
+            break
+        gap = (previous_time - row_time).total_seconds()
+        if gap < -1e-6 or gap > max_gap:
+            break
+        persisted_confirmation = (
+            row.get("protectiveConfirmation")
+            or (row.get("exitAnalysis") or {}).get(
+                "protectiveConfirmation"
+            )
+            or ((row.get("features") or {}).get("exitAnalysis") or {}).get(
+                "protectiveConfirmation"
+            )
+        )
+        # Explicitly ineligible persisted rows are never allowed to advance a
+        # later fresh streak, even if an old worker accidentally wrote the
+        # legacy marker. Missing metadata remains compatible with eligible
+        # rows recorded before this field was introduced.
+        if (
+            isinstance(persisted_confirmation, Mapping)
+            and persisted_confirmation.get("dataQualityEligible") is not True
+        ):
+            break
+        reasons = set(str(value) for value in (row.get("blockingReasons") or []))
+        if (
+            "protective_exit_confirmation" not in reasons
+            and "protective_exit_confirmed" not in reasons
+            and str(row.get("exitTrigger") or "") != "protective_stop_loss"
+        ):
+            break
+        streak += 1
+        previous_time = row_time
+        if streak >= required:
+            break
+    return {
+        "required": True,
+        "requiredSnapshots": required,
+        "streak": streak,
+        "confirmed": streak >= required,
+        "emergencyBypass": False,
+        "dataQualityEligible": True,
+        "maxGapSeconds": max_gap,
+    }
+
+
+def _entry_confirmation(
+    robot_state: Mapping[str, Any],
+    ticker: str,
+    side: str,
+    decision: Mapping[str, Any],
+    strategy_config: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Require a new-position BUY thesis to persist for consecutive cycles."""
+    required = max(
+        1,
+        min(
+            5,
+            int(
+                round(
+                    _finite_number(
+                        strategy_config.get("entryConfirmationSnapshots"),
+                        2.0,
+                    )
+                )
+            ),
+        ),
+    )
+    max_gap = max(
+        5.0,
+        min(
+            60.0,
+            _finite_number(
+                strategy_config.get("entryConfirmationMaxGapSeconds"),
+                15.0,
+            ),
+        ),
+    )
+    generated = _parse_utc(decision.get("generatedAt")) or datetime.now(timezone.utc)
+    normalized_ticker = str(ticker or "")
+    normalized_side = str(side or "").upper()
+    action = str(decision.get("action") or "").upper()
+    if (
+        not normalized_ticker
+        or normalized_side not in {"YES", "NO"}
+        or not action.startswith("BUY_")
+    ):
+        return {
+            "required": False,
+            "requiredSnapshots": required,
+            "streak": 0,
+            "confirmed": False,
+            "maxGapSeconds": max_gap,
+        }
+    if required <= 1:
+        return {
+            "required": False,
+            "requiredSnapshots": required,
+            "streak": 1,
+            "confirmed": True,
+            "maxGapSeconds": max_gap,
+        }
+
+    streak = 1
+    family = _market_family(normalized_ticker)
+    previous_time = generated
+    # The most recent decision in this same strategy family must describe the
+    # same ticker and side.  This deliberately resets an hourly confirmation
+    # whenever the selected strike changes, even if an older strike reappears.
+    for row in list(robot_state.get("decisions") or []):
+        row_ticker = str(row.get("ticker") or "")
+        if _market_family(row_ticker) != family:
+            continue
+        row_side = str(row.get("side") or "").upper()
+        row_time = _parse_utc(row.get("generatedAt"))
+        reasons = set(str(value) for value in (row.get("blockingReasons") or []))
+        if (
+            row_ticker != normalized_ticker
+            or row_side != normalized_side
+            or row_time is None
+            or (previous_time - row_time).total_seconds() < -1e-6
+            or (previous_time - row_time).total_seconds() > max_gap
+            or "entry_confirmation" not in reasons
+        ):
+            break
+        streak += 1
+        previous_time = row_time
+        if streak >= required:
+            break
+    return {
+        "required": True,
+        "requiredSnapshots": required,
+        "streak": streak,
+        "confirmed": streak >= required,
+        "maxGapSeconds": max_gap,
+        "ticker": normalized_ticker,
+        "side": normalized_side,
+    }
+
+
+def _hourly_candidate_diagnostic(
+    candidate: Mapping[str, Any],
+    market: Mapping[str, Any],
+    candidate_count: int,
+    *,
+    penalty_weight: float = 0.10,
+) -> Dict[str, Any]:
+    """Return a winner's-curse-adjusted score for one hourly strike."""
+    edge = dict(candidate.get("edge") or {})
+    model = dict(candidate.get("model") or {})
+    raw_score = _finite_number(edge.get("conservativeEdge"), -99.0)
+    uncertainty = max(0.0, _finite_number(model.get("uncertainty"), 0.0))
+    trials = max(1, int(candidate_count or 1))
+    trial_factor = math.sqrt(max(0.0, 2.0 * math.log(float(trials))))
+    weight = max(0.0, min(0.50, _finite_number(penalty_weight, 0.10)))
+    penalty = min(0.08, uncertainty * trial_factor * weight)
+    shrunken = raw_score - penalty
+    minimum = _finite_number(
+        edge.get("effectiveMinimumConservativeEdge"),
+        _finite_number(edge.get("minimumConservativeEdge"), 0.0075),
+    )
+    action = str(candidate.get("action") or "").upper()
+    return {
+        "ticker": str(market.get("ticker") or ""),
+        "strike": market.get("floor_strike"),
+        "action": action or "WAIT",
+        "side": candidate.get("side"),
+        "netEdge": edge.get("netEdge"),
+        "conservativeEdge": edge.get("conservativeEdge"),
+        "uncertainty": model.get("uncertainty"),
+        "candidateCount": trials,
+        "multipleCandidatePenalty": penalty,
+        "shrunkenScore": shrunken,
+        "minimumShrunkenScore": minimum,
+        "penaltyCleared": bool(action.startswith("BUY_") and shrunken >= minimum),
+        "blockingReasons": [
+            str(reason)[:80]
+            for reason in (candidate.get("blockingReasons") or [])[:6]
+        ],
+    }
+
+
 def _hourly_candidate_management_priority(
     candidate: Mapping[str, Any],
     market: Mapping[str, Any],
@@ -1405,7 +1976,7 @@ def _hourly_candidate_management_priority(
     ticker = str(market.get("ticker") or "")
     position = _position_execution_context(portfolio, ticker)
     held_side = str(position.get("side") or "").upper()
-    held_count = int(position.get("count") or 0)
+    held_count = _contract_quantity(position.get("count"))
     if held_side not in {"YES", "NO"} or held_count <= 0:
         return (0, -1.0, -1.0)
 
@@ -1414,8 +1985,15 @@ def _hourly_candidate_management_priority(
         0.5,
     )
     held_probability = fair_yes if held_side == "YES" else 1.0 - fair_yes
-    sale = _estimate_reduce_only_sale(held_side, held_count, orderbook)
-    fillable = int(sale.get("fillableCount") or 0)
+    sale = _estimate_reduce_only_sale(
+        held_side,
+        held_count,
+        orderbook,
+        taker_fee_rate=_finite_number(
+            strategy_config.get("takerFeeRate"), 0.07
+        ),
+    )
+    fillable = _contract_quantity(sale.get("fillableCount"))
     net_exit = (
         _finite_number(sale.get("netProceeds"), 0.0) / fillable
         if fillable > 0
@@ -1760,7 +2338,7 @@ def _intent_client_order_id(
     ticker: str,
     action: str,
     side: str,
-    held_count: int,
+    held_count: float,
     *,
     now_epoch: Optional[float] = None,
 ) -> str:
@@ -1776,7 +2354,7 @@ def _intent_client_order_id(
         str(ticker),
         str(action),
         str(side),
-        str(max(0, int(held_count))),
+        f"{_contract_quantity(held_count):.2f}",
         str(bucket),
     ))
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"alphalab:kalshi:intent:{identity}"))
@@ -1786,7 +2364,7 @@ def _paper_order_payload(
     decision: Mapping[str, Any],
     ticker: str,
     *,
-    count_override: Optional[int] = None,
+    count_override: Optional[float] = None,
     price_tolerance: float = 0.0,
     client_order_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
@@ -1796,7 +2374,16 @@ def _paper_order_payload(
     edge = dict(decision.get("edge") or {})
     sizing = dict(decision.get("sizing") or {})
     selected_price = _finite_number(edge.get("price"), -1.0)
-    count = int(count_override) if count_override is not None else int(_finite_number(sizing.get("contracts"), 0.0))
+    count_source = (
+        count_override
+        if count_override is not None
+        else sizing.get("plannedContractsFp")
+        if sizing.get("plannedContractsFp") not in (None, "")
+        else sizing.get("contractsFp")
+        if sizing.get("contractsFp") not in (None, "")
+        else sizing.get("contracts")
+    )
+    count = _contract_quantity(count_source)
     is_buy = action in {"BUY_YES", "BUY_NO"}
     is_sell = action in {"SELL_YES", "SELL_NO"}
     if not (is_buy or is_sell) or side not in {"YES", "NO"} or count <= 0:
@@ -1846,17 +2433,25 @@ def _paper_order_payload(
 def _order_fill_count(order: Optional[Mapping[str, Any]]) -> float:
     if not order:
         return 0.0
-    for key in ("fill_count", "fill_count_fp", "filled_count", "filled_count_fp"):
+    explicit_fill = _first_present(
+        order,
+        "fill_count_fp",
+        "filled_count_fp",
+        "fill_count",
+        "filled_count",
+    )
+    if explicit_fill is not None:
         try:
-            value = float(order.get(key) or 0)
+            value = float(explicit_fill)
         except (TypeError, ValueError):
-            continue
-        if value > 0:
-            return value
+            value = 0.0
+        return max(0.0, value)
     status = str(order.get("status") or "").strip().lower()
     if status == "filled":
         try:
-            return float(order.get("count") or order.get("count_fp") or 1)
+            return float(
+                _first_present(order, "count_fp", "count") or 1
+            )
         except (TypeError, ValueError):
             return 1.0
     return 0.0
@@ -2102,8 +2697,22 @@ def _normalise_live_order(raw: Mapping[str, Any], payload: Mapping[str, Any], de
             if reduce_only and side in {"YES", "NO"}
             else side
         )
-    requested = _finite_number(order.get("count") or order.get("count_fp") or payload.get("count"), 0.0)
-    filled = _finite_number(order.get("fill_count") or order.get("fill_count_fp") or order.get("filled_count"), 0.0)
+    requested = _finite_number(
+        _first_present(order, "count_fp", "count")
+        if _first_present(order, "count_fp", "count") is not None
+        else payload.get("count"),
+        0.0,
+    )
+    filled = _finite_number(
+        _first_present(
+            order,
+            "fill_count_fp",
+            "filled_count_fp",
+            "fill_count",
+            "filled_count",
+        ),
+        0.0,
+    )
     explicit_remaining = order.get("remaining_count_fp")
     if explicit_remaining in (None, ""):
         explicit_remaining = order.get("remaining_count")
@@ -2216,11 +2825,14 @@ def _normalise_live_fill(
         elif has_no and not has_yes:
             side = "NO"
     count = _finite_number(
-        fill.get("count")
-        or fill.get("count_fp")
-        or fill.get("fill_count")
-        or fill.get("fill_count_fp")
-        or fill.get("contracts"),
+        _first_present(
+            fill,
+            "count_fp",
+            "fill_count_fp",
+            "count",
+            "fill_count",
+            "contracts",
+        ),
         0.0,
     )
     price_dollars = None
@@ -2309,7 +2921,9 @@ def _reconcile_live_exit_fills(fills) -> list:
         action = str(row.get("action") or "").upper()
         side = str(row.get("outcome_side") or "").upper()
         ticker = str(row.get("ticker") or row.get("market_ticker") or "")
-        count = _finite_number(row.get("count_fp") or row.get("fill_count_fp"), 0.0)
+        count = _finite_number(
+            _first_present(row, "count_fp", "fill_count_fp"), 0.0
+        )
         price = _finite_number(row.get("average_price_dollars") or row.get("price_dollars"), 0.0)
         fee = max(0.0, _finite_number(row.get("fee_cost_dollars"), 0.0))
         if side not in {"YES", "NO"} or count <= 0 or price <= 0:
@@ -2385,7 +2999,9 @@ def _open_live_fill_inventory(fills) -> Dict[Tuple[str, str], Dict[str, Any]]:
         ticker = str(row.get("ticker") or row.get("market_ticker") or "")
         side = str(row.get("outcome_side") or "").upper()
         action = str(row.get("action") or "").upper()
-        count = _finite_number(row.get("count_fp") or row.get("fill_count_fp"), 0.0)
+        count = _finite_number(
+            _first_present(row, "count_fp", "fill_count_fp"), 0.0
+        )
         price = _finite_number(row.get("average_price_dollars") or row.get("price_dollars"), 0.0)
         if not _is_supported_kalshi_ticker(ticker) or side not in {"YES", "NO"} or count <= 0:
             continue
@@ -2471,11 +3087,14 @@ def _durable_managed_inventory(
         side = str(row.get("side") or row.get("outcome_side") or "").upper()
         action = str(row.get("action") or "").upper()
         count = _finite_number(
-            row.get("fillCount")
-            or row.get("fill_count_fp")
-            or row.get("fill_count")
-            or row.get("count_fp")
-            or row.get("count"),
+            _first_present(
+                row,
+                "fill_count_fp",
+                "count_fp",
+                "fillCount",
+                "fill_count",
+                "count",
+            ),
             0.0,
         )
         if (
@@ -2517,8 +3136,18 @@ def _normalise_live_settlement(raw: Mapping[str, Any]) -> Dict[str, Any]:
             or settlement.get("created_time")
             or settlement.get("updated_time")
         ),
-        "yes_count_fp": _finite_number(settlement.get("yes_count_fp") or settlement.get("yes_count") or settlement.get("yes_position"), 0.0),
-        "no_count_fp": _finite_number(settlement.get("no_count_fp") or settlement.get("no_count") or settlement.get("no_position"), 0.0),
+        "yes_count_fp": _finite_number(
+            _first_present(
+                settlement, "yes_count_fp", "yes_count", "yes_position"
+            ),
+            0.0,
+        ),
+        "no_count_fp": _finite_number(
+            _first_present(
+                settlement, "no_count_fp", "no_count", "no_position"
+            ),
+            0.0,
+        ),
         "revenue_dollars": _dollar_amount(
             settlement.get("revenue_dollars"),
             settlement.get("revenue") or settlement.get("settlement_value") or settlement.get("proceeds"),
@@ -2602,6 +3231,11 @@ def _signed_headers(api_key_id: str, private_key: str, method: str, path: str, *
 class _PublicDataClient:
     def __init__(self, *, http_get=None, safe_print=print):
         self.http_get = http_get or requests.get
+        # Injected transports are deterministic tests/offline adapters. They
+        # may not implement the optional series endpoints, so automatic fee
+        # refresh is limited to the real public transport; callers can still
+        # invoke ``series_fee_policy`` explicitly with an injected transport.
+        self._automatic_fee_policy = http_get is None
         self.safe_print = safe_print
         self._cache: Dict[str, Tuple[float, Any]] = {}
         self._cache_meta: Dict[str, Dict[str, Any]] = {}
@@ -3114,6 +3748,136 @@ class _PublicDataClient:
         )
         return dict((payload or {}).get("market") or payload or {})
 
+    def _optional_public_json(
+        self,
+        key: str,
+        url: str,
+        *,
+        params: Optional[Mapping[str, Any]] = None,
+        ttl: float,
+        timeout: float = 5.0,
+    ) -> Any:
+        """Cache optional metadata without degrading execution-data health.
+
+        Fee metadata can disable maker shadow when absent, but it must never
+        open the shared market-data host backoff and thereby starve a required
+        orderbook/reference request.  Taker execution keeps its conservative
+        0.07 fallback while this optional fetch recovers.
+        """
+        now = time.monotonic()
+        with self._cache_lock:
+            cached = self._cache.get(key)
+            if cached and now - cached[0] <= max(0.0, float(ttl)):
+                return cached[1]
+        errors = []
+        for candidate_url in self._kalshi_url_candidates(url)[:2]:
+            try:
+                response = self.http_get(
+                    candidate_url,
+                    params=dict(params or {}),
+                    headers=self._headers,
+                    timeout=timeout,
+                )
+                if hasattr(response, "raise_for_status"):
+                    response.raise_for_status()
+                payload = (
+                    response.json() if hasattr(response, "json") else response
+                )
+                fetched = time.monotonic()
+                with self._cache_lock:
+                    self._cache[key] = (fetched, payload)
+                    self._cache_meta[key] = {
+                        "fetchedAt": datetime.now(timezone.utc)
+                        .isoformat()
+                        .replace("+00:00", "Z"),
+                        "servedStale": False,
+                        "ageSeconds": 0.0,
+                        "sourceHost": self._host_name(candidate_url),
+                        "optional": True,
+                    }
+                    self._prune_cache_locked(now=fetched)
+                return payload
+            except Exception as exc:
+                errors.append(exc)
+        raise KalshiApiError(
+            "Optional Kalshi series fee metadata is unavailable",
+            status=503,
+            code="kalshi_fee_policy_unavailable",
+        ) from (errors[-1] if errors else None)
+
+    def series_fee_policy(
+        self,
+        series_ticker: str,
+        *,
+        base_url: str = KALSHI_PUBLIC_BASE,
+    ) -> Dict[str, Any]:
+        """Return current fee metadata plus scheduled changes for a series."""
+        series = str(series_ticker or "").strip().upper()
+        if not series:
+            return {"available": False, "reason": "series_ticker_missing"}
+        current_payload = self._optional_public_json(
+            f"kalshi-series-fee:{base_url}:{series}",
+            f"{base_url}/series/{series}",
+            ttl=60.0,
+        )
+        current = dict((current_payload or {}).get("series") or {})
+        try:
+            changes_payload = self._optional_public_json(
+                f"kalshi-series-fee-changes:{base_url}:{series}",
+                f"{base_url}/series/fee_changes",
+                params={
+                    "series_ticker": series,
+                    "show_historical": False,
+                },
+                ttl=30.0,
+            )
+            changes = [
+                {
+                    "id": row.get("id"),
+                    "feeType": row.get("fee_type"),
+                    "feeMultiplier": row.get("fee_multiplier"),
+                    "scheduledAt": row.get("scheduled_ts"),
+                }
+                for row in (
+                    (changes_payload or {}).get("series_fee_change_arr") or []
+                )
+                if str(row.get("series_ticker") or "").upper() in {"", series}
+            ]
+        except KalshiApiError:
+            changes = []
+        fee_type = str(current.get("fee_type") or "").strip().lower()
+        fee_multiplier = _finite_number(current.get("fee_multiplier"), None)
+        recognized = fee_type in {
+            "quadratic",
+            "quadratic_with_maker_fees",
+        }
+        available = bool(
+            recognized
+            and fee_multiplier is not None
+            and fee_multiplier >= 0.0
+        )
+        maker_coefficient = (
+            0.0175 * fee_multiplier
+            if available and fee_type == "quadratic_with_maker_fees"
+            else 0.0
+            if available and fee_type == "quadratic"
+            else None
+        )
+        return {
+            "available": available,
+            "seriesTicker": series,
+            "feeType": fee_type or None,
+            "feeMultiplier": fee_multiplier,
+            "takerFeeCoefficient": (
+                0.07 * fee_multiplier if available else None
+            ),
+            "makerFeeCoefficient": maker_coefficient,
+            "makerRateKnown": maker_coefficient is not None,
+            "scheduledChanges": changes[:10],
+            "source": "kalshi_series_and_fee_changes_v2",
+            "reason": None if available else "fee_policy_unavailable",
+        }
+
     def snapshot(
         self,
         *,
@@ -3127,6 +3891,29 @@ class _PublicDataClient:
         market, selection = self._market_candidates(now, base_url)
         if not market:
             raise KalshiApiError("No KXBTC15M contract was returned by Kalshi")
+        market = dict(market)
+        try:
+            if not self._automatic_fee_policy:
+                raise KalshiApiError(
+                    "Automatic fee policy refresh is disabled for this transport",
+                    code="kalshi_fee_policy_unavailable",
+                )
+            fee_policy = self.series_fee_policy(
+                BTC_15M_SERIES,
+                base_url=base_url,
+            )
+        except KalshiApiError:
+            fee_policy = {
+                "available": False,
+                "seriesTicker": BTC_15M_SERIES,
+                "makerRateKnown": False,
+                "reason": "fee_policy_unavailable",
+            }
+        if fee_policy.get("available"):
+            market["fee_type"] = fee_policy.get("feeType")
+            market["fee_multiplier"] = fee_policy.get("feeMultiplier")
+        else:
+            warnings.append("kalshi_fee_policy_unavailable")
         market_keys = ["kalshi-btc15-open:production"]
         if selection != "active":
             market_keys.append("kalshi-btc15-schedule:production")
@@ -3303,6 +4090,7 @@ class _PublicDataClient:
             "orderbook": orderbook,
             "orderbookAsOf": orderbook_as_of,
             "reference": reference,
+            "feePolicy": fee_policy,
             "warnings": warnings,
             "sources": {
                 "contract": f"Kalshi {BTC_15M_SERIES}",
@@ -3457,6 +4245,29 @@ class _PublicDataClient:
 
         books: Dict[str, Dict[str, Any]] = {}
         warnings = list(reference_snapshot.get("warnings") or [])
+        try:
+            if not self._automatic_fee_policy:
+                raise KalshiApiError(
+                    "Automatic fee policy refresh is disabled for this transport",
+                    code="kalshi_fee_policy_unavailable",
+                )
+            fee_policy = self.series_fee_policy(
+                BTC_HOURLY_SERIES,
+                base_url=base_url,
+            )
+        except KalshiApiError:
+            fee_policy = {
+                "available": False,
+                "seriesTicker": BTC_HOURLY_SERIES,
+                "makerRateKnown": False,
+                "reason": "fee_policy_unavailable",
+            }
+        if fee_policy.get("available"):
+            for market in selected_markets:
+                market["fee_type"] = fee_policy.get("feeType")
+                market["fee_multiplier"] = fee_policy.get("feeMultiplier")
+        else:
+            warnings.append("kalshi_fee_policy_unavailable")
         included_required = sorted(
             required.intersection({
                 str(market.get("ticker") or "") for market in selected_markets
@@ -3518,6 +4329,7 @@ class _PublicDataClient:
             "ladderFit": ladder_fit,
             "reference": dict(reference_snapshot.get("reference") or {}),
             "referencePolicy": reference_policy,
+            "feePolicy": fee_policy,
             "warnings": sorted(set(warnings)),
             "sources": {
                 **dict(reference_snapshot.get("sources") or {}),
@@ -4231,9 +5043,22 @@ class _PaperRobotController:
             ticker = str(row.get("ticker") or row.get("market_ticker") or row.get("market") or "")
             if not _is_supported_kalshi_ticker(ticker):
                 continue
-            yes_count = _finite_number(row.get("yes_count") or row.get("yes_count_fp") or row.get("yes_position") or 0.0)
-            no_count = _finite_number(row.get("no_count") or row.get("no_count_fp") or row.get("no_position") or 0.0)
-            position = _finite_number(row.get("position") or row.get("position_fp"), yes_count - no_count)
+            yes_count = _finite_number(
+                _first_present(
+                    row, "yes_count_fp", "yes_count", "yes_position"
+                ),
+                0.0,
+            )
+            no_count = _finite_number(
+                _first_present(
+                    row, "no_count_fp", "no_count", "no_position"
+                ),
+                0.0,
+            )
+            position = _finite_number(
+                _first_present(row, "position_fp", "position"),
+                yes_count - no_count,
+            )
             if yes_count == 0 and no_count == 0 and position:
                 if position > 0:
                     yes_count = abs(position)
@@ -4940,15 +5765,15 @@ class _PaperRobotController:
                 or ""
             )
             yes_count = _finite_number(
-                row.get("yes_count_fp")
-                or row.get("yes_count")
-                or row.get("yes_position"),
+                _first_present(
+                    row, "yes_count_fp", "yes_count", "yes_position"
+                ),
                 0.0,
             )
             no_count = _finite_number(
-                row.get("no_count_fp")
-                or row.get("no_count")
-                or row.get("no_position"),
+                _first_present(
+                    row, "no_count_fp", "no_count", "no_position"
+                ),
                 0.0,
             )
             signed = _finite_number(
@@ -5119,6 +5944,24 @@ class _PaperRobotController:
             latest_state.get("config") or {}
         )
         if not exact_same_side:
+            if "entryConfirmation" in decision:
+                entry_confirmation = _entry_confirmation(
+                    latest_state,
+                    ticker,
+                    side,
+                    decision,
+                    config,
+                )
+                if (
+                    entry_confirmation.get("required")
+                    and not entry_confirmation.get("confirmed")
+                ):
+                    raise KalshiApiError(
+                        "A new Real position requires consecutive confirmed "
+                        "scheduler decisions.",
+                        status=409,
+                        code="kalshi_entry_confirmation_required",
+                    )
             reentry_confirmation = _same_ticker_reentry_confirmation(
                 latest_state,
                 ticker,
@@ -5177,11 +6020,23 @@ class _PaperRobotController:
             ),
         )
         requested_exposure = requested_count * user_price
+        taker_fee_rate = _finite_number(
+            (decision.get("config") or {}).get("takerFeeRate"),
+            _finite_number(config.get("takerFeeRate"), 0.07),
+        )
+        rounded_order_cost = kalshi_order_cost(
+            user_price,
+            requested_count,
+            taker_fee_rate,
+        )
         conservative_fee = max(
             requested_count * decision_fee_per_contract,
-            kalshi_fee(user_price, requested_count),
+            _finite_number(rounded_order_cost.get("allInFee"), 0.0),
         )
-        required_cash = requested_exposure + conservative_fee
+        required_cash = max(
+            _finite_number(rounded_order_cost.get("cashDebit"), 0.0),
+            requested_exposure + conservative_fee,
+        )
         if required_cash > cash_dollars + 1e-9:
             raise KalshiApiError(
                 "Kalshi cash changed after the strategy decision.",
@@ -5270,14 +6125,15 @@ class _PaperRobotController:
                 0.01,
             )
         )
-        if portfolio_exposure + requested_exposure > portfolio_limit + 1e-9:
+        requested_risk = required_cash
+        if portfolio_exposure + requested_risk > portfolio_limit + 1e-9:
             raise KalshiApiError(
                 "Fresh Kalshi portfolio exposure exceeds the Real limit.",
                 status=409,
                 code="kalshi_live_exposure_changed",
             )
         if (
-            ticker_exposure + requested_exposure > market_limit + 1e-9
+            ticker_exposure + requested_risk > market_limit + 1e-9
             and not micro_position_authorized
         ):
             raise KalshiApiError(
@@ -5287,7 +6143,7 @@ class _PaperRobotController:
             )
         if (
             is_hourly
-            and scope_exposure + requested_exposure > market_limit + 1e-9
+            and scope_exposure + requested_risk > market_limit + 1e-9
             and not micro_position_authorized
         ):
             raise KalshiApiError(
@@ -5466,7 +6322,8 @@ class _PaperRobotController:
             bankroll = 0.0 if execution_mode == "real" else 1000.0
         if execution_mode != "real":
             bankroll = max(100.0, bankroll)
-        strategy_config = dict(robot_state.get("config") or {})
+        raw_strategy_config = dict(robot_state.get("config") or {})
+        strategy_config = dict(raw_strategy_config)
         strategy_config["executionMode"] = execution_mode
         strategy_config["paperBankroll"] = bankroll
         strategy_config = normalize_strategy_config(strategy_config)
@@ -5532,6 +6389,22 @@ class _PaperRobotController:
                 ),
             }
             hourly_config = normalize_strategy_config(hourly_config)
+            hourly_fee_rate = _finite_number(
+                (ladder.get("feePolicy") or {}).get("takerFeeCoefficient"),
+                None,
+            )
+            if hourly_fee_rate is not None and hourly_fee_rate >= 0.0:
+                hourly_config["takerFeeRate"] = hourly_fee_rate
+            hourly_candidate_penalty_weight = max(
+                0.0,
+                min(
+                    0.50,
+                    _finite_number(
+                        hourly_config.get("hourlyCandidatePenaltyWeight"),
+                        0.10,
+                    ),
+                ),
+            )
             reference_policy = dict(ladder.get("referencePolicy") or {})
             evaluation_spot = _finite_number(
                 reference_policy.get("selectedPrice"),
@@ -5584,6 +6457,16 @@ class _PaperRobotController:
                 candidates.append((candidate, market, book))
             if not candidates:
                 raise KalshiApiError("The active KXBTCD event has no executable strike candidates")
+            candidate_diagnostics = {
+                str((item[1] or {}).get("ticker") or ""):
+                _hourly_candidate_diagnostic(
+                    item[0],
+                    item[1],
+                    len(candidates),
+                    penalty_weight=hourly_candidate_penalty_weight,
+                )
+                for item in candidates
+            }
             held_candidates = [
                 item
                 for item in candidates
@@ -5624,8 +6507,19 @@ class _PaperRobotController:
                         if held_candidates
                         else ()
                     ),
-                    1 if str(item[0].get("action") or "").startswith("BUY_") else 0,
-                    _finite_number((item[0].get("edge") or {}).get("conservativeEdge"), -99.0),
+                    1
+                    if candidate_diagnostics.get(
+                        str((item[1] or {}).get("ticker") or ""),
+                        {},
+                    ).get("penaltyCleared")
+                    else 0,
+                    _finite_number(
+                        candidate_diagnostics.get(
+                            str((item[1] or {}).get("ticker") or ""),
+                            {},
+                        ).get("shrunkenScore"),
+                        -99.0,
+                    ),
                     _finite_number((item[0].get("edge") or {}).get("netEdge"), -99.0),
                 ),
             )
@@ -5638,6 +6532,74 @@ class _PaperRobotController:
                 and str(item[0].get("action") or "").startswith("BUY_")
             })
             decision = dict(decision)
+            selected_ticker = str((selected_market or {}).get("ticker") or "")
+            selected_diagnostic = dict(
+                candidate_diagnostics.get(selected_ticker) or {}
+            )
+            ranked_diagnostics = sorted(
+                candidate_diagnostics.values(),
+                key=lambda row: (
+                    1 if row.get("penaltyCleared") else 0,
+                    _finite_number(row.get("shrunkenScore"), -99.0),
+                    _finite_number(row.get("netEdge"), -99.0),
+                ),
+                reverse=True,
+            )
+            selected_rank = next(
+                (
+                    index
+                    for index, row in enumerate(ranked_diagnostics, start=1)
+                    if str(row.get("ticker") or "") == selected_ticker
+                ),
+                None,
+            )
+            compact_candidates = [dict(row) for row in ranked_diagnostics[:12]]
+            if (
+                selected_ticker
+                and all(
+                    str(row.get("ticker") or "") != selected_ticker
+                    for row in compact_candidates
+                )
+            ):
+                compact_candidates.append(selected_diagnostic)
+            decision["candidateDiagnostics"] = {
+                "candidateCount": len(candidates),
+                "selectedTicker": selected_ticker,
+                "selectedRank": selected_rank,
+                "penaltyWeight": hourly_candidate_penalty_weight,
+                "selected": selected_diagnostic,
+                "topCandidates": compact_candidates,
+            }
+            if (
+                str(decision.get("action") or "").startswith("BUY_")
+                and not selected_diagnostic.get("penaltyCleared")
+            ):
+                decision["action"] = "WAIT"
+                decision["executionIntent"] = "WAIT_HOURLY_CANDIDATE_SHRINKAGE"
+                decision["blockingReasons"] = list(dict.fromkeys(
+                    list(decision.get("blockingReasons") or [])
+                    + ["hourly_multiple_candidate_uncertainty"]
+                ))
+                decision["sizing"] = {
+                    **dict(decision.get("sizing") or {}),
+                    "contracts": 0,
+                    "contractsFp": 0.0,
+                    "plannedContractsFp": 0.0,
+                    "notional": 0.0,
+                }
+                decision["gates"] = list(decision.get("gates") or []) + [{
+                    "category": "signal",
+                    "name": "Hourly multiple-candidate uncertainty",
+                    "status": "block",
+                    "value": selected_diagnostic.get("shrunkenScore"),
+                    "threshold": selected_diagnostic.get(
+                        "minimumShrunkenScore"
+                    ),
+                    "detail": (
+                        "The selected strike's conservative edge did not "
+                        "survive the hourly ladder winner's-curse penalty."
+                    ),
+                }]
             decision["referencePolicy"] = reference_policy
             decision["managementPriority"] = {
                 "active": bool(required_held_tickers),
@@ -5659,24 +6621,21 @@ class _PaperRobotController:
                 "evaluationReferencePrice": evaluation_spot,
                 "referencePolicy": reference_policy,
                 "managementPriority": dict(decision["managementPriority"]),
-                "candidateSummary": [
-                    {
-                        "ticker": (item[1] or {}).get("ticker"),
-                        "strike": (item[1] or {}).get("floor_strike"),
-                        "action": item[0].get("action"),
-                        "side": item[0].get("side"),
-                        "netEdge": (item[0].get("edge") or {}).get("netEdge"),
-                        "conservativeEdge": (item[0].get("edge") or {}).get("conservativeEdge"),
-                        "blockingReasons": item[0].get("blockingReasons"),
-                    }
-                    for item in candidates
-                ],
+                "candidateSummary": compact_candidates,
             }
         else:
             snapshot_args: Dict[str, Any] = {"base_url": KALSHI_PUBLIC_BASE}
             if reference_override is not None:
                 snapshot_args["reference_override"] = reference_override
             snapshot = self.client.snapshot(**snapshot_args)
+            snapshot_fee_rate = _finite_number(
+                (snapshot.get("feePolicy") or {}).get(
+                    "takerFeeCoefficient"
+                ),
+                None,
+            )
+            if snapshot_fee_rate is not None and snapshot_fee_rate >= 0.0:
+                strategy_config["takerFeeRate"] = snapshot_fee_rate
             candidate_ticker = str((snapshot.get("market") or {}).get("ticker") or "")
             context = _paper_account_context(portfolio, robot_state, candidate_ticker, bankroll)
             if context.get("hasPosition"):
@@ -5714,7 +6673,9 @@ class _PaperRobotController:
             )),
             "candidateCount": snapshot.get("candidateCount", 1),
             "accountCompleteness": dict(portfolio.get("completeness") or {}),
+            "feePolicy": dict(snapshot.get("feePolicy") or {}),
         }
+        decision["feePolicy"] = dict(snapshot.get("feePolicy") or {})
         ticker = str((snapshot.get("market") or {}).get("ticker") or "")
         account_context = _paper_account_context(
             portfolio,
@@ -5729,9 +6690,15 @@ class _PaperRobotController:
         )
         position_context = _position_execution_context(portfolio, ticker)
         held_side = position_context.get("side")
-        held_count = int(position_context.get("count") or 0)
-        unmanaged_position_count = int(
-            position_context.get("unmanagedCount") or 0
+        held_count = _contract_quantity(position_context.get("count"))
+        unmanaged_position_count = _contract_quantity(
+            position_context.get("unmanagedCount")
+        )
+        decision["makerShadow"] = _maker_shadow_diagnostic(
+            decision,
+            snapshot.get("feePolicy") or {},
+            strategy_config,
+            has_position=bool(held_side and held_count > 0),
         )
         fair_yes = _finite_number((decision.get("model") or {}).get("fairYesProbability"), 0.5)
         held_probability = (
@@ -5740,11 +6707,20 @@ class _PaperRobotController:
             else None
         )
         sale_estimate = (
-            _estimate_reduce_only_sale(held_side, held_count, snapshot.get("orderbook") or {})
+            _estimate_reduce_only_sale(
+                held_side,
+                held_count,
+                snapshot.get("orderbook") or {},
+                taker_fee_rate=_finite_number(
+                    strategy_config.get("takerFeeRate"), 0.07
+                ),
+            )
             if held_side and held_count > 0
             else {}
         )
-        fillable_exit_count = int(sale_estimate.get("fillableCount") or 0)
+        fillable_exit_count = _contract_quantity(
+            sale_estimate.get("fillableCount")
+        )
         exit_net_per_contract = (
             _finite_number(sale_estimate.get("netProceeds")) / fillable_exit_count
             if fillable_exit_count > 0
@@ -5776,6 +6752,25 @@ class _PaperRobotController:
             held_probability=held_probability,
             strategy_config=strategy_config,
         )
+        exit_confirmation = _protective_exit_confirmation(
+            robot_state,
+            ticker,
+            str(held_side or ""),
+            exit_economics,
+            strategy_config,
+            generated_at=decision.get("generatedAt"),
+            data_quality_ok=not bool(
+                set((decision.get("dataQuality") or {}).get("warnings") or [])
+                & KALSHI_EXECUTION_BLOCKING_WARNINGS
+            ),
+        )
+        loss_exit_authorized = bool(
+            exit_economics.get("emergencyLossExit")
+            or (
+                exit_economics.get("protectiveLossExit")
+                and exit_confirmation.get("confirmed")
+            )
+        )
         economically_executable = bool(
             fillable_exit_count > 0
             and exit_value_edge is not None
@@ -5793,8 +6788,43 @@ class _PaperRobotController:
             "holdAgeSeconds": hold_age_seconds,
             "minimumHoldSeconds": minimum_hold_seconds,
             "economicallyExecutable": economically_executable,
+            "expectedHoldValuePerContract": held_probability,
+            "expectedHoldPnlPerContract": (
+                held_probability
+                - _finite_number(
+                    exit_economics.get("breakEvenExitValuePerContract"),
+                    0.0,
+                )
+                if held_probability is not None
+                and exit_economics.get("breakEvenExitValuePerContract")
+                is not None
+                else None
+            ),
+            "holdVsExitExpectedDeltaPerContract": (
+                held_probability - exit_net_per_contract
+                if held_probability is not None
+                and exit_net_per_contract is not None
+                else None
+            ),
+            "counterfactualPolicy": "hold_to_settlement_vs_executable_exit_v1",
+            "protectiveConfirmation": exit_confirmation,
+            "lossExitAuthorizedAfterConfirmation": loss_exit_authorized,
         }
         decision["exitAnalysis"] = exit_analysis
+        decision["protectiveConfirmation"] = dict(exit_confirmation)
+        if (
+            exit_confirmation.get("required")
+            and exit_confirmation.get("dataQualityEligible") is True
+        ):
+            confirmation_reason = (
+                "protective_exit_confirmed"
+                if exit_confirmation.get("confirmed")
+                else "protective_exit_confirmation"
+            )
+            decision["blockingReasons"] = list(dict.fromkeys(
+                list(decision.get("blockingReasons") or [])
+                + [confirmation_reason]
+            ))
         decision["account"] = {
             "heldSide": held_side,
             "heldCount": held_count,
@@ -5829,11 +6859,17 @@ class _PaperRobotController:
                 "threshold": "> 0",
                 "detail": "Real Kalshi account has no available cash; robot will not submit orders.",
             }]
-            decision["sizing"] = {**dict(decision.get("sizing") or {}), "contracts": 0, "notional": 0.0}
+            decision["sizing"] = {
+                **dict(decision.get("sizing") or {}),
+                "contracts": 0,
+                "contractsFp": 0.0,
+                "plannedContractsFp": 0.0,
+                "notional": 0.0,
+            }
         order = None
         decision_side = str(decision.get("side") or "").upper()
         can_route = False
-        route_count_override: Optional[int] = None
+        route_count_override: Optional[float] = None
         if (
             held_side
             and str(decision.get("action") or "").startswith("BUY_")
@@ -5908,17 +6944,28 @@ class _PaperRobotController:
                 elif add_probability < add_probability_floor or add_edge < add_edge_floor or not signal_improved:
                     decision["action"] = "WAIT"
                     decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["add_signal_not_improved"]
-                elif int(_finite_number((decision.get("sizing") or {}).get("contracts"), 0.0)) <= 0:
+                elif _contract_quantity(
+                    (decision.get("sizing") or {}).get("plannedContractsFp")
+                    or (decision.get("sizing") or {}).get("contractsFp")
+                    or (decision.get("sizing") or {}).get("contracts")
+                ) <= 0:
                     decision["action"] = "WAIT"
                     decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["add_exposure_full"]
                 else:
                     can_route = True
-                    proposed_add = int(_finite_number((decision.get("sizing") or {}).get("contracts"), 0.0))
+                    proposed_add = _contract_quantity(
+                        (decision.get("sizing") or {}).get("plannedContractsFp")
+                        or (decision.get("sizing") or {}).get("contractsFp")
+                        or (decision.get("sizing") or {}).get("contracts")
+                    )
                     add_fraction = max(
                         0.10,
                         min(1.0, _finite_number(strategy_config.get("addSizeFraction"), 0.50)),
                     )
-                    route_count_override = max(1, int(math.floor(proposed_add * add_fraction)))
+                    route_count_override = max(
+                        0.01,
+                        _contract_quantity(proposed_add * add_fraction),
+                    )
                     decision["executionIntent"] = f"ADD_{decision_side}"
                     decision["positionManagement"] = {
                         "mode": "add",
@@ -5948,7 +6995,7 @@ class _PaperRobotController:
                 elif fillable_exit_count <= 0:
                     decision["action"] = "WAIT"
                     decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["no_executable_close_depth"]
-                elif not economically_executable and not exit_economics["lossExitAuthorized"]:
+                elif not economically_executable and not loss_exit_authorized:
                     decision["action"] = "WAIT"
                     decision["blockingReasons"] = list(decision.get("blockingReasons") or []) + ["reversal_exit_value_insufficient"]
                 elif exit_net_per_contract is not None and 0.0 < exit_net_per_contract < 1.0:
@@ -6049,8 +7096,93 @@ class _PaperRobotController:
                         ),
                     }]
                 else:
-                    can_route = True
-                    decision["executionIntent"] = f"OPEN_{decision_side}"
+                    entry_inputs_fresh = not bool(
+                        set(
+                            (decision.get("dataQuality") or {}).get(
+                                "warnings"
+                            )
+                            or []
+                        )
+                        & KALSHI_EXECUTION_BLOCKING_WARNINGS
+                    )
+                    entry_confirmation = (
+                        _entry_confirmation(
+                            robot_state,
+                            ticker,
+                            decision_side,
+                            decision,
+                            strategy_config,
+                        )
+                        if entry_inputs_fresh
+                        else {
+                            "required": True,
+                            "requiredSnapshots": int(
+                                _finite_number(
+                                    strategy_config.get(
+                                        "entryConfirmationSnapshots"
+                                    ),
+                                    2.0,
+                                )
+                            ),
+                            "streak": 0,
+                            "confirmed": False,
+                            "dataQualityEligible": False,
+                        }
+                    )
+                    decision["entryConfirmation"] = entry_confirmation
+                    if not entry_inputs_fresh:
+                        # Let the existing fail-closed data-quality gate own
+                        # the public intent and blocker; a stale frame must not
+                        # advance durable entry confirmation.
+                        can_route = True
+                        decision["executionIntent"] = f"OPEN_{decision_side}"
+                    elif (
+                        entry_confirmation.get("required")
+                        and not entry_confirmation.get("confirmed")
+                    ):
+                        intended_action = str(decision.get("action") or "")
+                        decision["action"] = "WAIT"
+                        decision["intendedAction"] = intended_action
+                        decision["executionIntent"] = (
+                            "WAIT_ENTRY_CONFIRMATION"
+                        )
+                        decision["blockingReasons"] = list(dict.fromkeys(
+                            list(decision.get("blockingReasons") or [])
+                            + ["entry_confirmation"]
+                        ))
+                        decision["gates"] = list(
+                            decision.get("gates") or []
+                        ) + [{
+                            "category": "signal",
+                            "name": "Consecutive entry confirmation",
+                            "status": "block",
+                            "value": entry_confirmation.get("streak"),
+                            "threshold": entry_confirmation.get(
+                                "requiredSnapshots"
+                            ),
+                            "detail": (
+                                "A first entry must remain on the same ticker "
+                                "and side across consecutive scheduler cycles."
+                            ),
+                        }]
+                    else:
+                        can_route = True
+                        decision["executionIntent"] = f"OPEN_{decision_side}"
+                        decision["gates"] = list(
+                            decision.get("gates") or []
+                        ) + [{
+                            "category": "signal",
+                            "name": "Consecutive entry confirmation",
+                            "status": "pass",
+                            "value": entry_confirmation.get("streak"),
+                            "threshold": entry_confirmation.get(
+                                "requiredSnapshots"
+                            ),
+                            "detail": (
+                                "The entry thesis persisted on the same "
+                                "ticker and side."
+                            ),
+                        }]
                     if reentry_confirmation["required"]:
                         decision["reentryConfirmation"] = (
                             reentry_confirmation
@@ -6130,7 +7262,7 @@ class _PaperRobotController:
                 and exit_net_per_contract is not None
                 and (
                     economically_executable
-                    or exit_economics["lossExitAuthorized"]
+                    or loss_exit_authorized
                 )
             ):
                 # Close the held outcome with a reduce-only sale. Buying the
@@ -6162,14 +7294,19 @@ class _PaperRobotController:
                         0.10,
                         min(1.0, _finite_number(strategy_config.get("takeProfitScaleOutPct"), 0.50)),
                     )
-                    route_count_override = max(1, int(math.ceil(fillable_exit_count * scale_out)))
+                    route_count_override = max(
+                        0.01,
+                        _contract_quantity(fillable_exit_count * scale_out),
+                    )
                     decision["executionIntent"] = f"REDUCE_{held_side}_TAKE_PROFIT"
                     decision["positionManagement"] = {
                         "mode": "reduce",
                         "existingContracts": held_count,
                         "routedContracts": route_count_override,
                         "takeProfitScaleOutPct": scale_out,
-                        "remainingIfFilled": max(0, held_count - route_count_override),
+                        "remainingIfFilled": _contract_quantity(
+                            max(0.0, held_count - route_count_override)
+                        ),
                     }
                 else:
                     route_count_override = fillable_exit_count
@@ -6366,7 +7503,7 @@ class _PaperRobotController:
                         ticker=ticker,
                         side=side,
                         price=selected_price,
-                        contracts=int(float(order_payload["count"])),
+                        contracts=_contract_quantity(order_payload["count"]),
                         limit_price=_finite_number(order_payload.get("user_side_limit_price"), selected_price),
                         orderbook=snapshot.get("orderbook") or {},
                         client_order_id=str(order_payload["client_order_id"]),
@@ -6377,7 +7514,7 @@ class _PaperRobotController:
                         ticker=ticker,
                         side=side,
                         price=selected_price,
-                        contracts=int(float(order_payload["count"])),
+                        contracts=_contract_quantity(order_payload["count"]),
                         available_depth=available_depth,
                         limit_price=_finite_number(order_payload.get("user_side_limit_price"), selected_price),
                         orderbook=snapshot.get("orderbook") or {},
@@ -6450,8 +7587,10 @@ class _PaperRobotController:
         mode = _execution_mode(order.get("environment") or (decision.get("config") or {}).get("executionMode") or "paper")
         source = "Kalshi Real Robot" if mode == "real" else "Kalshi Paper Robot"
         status = str(order.get("status") or "").lower()
-        filled = int(_finite_number(order.get("fill_count_fp"), 0.0))
-        requested = int(_finite_number(order.get("count_fp"), 0.0))
+        filled = _contract_quantity(order.get("fill_count_fp"))
+        requested = _contract_quantity(order.get("count_fp"))
+        filled_label = f"{filled:.2f}".rstrip("0").rstrip(".")
+        requested_label = f"{requested:.2f}".rstrip("0").rstrip(".")
         symbol = str(order.get("ticker") or "")
         side = str(order.get("outcome_side") or "").upper()
         avg_price = _finite_number(order.get("average_price_dollars"), None)
@@ -6468,13 +7607,13 @@ class _PaperRobotController:
             "symbol": symbol,
             "side": action_name,
             "action": f"{action_name} {side}".strip(),
-            "qty": f"{filled} / {requested} contracts",
+            "qty": f"{filled_label} / {requested_label} contracts",
             "orderType": "IOC limit",
             "price": f"{avg_price * 100:.1f}c avg" if avg_price is not None else None,
             "limitPrice": f"{limit_price * 100:.1f}c limit" if limit_price is not None else None,
             "status": "filled" if status in {"filled", "partially_filled"} else status,
             "orderId": order.get("order_id"),
-            "description": f"{source} {action_name.lower()} {status.replace('_', ' ')} {filled}/{requested} {side} on {symbol}.",
+            "description": f"{source} {action_name.lower()} {status.replace('_', ' ')} {filled_label}/{requested_label} {side} on {symbol}.",
             "descriptionZh": f"Kalshi {'实盘' if mode == 'real' else '模拟盘'}{action_zh}{status.replace('_', ' ')}：{symbol} {side} 成交 {filled}/{requested} 张。",
             "reason": (
                 f"Intent {decision.get('executionIntent') or decision.get('action')}; "
@@ -6508,8 +7647,12 @@ class _PaperRobotController:
             raw_pnl = settlement.get("pnl_dollars")
         pnl = _finite_number(raw_pnl, revenue - cost - fees)
         side = str(settlement.get("side") or "").upper()
-        yes_count = _finite_number(settlement.get("yes_count_fp") or settlement.get("yes_count"), 0.0)
-        no_count = _finite_number(settlement.get("no_count_fp") or settlement.get("no_count"), 0.0)
+        yes_count = _finite_number(
+            _first_present(settlement, "yes_count_fp", "yes_count"), 0.0
+        )
+        no_count = _finite_number(
+            _first_present(settlement, "no_count_fp", "no_count"), 0.0
+        )
         if side not in {"YES", "NO"}:
             side = "YES" if yes_count > 0 else "NO" if no_count > 0 else ""
         contracts = _finite_number(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import threading
 from datetime import datetime, timezone
@@ -34,6 +35,37 @@ def _number(value: Any, default: float = 0.0) -> float:
     return parsed if parsed == parsed and abs(parsed) != float("inf") else default
 
 
+def _first_present(row: Mapping[str, Any], *keys: str) -> Any:
+    """Return the first explicit field, preserving numeric/string zero."""
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _has_present(row: Mapping[str, Any], *keys: str) -> bool:
+    return any(row.get(key) not in (None, "") for key in keys)
+
+
+def _utc_time_sort_key(value: Any) -> tuple[int, float]:
+    """Chronologically sort mixed ISO-Z/offset timestamps in UTC."""
+    raw = str(value or "").strip()
+    if not raw:
+        return (0, 0.0)
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return (0, 0.0)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    try:
+        timestamp = parsed.astimezone(timezone.utc).timestamp()
+    except (OverflowError, OSError, ValueError):
+        return (0, 0.0)
+    return (1, timestamp)
+
+
 def _money(row: Mapping[str, Any], dollar_keys, cent_keys=()) -> float:
     for key in dollar_keys:
         value = row.get(key)
@@ -54,6 +86,8 @@ def _settlement_result(settlement: Mapping[str, Any]) -> str:
     try:
         numeric = float(value)
     except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(numeric):
         return ""
     threshold = 0.5 if 0.0 <= numeric <= 1.0 else 50.0
     return "YES" if numeric >= threshold else "NO"
@@ -180,19 +214,45 @@ def _safe_strategy_config(
 def _order_fill_count(order: Optional[Mapping[str, Any]]) -> float:
     if not order:
         return 0.0
-    for key in ("fill_count", "fill_count_fp", "filled_count", "filled_count_fp"):
-        try:
-            value = float(order.get(key) or 0)
-        except (TypeError, ValueError):
+    # Fixed-point fields are authoritative, including an explicit zero.  A
+    # value such as fill_count_fp="0.00" must not fall through to a stale
+    # positive legacy integer field.
+    for key in ("fill_count_fp", "filled_count_fp"):
+        raw = order.get(key)
+        if raw in (None, ""):
             continue
-        if value > 0:
-            return value
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(value):
+            return 0.0
+        return max(0.0, value)
+    for key in ("fill_count", "filled_count"):
+        raw = order.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(value):
+            return 0.0
+        return max(0.0, value)
     status = str(order.get("status") or "").strip().lower()
     if status == "filled":
-        try:
-            return float(order.get("count") or order.get("count_fp") or 1)
-        except (TypeError, ValueError):
-            return 1.0
+        for key in ("count_fp", "count"):
+            raw = order.get(key)
+            if raw in (None, ""):
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                return 0.0
+            if not math.isfinite(value):
+                return 0.0
+            return max(0.0, value)
+        return 1.0
     return 0.0
 
 
@@ -552,6 +612,11 @@ class KalshiRobotState:
                 "realizedWinRate": None,
                 "realizedTotalPnl": 0.0,
                 "realizedAveragePnl": 0.0,
+                "realizedAverageWin": 0.0,
+                "realizedAverageLoss": 0.0,
+                "realizedProfitFactor": None,
+                "realizedRecoveryMultiple": None,
+                "realizedMaxDrawdown": 0.0,
                 "equityCurve": [],
                 "dailyPnlDate": None,
                 "dailyPnl": 0.0,
@@ -1044,17 +1109,29 @@ class KalshiRobotState:
                 "price": edge.get("price"),
                 "netEdge": edge.get("netEdge"),
                 "conservativeEdge": edge.get("conservativeEdge"),
+                "recoveryMultiple": edge.get("recoveryMultiple"),
+                "recoveryEdgePremium": edge.get("recoveryEdgePremium"),
+                "timeStage": (decision.get("model") or {}).get("timeStage"),
                 "uncertainty": (decision.get("model") or {}).get("uncertainty"),
                 "blockingReasons": list(decision.get("blockingReasons") or []),
                 "sizing": {
                     key: (decision.get("sizing") or {}).get(key)
                     for key in (
                         "contracts",
+                        "contractsFp",
+                        "plannedContractsFp",
+                        "contractStep",
                         "maximumLoss",
+                        "expectedLoss",
+                        "expectedValue",
                         "riskBudget",
                         "standardRiskBudget",
                         "microSizingApplied",
                         "microPositionLossCap",
+                        "fractionalSizingApplied",
+                        "smallAccountSizingApplied",
+                        "allInFee",
+                        "roundingFee",
                     )
                 },
                 "gateSummary": {
@@ -1067,7 +1144,7 @@ class KalshiRobotState:
                 "orderId": (order or {}).get("order_id"),
                 "clientOrderId": (order or {}).get("client_order_id"),
                 "orderStatus": (order or {}).get("status"),
-                "fillCount": (order or {}).get("fill_count") or (order or {}).get("fill_count_fp") or (order or {}).get("filled_count"),
+                "fillCount": _order_fill_count(order) if order else None,
                 "orderSubmitted": bool(order),
                 "orderFilled": _order_fill_count(order) > 0,
                 "executionIntent": decision.get("executionIntent"),
@@ -1326,12 +1403,16 @@ class KalshiRobotState:
             })
         realized = sorted(
             realized,
-            key=lambda row: str(row.get("settledAt") or ""),
+            key=lambda row: _utc_time_sort_key(row.get("settledAt")),
         )[-MAX_SETTLEMENT_RECORDS:]
         cumulative = 0.0
+        equity_peak = 0.0
+        max_drawdown = 0.0
         curve = []
         for row in realized:
             cumulative = round(cumulative + _number(row.get("pnl")), 4)
+            equity_peak = max(equity_peak, cumulative)
+            max_drawdown = max(max_drawdown, equity_peak - cumulative)
             curve.append({
                 "environment": environment,
                 "at": row.get("settledAt"),
@@ -1340,7 +1421,21 @@ class KalshiRobotState:
                 "cumulativePnl": cumulative,
                 "exitType": row.get("exitType"),
             })
-        wins = sum(1 for row in realized if _number(row.get("pnl")) > 0)
+        winning_pnls = [
+            _number(row.get("pnl"))
+            for row in realized
+            if _number(row.get("pnl")) > 0
+        ]
+        losing_pnls = [
+            _number(row.get("pnl"))
+            for row in realized
+            if _number(row.get("pnl")) < 0
+        ]
+        wins = len(winning_pnls)
+        gross_profit = sum(winning_pnls)
+        gross_loss = abs(sum(losing_pnls))
+        average_win = gross_profit / len(winning_pnls) if winning_pnls else 0.0
+        average_loss = gross_loss / len(losing_pnls) if losing_pnls else 0.0
         strategy["realizedTradeRecords"] = list(reversed(realized))
         strategy["realizedSamples"] = len(realized)
         strategy["realizedWins"] = wins
@@ -1348,6 +1443,17 @@ class KalshiRobotState:
         strategy["realizedWinRate"] = round(wins / len(realized), 4) if realized else None
         strategy["realizedTotalPnl"] = round(cumulative, 4)
         strategy["realizedAveragePnl"] = round(cumulative / len(realized), 4) if realized else 0.0
+        strategy["realizedAverageWin"] = round(average_win, 4)
+        strategy["realizedAverageLoss"] = round(average_loss, 4)
+        strategy["realizedProfitFactor"] = (
+            round(gross_profit / gross_loss, 4) if gross_loss > 0.0 else None
+        )
+        strategy["realizedRecoveryMultiple"] = (
+            round(average_loss / average_win, 4)
+            if average_loss > 0.0 and average_win > 0.0
+            else None
+        )
+        strategy["realizedMaxDrawdown"] = round(max_drawdown, 4)
         strategy["realizedBestTrade"] = max((_number(row.get("pnl")) for row in realized), default=None)
         strategy["realizedWorstTrade"] = min((_number(row.get("pnl")) for row in realized), default=None)
         strategy["equityCurve"] = curve
@@ -1486,7 +1592,7 @@ class KalshiRobotState:
             if closed_by_order:
                 closed_records = sorted(
                     closed_by_order.values(),
-                    key=lambda row: str(row.get("closedAt") or ""),
+                    key=lambda row: _utc_time_sort_key(row.get("closedAt")),
                 )[-MAX_SETTLEMENT_RECORDS:]
                 strategy["closedTradeRecords"] = closed_records
                 strategy["closedTradeSamples"] = len(closed_records)
@@ -1505,7 +1611,9 @@ class KalshiRobotState:
             }
             ordered_settlements = sorted(
                 list(settlements or []),
-                key=lambda row: str(row.get("settled_time") or ""),
+                key=lambda row: _utc_time_sort_key(
+                    row.get("settled_time") or row.get("created_time")
+                ),
             )
             canonical_settlement_keys: Dict[str, set[str]] = {}
             for settlement in ordered_settlements:
@@ -1606,15 +1714,56 @@ class KalshiRobotState:
                         processed.add(settlement_key)
                         changed = True
                     continue
-                yes_count = _number(settlement.get("yes_count_fp") or settlement.get("yes_count"))
-                no_count = _number(settlement.get("no_count_fp") or settlement.get("no_count"))
+                yes_count_present = _has_present(
+                    settlement,
+                    "yes_count_fp",
+                    "yes_count",
+                )
+                no_count_present = _has_present(
+                    settlement,
+                    "no_count_fp",
+                    "no_count",
+                )
+                yes_count = _number(_first_present(
+                    settlement,
+                    "yes_count_fp",
+                    "yes_count",
+                ))
+                no_count = _number(_first_present(
+                    settlement,
+                    "no_count_fp",
+                    "no_count",
+                ))
                 if side not in {"YES", "NO"}:
                     side = "YES" if yes_count > 0 else "NO" if no_count > 0 else ""
                 count = yes_count if side == "YES" else no_count if side == "NO" else 0.0
-                if count <= 0:
-                    count = sum(_number(row.get("count_fp") or row.get("count") or row.get("fill_count_fp") or row.get("fill_count")) for row in matching_entry_fills)
-                if count <= 0:
+                selected_count_present = (
+                    yes_count_present
+                    if side == "YES"
+                    else no_count_present
+                    if side == "NO"
+                    else yes_count_present or no_count_present
+                )
+                if not selected_count_present:
+                    count = sum(
+                        _number(_first_present(
+                            row,
+                            "count_fp",
+                            "fill_count_fp",
+                            "count",
+                            "fill_count",
+                        ))
+                        for row in matching_entry_fills
+                    )
+                if count <= 0 and not selected_count_present:
                     count = _number((forecast or {}).get("fillCount"), 1.0 if legacy_forecast_mode else 0.0)
+                if count <= 0:
+                    if existing_records.pop(settlement_key, None) is not None:
+                        changed = True
+                    if settlement_key not in processed:
+                        processed.add(settlement_key)
+                        changed = True
+                    continue
                 has_financials = any(settlement.get(key) not in (None, "") for key in (
                     "revenue_dollars", "revenue", "yes_total_cost_dollars", "yes_total_cost",
                     "no_total_cost_dollars", "no_total_cost", "fee_cost_dollars", "fee_cost",
@@ -1627,7 +1776,13 @@ class KalshiRobotState:
                     derived_cost = 0.0
                     derived_fees = 0.0
                     for fill in matching_entry_fills:
-                        fill_count = _number(fill.get("count_fp") or fill.get("count") or 0)
+                        fill_count = _number(_first_present(
+                            fill,
+                            "count_fp",
+                            "fill_count_fp",
+                            "count",
+                            "fill_count",
+                        ))
                         price = _money(fill, ("yes_price_dollars", "no_price_dollars", "price_dollars"), ("yes_price", "no_price", "price"))
                         derived_cost += fill_count * price
                         derived_fees += _money(fill, ("fee_cost_dollars", "fee_cost", "taker_fees_dollars", "maker_fees_dollars"), ("fees",))
@@ -1694,7 +1849,10 @@ class KalshiRobotState:
                 processed.add(settlement_key)
                 changed = True
 
-            records = sorted(existing_records.values(), key=lambda row: str(row.get("settledAt") or ""))[-MAX_SETTLEMENT_RECORDS:]
+            records = sorted(
+                existing_records.values(),
+                key=lambda row: _utc_time_sort_key(row.get("settledAt")),
+            )[-MAX_SETTLEMENT_RECORDS:]
             strategy = bucket["strategy"]
             strategy["settlementRecords"] = list(reversed(records))
             strategy["settledSamples"] = len(records)

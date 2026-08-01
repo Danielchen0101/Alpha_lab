@@ -13,6 +13,51 @@ def test_official_general_event_taker_fee_and_account_rounding():
     assert hundred["debit"] == 51.75
 
 
+def test_fractional_fill_uses_fixed_point_quantity_and_whole_cent_debit():
+    amounts = taker_fill_amounts(0.50, 0.30)
+
+    assert amounts["positionCost"] == 0.15
+    assert amounts["tradeFee"] == 0.0053
+    assert amounts["roundingFee"] == 0.0047
+    assert amounts["fee"] == 0.01
+    assert amounts["debit"] == 0.16
+
+
+def test_fractional_paper_position_can_fill_close_and_settle(tmp_path):
+    store = KalshiPaperAccountStore(str(tmp_path / "paper.json"))
+    entry = store.submit_taker(
+        "u",
+        ticker="T",
+        side="YES",
+        price=0.50,
+        contracts=0.90,
+        orderbook={"no": [[0.50, 0.60], [0.49, 0.30]]},
+        limit_price=0.51,
+    )
+
+    assert entry["fill_count_fp"] == 0.9
+    assert entry["remaining_count_fp"] == 0.0
+    assert store.portfolio("u")["positions"][0]["yes_count_fp"] == 0.9
+
+    close = store.submit_close(
+        "u",
+        ticker="T",
+        side="YES",
+        price=0.60,
+        contracts=0.35,
+        orderbook={"yes": [[0.60, 0.35]]},
+    )
+    assert close["fill_count_fp"] == 0.35
+    assert store.portfolio("u")["positions"][0]["yes_count_fp"] == 0.55
+
+    cash_before_settlement = store.portfolio("u")["balance"]["balance"]
+    settlement = store.settle("u", "T", "YES")
+    assert settlement["yes_count_fp"] == 0.55
+    assert settlement["revenue_dollars"] == 0.55
+    assert settlement["settlement_fee_dollars"] == 0.0
+    assert store.portfolio("u")["balance"]["balance"] == cash_before_settlement + 55
+
+
 def test_explicit_market_fee_multiplier_is_applied_to_paper_fills(tmp_path):
     store = KalshiPaperAccountStore(str(tmp_path / "paper.json"))
     order = store.submit_taker(
@@ -421,7 +466,7 @@ def test_v2_account_upgrade_preserves_ledger_and_repairs_settlement_pnl(tmp_path
     portfolio = store.portfolio("u")
     persisted = json.loads(path.read_text(encoding="utf-8"))["u"]
 
-    assert persisted["version"] == 3
+    assert persisted["version"] == 4
     assert persisted["orders"][0]["order_id"] == "kept-order"
     assert persisted["fills"][0]["fill_id"] == "closed-fill"
     assert persisted["settlements"][0]["settlement_id"] == "kept-settlement"
