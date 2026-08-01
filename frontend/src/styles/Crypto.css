@@ -23,6 +23,27 @@
   font-feature-settings: "tnum" 1;
 }
 
+:root[data-theme='dark'] .cx-root {
+  --cx-ink: var(--app-text-strong, #fffaf0);
+  --cx-muted: var(--app-text-muted, #aaa3ae);
+  --cx-faint: color-mix(in srgb, var(--app-text-muted, #aaa3ae) 72%, transparent);
+  --cx-line: var(--app-border, rgba(226, 214, 196, .2));
+  --cx-line-strong: color-mix(in srgb, var(--app-border, rgba(226, 214, 196, .2)) 72%, var(--cx-ink));
+  --cx-soft: var(--app-card-bg-soft, #211e25);
+  --cx-paper: var(--app-card-bg, #1c1a20);
+  --cx-canvas: var(--app-bg, #121114);
+  --cx-blue: var(--app-accent-secondary, #b6a0c9);
+  --cx-green: var(--app-positive, #9db58c);
+  --cx-red: var(--app-danger, #df7b68);
+  --cx-amber: var(--app-warning, #d6a45f);
+  background:
+    radial-gradient(circle at 12% 0, color-mix(in srgb, var(--cx-green) 7%, transparent), transparent 28%),
+    linear-gradient(color-mix(in srgb, var(--cx-ink) 1.6%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--cx-ink) 1.6%, transparent) 1px, transparent 1px),
+    var(--cx-canvas);
+  background-size: auto, 32px 32px, 32px 32px, auto;
+}
+
 .cx-root * { box-sizing: border-box; }
 .cx-root button, .cx-root input, .cx-root select { font: inherit; }
 .cx-root button:focus-visible, .cx-root input:focus-visible, .cx-root select:focus-visible {
@@ -114,6 +135,80 @@
   0%, 100% { box-shadow: 0 0 0 0 rgba(49,95,213,.08); }
   50% { box-shadow: 0 0 0 5px rgba(49,95,213,.14); }
 }
+
+/* Dark-theme component surfaces stay inside the same warm graphite palette. */
+:root[data-theme='dark'] .cx-root :is(.cx-status, .cx-mode, .cx-ops-strip, .cx-asset, .cx-panel, .cx-empty-card) {
+  background: color-mix(in srgb, var(--cx-paper) 96%, transparent);
+  box-shadow: none;
+}
+:root[data-theme='dark'] .cx-root .cx-profile-strip > div,
+:root[data-theme='dark'] .cx-root .cx-table th,
+:root[data-theme='dark'] .cx-root .cx-horizon-picker button,
+:root[data-theme='dark'] .cx-root .cx-evidence-strip > div,
+:root[data-theme='dark'] .cx-root .cx-runtime-grid > div,
+:root[data-theme='dark'] .cx-root .cx-ledger-filters button,
+:root[data-theme='dark'] .cx-root .cx-secondary {
+  color: var(--cx-ink);
+  background: var(--cx-paper);
+  border-color: var(--cx-line);
+}
+:root[data-theme='dark'] .cx-root .cx-profile-strip > div.selected,
+:root[data-theme='dark'] .cx-root .cx-horizon-picker button.selected,
+:root[data-theme='dark'] .cx-root .cx-ledger-filters button.selected {
+  color: var(--cx-green);
+  background: color-mix(in srgb, var(--cx-green) 9%, var(--cx-paper));
+  border-color: color-mix(in srgb, var(--cx-green) 42%, var(--cx-line));
+}
+:root[data-theme='dark'] .cx-root .cx-table td { border-bottom-color: var(--cx-line); }
+:root[data-theme='dark'] .cx-root .cx-table tbody tr:hover td { background: color-mix(in srgb, var(--cx-green) 6%, transparent); }
+:root[data-theme='dark'] .cx-root .cx-banner.error,
+:root[data-theme='dark'] .cx-root :is(.cx-action.exit, .cx-action.sell, .cx-route-state.rejected, .cx-operational-note.danger) {
+  color: var(--cx-red);
+  background: color-mix(in srgb, var(--cx-red) 10%, var(--cx-paper));
+  border-color: color-mix(in srgb, var(--cx-red) 38%, var(--cx-line));
+}
+:root[data-theme='dark'] .cx-root .cx-banner.success,
+:root[data-theme='dark'] .cx-root :is(.cx-action.buy, .cx-action.add, .cx-route-state.routed) {
+  color: var(--cx-green);
+  background: color-mix(in srgb, var(--cx-green) 10%, var(--cx-paper));
+  border-color: color-mix(in srgb, var(--cx-green) 38%, var(--cx-line));
+}
+:root[data-theme='dark'] .cx-root :is(.cx-action.reduce, .cx-inline-warning) {
+  color: var(--cx-amber);
+  background: color-mix(in srgb, var(--cx-amber) 10%, var(--cx-paper));
+  border-color: color-mix(in srgb, var(--cx-amber) 38%, var(--cx-line));
+}
+:root[data-theme='dark'] .cx-root .cx-route-state.simulated,
+:root[data-theme='dark'] .cx-root .cx-orbit {
+  color: var(--cx-blue);
+  background: color-mix(in srgb, var(--cx-blue) 10%, var(--cx-paper));
+  border-color: color-mix(in srgb, var(--cx-blue) 38%, var(--cx-line));
+}
+:root[data-theme='dark'] .cx-root :is(.cx-experiment-band, .cx-allocation-control.experimental) {
+  color: var(--cx-ink);
+  background: color-mix(in srgb, var(--cx-blue) 8%, var(--cx-paper));
+  border-color: color-mix(in srgb, var(--cx-blue) 34%, var(--cx-line));
+}
+:root[data-theme='dark'] .cx-root :is(.cx-experiment-band > span, .cx-allocation-name em) {
+  color: var(--cx-blue);
+  background: color-mix(in srgb, var(--cx-blue) 13%, var(--cx-paper));
+  border-color: color-mix(in srgb, var(--cx-blue) 38%, var(--cx-line));
+}
+:root[data-theme='dark'] .cx-root .cx-experiment-band p { color: var(--cx-muted); }
+:root[data-theme='dark'] .cx-root .cx-experiment-band.blocked {
+  background: color-mix(in srgb, var(--cx-red) 9%, var(--cx-paper));
+  border-color: color-mix(in srgb, var(--cx-red) 36%, var(--cx-line));
+}
+:root[data-theme='dark'] .cx-root .cx-experiment-band.blocked > span {
+  color: var(--cx-red);
+  background: color-mix(in srgb, var(--cx-red) 13%, var(--cx-paper));
+  border-color: color-mix(in srgb, var(--cx-red) 38%, var(--cx-line));
+}
+:root[data-theme='dark'] .cx-root .cx-experiment-band.blocked p { color: var(--cx-muted); }
+:root[data-theme='dark'] .cx-root .cx-coin.btc { color: #e0ad62; border-color: rgba(224,173,98,.38); background: rgba(224,173,98,.09); }
+:root[data-theme='dark'] .cx-root .cx-coin.eth { color: #aeb7ef; border-color: rgba(174,183,239,.36); background: rgba(174,183,239,.09); }
+:root[data-theme='dark'] .cx-root .cx-coin.sol { color: #c5a7ea; border-color: rgba(197,167,234,.36); background: rgba(197,167,234,.09); }
+:root[data-theme='dark'] .cx-root .cx-coin.generic { color: var(--cx-muted); border-color: var(--cx-line); background: var(--cx-soft); }
 
 .cx-banner {
   display: flex;

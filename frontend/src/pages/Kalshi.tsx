@@ -170,6 +170,16 @@ export const shouldAcceptKalshiOperationResponse = (
   && kalshiResponseStateMatchesMode(responseState, token.mode)
 );
 
+export const kalshiRequiresExplicitEnable = (
+  state: KalshiPaperRobotState | null | undefined,
+  mode: KalshiBotConfig['executionMode'],
+): boolean => Boolean(
+  mode === 'real'
+  && state
+  && !state.enabled
+  && state.modeState?.real?.arming?.awaitingExplicitEnable,
+);
+
 const recordTimeMs = (record: Record<string, any>): number | null => {
   const raw = (
     record.created_time
@@ -1812,6 +1822,7 @@ const Kalshi: React.FC = () => {
   const showPortfolioRefresh = view === 'positions' || view === 'orders';
   const showSafetyBanner = view === 'bot' || view === 'risk';
   const showDecisionLoading = view === 'desk' || view === 'bot' || view === 'rules' || view === 'decisions';
+  const requiresExplicitEnable = kalshiRequiresExplicitEnable(robotState, executionMode);
 
   return (
     <div className="kalshi-page">
@@ -1822,9 +1833,9 @@ const Kalshi: React.FC = () => {
           <p>{currentPage.description}</p>
         </div>
         {showRobotActions && <div className="kalshi-command-actions">
-          <div className={`kalshi-monitor-state${robotState?.enabled ? ' is-on' : ''}`}><i /><span>{robotState?.enabled ? copy('ROBOT ON', '机器人运行中') : copy('ROBOT OFF', '机器人已关闭')}</span><small>{kalshiModeLabel} · {copy('5-second server cycle', '服务端每 5 秒运行')}</small></div>
+          <div className={`kalshi-monitor-state${robotState?.enabled ? ' is-on' : ''}${requiresExplicitEnable ? ' needs-enable' : ''}`}><i /><span>{robotState?.enabled ? copy('ROBOT ON', '机器人运行中') : requiresExplicitEnable ? copy('START REQUIRED', '需要重新启动') : copy('ROBOT OFF', '机器人已关闭')}</span><small>{requiresExplicitEnable ? copy('Real mode is selected but not armed', '已进入实盘，但自动交易尚未启用') : `${kalshiModeLabel} · ${copy('5-second server cycle', '服务端每 5 秒运行')}`}</small></div>
           <button type="button" className="is-secondary" onClick={() => void evaluate()} disabled={refreshing}><ReloadOutlined className={refreshing ? 'is-spinning' : ''} />{copy('Refresh', '刷新')}</button>
-          <button type="button" className={robotState?.enabled ? 'is-stop' : 'is-start'} onClick={() => void toggleRobot()} disabled={robotBusy}>{robotState?.enabled ? <PauseCircleOutlined /> : <PlayCircleOutlined />}{robotState?.enabled ? copy('Stop robot', '停止机器人') : copy('Start robot', '启动机器人')}</button>
+          <button type="button" className={robotState?.enabled ? 'is-stop' : 'is-start'} onClick={() => void toggleRobot()} disabled={robotBusy}>{robotState?.enabled ? <PauseCircleOutlined /> : <PlayCircleOutlined />}{robotState?.enabled ? copy('Stop robot', '停止机器人') : requiresExplicitEnable ? copy('Enable Real automation', '确认启用实盘自动交易') : copy('Start robot', '启动机器人')}</button>
         </div>}
         {showPortfolioRefresh && <div className="kalshi-command-actions">
           {view === 'positions' && <button type="button" className="is-secondary" data-testid="reset-portfolio-display" onClick={() => void resetPortfolioDisplay()} disabled={portfolioResetting || portfolioLoading}><DatabaseOutlined />{portfolioResetting ? copy('Resetting…', '重置中…') : copy('Reset visible period', '重置显示周期')}</button>}
@@ -1839,6 +1850,19 @@ const Kalshi: React.FC = () => {
         <div><span>{copy('AUTOMATION', '自动交易')}</span><strong className={robotState?.enabled ? 'is-on' : ''}>{robotState?.enabled ? copy('RUNNING', '运行中') : copy('STOPPED', '已停止')}</strong></div>
         <div><span>{copy('ACCOUNT SOURCE', '账户数据源')}</span><strong>{isRealMode ? 'KALSHI API' : 'ALPHALAB'}</strong></div>
       </section>
+
+      {requiresExplicitEnable && showRobotActions && (
+        <div className="kalshi-rearm-banner" role="status" data-testid="kalshi-rearm-required">
+          <WarningOutlined />
+          <span>
+            <b>{copy('Real mode is selected, but automation is still stopped.', '已切换到 Kalshi 实盘，但自动交易仍处于停止状态。')}</b>
+            {copy(
+              ' Mode switching never authorizes real-money orders. Review the account and risk settings, then use “Enable Real automation” above when you are ready.',
+              ' 切换模式不会授权真实资金下单。请先核对账户和风控设置，准备好后再点击上方“确认启用实盘自动交易”。',
+            )}
+          </span>
+        </div>
+      )}
 
       {showSafetyBanner && <div className={`kalshi-safety-banner${isRealMode ? ' is-real' : ''}`}><SafetyCertificateOutlined /><span><b>{isRealMode ? copy('Kalshi Real mode.', 'Kalshi 实盘模式。') : copy('AlphaLab Paper mode.', 'AlphaLab 内置模拟盘。')}</b>{isRealMode ? copy(' Public market data is still used for evidence; orders are signed on the backend with your saved Kalshi API key and sent to your real Kalshi account.', ' 行情证据仍使用公开数据；订单会在后端用你保存的 Kalshi API Key 签名，并发送到你的真实 Kalshi 账户。') : copy(' Fills use production Kalshi public executable quotes and the official taker-fee schedule, but no order is sent to Kalshi and profitability is not guaranteed.', ' 成交使用 Kalshi 正式公开可成交报价和官方 taker 手续费规则，但不会向 Kalshi 发送订单，也不保证盈利。')}</span></div>}
       {showDecisionLoading && loading && !decision && <div className="kalshi-loading"><ClockCircleOutlined /><span>{copy('Loading Kalshi contract and BTC reference data...', '正在加载 Kalshi 合约与 BTC 参考数据……')}</span></div>}

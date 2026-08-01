@@ -67,6 +67,89 @@ def test_discord_delivery_does_not_retry_permanent_4xx(monkeypatch):
     assert len(calls) == 1
 
 
+def test_discord_rate_limit_is_durably_deferred(monkeypatch):
+    queued = []
+    recorded = []
+    monkeypatch.setattr(
+        backend,
+        "get_discord_config",
+        lambda _uid: {"enabled": True, "webhookUrl": "https://discord.com/api/webhooks/example/token"},
+    )
+    monkeypatch.setattr(backend, "_workspace_notification_allows", lambda *_args, **_kwargs: (True, ""))
+    monkeypatch.setattr(backend, "_discord_event_enabled", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(backend, "_discord_should_send", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(backend, "_discord_post_with_retry", lambda *_args, **_kwargs: {
+        "sent": False,
+        "reason": "rate_limited",
+        "status": 429,
+        "attempts": 1,
+        "retryAfterSeconds": 42_000,
+    })
+    monkeypatch.setattr(
+        backend,
+        "_enqueue_discord_retry",
+        lambda uid, event_type, payload, delay: queued.append((uid, event_type, payload, delay)) or True,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_record_notification_delivery",
+        lambda uid, event_type, result, payload: recorded.append((uid, event_type, result, payload)),
+    )
+
+    result = backend.send_discord_notification(
+        "user-1",
+        "order",
+        {"event_id": "order-1", "notificationScope": "kalshi"},
+    )
+
+    assert result["sent"] is False
+    assert result["deferred"] is True
+    assert queued[0][3] == 42_000
+    assert recorded[0][2]["deferred"] is True
+
+
+def test_discord_retry_queue_survives_then_removes_confirmed_delivery(monkeypatch):
+    class QueueStore:
+        def __init__(self):
+            self.row = None
+
+        def get_artifact(self, *_args):
+            return self.row
+
+        def put_artifact(self, _uid, _kind, _key, *, payload, idempotency_key, expected_version):
+            current_version = int((self.row or {}).get("version") or 0)
+            assert expected_version == current_version
+            self.row = {
+                "version": current_version + 1,
+                "payload": payload,
+                "last_idempotency_key": idempotency_key,
+            }
+            return self.row
+
+    store = QueueStore()
+    monkeypatch.setattr(backend, "operations_store", store)
+
+    assert backend._enqueue_discord_retry(
+        "user-1",
+        "order",
+        {"event_id": "order-1", "notificationScope": "kalshi"},
+        60,
+    ) is True
+    assert store.row["payload"]["pending"] is True
+    assert len(store.row["payload"]["entries"]) == 1
+
+    store.row["payload"]["entries"][0]["nextAttemptAt"] = "2000-01-01T00:00:00+00:00"
+    monkeypatch.setattr(
+        backend,
+        "send_discord_notification",
+        lambda *_args, **_kwargs: {"sent": True, "status": 200},
+    )
+
+    assert backend._process_discord_retry_queue("user-1") == 1
+    assert store.row["payload"]["pending"] is False
+    assert store.row["payload"]["entries"] == []
+
+
 def test_suffixed_order_stays_urgent_in_digest_mode(monkeypatch):
     monkeypatch.setattr(
         backend,
@@ -276,3 +359,33 @@ def test_crypto_cycle_digest_has_domain_specific_fields():
     assert embed["title"] == "Crypto 周期已完成"
     assert "研究流程" not in names
     assert "已处理交易对" in names
+
+
+def test_equity_cycle_digest_explains_why_a_plan_did_not_submit():
+    embed = backend._discord_embed(
+        "cycle_digest",
+        {
+            "_language": "zh-CN",
+            "notificationScope": "research",
+            "mode": "AI / REAL",
+            "universeScanned": 1500,
+            "rankedCandidates": 100,
+            "fineScanned": 30,
+            "dvPassed": 1,
+            "entryPlans": 1,
+            "ordersSubmitted": 0,
+            "brokerFills": 0,
+            "holdingsScanned": 0,
+            "protectionActions": 0,
+            "planOutcomes": [{
+                "symbol": "CSX",
+                "finalAction": "SKIP",
+                "reason": "The selected setup is research-only.",
+            }],
+            "durationSeconds": 394.4,
+        },
+    )
+
+    decision = next(field for field in embed["fields"] if field["name"] == "最终计划决策")
+    assert "CSX · 跳过" in decision["value"]
+    assert "research-only" in decision["value"]

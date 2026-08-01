@@ -119,6 +119,7 @@
 }
 
 .kalshi-monitor-state.is-on i { background: #20a358; box-shadow: 0 0 0 4px rgba(32, 163, 88, 0.1); }
+.kalshi-monitor-state.needs-enable i { background: var(--kalshi-orange); box-shadow: 0 0 0 4px color-mix(in srgb, var(--kalshi-orange) 14%, transparent); }
 .kalshi-monitor-state span { font: 750 10.5px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.4px; }
 .kalshi-monitor-state small { margin-top: 3px; color: var(--kalshi-muted); font-size: 10.5px; }
 
@@ -134,7 +135,7 @@
 .kalshi-hourly-ladder,
 .kalshi-family-performance {
   border: 1px solid var(--kalshi-border, #dfe3dc);
-  background: rgba(255, 255, 252, 0.92);
+  background: color-mix(in srgb, var(--kalshi-surface) 92%, transparent);
 }
 
 .kalshi-display-baseline {
@@ -171,8 +172,8 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px;
   margin-top: 18px;
-  background: #dfe3dc;
-  border: 1px solid #dfe3dc;
+  background: var(--kalshi-rule);
+  border: 1px solid var(--kalshi-rule);
 }
 
 .kalshi-hourly-grid article {
@@ -180,14 +181,14 @@
   gap: 6px;
   min-height: 92px;
   padding: 16px 18px;
-  background: #fbfcf8;
+  background: var(--kalshi-surface);
   transition: background 160ms ease, box-shadow 160ms ease;
 }
 
 .kalshi-hourly-grid article.is-selected {
   position: relative;
   z-index: 1;
-  background: #f1f6ef;
+  background: color-mix(in srgb, var(--kalshi-green) 8%, var(--kalshi-surface));
   box-shadow: inset 3px 0 0 #2f7659;
 }
 
@@ -214,14 +215,14 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1px;
-  background: #dfe3dc;
+  background: var(--kalshi-rule);
 }
 
 .kalshi-family-performance article {
   display: grid;
   gap: 8px;
   padding: 24px 26px;
-  background: #fbfcf8;
+  background: var(--kalshi-surface);
 }
 
 .kalshi-family-performance article > strong {
@@ -270,6 +271,7 @@
 .kalshi-context-rail strong.is-real { color: var(--kalshi-orange); }
 
 .kalshi-safety-banner,
+.kalshi-rearm-banner,
 .kalshi-error,
 .kalshi-loading,
 .kalshi-policy-note {
@@ -287,8 +289,14 @@
 }
 
 .kalshi-safety-banner b,
+.kalshi-rearm-banner b,
 .kalshi-error b,
 .kalshi-policy-note b { color: var(--kalshi-ink); }
+.kalshi-rearm-banner {
+  border-left-color: var(--kalshi-orange);
+  background: color-mix(in srgb, var(--kalshi-orange) 9%, var(--kalshi-surface));
+}
+.kalshi-rearm-banner > svg { flex: 0 0 auto; color: var(--kalshi-orange); font-size: 17px; }
 .kalshi-error { border-left-color: var(--kalshi-red); }
 .kalshi-error span { display: grid; gap: 2px; }
 .kalshi-error button { min-height: 30px; margin-left: auto; }

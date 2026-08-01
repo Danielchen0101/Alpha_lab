@@ -386,3 +386,46 @@
   .portfolio-editorial *::before,
   .portfolio-editorial *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
 }
+
+/* Portfolio dark-mode containment for Ant portals and state components. */
+:root[data-theme='dark'] .portfolio-editorial {
+  --portfolio-paper: var(--app-bg, #121114);
+  --portfolio-surface: var(--app-card-bg, #1c1a20);
+  --portfolio-surface-deep: var(--app-card-bg-soft, #211e25);
+  --portfolio-ink: var(--app-text-strong, #fffaf0);
+  --portfolio-muted: var(--app-text-muted, #aaa3ae);
+  --portfolio-rule: var(--app-border, rgba(226, 214, 196, .2));
+  --portfolio-rule-soft: var(--app-border-soft, rgba(226, 214, 196, .1));
+  --portfolio-blue: var(--app-accent, #d6a45f);
+  --portfolio-green: var(--app-positive, #9db58c);
+  --portfolio-red: var(--app-danger, #df7b68);
+}
+:root[data-theme='dark'] .portfolio-editorial :is(.ant-select-selector, .ant-pagination-item, .ant-pagination-item-link) {
+  color: var(--portfolio-ink) !important;
+  background: var(--portfolio-surface-deep) !important;
+  border-color: var(--portfolio-rule) !important;
+}
+:root[data-theme='dark'] .portfolio-editorial .ant-select-arrow,
+:root[data-theme='dark'] .portfolio-editorial .ant-pagination { color: var(--portfolio-muted) !important; }
+:root[data-theme='dark'] .portfolio-editorial .ant-table-container,
+:root[data-theme='dark'] .portfolio-editorial .ant-table-content,
+:root[data-theme='dark'] .portfolio-editorial .ant-table-body,
+:root[data-theme='dark'] .portfolio-editorial .ant-table-placeholder .ant-table-cell {
+  background: var(--portfolio-surface) !important;
+}
+:root[data-theme='dark'] .portfolio-editorial .ant-empty,
+:root[data-theme='dark'] .portfolio-editorial .ant-skeleton { color: var(--portfolio-muted); }
+:root[data-theme='dark'] .portfolio-editorial .portfolio-equity-tooltip {
+  color: var(--portfolio-ink);
+  background: var(--portfolio-surface-deep) !important;
+  border-color: var(--portfolio-rule) !important;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, .42) !important;
+}
+:root[data-theme='dark'] .portfolio-insights {
+  background: var(--portfolio-surface, var(--app-card-bg));
+  border-color: var(--portfolio-rule, var(--app-border));
+}
+:root[data-theme='dark'] .portfolio-insights__metrics article,
+:root[data-theme='dark'] .portfolio-insights__header,
+:root[data-theme='dark'] .portfolio-insights > footer { border-color: var(--portfolio-rule-soft, var(--app-border-soft)); }
+:root[data-theme='dark'] .portfolio-insights .ant-progress-inner { background: var(--portfolio-rule-soft, var(--app-border-soft)) !important; }
