@@ -1,5 +1,6 @@
 import json
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -99,6 +100,32 @@ def test_supabase_execute_retries_transient_transport_failure(monkeypatch):
 
     assert backend._supabase_execute(operation, "test read") == "ok"
     assert len(attempts) == 3
+
+
+def test_operations_store_wrapper_does_not_amplify_transport_retries(monkeypatch):
+    attempts = []
+
+    def operation():
+        attempts.append(True)
+        raise RuntimeError("Resource temporarily unavailable")
+
+    monkeypatch.setattr(backend.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="temporarily unavailable"):
+        backend._operations_supabase_execute(operation, "artifact read")
+    assert len(attempts) == 1
+
+
+def test_operations_store_uses_a_separate_io_lock(monkeypatch):
+    class ForbiddenSharedLock:
+        def acquire(self, *_args, **_kwargs):
+            pytest.fail("Operations Store must not use the general Supabase lock")
+
+    monkeypatch.setattr(backend, "_SUPABASE_IO_LOCK", ForbiddenSharedLock())
+
+    assert backend._operations_supabase_execute(
+        lambda: "ok", "artifact read",
+    ) == "ok"
 
 
 def test_order_authority_explains_why_auto_orders_are_locked():
@@ -2479,6 +2506,50 @@ def test_readiness_is_200_when_required_dependencies_are_healthy(monkeypatch):
     assert response.get_json()["status"] == "ready"
     assert response.headers["Cache-Control"] == "no-store, max-age=0"
     assert response.headers["Pragma"] == "no-cache"
+
+
+def test_readiness_endpoint_never_performs_dependency_io(monkeypatch):
+    monkeypatch.setattr(
+        backend,
+        "_run_supabase_readiness_probe",
+        lambda **_kwargs: pytest.fail("readiness endpoint must use cached state"),
+    )
+    monkeypatch.setattr(backend, "supabase_admin", object())
+    monkeypatch.setattr(backend, "SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setattr(backend, "SUPABASE_SERVICE_ROLE_KEY", "service-key")
+    monkeypatch.setattr(
+        backend,
+        "_SUPABASE_READINESS_CACHE",
+        {
+            "checkedAt": time.time(),
+            "probeOk": True,
+            "migrationOk": True,
+            "leaseRpcOk": True,
+            "pipelineConfigMergeRpcOk": True,
+            "migrationContractFailure": False,
+            "consecutiveFailures": 0,
+            "lastSuccessAt": time.time(),
+            "lastFailureAt": 0.0,
+            "lastFailureType": "",
+        },
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_scheduler_health_snapshot",
+        lambda: {"running": True, "heartbeatAgeSeconds": 1},
+    )
+    monkeypatch.setattr(
+        backend,
+        "_background_thread_readiness_snapshot",
+        lambda: {"required": True, "healthy": True},
+    )
+    monkeypatch.setattr(backend, "_backend_current_rss_mb", lambda: 256)
+    monkeypatch.setattr(backend, "_BACKEND_MEMORY_ABORT_LIMIT_MB", 3_700)
+
+    response = backend.app.test_client().get("/api/ready")
+
+    assert response.status_code == 200
+    assert response.get_json()["components"]["persistence"]["probeOk"] is True
 
 
 def test_supabase_readiness_requires_two_final_failures_and_recovers(monkeypatch):
