@@ -31,7 +31,29 @@ MAX_SETTLEMENT_RECORDS = 1000
 MAX_TRADED_TICKERS = 2000
 PAPER_STATE_VERSION = 11
 KALSHI_MODES = ("paper", "real")
-ROBOT_STATE_HEARTBEAT_SECONDS = 60.0
+
+# These fields mirror the active mode bucket for older API consumers.  Keeping
+# both copies in memory is useful, but sending both copies to Supabase on every
+# durable mutation doubles the largest parts of the request body.  The mirror
+# is rebuilt by ``_sync_mode_mirror`` immediately after a durable load.
+_TOP_LEVEL_MODE_MIRRORS = (
+    "config",
+    "strategy",
+    "tradedTickers",
+    "filledTrades",
+    "processedSettlements",
+    "decisions",
+    "decisionLimit",
+)
+
+# Removed strategy experiments are not execution inputs.  Old durable rows can
+# still contain them, so strip them from the next outbound write instead of
+# paying Render egress to preserve unused history indefinitely.
+_LEGACY_NON_TRADING_FIELDS = (
+    "learningObservations",
+    "learningExamples",
+    "strategyLibrary",
+)
 
 
 def _number(value: Any, default: float = 0.0) -> float:
@@ -734,6 +756,10 @@ class KalshiRobotState:
         if key not in self._users:
             restored = self._state_loader(key) if callable(self._state_loader) else None
             restored_existing_state = isinstance(restored, Mapping)
+            durable_compaction_required = bool(
+                restored_existing_state
+                and self._requires_durable_compaction(restored)
+            )
             self._users[key] = dict(restored) if isinstance(restored, Mapping) else self._initial()
             if int(self._users[key].get("storageVersion") or 0) < 8:
                 self._apply_v8_strategy_defaults(self._users[key])
@@ -746,6 +772,7 @@ class KalshiRobotState:
                 if int(self._users[key].get("storageVersion") or 0) < 11:
                     self._apply_v11_micro_account_sizing(self._users[key])
                 migrated = True
+            migrated = bool(migrated or durable_compaction_required)
         else:
             initial = self._initial()
             for field, value in initial.items():
@@ -818,7 +845,10 @@ class KalshiRobotState:
         if not isinstance(state, dict) or not callable(self._state_saver):
             return
         try:
-            saved = self._state_saver(key, copy.deepcopy(state))
+            saved = self._state_saver(
+                key,
+                self._durable_payload(state),
+            )
         except Exception:
             # A failed compare-and-swap means another runtime owns a newer
             # state. Invalidate only this user's cache so the next operation
@@ -828,6 +858,56 @@ class KalshiRobotState:
         if isinstance(saved, Mapping) and saved.get("version") is not None:
             state["_operationsVersion"] = int(saved.get("version") or 0)
         self._last_persisted_monotonic[key] = time.monotonic()
+
+    @staticmethod
+    def _durable_payload(state: Mapping[str, Any]) -> Dict[str, Any]:
+        """Return the canonical low-bandwidth representation for Supabase.
+
+        Active-mode mirrors and retired learning fields are reconstructed or
+        ignored on load, so serializing them is pure duplicate egress.  Keep
+        execution configuration, arming, fills, settlement provenance, risk
+        guards, and compare-and-swap metadata unchanged.
+        """
+        payload = copy.deepcopy(dict(state))
+        for field in _TOP_LEVEL_MODE_MIRRORS:
+            payload.pop(field, None)
+        for field in _LEGACY_NON_TRADING_FIELDS:
+            payload.pop(field, None)
+        mode_state = payload.get("modeState")
+        if isinstance(mode_state, dict):
+            for bucket in mode_state.values():
+                if not isinstance(bucket, dict):
+                    continue
+                for field in _LEGACY_NON_TRADING_FIELDS:
+                    bucket.pop(field, None)
+                strategy = bucket.get("strategy")
+                if isinstance(strategy, dict):
+                    strategy.pop("learning", None)
+                bucket["decisions"] = list(
+                    bucket.get("decisions") or []
+                )[:MAX_DECISION_RECORDS]
+                bucket["decisionLimit"] = MAX_DECISION_RECORDS
+        return payload
+
+    @staticmethod
+    def _requires_durable_compaction(state: Mapping[str, Any]) -> bool:
+        """Detect one legacy full-row layout without mutating loaded state."""
+        if any(field in state for field in _TOP_LEVEL_MODE_MIRRORS):
+            return True
+        if any(field in state for field in _LEGACY_NON_TRADING_FIELDS):
+            return True
+        mode_state = state.get("modeState")
+        if not isinstance(mode_state, Mapping):
+            return False
+        for bucket in mode_state.values():
+            if not isinstance(bucket, Mapping):
+                continue
+            if any(field in bucket for field in _LEGACY_NON_TRADING_FIELDS):
+                return True
+            strategy = bucket.get("strategy")
+            if isinstance(strategy, Mapping) and "learning" in strategy:
+                return True
+        return False
 
     def _save_local_snapshot(self) -> None:
         if not self.path:
@@ -1232,13 +1312,15 @@ class KalshiRobotState:
                 or previous_error
                 or action not in {"", "WAIT", "HOLD", "SKIP", "NO_TRADE"}
             )
-            persist_age = time.monotonic() - self._last_persisted_monotonic.get(
-                str(user_id), 0.0,
-            )
+            # Routine WAIT/HOLD decisions are an in-memory operator view.  A
+            # full-state heartbeat previously uploaded hundreds of kilobytes
+            # to Supabase every minute, even though scheduler liveness and the
+            # lease are tracked separately.  Persist immediately only for
+            # execution-relevant mutations; local-only mode can still snapshot
+            # every decision without generating network bandwidth.
             if (
                 not callable(self._state_saver)
                 or material_change
-                or persist_age >= ROBOT_STATE_HEARTBEAT_SECONDS
             ):
                 self._save_user(user_id)
             return copy.deepcopy(state)
@@ -1515,12 +1597,20 @@ class KalshiRobotState:
     def error(self, user_id: str, message: str) -> None:
         with self._lock:
             state = self._state(user_id)
+            normalized_message = str(message)[:300]
+            previous_error = str(state.get("lastError") or "")
             state["lastRunAt"] = _now()
-            state["lastError"] = str(message)[:300]
+            state["lastError"] = normalized_message
             bucket = self._mode_bucket(state, state.get("activeEnvironment") or (state.get("config") or {}).get("executionMode"))
+            bucket_error = str(bucket.get("lastError") or "")
             bucket["lastRunAt"] = state["lastRunAt"]
             bucket["lastError"] = state["lastError"]
-            self._save_user(user_id)
+            if (
+                not callable(self._state_saver)
+                or previous_error != normalized_message
+                or bucket_error != normalized_message
+            ):
+                self._save_user(user_id)
 
     def reconcile_settlements(
         self,

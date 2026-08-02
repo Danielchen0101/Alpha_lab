@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 
 from kalshi_robot_state import (
     KalshiRobotState,
-    ROBOT_STATE_HEARTBEAT_SECONDS,
     _order_fill_count,
     _settlement_result,
 )
@@ -1200,7 +1199,7 @@ def test_robot_state_mutations_persist_only_the_target_user(tmp_path):
     assert store._users["user-b"]["_operationsVersion"] == 1
 
 
-def test_routine_wait_decisions_use_bounded_durable_heartbeat(tmp_path):
+def test_routine_wait_decisions_never_upload_full_durable_heartbeats(tmp_path):
     calls = []
 
     def save(_user_id, payload):
@@ -1223,22 +1222,128 @@ def test_routine_wait_decisions_use_bounded_durable_heartbeat(tmp_path):
 
     store.record("user-a", decision)
     store.record("user-a", {**decision, "generatedAt": "2026-07-26T12:00:05Z"})
-    assert len(calls) == 1
+    assert calls == []
 
     store.record("user-a", {
         **decision,
         "generatedAt": "2026-07-26T12:00:10Z",
         "blockingReasons": ["liquidity"],
     })
-    assert len(calls) == 1
+    assert calls == []
 
-    store._last_persisted_monotonic["user-a"] -= ROBOT_STATE_HEARTBEAT_SECONDS
     store.record("user-a", {
         **decision,
         "generatedAt": "2026-07-26T12:01:10Z",
         "blockingReasons": ["liquidity"],
     })
+    assert calls == []
+
+    store.record("user-a", {
+        **decision,
+        "generatedAt": "2026-07-26T12:01:15Z",
+        "action": "BUY_YES",
+        "blockingReasons": [],
+    })
+    assert len(calls) == 1
+
+
+def test_repeated_identical_errors_do_not_rewrite_full_durable_state(tmp_path):
+    calls = []
+
+    def save(_user_id, payload):
+        calls.append(payload)
+        return {"version": len(calls)}
+
+    store = KalshiRobotState(
+        str(tmp_path / "state.json"),
+        state_saver=save,
+    )
+
+    store.error("user-a", "ReadTimeout")
+    store.error("user-a", "ReadTimeout")
+    store.error("user-a", "ReadTimeout")
+    assert len(calls) == 1
+
+    store.error("user-a", "OperationsStoreUnavailable")
     assert len(calls) == 2
+
+
+def test_durable_payload_omits_rebuildable_mirrors_and_legacy_learning(tmp_path):
+    durable = {}
+    saves = []
+
+    def save(user_id, payload):
+        durable[user_id] = copy.deepcopy(payload)
+        saves.append(copy.deepcopy(payload))
+        return {"version": len(saves)}
+
+    store = KalshiRobotState(
+        str(tmp_path / "state.json"),
+        state_loader=durable.get,
+        state_saver=save,
+    )
+    store.configure("user-a", True, {"executionMode": "paper"})
+    state = store._users["user-a"]
+    state["learningObservations"] = [{"unused": "x" * 2000}]
+    state["modeState"]["paper"]["learningExamples"] = [
+        {"unused": "y" * 2000}
+    ]
+    full_size = len(json.dumps(state, separators=(",", ":")))
+
+    store.configure("user-a", True, {
+        "executionMode": "paper",
+        "riskPerTradePct": 0.5,
+    })
+    persisted = saves[-1]
+    persisted_size = len(json.dumps(persisted, separators=(",", ":")))
+
+    for field in (
+        "config", "strategy", "tradedTickers", "filledTrades",
+        "processedSettlements", "decisions", "decisionLimit",
+        "learningObservations", "learningExamples", "strategyLibrary",
+    ):
+        assert field not in persisted
+    assert "learningExamples" not in persisted["modeState"]["paper"]
+    assert persisted_size < full_size * 0.75
+
+    restored = KalshiRobotState(
+        str(tmp_path / "restored.json"),
+        state_loader=durable.get,
+        state_saver=save,
+    ).get("user-a", environment="paper")
+    assert restored["enabled"] is True
+    assert restored["config"]["executionMode"] == "paper"
+    assert restored["config"]["riskPerTradePct"] == 0.5
+    assert restored["decisionLimit"] == 50
+
+
+def test_legacy_full_durable_state_is_compacted_once_on_restore(tmp_path):
+    seed = KalshiRobotState(str(tmp_path / "seed.json")).get(
+        "user-a", environment="paper"
+    )
+    seed["learningObservations"] = [{"unused": "x" * 1000}]
+    durable = {"user-a": copy.deepcopy(seed)}
+    saves = []
+
+    def save(user_id, payload):
+        durable[user_id] = copy.deepcopy(payload)
+        saves.append(copy.deepcopy(payload))
+        return {"version": len(saves)}
+
+    store = KalshiRobotState(
+        str(tmp_path / "restored.json"),
+        state_loader=durable.get,
+        state_saver=save,
+    )
+    restored = store.get("user-a", environment="paper")
+
+    assert restored["config"]["executionMode"] == "paper"
+    assert len(saves) == 1
+    assert "config" not in saves[0]
+    assert "learningObservations" not in saves[0]
+
+    store.get("user-a", environment="paper")
+    assert len(saves) == 1
 
 
 def test_paper_reconciliation_removes_stale_conflict_artifacts_for_same_market(tmp_path):

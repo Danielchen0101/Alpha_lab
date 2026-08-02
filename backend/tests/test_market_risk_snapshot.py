@@ -118,6 +118,78 @@ def test_macro_news_without_tickers_infers_market_proxies():
     assert {'SPY', 'IWM', 'TLT'}.issubset(set(enriched['symbols']))
 
 
+def test_kalshi_observation_writes_dedupe_same_15_second_sample(monkeypatch):
+    class Store:
+        def __init__(self):
+            self.rows = []
+
+        def put_kalshi_observation(self, user_id, observation):
+            row = {'user_id': user_id, **dict(observation)}
+            self.rows.append(row)
+            return row
+
+    store = Store()
+    monkeypatch.setattr(backend, 'operations_store', store)
+    with backend._KALSHI_PERSISTENCE_TRAFFIC_LOCK:
+        original_cache = dict(backend._KALSHI_OBSERVATION_WRITE_CACHE)
+        original_stats = dict(backend._KALSHI_PERSISTENCE_TRAFFIC)
+        backend._KALSHI_OBSERVATION_WRITE_CACHE.clear()
+        backend._KALSHI_PERSISTENCE_TRAFFIC.update({
+            'artifactWrites': 0,
+            'artifactPayloadBytes': 0,
+            'observationAttempts': 0,
+            'observationWrites': 0,
+            'observationPayloadBytes': 0,
+            'observationDeduplicated': 0,
+        })
+    observation = {
+        'environment': 'real',
+        'ticker': 'KXBTC15M-TEST',
+        'observation_key': 'KXBTC15M-TEST:123',
+        'observed_at': '2026-08-02T12:00:00Z',
+        'action': 'WAIT',
+        'side': 'YES',
+        'blocked_reasons': ['net_edge'],
+        'features': {'model': {'distanceBps': 4.2}},
+        'order_result': None,
+    }
+    try:
+        first = backend._kalshi_save_observation('user-a', observation)
+        duplicate = backend._kalshi_save_observation('user-a', {
+            **observation,
+            'features': {'model': {'distanceBps': 4.4}},
+        })
+        changed = backend._kalshi_save_observation('user-a', {
+            **observation,
+            'action': 'BUY_YES',
+            'blocked_reasons': [],
+            'order_result': {'order_id': 'order-1', 'status': 'filled'},
+        })
+        next_bucket = backend._kalshi_save_observation('user-a', {
+            **observation,
+            'observation_key': 'KXBTC15M-TEST:138',
+            'observed_at': '2026-08-02T12:00:15Z',
+        })
+        traffic = backend._kalshi_persistence_traffic_snapshot()
+
+        assert first['observation_key'] == observation['observation_key']
+        assert duplicate['persistenceDeduplicated'] is True
+        assert changed['action'] == 'BUY_YES'
+        assert next_bucket['observation_key'].endswith(':138')
+        assert len(store.rows) == 3
+        assert traffic['observationAttempts'] == 4
+        assert traffic['observationWrites'] == 3
+        assert traffic['observationDeduplicated'] == 1
+        assert traffic['observationDeduplicationPct'] == 25.0
+        assert traffic['estimatedOutboundPayloadBytes'] > 0
+    finally:
+        with backend._KALSHI_PERSISTENCE_TRAFFIC_LOCK:
+            backend._KALSHI_OBSERVATION_WRITE_CACHE.clear()
+            backend._KALSHI_OBSERVATION_WRITE_CACHE.update(original_cache)
+            backend._KALSHI_PERSISTENCE_TRAFFIC.clear()
+            backend._KALSHI_PERSISTENCE_TRAFFIC.update(original_stats)
+
+
 def test_short_topic_keywords_do_not_match_inside_unrelated_words():
     enriched = _market_intelligence_enrich_news({
         'headline': 'Markets shrug off political turmoil',

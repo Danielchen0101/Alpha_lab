@@ -7471,6 +7471,11 @@ def _background_thread_readiness_snapshot():
             kalshi = dict(kalshi_reader() or {})
         except Exception as exc:
             kalshi = {'required': True, 'healthy': False, 'lastError': type(exc).__name__}
+    persistence_traffic_reader = globals().get(
+        '_kalshi_persistence_traffic_snapshot'
+    )
+    if callable(persistence_traffic_reader):
+        kalshi['persistenceTraffic'] = persistence_traffic_reader()
     kalshi_required = bool(not api_only_disabled and kalshi.get('required'))
     kalshi_thread_healthy = bool(
         not kalshi_required or kalshi.get('healthy')
@@ -54621,6 +54626,33 @@ _KALSHI_ROBOT_ARTIFACT_TYPE = 'kalshi_robot_state'
 _KALSHI_PAPER_ARTIFACT_TYPE = 'kalshi_paper_account'
 _KALSHI_PORTFOLIO_DISPLAY_ARTIFACT_TYPE = 'kalshi_portfolio_display'
 _KALSHI_ARTIFACT_KEY = 'current'
+_KALSHI_PERSISTENCE_TRAFFIC_LOCK = threading.Lock()
+_KALSHI_OBSERVATION_WRITE_CACHE = {}
+_KALSHI_OBSERVATION_WRITE_CACHE_LIMIT = 4096
+_KALSHI_PERSISTENCE_TRAFFIC = {
+    'startedAt': datetime.now(timezone.utc).isoformat(),
+    'artifactWrites': 0,
+    'artifactPayloadBytes': 0,
+    'observationAttempts': 0,
+    'observationWrites': 0,
+    'observationPayloadBytes': 0,
+    'observationDeduplicated': 0,
+}
+
+
+def _kalshi_persistence_traffic_snapshot():
+    with _KALSHI_PERSISTENCE_TRAFFIC_LOCK:
+        snapshot = dict(_KALSHI_PERSISTENCE_TRAFFIC)
+    attempts = int(snapshot.get('observationAttempts') or 0)
+    deduplicated = int(snapshot.get('observationDeduplicated') or 0)
+    snapshot['estimatedOutboundPayloadBytes'] = int(
+        snapshot.get('artifactPayloadBytes') or 0
+    ) + int(snapshot.get('observationPayloadBytes') or 0)
+    snapshot['observationDeduplicationPct'] = round(
+        100.0 * deduplicated / attempts,
+        1,
+    ) if attempts else 0.0
+    return snapshot
 
 
 def _kalshi_load_artifact(user_id, artifact_type):
@@ -54641,7 +54673,7 @@ def _kalshi_save_artifact(user_id, artifact_type, payload):
     durable_payload = dict(payload)
     expected_version = durable_payload.pop('_operationsVersion', None)
     serialized = json.dumps(durable_payload, sort_keys=True, separators=(',', ':'), default=str)
-    return operations_store.put_artifact(
+    saved = operations_store.put_artifact(
         user_id,
         artifact_type,
         _KALSHI_ARTIFACT_KEY,
@@ -54651,6 +54683,12 @@ def _kalshi_save_artifact(user_id, artifact_type, payload):
         ),
         expected_version=expected_version,
     )
+    with _KALSHI_PERSISTENCE_TRAFFIC_LOCK:
+        _KALSHI_PERSISTENCE_TRAFFIC['artifactWrites'] += 1
+        _KALSHI_PERSISTENCE_TRAFFIC['artifactPayloadBytes'] += len(
+            serialized.encode('utf-8')
+        )
+    return saved
 
 
 def _kalshi_enabled_users():
@@ -54663,7 +54701,42 @@ def _kalshi_enabled_users():
 
 
 def _kalshi_save_observation(user_id, observation):
-    return operations_store.put_kalshi_observation(user_id, dict(observation))
+    row = dict(observation)
+    cache_key = '{}:{}:{}'.format(
+        str(user_id),
+        str(row.get('environment') or ''),
+        str(row.get('observation_key') or ''),
+    )
+    material_signature = json.dumps({
+        'action': row.get('action'),
+        'side': row.get('side'),
+        'executionIntent': row.get('execution_intent'),
+        'blockedReasons': list(row.get('blocked_reasons') or []),
+        'orderResult': row.get('order_result'),
+    }, sort_keys=True, separators=(',', ':'), default=str)
+    with _KALSHI_PERSISTENCE_TRAFFIC_LOCK:
+        _KALSHI_PERSISTENCE_TRAFFIC['observationAttempts'] += 1
+        if _KALSHI_OBSERVATION_WRITE_CACHE.get(cache_key) == material_signature:
+            _KALSHI_PERSISTENCE_TRAFFIC['observationDeduplicated'] += 1
+            return {
+                **row,
+                'persistenceDeduplicated': True,
+            }
+
+    saved = operations_store.put_kalshi_observation(user_id, row)
+    serialized = json.dumps(row, sort_keys=True, separators=(',', ':'), default=str)
+    with _KALSHI_PERSISTENCE_TRAFFIC_LOCK:
+        _KALSHI_OBSERVATION_WRITE_CACHE[cache_key] = material_signature
+        while len(_KALSHI_OBSERVATION_WRITE_CACHE) > _KALSHI_OBSERVATION_WRITE_CACHE_LIMIT:
+            _KALSHI_OBSERVATION_WRITE_CACHE.pop(
+                next(iter(_KALSHI_OBSERVATION_WRITE_CACHE)),
+                None,
+            )
+        _KALSHI_PERSISTENCE_TRAFFIC['observationWrites'] += 1
+        _KALSHI_PERSISTENCE_TRAFFIC['observationPayloadBytes'] += len(
+            serialized.encode('utf-8')
+        )
+    return saved
 
 
 _KALSHI_WORKER_OWNER = '{}:{}'.format(
