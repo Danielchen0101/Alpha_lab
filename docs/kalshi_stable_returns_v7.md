@@ -30,8 +30,10 @@ trades, so v7 applies a soft price/recovery penalty instead of banning them.
   edge per excess unit, capped at `2.0` percentage points. This is an adaptive
   premium, not a hard blocker.
 - A new position must remain on the same ticker and side for two consecutive
-  scheduler snapshots (default maximum gap 15 seconds). Browser refreshes do
-  not advance the durable confirmation streak.
+  scheduler snapshots. BTC15 uses a 25-second maximum gap, calibrated to the
+  production cycle's reference, order-book, and account-read latency; hourly
+  markets retain the generic 15-second gap. Browser refreshes do not advance
+  the durable confirmation streak.
 
 BTC 15-minute contracts use three stages:
 
@@ -71,8 +73,10 @@ zero available cash never falls back to a configured paper bankroll.
 - Profitable exits still require executable value after entry fee, exit fee,
   spread, and the configured value buffer.
 - An ordinary protective loss exit must persist for three durable scheduler
-  snapshots (default maximum gap 20 seconds). A true emergency loss exit is
-  immediate and is not delayed by confirmation.
+  snapshots. BTC15 uses a 30-second maximum gap so a persistent deterioration
+  can complete the streak despite normal production latency; hourly markets
+  retain the generic 20-second gap. A true emergency loss exit is immediate
+  and is not delayed by confirmation.
 - Every exit is a reduce-only sale of the held outcome. No complementary buy is
   treated as a close.
 - Fractional inventory, ownership, fresh account cash, open orders, and event

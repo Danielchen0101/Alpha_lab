@@ -1732,13 +1732,20 @@ def _protective_exit_confirmation(
             ),
         ),
     )
+    gap_setting = (
+        "btc15ProtectiveExitConfirmationMaxGapSeconds"
+        if _market_family(ticker) == "btc15m"
+        else "protectiveExitConfirmationMaxGapSeconds"
+    )
+    gap_default = 30.0 if gap_setting.startswith("btc15") else 20.0
+    gap_cap = 90.0 if gap_setting.startswith("btc15") else 60.0
     max_gap = max(
         10.0,
         min(
-            60.0,
+            gap_cap,
             _finite_number(
-                strategy_config.get("protectiveExitConfirmationMaxGapSeconds"),
-                20.0,
+                strategy_config.get(gap_setting),
+                gap_default,
             ),
         ),
     )
@@ -1842,13 +1849,19 @@ def _entry_confirmation(
             ),
         ),
     )
+    gap_setting = (
+        "btc15EntryConfirmationMaxGapSeconds"
+        if _market_family(ticker) == "btc15m"
+        else "entryConfirmationMaxGapSeconds"
+    )
+    gap_default = 25.0 if gap_setting.startswith("btc15") else 15.0
     max_gap = max(
         5.0,
         min(
             60.0,
             _finite_number(
-                strategy_config.get("entryConfirmationMaxGapSeconds"),
-                15.0,
+                strategy_config.get(gap_setting),
+                gap_default,
             ),
         ),
     )

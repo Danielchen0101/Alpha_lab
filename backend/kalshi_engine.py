@@ -103,8 +103,17 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "takerFeeRate": 0.07,
     "entryConfirmationSnapshots": 2,
     "entryConfirmationMaxGapSeconds": 15,
+    # BTC15 production cycles include reference, order-book, and account reads.
+    # Their observed cadence is slower and more variable than the five-second
+    # scheduler target, so use a family-specific window while still requiring
+    # two consecutive qualifying decisions.
+    "btc15EntryConfirmationMaxGapSeconds": 25,
     "protectiveExitConfirmations": 3,
     "protectiveExitConfirmationMaxGapSeconds": 20,
+    # Loss exits require three confirmations.  Give BTC15 enough wall-clock
+    # room to complete that streak without weakening the probability or
+    # executable-loss thresholds that authorize the exit.
+    "btc15ProtectiveExitConfirmationMaxGapSeconds": 30,
     "hourlyCandidatePenaltyWeight": 0.10,
     "executionPriceTolerance": 0.01,
     "exitProbabilityThreshold": 0.35,
@@ -218,8 +227,10 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
         "takerFeeRate": (0.0, 0.20),
         "entryConfirmationSnapshots": (1.0, 5.0),
         "entryConfirmationMaxGapSeconds": (5.0, 60.0),
+        "btc15EntryConfirmationMaxGapSeconds": (10.0, 60.0),
         "protectiveExitConfirmations": (2.0, 6.0),
         "protectiveExitConfirmationMaxGapSeconds": (10.0, 60.0),
+        "btc15ProtectiveExitConfirmationMaxGapSeconds": (15.0, 90.0),
         "hourlyCandidatePenaltyWeight": (0.0, 0.50),
         "executionPriceTolerance": (0.0, 0.03),
         "exitProbabilityThreshold": (0.10, 0.49),

@@ -859,8 +859,10 @@ def test_user_config_is_bounded_to_research_limits():
         "emergencyStopLossPct": 1,
         "entryConfirmationSnapshots": 99,
         "entryConfirmationMaxGapSeconds": 1,
+        "btc15EntryConfirmationMaxGapSeconds": 999,
         "protectiveExitConfirmations": 0,
         "protectiveExitConfirmationMaxGapSeconds": 999,
+        "btc15ProtectiveExitConfirmationMaxGapSeconds": 1,
         "hourlyCandidatePenaltyWeight": 5,
     })
 
@@ -883,8 +885,10 @@ def test_user_config_is_bounded_to_research_limits():
     assert config["emergencyStopLossPct"] == 0.15
     assert config["entryConfirmationSnapshots"] == 5
     assert config["entryConfirmationMaxGapSeconds"] == 5
+    assert config["btc15EntryConfirmationMaxGapSeconds"] == 60
     assert config["protectiveExitConfirmations"] == 2
     assert config["protectiveExitConfirmationMaxGapSeconds"] == 60
+    assert config["btc15ProtectiveExitConfirmationMaxGapSeconds"] == 15
     assert config["hourlyCandidatePenaltyWeight"] == pytest.approx(0.50)
 
 
@@ -914,7 +918,9 @@ def test_default_quality_floors_and_risk_scale_invariants():
     assert defaults["smallAccountRiskTargetPct"] == pytest.approx(1.50)
     assert defaults["recoveryMultipleTarget"] == pytest.approx(2.0)
     assert defaults["entryConfirmationSnapshots"] == 2
+    assert defaults["btc15EntryConfirmationMaxGapSeconds"] == 25
     assert defaults["protectiveExitConfirmations"] == 3
+    assert defaults["btc15ProtectiveExitConfirmationMaxGapSeconds"] == 30
     assert defaults["hourlyCandidatePenaltyWeight"] == pytest.approx(0.10)
     assert malformed_fractional["fractionalContractSizingEnabled"] is True
     assert defaults["maxPortfolioExposurePct"] == pytest.approx(10.0)
