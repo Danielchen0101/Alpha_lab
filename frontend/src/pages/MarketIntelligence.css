@@ -1,4 +1,4 @@
-.market-intelligence {
+.market-intelligence-page {
   --mi-ink: var(--text-primary, #17212b);
   --mi-muted: var(--text-secondary, #667584);
   --mi-line: var(--border-color, rgba(105, 123, 139, .2));
@@ -13,7 +13,7 @@
   color: var(--mi-ink);
 }
 
-:root[data-theme="dark"] .market-intelligence {
+:root[data-theme="dark"] .market-intelligence-page {
   --mi-ink: #edf3f7;
   --mi-muted: #9aaab8;
   --mi-line: rgba(151, 172, 190, .19);
@@ -174,7 +174,7 @@
 }
 
 @media (max-width: 700px) {
-  .market-intelligence { padding: 20px 14px 48px; }
+  .market-intelligence-page { padding: 20px 14px 48px; }
   .mi-header { align-items: flex-start; padding: 22px; }
   .mi-refresh-control { align-items: flex-end; flex-direction: column; }
   .mi-refresh-control > small { display: none; }

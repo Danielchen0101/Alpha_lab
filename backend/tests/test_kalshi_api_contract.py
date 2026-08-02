@@ -468,6 +468,36 @@ def test_hourly_held_market_settlement_gap_is_standby_not_failure_or_alert():
     )
 
 
+def test_hourly_public_rate_limit_is_standby_not_failure_or_alert():
+    notifications = []
+    controller = object.__new__(_PaperRobotController)
+    controller._runtime_lock = threading.RLock()
+    controller._loop_last_error = ""
+    controller._loop_error_counts = {}
+    controller._loop_alerted = set()
+    controller._market_standby = {}
+    controller.safe_print = lambda *_args, **_kwargs: None
+    controller._notify = lambda *args, **kwargs: notifications.append((args, kwargs))
+
+    controller._record_loop_failure(
+        "user-1",
+        "btchourly",
+        "real",
+        KalshiApiError(
+            "Kalshi public market data is temporarily rate limited",
+            status=503,
+            code=kalshi_api.KALSHI_PUBLIC_RATE_LIMITED,
+        ),
+    )
+
+    assert controller._loop_error_counts == {}
+    assert controller._loop_alerted == set()
+    assert controller._market_standby["user-1:btchourly"]["reason"] == (
+        kalshi_api.KALSHI_PUBLIC_RATE_LIMITED
+    )
+    assert notifications == []
+
+
 def test_kalshi_nested_error_detail_preserves_exchange_reason():
     response = _StatusResponse(
         {

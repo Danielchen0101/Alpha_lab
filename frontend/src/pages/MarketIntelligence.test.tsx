@@ -1,8 +1,9 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { StaticRouter } from 'react-router-dom/server';
-import { CalendarView } from './MarketIntelligence';
-import type { MarketCalendarResponse } from '../services/marketIntelligenceService';
+import { CalendarView, marketIntelligenceRefreshTimestamp } from './MarketIntelligence';
+import type { MarketRiskSnapshotResponse } from '../services/marketDataService';
+import type { MarketCalendarResponse, MarketNewsResponse } from '../services/marketIntelligenceService';
 
 const copy = {
   calendarTitle: '未来 30 天事件日历', economic: '公共宏观事件', macroEvents: '项宏观事件',
@@ -53,5 +54,16 @@ describe('MarketIntelligence CalendarView', () => {
     expect(view).toContain('08:30 ET');
     expect(view).toContain('U.S. Bureau of Labor Statistics');
     expect(view).toContain('未来暂无财报');
+  });
+
+  it('uses the active view response time instead of a stale market as-of date', () => {
+    const pulse = {
+      asOf: '2026-08-01',
+      generatedAt: '2026-08-02T20:15:00Z',
+    } as MarketRiskSnapshotResponse;
+    const news = { generatedAt: '2026-08-02T20:20:00Z' } as MarketNewsResponse;
+
+    expect(marketIntelligenceRefreshTimestamp('pulse', pulse, null, null)).toBe('2026-08-02T20:15:00Z');
+    expect(marketIntelligenceRefreshTimestamp('news', pulse, news, null)).toBe('2026-08-02T20:20:00Z');
   });
 });

@@ -60,9 +60,13 @@ KALSHI_PUBLIC_FALLBACK_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 KALSHI_PUBLIC_BASES = (KALSHI_PUBLIC_BASE, KALSHI_PUBLIC_FALLBACK_BASE)
 KALSHI_NO_ACTIVE_HOURLY_MARKET = "kalshi_no_active_hourly_market"
 KALSHI_HOURLY_HELD_MARKET_UNAVAILABLE = "kalshi_hourly_held_market_unavailable"
+KALSHI_PUBLIC_RATE_LIMITED = "kalshi_public_rate_limited"
+KALSHI_HOURLY_LOOP_INTERVAL_SECONDS = 15.0
+KALSHI_HOURLY_RATE_LIMIT_BACKOFF_SECONDS = 60.0
 KALSHI_HOURLY_STANDBY_CODES = frozenset({
     KALSHI_NO_ACTIVE_HOURLY_MARKET,
     KALSHI_HOURLY_HELD_MARKET_UNAVAILABLE,
+    KALSHI_PUBLIC_RATE_LIMITED,
 })
 KALSHI_EXECUTION_BLOCKING_WARNINGS = frozenset({
     "kalshi_market_stale",
@@ -3606,7 +3610,7 @@ class _PublicDataClient:
                 ),
                 status=503,
                 code=(
-                    "kalshi_public_rate_limited"
+                    KALSHI_PUBLIC_RATE_LIMITED
                     if rate_limited
                     else "kalshi_public_data_unavailable"
                 ),
@@ -7926,14 +7930,26 @@ class _PaperRobotController:
                     self.tick(user_id, submit_order=True, mode=mode, family="btc15m")
                     self._record_loop_success(user_id, "btc15m", mode)
                     now_monotonic = time.monotonic()
-                    if now_monotonic - self._last_hourly_tick.get(str(user_id), 0.0) >= 5.0:
+                    if (
+                        now_monotonic - self._last_hourly_tick.get(str(user_id), 0.0)
+                        >= KALSHI_HOURLY_LOOP_INTERVAL_SECONDS
+                    ):
+                        next_hourly_tick_base = now_monotonic
                         try:
                             self.tick(user_id, submit_order=True, mode=mode, family="btchourly")
                             self._record_loop_success(user_id, "btchourly", mode)
                         except Exception as exc:
                             self._record_loop_failure(user_id, "btchourly", mode, exc)
+                            if (
+                                isinstance(exc, KalshiApiError)
+                                and exc.code == KALSHI_PUBLIC_RATE_LIMITED
+                            ):
+                                next_hourly_tick_base += (
+                                    KALSHI_HOURLY_RATE_LIMIT_BACKOFF_SECONDS
+                                    - KALSHI_HOURLY_LOOP_INTERVAL_SECONDS
+                                )
                         finally:
-                            self._last_hourly_tick[str(user_id)] = now_monotonic
+                            self._last_hourly_tick[str(user_id)] = next_hourly_tick_base
                 except Exception as exc:
                     self._record_loop_failure(user_id, "btc15m", mode, exc)
 
