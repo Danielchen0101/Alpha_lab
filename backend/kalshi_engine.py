@@ -102,7 +102,10 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "maxAllInFeeToPotentialProfitPct": 20.0,
     "takerFeeRate": 0.07,
     "entryConfirmationSnapshots": 2,
-    "entryConfirmationMaxGapSeconds": 15,
+    # The hourly robot runs every 15 seconds.  Leave enough room for the
+    # market/reference/account request latency so two genuinely consecutive
+    # scheduler decisions can confirm instead of resetting at ~16 seconds.
+    "entryConfirmationMaxGapSeconds": 25,
     # BTC15 production cycles include reference, order-book, and account reads.
     # Their observed cadence is slower and more variable than the five-second
     # scheduler target, so use a family-specific window while still requiring

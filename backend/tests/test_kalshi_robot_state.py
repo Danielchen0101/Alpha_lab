@@ -249,6 +249,7 @@ def test_every_configure_enforces_safety_floors_and_preserves_stricter_values(tm
         "fractionalKelly": 0.50,
         "maxPortfolioExposurePct": 50.0,
         "maxSingleMarketExposurePct": 20.0,
+        "entryConfirmationMaxGapSeconds": 5,
         "minimumAddIntervalSeconds": 10,
         "minimumHoldSeconds": 1,
         "reversalCooldownSeconds": 1,
@@ -264,6 +265,7 @@ def test_every_configure_enforces_safety_floors_and_preserves_stricter_values(tm
     assert floored["config"]["fractionalKelly"] == 0.15
     assert floored["config"]["maxPortfolioExposurePct"] == 10.0
     assert floored["config"]["maxSingleMarketExposurePct"] == 2.0
+    assert floored["config"]["entryConfirmationMaxGapSeconds"] == 25.0
     assert floored["config"]["microPositionMaxLossDollars"] == 1.0
     assert floored["config"]["microPositionMaxLossPct"] == 5.0
     assert floored["config"]["microPositionMinNetEdge"] == 0.02
@@ -282,11 +284,13 @@ def test_every_configure_enforces_safety_floors_and_preserves_stricter_values(tm
         "minNetEdge": 0.03,
         "minConservativeEdge": 0.02,
         "maxPrice": 0.84,
+        "entryConfirmationMaxGapSeconds": 30,
     })
     assert stricter["config"]["minModelProbability"] == 0.72
     assert stricter["config"]["minNetEdge"] == 0.03
     assert stricter["config"]["minConservativeEdge"] == 0.02
     assert stricter["config"]["maxPrice"] == 0.84
+    assert stricter["config"]["entryConfirmationMaxGapSeconds"] == 30
     assert (
         stricter["config"]["fullRiskModelProbability"]
         >= stricter["config"]["minModelProbability"] + 0.01
