@@ -50,6 +50,8 @@ export interface EarningsEvent {
   revenueActual?: number | null;
   quarter?: number;
   year?: number;
+  dateStatus?: 'provider_scheduled' | 'estimated' | string;
+  source?: string;
 }
 
 export interface EconomicEvent {
@@ -65,6 +67,9 @@ export interface EconomicEvent {
   actual?: string | number | null;
   forecast?: string | number | null;
   previous?: string | number | null;
+  unit?: string | null;
+  valueStatus?: 'available' | 'not_available' | string;
+  valueSource?: string;
 }
 
 export interface NormalizedEconomicEvent extends EconomicEvent {
@@ -101,6 +106,11 @@ export interface MarketNewsResponse {
     model?: string;
     eligibleCount: number;
     analyzedCount: number;
+    pendingCount?: number;
+    jobStarted?: boolean;
+    pollAfterSeconds?: number | null;
+    lastAttemptAt?: string | null;
+    lastSuccessAt?: string | null;
     errors?: string[];
   };
 }
@@ -110,6 +120,16 @@ export interface MarketCalendarResponse {
   earnings: EarningsEvent[];
   earningsCount: number;
   earningsScope: 'watchlist';
+  earningsCoverage?: {
+    status: string;
+    requestedSymbols: number;
+    symbolsWithEvents: string[];
+    symbolsWithoutEvents: string[];
+    errors?: string[];
+    windowStart?: string;
+    windowEnd?: string;
+    method?: string;
+  };
   watchlistSymbols: string[];
   watchlistCount: number;
   watchlistStatus: 'ready' | 'empty' | 'unavailable';
@@ -120,6 +140,7 @@ export interface MarketCalendarResponse {
     message: string;
     cache?: { status?: string; ageSeconds?: number };
     sourceStatus?: Record<string, { status: string; eventCount?: number; source?: string; error?: string }>;
+    values?: { status: string; matchedEvents?: number; availableEvents?: number; error?: string | null };
   };
   sources: string[];
   errors: string[];

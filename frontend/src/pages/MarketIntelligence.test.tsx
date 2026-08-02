@@ -13,6 +13,8 @@ const copy = {
   noEarnings: '未来暂无财报', before: '盘前', after: '盘后', estimate: '预期 EPS', revenue: '预期营收',
   showAll: '显示全部', collapse: '收起',
   nextCatalyst: '下一个高影响事件',
+  allEvents: '按日期排列的全部事件', scheduled: '数据源日程', actualPending: '待公布', noConsensus: '暂无共识', noPrevious: '暂无数据',
+  earningsCoverage: '财报覆盖', noDateInWindow: '其余股票在当前窗口内暂无数据源日程', valuesPlanRequired: '套餐不含宏观一致预期',
 };
 
 const calendar: MarketCalendarResponse = {

@@ -283,6 +283,83 @@ def test_empty_watchlist_skips_all_earnings():
     ) == []
 
 
+def test_watchlist_earnings_queries_each_symbol_instead_of_capped_global_calendar(monkeypatch):
+    class Response:
+        status_code = 200
+        content = b'{}'
+
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+        def json(self):
+            return {'earningsCalendar': [{
+                'date': (backend.datetime.now(backend.ZoneInfo('America/New_York')).date() + backend.timedelta(days=2)).isoformat(),
+                'symbol': self.symbol,
+                'hour': 'amc',
+                'epsEstimate': 1.25,
+            }]}
+
+    requested = []
+
+    def fake_get(_url, params=None, **_kwargs):
+        requested.append(params['symbol'])
+        return Response(params['symbol'])
+
+    monkeypatch.setattr(backend.requests, 'get', fake_get)
+    events, coverage = backend._market_intelligence_fetch_watchlist_earnings(
+        {'api_key': 'test', 'base_url': 'https://example.test'},
+        ['AMD', 'NVDA'],
+        days_forward=30,
+        force_refresh=True,
+    )
+
+    assert sorted(requested) == ['AMD', 'NVDA']
+    assert [event['symbol'] for event in events] == ['AMD', 'NVDA']
+    assert coverage['symbolsWithEvents'] == ['AMD', 'NVDA']
+    assert coverage['method'] == 'per_symbol'
+
+
+def test_news_ai_analyzes_each_article_separately_to_avoid_truncated_batches(monkeypatch):
+    saved = {}
+    calls = []
+    monkeypatch.setattr(backend, '_market_news_ai_state', lambda _uid: {})
+    monkeypatch.setattr(backend, '_market_news_save_ai_state', lambda _uid, state: saved.update(state) or True)
+    monkeypatch.setattr(
+        backend,
+        'resolve_ai_config_for_user',
+        lambda _uid: ({'apiKey': 'test', 'provider': 'DeepSeek', 'model': 'deepseek-v4-flash'}, 'test'),
+    )
+    monkeypatch.setattr(backend.operations_store, 'claim_worker_lease', lambda *_args, **_kwargs: True)
+
+    def fake_ai(_cfg, _system, user_prompt):
+        article = backend.json.loads(user_prompt)['articles'][0]
+        calls.append(article['id'])
+        return {'analyses': [{
+            'id': article['id'],
+            'headlineZh': '中文标题',
+            'analysisEn': 'The event may affect the supplied ticker, subject to confirmation.',
+            'analysisZh': '该事件可能影响所列股票，仍需市场确认。',
+            'marketImpactEn': 'Watch the initial price and volume response.',
+            'marketImpactZh': '关注开盘后的价格与成交量反应。',
+            'confidence': 72,
+            'affectedStocks': [],
+        }]}, None
+
+    monkeypatch.setattr(backend, '_inst_call_ai_trader', fake_ai)
+    articles = [backend._market_intelligence_enrich_news({
+        'headline': 'Federal Reserve interest rate decision %s' % index,
+        'summary': 'Markets react to the decision.',
+        'symbols': ['SPY'],
+    }) for index in range(3)]
+
+    enriched, status = backend._market_news_ai_enrich('user-ai', articles, notify=False, run_ai=True)
+
+    assert len(calls) == 3
+    assert status['analyzedCount'] == 3
+    assert all(article['aiAnalysis']['status'] == 'ready' for article in enriched)
+    assert len(saved['analyses']) == 3
+
+
 def test_official_ics_calendar_unfolds_titles_and_converts_to_eastern_time():
     events = _market_calendar_parse_ics(
         """BEGIN:VCALENDAR
@@ -432,11 +509,18 @@ def test_calendar_endpoint_combines_watchlist_earnings_with_public_macro_events(
     monkeypatch.setattr(backend, 'resolve_finnhub_config_strict_user', lambda: ({'api_key': 'test'}, 'ok'))
     monkeypatch.setattr(
         backend,
-        '_inst_fetch_finnhub_earnings_calendar',
-        lambda *_args, **_kwargs: ({'earningsCalendar': [
+        '_market_intelligence_fetch_watchlist_earnings',
+        lambda *_args, **_kwargs: ([
             {'date': '2026-08-10', 'symbol': 'AAPL', 'hour': 'amc'},
-            {'date': '2026-08-11', 'symbol': 'MSFT', 'hour': 'amc'},
-        ]}, None),
+        ], {
+            'status': 'ready', 'requestedSymbols': 1,
+            'symbolsWithEvents': ['AAPL'], 'symbolsWithoutEvents': [], 'errors': [],
+        }),
+    )
+    monkeypatch.setattr(
+        backend,
+        '_market_intelligence_enrich_economic_values',
+        lambda events, *_args, **_kwargs: (events, {'status': 'plan_required', 'matchedEvents': 0, 'error': None}),
     )
     monkeypatch.setattr(
         backend,
@@ -462,4 +546,5 @@ def test_calendar_endpoint_combines_watchlist_earnings_with_public_macro_events(
     assert payload['watchlistSymbols'] == ['AAPL']
     assert payload['economicEvents'][0]['name'] == 'Employment Situation (Nonfarm Payrolls)'
     assert payload['economicCalendar']['status'] == 'ready'
-    assert payload['sources'] == ['Finnhub /calendar/earnings', 'U.S. Bureau of Labor Statistics']
+    assert payload['earningsCoverage']['symbolsWithEvents'] == ['AAPL']
+    assert payload['sources'] == ['Finnhub per-symbol earnings calendar', 'U.S. Bureau of Labor Statistics']

@@ -18044,28 +18044,52 @@ def _market_news_ai_state(uid):
 
 
 def _market_news_save_ai_state(uid, state):
-    analyses = state.get('analyses') if isinstance(state.get('analyses'), dict) else {}
-    ordered = sorted(
-        analyses.items(),
-        key=lambda item: _safe_str((item[1] or {}).get('analyzedAt')),
-        reverse=True,
-    )[:_MARKET_NEWS_AI_MAX_STORED]
-    payload = {
-        'schemaVersion': 1,
-        'analyses': dict(ordered),
-        'updatedAt': datetime.now(timezone.utc).isoformat(),
-    }
-    serialized = json.dumps(payload, sort_keys=True, separators=(',', ':'), default=str)
-    try:
-        operations_store.put_artifact(
-            uid,
-            _MARKET_NEWS_AI_ARTIFACT_TYPE,
-            _MARKET_NEWS_AI_ARTIFACT_KEY,
-            payload=payload,
-            idempotency_key=hashlib.sha256(('market-news-ai:%s:%s' % (uid, serialized)).encode('utf-8')).hexdigest(),
-        )
-    except Exception as exc:
-        safe_print('[MarketNewsAI] state write failed: %s' % exc)
+    """Merge AI results into the durable cache without losing another worker's batch."""
+    requested_analyses = state.get('analyses') if isinstance(state.get('analyses'), dict) else {}
+    requested_errors = state.get('errors') if isinstance(state.get('errors'), dict) else {}
+    for attempt in range(3):
+        try:
+            current = operations_store.get_artifact(
+                uid, _MARKET_NEWS_AI_ARTIFACT_TYPE, _MARKET_NEWS_AI_ARTIFACT_KEY,
+            )
+            current_payload = deepcopy((current or {}).get('payload') or {})
+            merged_analyses = dict(current_payload.get('analyses') or {})
+            merged_analyses.update(requested_analyses)
+            ordered = sorted(
+                merged_analyses.items(),
+                key=lambda item: _safe_str((item[1] or {}).get('analyzedAt')),
+                reverse=True,
+            )[:_MARKET_NEWS_AI_MAX_STORED]
+            merged_errors = dict(current_payload.get('errors') or {})
+            merged_errors.update(requested_errors)
+            for fingerprint in requested_analyses:
+                merged_errors.pop(fingerprint, None)
+            payload = {
+                'schemaVersion': 2,
+                'analyses': dict(ordered),
+                'errors': dict(list(merged_errors.items())[-100:]),
+                'lastAttemptAt': state.get('lastAttemptAt') or current_payload.get('lastAttemptAt'),
+                'lastSuccessAt': state.get('lastSuccessAt') or current_payload.get('lastSuccessAt'),
+                'updatedAt': datetime.now(timezone.utc).isoformat(),
+            }
+            serialized = json.dumps(payload, sort_keys=True, separators=(',', ':'), default=str)
+            operations_store.put_artifact(
+                uid,
+                _MARKET_NEWS_AI_ARTIFACT_TYPE,
+                _MARKET_NEWS_AI_ARTIFACT_KEY,
+                payload=payload,
+                idempotency_key=hashlib.sha256(('market-news-ai:%s:%s' % (uid, serialized)).encode('utf-8')).hexdigest(),
+                expected_version=int((current or {}).get('version') or 0),
+            )
+            return True
+        except OperationsVersionConflict:
+            if attempt < 2:
+                continue
+            safe_print('[MarketNewsAI] state write failed: version_conflict')
+        except Exception as exc:
+            safe_print('[MarketNewsAI] state write failed: %s' % exc)
+            break
+    return False
 
 
 def _market_news_normalize_analysis(raw, article, ai_cfg):
@@ -18134,6 +18158,7 @@ def _market_news_ai_enrich(uid, articles, *, notify=True, run_ai=True):
             candidates.append(article)
 
     errors = []
+    durable_errors = state.get('errors') if isinstance(state.get('errors'), dict) else {}
     if run_ai and candidates and ai_cfg.get('apiKey'):
         try:
             owns_ai_lease = operations_store.claim_worker_lease(
@@ -18147,18 +18172,20 @@ def _market_news_ai_enrich(uid, articles, *, notify=True, run_ai=True):
             errors.append('ai_lease_%s' % str(exc)[:100])
         if not owns_ai_lease:
             candidates = []
-        for offset in range(0, min(len(candidates), 24), 8):
-            batch = candidates[offset:offset + 8]
-            request_rows = [{
-                'id': item['newsFingerprint'],
-                'headline': item.get('headline'),
-                'summary': _inst_trim_text(item.get('summary'), 700),
-                'source': item.get('source'),
-                'topic': item.get('topic'),
-                'impactLevel': item.get('impactLevel'),
-                'sentiment': item.get('sentiment'),
-                'affectedSymbols': item.get('symbols') or [],
-            } for item in batch]
+        # Analyze one article per request. The former eight-article response could
+        # exhaust the model's output budget and leave a truncated JSON document;
+        # one malformed batch then discarded every article in that batch.
+        for article in candidates[:24]:
+            request_row = {
+                'id': article['newsFingerprint'],
+                'headline': article.get('headline'),
+                'summary': _inst_trim_text(article.get('summary'), 700),
+                'source': article.get('source'),
+                'topic': article.get('topic'),
+                'impactLevel': article.get('impactLevel'),
+                'sentiment': article.get('sentiment'),
+                'affectedSymbols': article.get('symbols') or [],
+            }
             system_prompt = (
                 'You are AlphaLab Market News Intelligence. Analyze only the supplied facts; do not invent prices, '
                 'earnings numbers, quotations, or affected tickers. Return one JSON object with an analyses array. '
@@ -18166,22 +18193,43 @@ def _market_news_ai_enrich(uid, articles, *, notify=True, run_ai=True):
                 'marketImpactZh, confidence (0-100), and affectedStocks. Each affectedStocks item must use only an '
                 'affectedSymbols ticker and contain symbol, direction (positive/negative/mixed), impactType '
                 '(direct/sector/macro/sympathy), horizon (intraday/short_term/medium_term), confidence, whyEn, whyZh. '
+                'The analyses array must contain exactly one item. Keep each narrative below 90 words. '
                 'Be concise, professional, bilingual, and explicitly state uncertainty.'
             )
-            parsed, error = _inst_call_ai_trader(ai_cfg, system_prompt, json.dumps({'articles': request_rows}, separators=(',', ':'), default=str))
+            parsed, error = _inst_call_ai_trader(
+                ai_cfg,
+                system_prompt,
+                json.dumps({'articles': [request_row]}, separators=(',', ':'), default=str),
+            )
             if error or not isinstance(parsed, dict):
-                errors.append(str(error or 'invalid_ai_response')[:160])
+                message = str(error or 'invalid_ai_response')[:160]
+                errors.append(message)
+                durable_errors[article['newsFingerprint']] = {
+                    'error': message,
+                    'attemptedAt': datetime.now(timezone.utc).isoformat(),
+                }
                 continue
             returned = {
                 _safe_str(item.get('id')): item
                 for item in (parsed.get('analyses') or [])
                 if isinstance(item, dict) and item.get('id')
             }
-            for article in batch:
-                raw = returned.get(article['newsFingerprint'])
-                if raw:
-                    analyses[article['newsFingerprint']] = _market_news_normalize_analysis(raw, article, ai_cfg)
+            raw = returned.get(article['newsFingerprint'])
+            if not raw or not _safe_str(raw.get('analysisEn')) or not _safe_str(raw.get('analysisZh')):
+                message = 'ai_response_missing_required_analysis'
+                errors.append(message)
+                durable_errors[article['newsFingerprint']] = {
+                    'error': message,
+                    'attemptedAt': datetime.now(timezone.utc).isoformat(),
+                }
+                continue
+            analyses[article['newsFingerprint']] = _market_news_normalize_analysis(raw, article, ai_cfg)
+            durable_errors.pop(article['newsFingerprint'], None)
         state['analyses'] = analyses
+        state['errors'] = durable_errors
+        state['lastAttemptAt'] = datetime.now(timezone.utc).isoformat()
+        if any(article.get('newsFingerprint') in analyses for article in candidates):
+            state['lastSuccessAt'] = state['lastAttemptAt']
         _market_news_save_ai_state(uid, state)
 
     for article in articles:
@@ -18221,6 +18269,9 @@ def _market_news_ai_enrich(uid, articles, *, notify=True, run_ai=True):
         'model': _safe_str(ai_cfg.get('model')),
         'eligibleCount': sum(1 for item in articles if item.get('impactLevel') in ('High', 'Critical')),
         'analyzedCount': sum(1 for item in articles if (item.get('aiAnalysis') or {}).get('status') == 'ready'),
+        'pendingCount': sum(1 for item in articles if (item.get('aiAnalysis') or {}).get('status') == 'pending'),
+        'lastAttemptAt': state.get('lastAttemptAt'),
+        'lastSuccessAt': state.get('lastSuccessAt'),
         'errors': errors,
     }
 
@@ -18602,8 +18653,11 @@ def trade_intelligence_news():
             force_refresh=force_refresh,
         )
         articles, ai_status = _market_news_ai_enrich(user['id'], articles, notify=False, run_ai=False)
+        ai_job_started = False
         if ai_status.get('configured') and ai_status.get('analyzedCount', 0) < ai_status.get('eligibleCount', 0):
-            _market_news_schedule_ai(user['id'], articles)
+            ai_job_started = _market_news_schedule_ai(user['id'], articles)
+        ai_status['jobStarted'] = bool(ai_job_started)
+        ai_status['pollAfterSeconds'] = 6 if ai_status.get('pendingCount') else None
         return jsonify({
             'success': True,
             'articles': articles,
@@ -18655,6 +18709,91 @@ def _market_intelligence_filter_watchlist_earnings(events, watchlist_symbols):
         deduped.values(),
         key=lambda event: (_safe_str(event.get('date')), _safe_str(event.get('symbol'))),
     )
+
+
+def _market_intelligence_fetch_watchlist_earnings(
+    finnhub_cfg,
+    watchlist_symbols,
+    *,
+    days_forward=30,
+    force_refresh=False,
+):
+    """Query Finnhub per symbol so its capped global calendar cannot omit Watchlist names."""
+    symbols = _market_intelligence_watchlist_symbols({'symbols': watchlist_symbols})[:60]
+    if not symbols or not finnhub_cfg or not finnhub_cfg.get('api_key'):
+        return [], {
+            'status': 'not_configured' if symbols else 'empty_watchlist',
+            'requestedSymbols': len(symbols),
+            'symbolsWithEvents': [],
+            'symbolsWithoutEvents': symbols,
+            'errors': [],
+        }
+    start_date = datetime.now(ZoneInfo('America/New_York')).date()
+    end_date = start_date + timedelta(days=max(7, min(int(days_forward or 30), 90)))
+    cache_seed = ','.join(symbols)
+    cache_key = 'market_watchlist_earnings_%s_%s_%s' % (
+        hashlib.sha256(cache_seed.encode('utf-8')).hexdigest()[:16],
+        start_date.isoformat(), end_date.isoformat(),
+    )
+    cached = None if force_refresh else stock_cache.get(cache_key)
+    if isinstance(cached, dict):
+        return deepcopy(cached.get('events') or []), deepcopy(cached.get('coverage') or {})
+
+    base_url = finnhub_cfg.get('base_url', 'https://finnhub.io/api/v1').rstrip('/')
+    api_key = finnhub_cfg.get('api_key')
+
+    def fetch_symbol(symbol):
+        try:
+            response = requests.get(
+                '%s/calendar/earnings' % base_url,
+                params={
+                    'from': start_date.isoformat(),
+                    'to': end_date.isoformat(),
+                    'symbol': symbol,
+                    'token': api_key,
+                },
+                timeout=(3.05, 12),
+            )
+            if response.status_code != 200:
+                return symbol, [], 'http_%s' % response.status_code
+            payload = response.json() if response.content else {}
+            rows = payload.get('earningsCalendar') if isinstance(payload, dict) else []
+            return symbol, rows if isinstance(rows, list) else [], None
+        except Exception as exc:
+            return symbol, [], type(exc).__name__
+
+    raw_events = []
+    errors = []
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(symbols)))) as executor:
+        futures = [executor.submit(fetch_symbol, symbol) for symbol in symbols]
+        for future in as_completed(futures):
+            symbol, rows, error = future.result()
+            if error:
+                errors.append('%s_%s' % (symbol, error))
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                event = dict(row)
+                event['symbol'] = _inst_clean_symbol(event.get('symbol') or symbol)
+                event['dateStatus'] = 'provider_scheduled'
+                event['source'] = 'Finnhub per-symbol earnings calendar'
+                raw_events.append(event)
+
+    events = _market_intelligence_filter_watchlist_earnings(raw_events, symbols)
+    with_events = sorted({_inst_clean_symbol(event.get('symbol')) for event in events})
+    coverage = {
+        'status': 'ready' if not errors else 'partial',
+        'requestedSymbols': len(symbols),
+        'symbolsWithEvents': with_events,
+        'symbolsWithoutEvents': [symbol for symbol in symbols if symbol not in set(with_events)],
+        'errors': errors,
+        'windowStart': start_date.isoformat(),
+        'windowEnd': end_date.isoformat(),
+        'method': 'per_symbol',
+    }
+    stock_cache.set(cache_key, {'events': events, 'coverage': coverage})
+    return events, coverage
 
 
 _MARKET_ECONOMIC_CALENDAR_CACHE = {}
@@ -19091,6 +19230,113 @@ def _market_intelligence_official_economic_events(days_forward=30, force_refresh
     }
 
 
+def _market_intelligence_enrich_economic_values(
+    events, finnhub_cfg, *, days_forward=30, force_refresh=False,
+):
+    """Add consensus/actual/previous values when the configured Finnhub plan exposes them.
+
+    Official agency calendars remain authoritative for event dates. Finnhub is
+    only a secondary values layer and a plan denial is returned explicitly so
+    the UI can explain why consensus fields are unavailable.
+    """
+    rows = [dict(event) for event in (events or []) if isinstance(event, dict)]
+    if not rows or not finnhub_cfg or not finnhub_cfg.get('api_key'):
+        return rows, {'status': 'not_configured', 'matchedEvents': 0, 'error': None}
+    eastern = ZoneInfo('America/New_York')
+    start_date = datetime.now(eastern).date()
+    end_date = start_date + timedelta(days=max(7, min(int(days_forward or 30), 90)))
+    credential_scope = hashlib.sha256(_safe_str(finnhub_cfg.get('api_key')).encode('utf-8')).hexdigest()[:10]
+    cache_key = 'market_economic_values_%s_%s_%s' % (
+        credential_scope, start_date.isoformat(), end_date.isoformat(),
+    )
+    cached = None if force_refresh else stock_cache.get(cache_key)
+    if isinstance(cached, dict):
+        value_rows = cached.get('rows') or []
+        cached_status = cached.get('status') or {}
+        if not value_rows:
+            return rows, deepcopy(cached_status)
+    else:
+        value_rows = None
+    try:
+        if value_rows is None:
+            response = requests.get(
+                '%s/calendar/economic' % finnhub_cfg.get('base_url', 'https://finnhub.io/api/v1').rstrip('/'),
+                params={
+                    'from': start_date.isoformat(),
+                    'to': end_date.isoformat(),
+                    'token': finnhub_cfg.get('api_key'),
+                },
+                timeout=(3.05, 12),
+            )
+            if response.status_code == 403:
+                status = {'status': 'plan_required', 'matchedEvents': 0, 'error': 'finnhub_economic_calendar_plan_required'}
+                stock_cache.set(cache_key, {'rows': [], 'status': status})
+                return rows, status
+            if response.status_code != 200:
+                return rows, {'status': 'unavailable', 'matchedEvents': 0, 'error': 'finnhub_economic_http_%s' % response.status_code}
+            payload = response.json() if response.content else {}
+            value_rows = payload.get('economicCalendar') if isinstance(payload, dict) else []
+            if not isinstance(value_rows, list):
+                value_rows = []
+    except Exception as exc:
+        return rows, {'status': 'unavailable', 'matchedEvents': 0, 'error': 'finnhub_economic_%s' % type(exc).__name__}
+
+    def tokens(value):
+        ignored = {'the', 'and', 'of', 'us', 'u', 's', 'index', 'report', 'release'}
+        return {
+            token for token in re.findall(r'[a-z0-9]+', _safe_str(value).lower())
+            if len(token) > 2 and token not in ignored
+        }
+
+    candidates_by_date = {}
+    for item in value_rows:
+        if not isinstance(item, dict):
+            continue
+        country = _safe_str(item.get('country')).upper()
+        if country and country not in {'US', 'USA', 'UNITED STATES'}:
+            continue
+        raw_time = _safe_str(item.get('time') or item.get('date'))
+        date_key = raw_time[:10]
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', date_key):
+            candidates_by_date.setdefault(date_key, []).append(item)
+
+    matched = 0
+    for event in rows:
+        event_tokens = tokens(event.get('name'))
+        best = None
+        best_score = 0.0
+        for candidate in candidates_by_date.get(_safe_str(event.get('date'))[:10], []):
+            candidate_tokens = tokens(candidate.get('event') or candidate.get('name'))
+            if not event_tokens or not candidate_tokens:
+                continue
+            overlap = len(event_tokens & candidate_tokens)
+            score = overlap / max(1, min(len(event_tokens), len(candidate_tokens)))
+            if overlap >= 1 and score > best_score:
+                best, best_score = candidate, score
+        if best is None or best_score < 0.34:
+            event['valueStatus'] = 'not_available'
+            continue
+        event.update({
+            'actual': best.get('actual'),
+            'forecast': best.get('estimate') if best.get('estimate') is not None else best.get('forecast'),
+            'previous': best.get('prev') if best.get('prev') is not None else best.get('previous'),
+            'unit': best.get('unit'),
+            'valueStatus': 'available',
+            'valueSource': 'Finnhub economic calendar',
+        })
+        matched += 1
+    for event in rows:
+        event.setdefault('valueStatus', 'not_available')
+    status = {
+        'status': 'ready' if value_rows else 'empty',
+        'matchedEvents': matched,
+        'availableEvents': len(value_rows),
+        'error': None,
+    }
+    stock_cache.set(cache_key, {'rows': value_rows, 'status': status})
+    return rows, status
+
+
 @app.route('/api/market/intelligence/calendar', methods=['GET'])
 @app.route('/api/trade/intelligence/calendar', methods=['GET'])
 def trade_intelligence_calendar():
@@ -19115,23 +19361,45 @@ def trade_intelligence_calendar():
 
     earnings = []
     earnings_error = None
+    earnings_coverage = {
+        'status': 'empty_watchlist', 'requestedSymbols': 0,
+        'symbolsWithEvents': [], 'symbolsWithoutEvents': [], 'errors': [],
+    }
     sources = []
+    finnhub_cfg, finnhub_status = resolve_finnhub_config_strict_user()
     if watchlist_symbols:
-        finnhub_cfg, finnhub_status = resolve_finnhub_config_strict_user()
         if finnhub_status == 'ok':
-            payload, earnings_error = _inst_fetch_finnhub_earnings_calendar(
-                finnhub_cfg, days_back=0, days_forward=days_forward,
+            earnings, earnings_coverage = _market_intelligence_fetch_watchlist_earnings(
+                finnhub_cfg,
+                watchlist_symbols,
+                days_forward=days_forward,
+                force_refresh=force_refresh,
             )
-            raw_earnings = payload.get('earningsCalendar') if isinstance(payload, dict) else []
-            earnings = _market_intelligence_filter_watchlist_earnings(raw_earnings, watchlist_symbols)
-            sources.append('Finnhub /calendar/earnings')
+            earnings_error = '; '.join(earnings_coverage.get('errors') or []) or None
+            sources.append('Finnhub per-symbol earnings calendar')
         else:
             earnings_error = 'finnhub_not_configured'
+            earnings_coverage = {
+                **earnings_coverage,
+                'status': 'not_configured',
+                'requestedSymbols': len(watchlist_symbols),
+                'symbolsWithoutEvents': watchlist_symbols,
+            }
 
     economic_calendar = _market_intelligence_official_economic_events(days_forward, force_refresh=force_refresh)
     economic_events = economic_calendar.get('events') or []
+    economic_events, economic_values = _market_intelligence_enrich_economic_values(
+        economic_events,
+        finnhub_cfg if finnhub_status == 'ok' else {},
+        days_forward=days_forward,
+        force_refresh=force_refresh,
+    )
     economic_errors = economic_calendar.get('errors') or []
-    economic_warnings = economic_calendar.get('warnings') or []
+    economic_warnings = list(economic_calendar.get('warnings') or [])
+    if economic_values.get('error'):
+        economic_warnings.append(economic_values['error'])
+    if economic_values.get('status') == 'ready' and economic_values.get('matchedEvents'):
+        sources.append('Finnhub economic consensus values')
     economic_status = 'ready'
     if economic_errors and economic_events:
         economic_status = 'partial'
@@ -19146,6 +19414,7 @@ def trade_intelligence_calendar():
         'earnings': earnings,
         'earningsCount': len(earnings),
         'earningsScope': 'watchlist',
+        'earningsCoverage': earnings_coverage,
         'watchlistSymbols': watchlist_symbols,
         'watchlistCount': len(watchlist_symbols),
         'watchlistStatus': watchlist_status,
@@ -19162,6 +19431,7 @@ def trade_intelligence_calendar():
             ),
             'cache': economic_calendar.get('cache') or {},
             'sourceStatus': economic_calendar.get('sourceStatus') or {},
+            'values': economic_values,
         },
         'sources': sources,
         'errors': errors,
