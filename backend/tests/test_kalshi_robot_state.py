@@ -1288,6 +1288,16 @@ def test_durable_payload_omits_rebuildable_mirrors_and_legacy_learning(tmp_path)
     state["modeState"]["paper"]["learningExamples"] = [
         {"unused": "y" * 2000}
     ]
+    state["modeState"]["paper"]["decisions"] = [
+        {"action": "WAIT", "features": {"unused": "z" * 4000}}
+    ]
+    state["modeState"]["paper"]["filledTrades"] = [{
+        "environment": "paper",
+        "ticker": "KXBTC15M-FILLED",
+        "orderId": "order-filled-1",
+        "orderFilled": True,
+        "action": "BUY_YES",
+    }]
     full_size = len(json.dumps(state, separators=(",", ":")))
 
     store.configure("user-a", True, {
@@ -1304,6 +1314,9 @@ def test_durable_payload_omits_rebuildable_mirrors_and_legacy_learning(tmp_path)
     ):
         assert field not in persisted
     assert "learningExamples" not in persisted["modeState"]["paper"]
+    assert "decisions" not in persisted["modeState"]["paper"]
+    assert "decisionLimit" not in persisted["modeState"]["paper"]
+    assert persisted["modeState"]["paper"]["filledTrades"][0]["orderId"] == "order-filled-1"
     assert persisted_size < full_size * 0.75
 
     restored = KalshiRobotState(
@@ -1315,6 +1328,8 @@ def test_durable_payload_omits_rebuildable_mirrors_and_legacy_learning(tmp_path)
     assert restored["config"]["executionMode"] == "paper"
     assert restored["config"]["riskPerTradePct"] == 0.5
     assert restored["decisionLimit"] == 50
+    assert restored["decisions"] == []
+    assert restored["filledTrades"][0]["orderId"] == "order-filled-1"
 
 
 def test_legacy_full_durable_state_is_compacted_once_on_restore(tmp_path):
