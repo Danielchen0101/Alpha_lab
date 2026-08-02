@@ -53,6 +53,7 @@ const Watchlist = React.lazy(() => import('./pages/Watchlist'));
 const StrategyRanking = React.lazy(() => import('./pages/StrategyRanking'));
 const ParameterOptimization = React.lazy(() => import('./pages/ParameterOptimization.jsx'));
 const Trade = React.lazy(() => import('./pages/Trade'));
+const MarketIntelligence = React.lazy(() => import('./pages/MarketIntelligence'));
 const Portfolio = React.lazy(() => import('./pages/Portfolio'));
 const Settings = React.lazy(() => import('./pages/Settings'));
 const SystemHealth = React.lazy(() => import('./pages/SystemHealth'));
@@ -254,6 +255,7 @@ const ThemedApp: React.FC = () => {
               <Route path={RESEARCH_CANDIDATES_PATH} element={<CandidateUniversePage />} />
               <Route path={RESEARCH_REVIEW_PATH} element={<ReviewWorkspacePage />} />
               <Route path="/trade" element={<Trade />} />
+              <Route path="/trade/intelligence/*" element={<MarketIntelligence />} />
               <Route path="/portfolio" element={<Portfolio />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/settings/configuration" element={<Configuration />} />

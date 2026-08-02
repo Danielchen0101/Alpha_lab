@@ -17,6 +17,8 @@ PROTECTED_ENDPOINTS = [
     ('GET', '/api/config/status'),
     ('GET', '/api/dashboard/status'),
     ('GET', '/api/market/risk-snapshot'),
+    ('GET', '/api/trade/intelligence/news'),
+    ('GET', '/api/trade/intelligence/calendar'),
     ('GET', '/api/ai/provider/config'),
     ('POST', '/api/ai/provider/config'),
     ('GET', '/api/operations/safety'),

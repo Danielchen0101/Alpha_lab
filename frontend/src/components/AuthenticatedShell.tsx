@@ -324,6 +324,7 @@ const sections: ShellSectionConfig[] = [
       isShellPath(pathname, '/portfolio')
     ),
     links: [
+      { key: 'market-intelligence', label: 'Market intelligence', labelZh: '市场分析', path: '/trade/intelligence', icon: <GlobalOutlined /> },
       { key: 'execution', label: 'Trade desk', labelZh: '交易台', path: '/trade', icon: <ExperimentOutlined /> },
       { key: 'portfolio', label: 'Portfolio', labelZh: '持仓组合', path: '/portfolio', icon: <PieChartOutlined /> },
     ],

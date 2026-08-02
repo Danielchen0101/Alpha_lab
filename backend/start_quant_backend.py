@@ -9,6 +9,8 @@ from flask import Flask, request, jsonify, has_request_context
 from datetime import datetime, timedelta, time as dt_time, timezone
 from zoneinfo import ZoneInfo
 from copy import deepcopy
+from io import BytesIO
+import html as _html
 import re
 import sys
 
@@ -17700,6 +17702,225 @@ def _market_risk_snapshot_row(symbol, snapshot, metadata=None):
     }
 
 
+_MARKET_INTELLIGENCE_THEMES = (
+    ('storage_memory', 'Storage & Memory', {'STX', 'WDC', 'PSTG', 'NTAP', 'MU', 'SNDK'}, ('data storage', 'memory', 'disk drive')),
+    ('space', 'Space Economy', {'RKLB', 'LUNR', 'RDW', 'PL', 'SPCE', 'ASTS', 'BKSY', 'MNTS'}, ('satellite', 'orbital', 'rocket')),
+    ('technology', 'Technology', {'AAPL', 'MSFT', 'NVDA', 'AVGO', 'ORCL', 'CRM', 'ADBE', 'CSCO', 'IBM', 'NOW', 'AMD', 'QCOM'}, ('information technology', 'technology services')),
+    ('ai_semiconductors', 'AI & Semiconductors', {'NVDA', 'AMD', 'AVGO', 'INTC', 'QCOM', 'ARM', 'MRVL', 'SMCI', 'TSM', 'ASML'}, ('semiconductor', 'chip', 'artificial intelligence')),
+    ('cloud_software', 'Cloud & Software', {'MSFT', 'ORCL', 'CRM', 'NOW', 'SNOW', 'DDOG', 'NET', 'MDB', 'PLTR'}, ('software', 'cloud', 'database')),
+    ('cybersecurity', 'Cybersecurity', {'CRWD', 'PANW', 'FTNT', 'ZS', 'OKTA', 'CYBR', 'S'}, ('cyber', 'security')),
+    ('fintech', 'Fintech', {'V', 'MA', 'PYPL', 'SQ', 'COIN', 'HOOD', 'SOFI', 'AFRM'}, ('financial technology', 'payment')),
+    ('clean_energy', 'Clean Energy', {'FSLR', 'ENPH', 'SEDG', 'RUN', 'PLUG', 'BE', 'NOVA'}, ('solar', 'renewable', 'clean energy', 'fuel cell')),
+    ('biotech', 'Biotech', {'MRNA', 'BNTX', 'REGN', 'VRTX', 'CRSP', 'NTLA', 'BEAM'}, ('biotech', 'therapeutic', 'pharmaceutical')),
+)
+
+
+def _market_intelligence_theme_breadth(rows):
+    result = []
+    for key, label, symbols, keywords in _MARKET_INTELLIGENCE_THEMES:
+        members = []
+        for row in rows or []:
+            symbol = _inst_clean_symbol(row.get('symbol'))
+            haystack = '%s %s' % (_safe_str(row.get('name')), symbol)
+            if symbol in symbols or any(keyword in haystack.lower() for keyword in keywords):
+                members.append(row)
+        if not members:
+            continue
+        changes = [float(row.get('changePct') or 0) for row in members]
+        advancing = sum(1 for change in changes if change > 0.05)
+        declining = sum(1 for change in changes if change < -0.05)
+        unchanged = len(changes) - advancing - declining
+        result.append({
+            'key': key,
+            'label': label,
+            'total': len(changes),
+            'advancing': advancing,
+            'declining': declining,
+            'unchanged': unchanged,
+            'averageChangePct': round(sum(changes) / len(changes), 3),
+            'advanceDeclineRatio': round(advancing / max(1, declining), 3),
+            'leaders': [
+                {'symbol': row.get('symbol'), 'changePct': row.get('changePct')}
+                for row in sorted(members, key=lambda item: float(item.get('changePct') or 0), reverse=True)[:3]
+            ],
+        })
+    return sorted(result, key=lambda item: abs(float(item.get('averageChangePct') or 0)), reverse=True)
+
+
+_MARKET_NEWS_HIGH_IMPACT_TERMS = (
+    'federal reserve', 'fed decision', 'interest rate', 'rate cut', 'rate hike', 'inflation',
+    'consumer price index', 'cpi', 'nonfarm payroll', 'jobs report', 'unemployment',
+    'recession', 'tariff', 'sanction', 'war ', 'ceasefire', 'bankruptcy', 'default',
+    'merger', 'acquisition', 'takeover', 'sec investigation', 'doj', 'fda approval',
+)
+_MARKET_NEWS_MEDIUM_IMPACT_TERMS = (
+    'earnings', 'revenue', 'guidance', 'forecast', 'upgrade', 'downgrade', 'price target',
+    'layoff', 'contract', 'partnership', 'offering', 'recall', 'lawsuit', 'data breach',
+)
+
+
+def _market_intelligence_news_topic(text):
+    lowered = _safe_str(text).lower()
+    rules = (
+        ('Monetary policy', ('federal reserve', 'fed ', 'interest rate', 'rate cut', 'rate hike', 'powell')),
+        ('Economy & labor', ('inflation', 'cpi', 'pce', 'gdp', 'payroll', 'jobs report', 'unemployment', 'retail sales')),
+        ('Geopolitics & trade', ('war ', 'tariff', 'sanction', 'ceasefire', 'trade deal', 'geopolit')),
+        ('Earnings & guidance', ('earnings', 'revenue', 'eps', 'guidance', 'forecast', 'quarter')),
+        ('M&A', ('merger', 'acquisition', 'takeover', 'buyout')),
+        ('Regulation & legal', ('regulat', 'lawsuit', 'sec ', 'doj', 'antitrust', 'probe', 'investigation')),
+        ('Technology', ('artificial intelligence', ' ai ', 'semiconductor', 'chip', 'software', 'cloud', 'cyber')),
+        ('Energy & commodities', ('oil', 'gas', 'gold', 'copper', 'opec', 'energy')),
+        ('Analyst action', ('upgrade', 'downgrade', 'price target', 'rating')),
+    )
+    for topic, terms in rules:
+        if any(
+            re.search(r'(?<![a-z0-9])%s(?![a-z0-9])' % re.escape(term.strip()), lowered)
+            if len(term.strip()) <= 4 and term.strip().isalnum()
+            else term in lowered
+            for term in terms
+        ):
+            return topic
+    return 'Company & market'
+
+
+def _market_intelligence_enrich_news(item):
+    cleaned = dict(item or {})
+    text = '%s %s' % (cleaned.get('headline') or '', cleaned.get('summary') or '')
+    lowered = text.lower()
+    high_hits = sum(1 for term in _MARKET_NEWS_HIGH_IMPACT_TERMS if term in lowered)
+    medium_hits = sum(1 for term in _MARKET_NEWS_MEDIUM_IMPACT_TERMS if term in lowered)
+    topic = _market_intelligence_news_topic(text)
+    reported_symbols = list(dict.fromkeys(cleaned.get('symbols') or []))
+    inferred_by_topic = {
+        'Monetary policy': ['SPY', 'QQQ', 'IWM', 'TLT', 'XLF', 'KRE'],
+        'Economy & labor': ['SPY', 'IWM', 'XLY', 'XLF', 'TLT'],
+        'Geopolitics & trade': ['SPY', 'XLE', 'XLI', 'LMT', 'NOC', 'GLD'],
+        'Technology': ['QQQ', 'XLK', 'NVDA', 'AMD', 'MSFT'],
+        'Energy & commodities': ['XLE', 'XOM', 'CVX', 'OXY'],
+        'Regulation & legal': ['SPY'],
+    }
+    inferred_symbols = [] if reported_symbols else inferred_by_topic.get(topic, [])
+    affected_symbols = reported_symbols or inferred_symbols
+    symbol_count = len(affected_symbols)
+    impact_score = min(100, 28 + min(18, symbol_count * 3) + min(42, high_hits * 21) + min(24, medium_hits * 8))
+    signal = _inst_news_signal([cleaned])
+    sentiment = signal.get('sentiment') or 'Neutral'
+    positive_direction_terms = (' rally', 'rallies', 'surge', 'jumps', 'beats estimates', 'raises guidance', 'approval')
+    negative_direction_terms = ('selloff', 'sells off', 'plunge', 'drops', 'misses estimates', 'cuts guidance', 'bankruptcy', 'default')
+    if sentiment == 'Neutral':
+        positive_hits = sum(1 for term in positive_direction_terms if term in lowered)
+        negative_hits = sum(1 for term in negative_direction_terms if term in lowered)
+        if positive_hits > negative_hits:
+            sentiment = 'Positive'
+        elif negative_hits > positive_hits:
+            sentiment = 'Negative'
+    direction = 'positive' if sentiment == 'Positive' else 'negative' if sentiment == 'Negative' else 'mixed'
+    cleaned.update({
+        'symbols': affected_symbols,
+        'symbolImpactSource': 'provider' if reported_symbols else 'topic_inference' if inferred_symbols else 'unresolved',
+        'impactScore': impact_score,
+        'impactLevel': 'Critical' if impact_score >= 80 else 'High' if impact_score >= 60 else 'Medium' if impact_score >= 42 else 'Low',
+        'topic': topic,
+        'sentiment': sentiment,
+        'marketDirection': direction,
+        'marketImpact': (
+            'Potential broad-market impact; watch index, rates, and volatility response.'
+            if topic in ('Monetary policy', 'Economy & labor', 'Geopolitics & trade') else
+            'Likely concentrated in the named stocks and their industry peers.'
+            if symbol_count else
+            'Contextual market news; direct ticker impact is not yet identified.'
+        ),
+    })
+    return cleaned
+
+
+def _market_intelligence_fetch_news(market_cfg, finnhub_cfg, days=1, limit=100):
+    start_iso = (datetime.now(timezone.utc) - timedelta(days=max(1, days))).strftime('%Y-%m-%dT%H:%M:%SZ')
+    cache_key = 'market_intelligence_news_%s_%s' % (days, limit)
+    cached = stock_cache.get(cache_key)
+    if isinstance(cached, dict):
+        return cached.get('articles') or [], cached.get('sources') or [], cached.get('errors') or []
+    articles = []
+    errors = []
+    sources = []
+    if market_cfg and market_cfg.get('api_key'):
+        try:
+            page_token = None
+            while len(articles) < limit:
+                params = {'start': start_iso, 'sort': 'desc', 'limit': min(50, limit - len(articles)), 'include_content': 'false'}
+                if page_token:
+                    params['page_token'] = page_token
+                response = requests.get(
+                    '%s/v1beta1/news' % _INST_SCANNER_MARKET_DATA_BASE_URL,
+                    headers=_inst_alpaca_headers(market_cfg),
+                    params=params,
+                    timeout=15,
+                )
+                if response.status_code != 200:
+                    errors.append('alpaca_news_http_%s' % response.status_code)
+                    break
+                if 'Alpaca News' not in sources:
+                    sources.append('Alpaca News')
+                page = response.json() if response.content else {}
+                raw_articles = page.get('news') or []
+                for raw in raw_articles:
+                    cleaned = _inst_clean_alpaca_news_item(raw)
+                    if cleaned:
+                        articles.append(cleaned)
+                page_token = page.get('next_page_token')
+                if not page_token or not raw_articles:
+                    break
+        except Exception as exc:
+            errors.append('alpaca_news_%s' % str(exc)[:100])
+    if finnhub_cfg and finnhub_cfg.get('api_key'):
+        try:
+            response = requests.get(
+                '%s/news' % finnhub_cfg.get('base_url', 'https://finnhub.io/api/v1').rstrip('/'),
+                params={'category': 'general', 'token': finnhub_cfg.get('api_key')},
+                timeout=12,
+            )
+            if response.status_code == 200 and isinstance(response.json(), list):
+                sources.append('Finnhub Market News')
+                for raw in response.json()[:limit]:
+                    cleaned = _inst_clean_alpaca_news_item({
+                        'id': 'finnhub-%s' % raw.get('id'),
+                        'headline': raw.get('headline'),
+                        'summary': raw.get('summary'),
+                        'source': raw.get('source') or 'Finnhub',
+                        'url': raw.get('url'),
+                        'created_at': datetime.fromtimestamp(int(raw.get('datetime') or 0), tz=timezone.utc).isoformat() if raw.get('datetime') else None,
+                        'symbols': [symbol.strip() for symbol in _safe_str(raw.get('related')).split(',') if symbol.strip()],
+                    })
+                    if cleaned:
+                        articles.append(cleaned)
+            elif response.status_code != 200:
+                errors.append('finnhub_news_http_%s' % response.status_code)
+        except Exception as exc:
+            errors.append('finnhub_news_%s' % str(exc)[:100])
+    deduped = {}
+    for article in articles:
+        created_at = _safe_str(article.get('createdAt'))
+        if created_at:
+            try:
+                created_dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                if created_dt.tzinfo is None:
+                    created_dt = created_dt.replace(tzinfo=timezone.utc)
+                if created_dt < datetime.now(timezone.utc) - timedelta(days=max(1, days)):
+                    continue
+            except Exception:
+                pass
+        key = re.sub(r'\W+', '', _safe_str(article.get('headline')).lower())[:160]
+        if key and key not in deduped:
+            deduped[key] = _market_intelligence_enrich_news(article)
+    ranked = sorted(
+        deduped.values(),
+        key=lambda item: (int(item.get('impactScore') or 0), _safe_str(item.get('createdAt'))),
+        reverse=True,
+    )[:limit]
+    stock_cache.set(cache_key, {'articles': ranked, 'sources': sources, 'errors': errors})
+    return ranked, sources, errors
+
+
 def _market_risk_aggregate(rows, benchmarks=None, universe_count=None, source='Alpaca'):
     rows = [row for row in (rows or []) if isinstance(row, dict)]
     changes = [float(row['changePct']) for row in rows]
@@ -17881,6 +18102,8 @@ def market_risk_snapshot():
                 bucket['unchanged'] += 1
         exchange_breadth = sorted(exchange_groups.values(), key=lambda row: row['total'], reverse=True)[:5]
         movers = sorted(selected_rows, key=lambda row: abs(row['changePct']), reverse=True)[:12]
+        gainers = sorted(selected_rows, key=lambda row: float(row.get('changePct') or 0), reverse=True)[:12]
+        losers = sorted(selected_rows, key=lambda row: float(row.get('changePct') or 0))[:12]
         timestamps = [str(row.get('dayBarTime')) for row in selected_rows if row.get('dayBarTime')]
         payload = {
             'success': True,
@@ -17889,6 +18112,9 @@ def market_risk_snapshot():
             'sectorEtfs': sector_etfs,
             'exchangeBreadth': exchange_breadth,
             'movers': movers,
+            'gainers': gainers,
+            'losers': losers,
+            'themeBreadth': _market_intelligence_theme_breadth(selected_rows),
             'asOf': max(timestamps) if timestamps else datetime.now(timezone.utc).isoformat(),
             'generatedAt': datetime.now(timezone.utc).isoformat(),
             'universeSource': universe_source,
@@ -17909,6 +18135,586 @@ def market_risk_snapshot():
             return jsonify(payload)
         safe_print('[MarketRisk] snapshot failed: %s' % exc)
         return jsonify({'success': False, 'error': str(exc)}), 503
+
+
+@app.route('/api/trade/intelligence/news', methods=['GET'])
+def trade_intelligence_news():
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'error': 'Authentication required'}), 401
+    try:
+        days = max(1, min(int(_inst_to_float(request.args.get('days'), 1) or 1), 7))
+        limit = max(20, min(int(_inst_to_float(request.args.get('limit'), 100) or 100), 200))
+        market_cfg, market_status = resolve_alpaca_config_strict_user('market_data')
+        finnhub_cfg, finnhub_status = resolve_finnhub_config_strict_user()
+        articles, sources, errors = _market_intelligence_fetch_news(
+            market_cfg if market_status == 'ok' else {},
+            finnhub_cfg if finnhub_status == 'ok' else {},
+            days=days,
+            limit=limit,
+        )
+        return jsonify({
+            'success': True,
+            'articles': articles,
+            'count': len(articles),
+            'sources': sources,
+            'errors': errors,
+            'windowDays': days,
+            'generatedAt': datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as exc:
+        safe_print('[MarketIntelligence] news failed: %s' % exc)
+        return jsonify({'success': False, 'error': str(exc), 'articles': []}), 503
+
+
+def _market_intelligence_watchlist_symbols(payload):
+    raw_symbols = payload.get('symbols') if isinstance(payload, dict) else []
+    if not isinstance(raw_symbols, list):
+        return []
+    symbols = []
+    seen = set()
+    for raw_symbol in raw_symbols:
+        symbol = _inst_clean_symbol(raw_symbol)
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            symbols.append(symbol)
+    return symbols
+
+
+def _market_intelligence_filter_watchlist_earnings(events, watchlist_symbols):
+    allowed = set(_market_intelligence_watchlist_symbols({'symbols': watchlist_symbols}))
+    if not allowed or not isinstance(events, list):
+        return []
+    deduped = {}
+    for raw_event in events:
+        if not isinstance(raw_event, dict):
+            continue
+        date = _safe_str(raw_event.get('date'))
+        symbol = _inst_clean_symbol(raw_event.get('symbol'))
+        hour = _safe_str(raw_event.get('hour'))
+        event_key = (date, symbol, hour)
+        if not date or symbol not in allowed or event_key in deduped:
+            continue
+        event = dict(raw_event)
+        event['symbol'] = symbol
+        deduped[event_key] = event
+    return sorted(
+        deduped.values(),
+        key=lambda event: (_safe_str(event.get('date')), _safe_str(event.get('symbol'))),
+    )
+
+
+_MARKET_ECONOMIC_CALENDAR_CACHE = {}
+_MARKET_ECONOMIC_CALENDAR_CACHE_LOCK = threading.Lock()
+_MARKET_ECONOMIC_CALENDAR_CACHE_TTL_SECONDS = 6 * 60 * 60
+_MARKET_ECONOMIC_CALENDAR_STALE_TTL_SECONDS = 7 * 24 * 60 * 60
+_MARKET_ECONOMIC_CALENDAR_URLS = {
+    'bls': 'https://www.bls.gov/schedule/news_release/bls.ics',
+    'bea': 'https://www.bea.gov/news/schedule/ics/online-calendar-subscription.ics',
+    'census': 'https://www.census.gov/economic-indicators/calendar-listview.html',
+    'fed': 'https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm',
+    'omb_census_template': 'https://www.census.gov/economic-indicators/econcards/assets/pdf/censusreleaseglance_%s.pdf',
+}
+_MARKET_ECONOMIC_REQUEST_HEADERS = {
+    'User-Agent': 'AlphaLab/3.0 economic-calendar (+https://alphalabquant.com)',
+    'Accept': 'text/calendar,text/html,application/pdf;q=0.9,*/*;q=0.5',
+}
+
+
+def _market_calendar_text(value):
+    return re.sub(r'\s+', ' ', _html.unescape(_inst_strip_html(value))).replace('\xa0', ' ').strip()
+
+
+def _market_calendar_importance(title):
+    lowered = _safe_str(title).lower()
+    high_terms = (
+        'employment situation', 'nonfarm payroll', 'consumer price index', 'producer price index',
+        'fomc', 'gross domestic product', 'gdp ', 'personal income and outlays', 'pce inflation',
+    )
+    medium_terms = (
+        'retail', 'job openings', 'employment cost', 'import and export price', 'international trade',
+        'durable goods', 'housing starts', 'new residential', 'construction spending',
+        'industrial production', 'consumer credit', 'manufacturers', 'wholesale trade',
+        'business inventories', 'productivity and costs', 'corporate profits',
+    )
+    if any(term in lowered for term in high_terms):
+        return 'high'
+    if any(term in lowered for term in medium_terms):
+        return 'medium'
+    return 'low'
+
+
+def _market_calendar_event(title, event_dt, source, *, period=None, source_url=None, importance=None):
+    eastern = ZoneInfo('America/New_York')
+    if event_dt.tzinfo is None:
+        event_dt = event_dt.replace(tzinfo=eastern)
+    else:
+        event_dt = event_dt.astimezone(eastern)
+    clean_title = _market_calendar_text(title)
+    return {
+        'date': event_dt.date().isoformat(),
+        'time': event_dt.strftime('%H:%M ET'),
+        'timezone': 'America/New_York',
+        'name': clean_title,
+        'country': 'US',
+        'importance': importance or _market_calendar_importance(clean_title),
+        'period': _market_calendar_text(period) or None,
+        'actual': None,
+        'forecast': None,
+        'previous': None,
+        'source': source,
+        'sourceUrl': source_url,
+    }
+
+
+def _market_calendar_request(url, *, timeout=10):
+    response = requests.get(
+        url,
+        headers=_MARKET_ECONOMIC_REQUEST_HEADERS,
+        timeout=(3.05, timeout),
+    )
+    if response.status_code != 200:
+        raise RuntimeError('http_%s' % response.status_code)
+    return response
+
+
+def _market_calendar_unfold_ics(text):
+    unfolded = []
+    for line in _safe_str(text).replace('\r\n', '\n').replace('\r', '\n').split('\n'):
+        if line.startswith((' ', '\t')) and unfolded:
+            unfolded[-1] += line[1:]
+        else:
+            unfolded.append(line)
+    return unfolded
+
+
+def _market_calendar_ics_datetime(raw_value):
+    value = _safe_str(raw_value).strip()
+    eastern = ZoneInfo('America/New_York')
+    formats = (
+        ('%Y%m%dT%H%M%SZ', timezone.utc),
+        ('%Y%m%dT%H%M%S', eastern),
+        ('%Y%m%dT%H%MZ', timezone.utc),
+        ('%Y%m%dT%H%M', eastern),
+        ('%Y%m%d', eastern),
+    )
+    for date_format, tzinfo in formats:
+        try:
+            return datetime.strptime(value, date_format).replace(tzinfo=tzinfo)
+        except ValueError:
+            continue
+    return None
+
+
+def _market_calendar_parse_ics(text, source, source_url):
+    events = []
+    current = None
+    for line in _market_calendar_unfold_ics(text):
+        if line == 'BEGIN:VEVENT':
+            current = {}
+            continue
+        if line == 'END:VEVENT':
+            if current:
+                summary = _safe_str(current.get('SUMMARY')).replace('\\,', ',').replace('\\;', ';').replace('\\n', ' ')
+                event_dt = _market_calendar_ics_datetime(current.get('DTSTART'))
+                if summary and event_dt:
+                    summary_aliases = {
+                        'Employment Situation': 'Employment Situation (Nonfarm Payrolls)',
+                        'Consumer Price Index': 'Consumer Price Index (CPI)',
+                        'Producer Price Index': 'Producer Price Index (PPI)',
+                    }
+                    summary = summary_aliases.get(summary.strip(), summary)
+                    if summary.lower().startswith('personal income and outlays'):
+                        summary = '%s (PCE inflation)' % summary
+                    events.append(_market_calendar_event(
+                        summary,
+                        event_dt,
+                        source,
+                        source_url=source_url,
+                    ))
+            current = None
+            continue
+        if current is None or ':' not in line:
+            continue
+        raw_key, value = line.split(':', 1)
+        key = raw_key.split(';', 1)[0].upper()
+        if key in ('SUMMARY', 'DTSTART'):
+            current[key] = value.strip()
+    return events
+
+
+def _market_calendar_parse_omb_bls_text(text, year, source_url):
+    if not text:
+        raise RuntimeError('bls_schedule_page_not_found')
+    rows = (
+        ('Employment Situation (Nonfarm Payrolls)', 'The Employment Situation', 'Producer Price Indexes'),
+        ('Producer Price Index', 'Producer Price Indexes', 'Consumer Price Index'),
+        ('Consumer Price Index (CPI)', 'Consumer Price Index', 'Real Earnings'),
+        ('Employment Cost Index', 'Employment Cost Index', 'U.S. Import and Export Price Indexes'),
+        ('U.S. Import and Export Price Indexes', 'U.S. Import and Export Price Indexes', 'DEPT AGENCY/INDICATORS'),
+    )
+    events = []
+    eastern = ZoneInfo('America/New_York')
+    for title, start_marker, end_marker in rows:
+        start_index = text.find(start_marker)
+        end_index = text.find(end_marker, start_index + len(start_marker)) if start_index >= 0 else -1
+        if start_index < 0 or end_index < 0:
+            continue
+        segment = text[start_index + len(start_marker):end_index]
+        days = [int(value) for value in re.findall(r'\b(?:[1-9]|[12]\d|3[01])\b', segment)]
+        if len(days) < 12:
+            continue
+        for month, day in enumerate(days[-12:], start=1):
+            try:
+                event_dt = datetime(int(year), month, day, 8, 30, tzinfo=eastern)
+            except ValueError:
+                continue
+            events.append(_market_calendar_event(
+                title,
+                event_dt,
+                'BLS schedule (OMB PFEI via Census Bureau)',
+                source_url=source_url,
+                importance='high' if title in ('Employment Situation (Nonfarm Payrolls)', 'Producer Price Index', 'Consumer Price Index (CPI)') else 'medium',
+            ))
+    if not events:
+        raise RuntimeError('bls_schedule_rows_not_found')
+    return events
+
+
+def _market_calendar_parse_omb_bls_pdf(content, year, source_url):
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise RuntimeError('pypdf_not_installed') from exc
+    text = ''
+    for page in PdfReader(BytesIO(content)).pages:
+        page_text = page.extract_text() or ''
+        if 'BUREAU OF LABOR STATISTICS' in page_text.upper():
+            text = page_text
+            break
+    return _market_calendar_parse_omb_bls_text(text, year, source_url)
+
+
+def _market_calendar_fetch_bls(start_date, end_date):
+    warnings = []
+    try:
+        response = _market_calendar_request(_MARKET_ECONOMIC_CALENDAR_URLS['bls'], timeout=8)
+        if 'BEGIN:VCALENDAR' not in response.text:
+            raise RuntimeError('invalid_ics')
+        events = _market_calendar_parse_ics(response.text, 'U.S. Bureau of Labor Statistics', _MARKET_ECONOMIC_CALENDAR_URLS['bls'])
+        if not events:
+            raise RuntimeError('empty_ics')
+        return events, 'U.S. Bureau of Labor Statistics', warnings
+    except Exception as exc:
+        warnings.append('bls_ics_%s; using official OMB schedule mirror' % str(exc)[:80])
+
+    events = []
+    for year in range(start_date.year, end_date.year + 1):
+        source_url = _MARKET_ECONOMIC_CALENDAR_URLS['omb_census_template'] % year
+        try:
+            response = _market_calendar_request(source_url, timeout=12)
+            events.extend(_market_calendar_parse_omb_bls_pdf(response.content, year, source_url))
+        except Exception as exc:
+            warnings.append('bls_omb_%s_%s' % (year, str(exc)[:80]))
+    if not events:
+        raise RuntimeError('; '.join(warnings) or 'bls_calendar_unavailable')
+    return events, 'BLS / OMB PFEI schedule (Census Bureau mirror)', warnings
+
+
+def _market_calendar_fetch_bea(_start_date, _end_date):
+    source_url = _MARKET_ECONOMIC_CALENDAR_URLS['bea']
+    response = _market_calendar_request(source_url, timeout=10)
+    events = _market_calendar_parse_ics(response.text, 'U.S. Bureau of Economic Analysis', source_url)
+    if not events:
+        raise RuntimeError('bea_calendar_empty')
+    return events, 'U.S. Bureau of Economic Analysis', []
+
+
+def _market_calendar_parse_census_html(html, source_url):
+    events = []
+    eastern = ZoneInfo('America/New_York')
+    for row_html in re.findall(r'<tr\b[^>]*>(.*?)</tr>', _safe_str(html), flags=re.IGNORECASE | re.DOTALL):
+        cells = re.findall(r'<td\b[^>]*>(.*?)</td>', row_html, flags=re.IGNORECASE | re.DOTALL)
+        if len(cells) < 4:
+            continue
+        title, date_text, time_text, period = [_market_calendar_text(cell) for cell in cells[:4]]
+        if not title or not date_text or not time_text:
+            continue
+        try:
+            event_dt = datetime.strptime('%s %s' % (date_text, time_text), '%B %d, %Y %I:%M %p').replace(tzinfo=eastern)
+        except ValueError:
+            continue
+        events.append(_market_calendar_event(
+            title,
+            event_dt,
+            'U.S. Census Bureau',
+            period=period,
+            source_url=source_url,
+        ))
+    return events
+
+
+def _market_calendar_fetch_census(_start_date, _end_date):
+    source_url = _MARKET_ECONOMIC_CALENDAR_URLS['census']
+    response = _market_calendar_request(source_url, timeout=10)
+    events = _market_calendar_parse_census_html(response.text, source_url)
+    if not events:
+        raise RuntimeError('census_calendar_empty')
+    return events, 'U.S. Census Bureau', []
+
+
+def _market_calendar_parse_fed_html(html, source_url):
+    year_matches = list(re.finditer(r'>(20\d{2}) FOMC Meetings<', html, flags=re.IGNORECASE))
+    eastern = ZoneInfo('America/New_York')
+    events = []
+    for index, year_match in enumerate(year_matches):
+        year = int(year_match.group(1))
+        block_end = year_matches[index + 1].start() if index + 1 < len(year_matches) else len(html)
+        block = html[year_match.end():block_end]
+        meeting_matches = re.findall(
+            r'fomc-meeting__month[^>]*>\s*<strong>([^<]+)</strong>.*?fomc-meeting__date[^>]*>([^<]+)</div>',
+            block,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        for month_text, date_text in meeting_matches:
+            day_values = [int(value) for value in re.findall(r'\d{1,2}', date_text)]
+            if not day_values:
+                continue
+            try:
+                month = datetime.strptime(_market_calendar_text(month_text), '%B').month
+                event_dt = datetime(year, month, day_values[-1], 14, 0, tzinfo=eastern)
+            except ValueError:
+                continue
+            title = 'FOMC interest-rate decision'
+            if '*' in date_text:
+                title += ' and economic projections'
+            events.append(_market_calendar_event(
+                title,
+                event_dt,
+                'Federal Reserve Board',
+                source_url=source_url,
+                importance='high',
+            ))
+    return events
+
+
+def _market_calendar_fetch_fed(_start_date, _end_date):
+    source_url = _MARKET_ECONOMIC_CALENDAR_URLS['fed']
+    response = _market_calendar_request(source_url, timeout=10)
+    events = _market_calendar_parse_fed_html(response.text, source_url)
+    if not events:
+        raise RuntimeError('fomc_calendar_empty')
+    return events, 'Federal Reserve Board', []
+
+
+def _market_calendar_canonical_title(title):
+    text = re.sub(r'[^a-z0-9]+', ' ', _safe_str(title).lower()).strip()
+    text = re.sub(r'\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+20\d{2}\b', '', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _market_calendar_filter_and_dedupe(events, start_date, end_date):
+    importance_rank = {'low': 1, 'medium': 2, 'high': 3}
+    deduped = {}
+    for event in events or []:
+        if not isinstance(event, dict):
+            continue
+        try:
+            event_date = datetime.strptime(_safe_str(event.get('date'))[:10], '%Y-%m-%d').date()
+        except ValueError:
+            continue
+        if event_date < start_date or event_date > end_date:
+            continue
+        key = (
+            event_date.isoformat(),
+            _safe_str(event.get('time')),
+            _market_calendar_canonical_title(event.get('name')),
+        )
+        current = deduped.get(key)
+        if current is None or importance_rank.get(event.get('importance'), 0) > importance_rank.get(current.get('importance'), 0):
+            deduped[key] = dict(event)
+    return sorted(
+        deduped.values(),
+        key=lambda event: (_safe_str(event.get('date')), _safe_str(event.get('time')), _safe_str(event.get('name'))),
+    )
+
+
+def _market_intelligence_official_economic_events(days_forward=30, force_refresh=False):
+    eastern = ZoneInfo('America/New_York')
+    start_date = datetime.now(eastern).date()
+    end_date = start_date + timedelta(days=max(7, min(int(days_forward or 30), 90)))
+    now = time.time()
+    with _MARKET_ECONOMIC_CALENDAR_CACHE_LOCK:
+        cached = deepcopy(_MARKET_ECONOMIC_CALENDAR_CACHE)
+    age = max(0.0, now - float(cached.get('storedAt') or 0)) if cached else None
+    if cached and not force_refresh and age < _MARKET_ECONOMIC_CALENDAR_CACHE_TTL_SECONDS:
+        return {
+            **cached,
+            'events': _market_calendar_filter_and_dedupe(cached.get('allEvents'), start_date, end_date),
+            'cache': {'status': 'hit', 'ageSeconds': round(age, 1)},
+        }
+
+    fetchers = {
+        'bls': _market_calendar_fetch_bls,
+        'bea': _market_calendar_fetch_bea,
+        'census': _market_calendar_fetch_census,
+        'fed': _market_calendar_fetch_fed,
+    }
+    all_events = []
+    source_events = {}
+    source_stored_at = {}
+    sources = []
+    warnings = []
+    errors = []
+    source_status = {}
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {
+            executor.submit(fetcher, start_date, end_date): name
+            for name, fetcher in fetchers.items()
+        }
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                events, source, source_warnings = future.result()
+                all_events.extend(events)
+                source_events[name] = events
+                source_stored_at[name] = now
+                if source not in sources:
+                    sources.append(source)
+                warnings.extend(source_warnings or [])
+                source_status[name] = {'status': 'ready', 'eventCount': len(events), 'source': source}
+            except Exception as exc:
+                error = '%s_%s' % (name, str(exc)[:120])
+                errors.append(error)
+                cached_source_events = (cached.get('sourceEvents') or {}).get(name) or []
+                cached_source_time = float((cached.get('sourceStoredAt') or {}).get(name) or 0)
+                cached_source_age = max(0.0, now - cached_source_time) if cached_source_time else None
+                if cached_source_events and cached_source_age is not None and cached_source_age < _MARKET_ECONOMIC_CALENDAR_STALE_TTL_SECONDS:
+                    old_status = (cached.get('sourceStatus') or {}).get(name) or {}
+                    old_source = old_status.get('source') or name.upper()
+                    all_events.extend(cached_source_events)
+                    source_events[name] = cached_source_events
+                    source_stored_at[name] = cached_source_time
+                    if old_source not in sources:
+                        sources.append(old_source)
+                    warnings.append('%s_using_stale_cache' % name)
+                    source_status[name] = {
+                        'status': 'stale',
+                        'eventCount': len(cached_source_events),
+                        'source': old_source,
+                        'ageSeconds': round(cached_source_age, 1),
+                        'error': str(exc)[:120],
+                    }
+                else:
+                    source_status[name] = {'status': 'unavailable', 'eventCount': 0, 'error': str(exc)[:120]}
+
+    if not all_events and cached and age is not None and age < _MARKET_ECONOMIC_CALENDAR_STALE_TTL_SECONDS:
+        return {
+            **cached,
+            'events': _market_calendar_filter_and_dedupe(cached.get('allEvents'), start_date, end_date),
+            'errors': list(dict.fromkeys((cached.get('errors') or []) + errors)),
+            'warnings': list(dict.fromkeys((cached.get('warnings') or []) + warnings)),
+            'cache': {'status': 'stale-if-error', 'ageSeconds': round(age, 1)},
+        }
+
+    payload = {
+        'allEvents': _market_calendar_filter_and_dedupe(all_events, datetime(2020, 1, 1).date(), datetime(2100, 1, 1).date()),
+        'sourceEvents': source_events,
+        'sourceStoredAt': source_stored_at,
+        'sources': sorted(sources),
+        'warnings': list(dict.fromkeys(warnings)),
+        'errors': list(dict.fromkeys(errors)),
+        'sourceStatus': source_status,
+        'storedAt': now,
+    }
+    if all_events:
+        with _MARKET_ECONOMIC_CALENDAR_CACHE_LOCK:
+            _MARKET_ECONOMIC_CALENDAR_CACHE.clear()
+            _MARKET_ECONOMIC_CALENDAR_CACHE.update(deepcopy(payload))
+    return {
+        **payload,
+        'events': _market_calendar_filter_and_dedupe(all_events, start_date, end_date),
+        'cache': {'status': 'miss', 'ageSeconds': 0},
+    }
+
+
+@app.route('/api/trade/intelligence/calendar', methods=['GET'])
+def trade_intelligence_calendar():
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'error': 'Authentication required'}), 401
+    days_forward = max(7, min(int(_inst_to_float(request.args.get('days'), 30) or 30), 90))
+    force_refresh = str(request.args.get('refresh') or '').lower() in ('1', 'true', 'yes')
+    watchlist_symbols = []
+    watchlist_status = 'empty'
+    watchlist_error = None
+    try:
+        watchlist_artifact = operations_store.get_artifact(user['id'], 'watchlist', 'primary')
+        watchlist_symbols = _market_intelligence_watchlist_symbols(
+            (watchlist_artifact or {}).get('payload') or {},
+        )
+        watchlist_status = 'ready' if watchlist_symbols else 'empty'
+    except Exception as exc:
+        watchlist_status = 'unavailable'
+        watchlist_error = 'watchlist_unavailable: %s' % str(exc)
+        safe_print('[MarketIntelligence] watchlist read failed: %s' % exc)
+
+    earnings = []
+    earnings_error = None
+    sources = []
+    if watchlist_symbols:
+        finnhub_cfg, finnhub_status = resolve_finnhub_config_strict_user()
+        if finnhub_status == 'ok':
+            payload, earnings_error = _inst_fetch_finnhub_earnings_calendar(
+                finnhub_cfg, days_back=0, days_forward=days_forward,
+            )
+            raw_earnings = payload.get('earningsCalendar') if isinstance(payload, dict) else []
+            earnings = _market_intelligence_filter_watchlist_earnings(raw_earnings, watchlist_symbols)
+            sources.append('Finnhub /calendar/earnings')
+        else:
+            earnings_error = 'finnhub_not_configured'
+
+    economic_calendar = _market_intelligence_official_economic_events(days_forward, force_refresh=force_refresh)
+    economic_events = economic_calendar.get('events') or []
+    economic_errors = economic_calendar.get('errors') or []
+    economic_warnings = economic_calendar.get('warnings') or []
+    economic_status = 'ready'
+    if economic_errors and economic_events:
+        economic_status = 'partial'
+    elif not economic_events:
+        economic_status = 'unavailable'
+    for source in economic_calendar.get('sources') or []:
+        if source not in sources:
+            sources.append(source)
+    errors = [error for error in (watchlist_error, earnings_error) if error] + economic_errors
+    return jsonify({
+        'success': True,
+        'earnings': earnings,
+        'earningsCount': len(earnings),
+        'earningsScope': 'watchlist',
+        'watchlistSymbols': watchlist_symbols,
+        'watchlistCount': len(watchlist_symbols),
+        'watchlistStatus': watchlist_status,
+        'economicEvents': economic_events,
+        'economicEventsCount': len(economic_events),
+        'economicCalendar': {
+            'status': economic_status,
+            'message': (
+                'Official public macro releases are independent of the watchlist.'
+                if economic_status == 'ready' else
+                'Official public macro releases are partially available; unavailable sources will retry after cache expiry.'
+                if economic_status == 'partial' else
+                'Official public macro calendars are temporarily unavailable.'
+            ),
+            'cache': economic_calendar.get('cache') or {},
+            'sourceStatus': economic_calendar.get('sourceStatus') or {},
+        },
+        'sources': sources,
+        'errors': errors,
+        'warnings': economic_warnings,
+        'windowDays': days_forward,
+        'generatedAt': datetime.now(timezone.utc).isoformat(),
+    })
 
 
 # Keep the existing AI pipeline route stable while replacing its implementation.
