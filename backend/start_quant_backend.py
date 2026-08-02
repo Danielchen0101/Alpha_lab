@@ -53731,6 +53731,9 @@ _CRYPTO_API_CONTROLS = register_crypto_api(
     ai_reviewer=None,
     ai_status_resolver=None,
     notifier=_crypto_discord_notify,
+    background_dependency_available=(
+        lambda: not _supabase_background_io_blocked()
+    ),
     start_background=False,
 )
 

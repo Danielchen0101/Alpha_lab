@@ -2773,6 +2773,56 @@ def test_registration_can_leave_crypto_scheduler_stopped(monkeypatch):
         controls["stop"]()
 
 
+def test_crypto_scheduler_pauses_database_io_during_dependency_outage(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setenv(
+        "CRYPTO_SCHEDULER_LOCK_PATH",
+        str(tmp_path / "dependency-backoff.lock"),
+    )
+    monkeypatch.setattr(crypto_api, "SCHEDULER_SCAN_INTERVAL_SECONDS", 0.02)
+    monkeypatch.setattr(
+        crypto_api, "SCHEDULER_DEPENDENCY_BACKOFF_MAX_SECONDS", 0.04,
+    )
+    controls = make_api(
+        monkeypatch,
+        start_background=False,
+        disable_scheduler=False,
+    )[4]
+    service = controls["service"]
+    dependency = {"available": False}
+    claims = []
+    scans = []
+    service.background_dependency_available = lambda: dependency["available"]
+    monkeypatch.setattr(
+        service,
+        "_claim_durable_scheduler_lease",
+        lambda **_kwargs: claims.append(True) or True,
+    )
+    monkeypatch.setattr(
+        service,
+        "_scheduler_scan",
+        lambda **_kwargs: scans.append(True),
+    )
+    try:
+        controls["start"]()
+        time.sleep(0.08)
+        assert claims == []
+        assert scans == []
+        assert controls["runtime"]()["lastError"] == (
+            "SupabaseDependencyUnavailable"
+        )
+
+        dependency["available"] = True
+        deadline = time.time() + 1
+        while not scans and time.time() < deadline:
+            time.sleep(0.01)
+        assert claims
+        assert scans
+    finally:
+        controls["stop"]()
+
+
 def test_on_environment_value_disables_crypto_scheduler(monkeypatch):
     controls = make_api(
         monkeypatch,
