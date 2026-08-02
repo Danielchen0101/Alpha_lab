@@ -101,12 +101,9 @@ export const LanguageProvider: React.FC<LanguageProviderProps> = ({ children }) 
   useEffect(() => {
     let active = true;
 
-    const loadSavedLanguage = async (knownSession?: Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']) => {
+    const loadSavedLanguage = async (knownSession: Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']) => {
       try {
-        const session = knownSession === undefined
-          ? (await supabase.auth.getSession()).data.session
-          : knownSession;
-        if (!session) return;
+        if (!knownSession) return;
         const response = await workspacePreferencesAPI.get();
         const saved = response.data?.preferences?.language;
         if (active && (saved === 'en-US' || saved === 'zh-CN')) {
@@ -123,10 +120,9 @@ export const LanguageProvider: React.FC<LanguageProviderProps> = ({ children }) 
       }
     };
 
-    void loadSavedLanguage();
     let deferredLoad: number | null = null;
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_IN' && session) {
+      if ((event === 'INITIAL_SESSION' || event === 'SIGNED_IN') && session) {
         // Supabase auth callbacks must stay synchronous. Defer all API work
         // until after the auth event lock has been released.
         if (deferredLoad !== null) window.clearTimeout(deferredLoad);

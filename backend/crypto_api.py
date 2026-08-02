@@ -90,6 +90,7 @@ SCHEDULER_LOCK_RETRY_SECONDS = 5.0
 SCHEDULER_HEARTBEAT_STALE_SECONDS = 75.0
 SCHEDULER_DURABLE_LEASE_NAME = "crypto-automation-scheduler-v1"
 SCHEDULER_DURABLE_LEASE_TTL_SECONDS = 90
+SCHEDULER_DURABLE_LEASE_REFRESH_SECONDS = 35.0
 ROUTING_LEASE_TIMEOUT_SECONDS = 5.0
 ROUTING_LEASE_RETRY_SECONDS = 0.02
 ROUTING_DURABLE_LEASE_TTL_SECONDS = 60
@@ -1556,6 +1557,7 @@ class _CryptoService:
         )
         self._scheduler_durable_lease_owner: Optional[bool] = None
         self._scheduler_durable_lease_at: Optional[str] = None
+        self._scheduler_durable_lease_refresh_at_monotonic = 0.0
         self._scheduler_durable_lease_contention_count = 0
         deployment_id = str(
             os.getenv("RENDER_INSTANCE_ID")
@@ -1592,8 +1594,16 @@ class _CryptoService:
             self._scheduler_last_heartbeat = _iso()
             self._scheduler_last_heartbeat_monotonic = time.monotonic()
 
-    def _claim_durable_scheduler_lease(self) -> bool:
+    def _claim_durable_scheduler_lease(self, *, force: bool = False) -> bool:
         """Claim or renew the single scheduler lease shared by all hosts."""
+        now_monotonic = time.monotonic()
+        with self._scheduler_state_guard:
+            if (
+                not force
+                and self._scheduler_durable_lease_owner is True
+                and now_monotonic < self._scheduler_durable_lease_refresh_at_monotonic
+            ):
+                return True
         claim = getattr(self.store, "claim_worker_lease", None)
         if not callable(claim):
             # Lightweight/local stores are already protected by the process
@@ -1603,6 +1613,7 @@ class _CryptoService:
                 self._scheduler_durable_lease_supported = False
                 self._scheduler_durable_lease_owner = True
                 self._scheduler_durable_lease_at = _iso()
+                self._scheduler_durable_lease_refresh_at_monotonic = float('inf')
             return True
         try:
             claimed = bool(claim(
@@ -1618,6 +1629,7 @@ class _CryptoService:
             with self._scheduler_state_guard:
                 self._scheduler_durable_lease_supported = True
                 self._scheduler_durable_lease_owner = False
+                self._scheduler_durable_lease_refresh_at_monotonic = 0.0
                 self._scheduler_last_error = type(exc).__name__
                 self._scheduler_last_error_at = _iso()
             raise
@@ -1626,12 +1638,18 @@ class _CryptoService:
             self._scheduler_durable_lease_owner = claimed
             if claimed:
                 self._scheduler_durable_lease_at = _iso()
+                self._scheduler_durable_lease_refresh_at_monotonic = (
+                    now_monotonic + SCHEDULER_DURABLE_LEASE_REFRESH_SECONDS
+                )
             else:
+                self._scheduler_durable_lease_refresh_at_monotonic = 0.0
                 self._scheduler_durable_lease_contention_count += 1
         return claimed
 
     def _require_durable_scheduler_lease(self) -> None:
-        if self._claim_durable_scheduler_lease():
+        # Broker routing and durable result writes renew explicitly. Only the
+        # passive scheduler scan uses the short in-process cache.
+        if self._claim_durable_scheduler_lease(force=True):
             return
         raise CryptoApiError(
             "This backend no longer owns the durable crypto scheduler lease",

@@ -1,10 +1,12 @@
 import {
   AUTH_AWAY_TIMEOUT_MS,
+  AuthOperationTimeoutError,
   clearSessionAway,
   getAwayTimeRemaining,
   hasSessionAwayExpired,
   markSessionAway,
   readAwaySince,
+  withAuthTimeout,
 } from './authSession';
 
 describe('auth away-session policy', () => {
@@ -27,5 +29,17 @@ describe('auth away-session policy', () => {
     markSessionAway(3_000);
     clearSessionAway();
     expect(readAwaySince()).toBeNull();
+  });
+});
+
+describe('bounded auth operations', () => {
+  afterEach(() => jest.useRealTimers());
+
+  it('stops waiting when Supabase Auth does not answer', async () => {
+    jest.useFakeTimers();
+    const bounded = withAuthTimeout(new Promise<void>(() => {}), 250, 'Auth test');
+    const assertion = expect(bounded).rejects.toBeInstanceOf(AuthOperationTimeoutError);
+    jest.advanceTimersByTime(250);
+    await assertion;
   });
 });

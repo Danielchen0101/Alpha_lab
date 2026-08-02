@@ -2565,7 +2565,12 @@ def test_supabase_readiness_requires_two_final_failures_and_recovers(monkeypatch
         def execute(self):
             if self.should_fail:
                 raise TimeoutError("probe timed out")
-            return {"data": []}
+            return {"data": {
+                "contract": "20260802010716_v1",
+                "baseTables": True,
+                "workerLeaseRpc": True,
+                "pipelineConfigMergeRpc": True,
+            }}
 
     query = Query()
 
@@ -2574,16 +2579,7 @@ def test_supabase_readiness_requires_two_final_failures_and_recovers(monkeypatch
             return query
 
         def rpc(self, name, _arguments):
-            if name == "probe_pipeline_config_atomic_merge":
-                return type(
-                    "MergeContract",
-                    (),
-                    {
-                        "execute": lambda self: {
-                            "data": "20260726060000_v2"
-                        }
-                    },
-                )()
+            assert name == "probe_runtime_dependencies"
             return query
 
     monkeypatch.setattr(backend, "supabase_admin", Client())
@@ -2615,6 +2611,43 @@ def test_supabase_readiness_requires_two_final_failures_and_recovers(monkeypatch
     assert recovered["migrations"]["healthy"] is True
     assert recovered["migrations"]["pipelineConfigMergeRpc"] is True
     assert recovered["leases"]["healthy"] is True
+
+
+def test_supabase_readiness_supports_rolling_deploy_before_new_probe(monkeypatch):
+    class Rpc:
+        def __init__(self, result=None, error=None):
+            self.result = result
+            self.error = error
+
+        def execute(self):
+            if self.error:
+                raise self.error
+            return {"data": self.result}
+
+    class Client:
+        def rpc(self, name, _arguments):
+            if name == "probe_runtime_dependencies":
+                return Rpc(error=RuntimeError(
+                    "PGRST202 could not find public.probe_runtime_dependencies"
+                ))
+            assert name == "probe_pipeline_config_atomic_merge"
+            return Rpc(result="20260726060000_v2")
+
+    monkeypatch.setattr(backend, "supabase_admin", Client())
+    monkeypatch.setattr(backend, "SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setattr(backend, "SUPABASE_SERVICE_ROLE_KEY", "service-key")
+    monkeypatch.setattr(backend, "_strict_production_runtime", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        backend,
+        "_SUPABASE_READINESS_CACHE",
+        {"checkedAt": 0.0, "probeOk": None},
+    )
+
+    snapshot = backend._supabase_dependency_snapshot(force_probe=True)
+
+    assert snapshot["healthy"] is True
+    assert snapshot["migrations"]["pipelineConfigMergeRpc"] is True
+    assert snapshot["leases"]["healthy"] is True
 
 
 def test_supabase_readiness_fails_immediately_for_missing_lease_migration(monkeypatch):
@@ -2677,10 +2710,12 @@ def test_supabase_readiness_fails_immediately_for_missing_atomic_merge_rpc(
 
     class MissingAtomicMergeRpc:
         def execute(self):
-            raise RuntimeError(
-                "PGRST202 could not find the function "
-                "public.probe_pipeline_config_atomic_merge"
-            )
+            return {"data": {
+                "contract": "20260802010716_v1",
+                "baseTables": True,
+                "workerLeaseRpc": True,
+                "pipelineConfigMergeRpc": False,
+            }}
 
     calls = []
 
@@ -2690,7 +2725,7 @@ def test_supabase_readiness_fails_immediately_for_missing_atomic_merge_rpc(
 
         def rpc(self, name, arguments):
             calls.append((name, arguments))
-            if name == "probe_pipeline_config_atomic_merge":
+            if name == "probe_runtime_dependencies":
                 return MissingAtomicMergeRpc()
             return Query()
 
@@ -2713,4 +2748,4 @@ def test_supabase_readiness_fails_immediately_for_missing_atomic_merge_rpc(
     assert snapshot["migrations"]["contractFailure"] is True
     assert snapshot["migrations"]["pipelineConfigMergeRpc"] is False
     assert snapshot["leases"]["healthy"] is True
-    assert calls[-1] == ("probe_pipeline_config_atomic_merge", {})
+    assert calls[-1] == ("probe_runtime_dependencies", {})

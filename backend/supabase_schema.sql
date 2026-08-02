@@ -144,6 +144,12 @@ BEGIN
     END LOOP;
   END IF;
 
+  -- Avoid a new tuple version, WAL, indexes and updated_at churn when a
+  -- scheduler repeats the exact same runtime state.
+  IF v_merged IS NOT DISTINCT FROM v_current THEN
+    RETURN v_current;
+  END IF;
+
   BEGIN
     v_next_run_at := NULLIF(v_merged->>'next_run_at', '')::TIMESTAMPTZ;
   EXCEPTION WHEN invalid_datetime_format THEN
@@ -200,6 +206,45 @@ $$;
 REVOKE ALL ON FUNCTION public.probe_pipeline_config_atomic_merge()
   FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.probe_pipeline_config_atomic_merge()
+  TO service_role;
+
+CREATE OR REPLACE FUNCTION public.probe_runtime_dependencies()
+RETURNS JSONB
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = public
+AS $$
+  SELECT jsonb_build_object(
+    'contract', '20260802010716_v1',
+    'baseTables',
+      to_regclass('public.user_pipeline_auto_configs') IS NOT NULL
+      AND to_regclass('public.user_api_configs') IS NOT NULL
+      AND to_regclass('public.app_worker_leases') IS NOT NULL,
+    'pipelineConfigMergeRpc',
+      to_regprocedure(
+        'public.merge_user_pipeline_auto_config(uuid,jsonb,text[])'
+      ) IS NOT NULL
+      AND has_function_privilege(
+        'service_role',
+        'public.merge_user_pipeline_auto_config(uuid,jsonb,text[])',
+        'EXECUTE'
+      ),
+    'workerLeaseRpc',
+      to_regprocedure(
+        'public.renew_app_worker_lease(text,text,bigint,integer,jsonb)'
+      ) IS NOT NULL
+      AND has_function_privilege(
+        'service_role',
+        'public.renew_app_worker_lease(text,text,bigint,integer,jsonb)',
+        'EXECUTE'
+      )
+  );
+$$;
+
+REVOKE ALL ON FUNCTION public.probe_runtime_dependencies()
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.probe_runtime_dependencies()
   TO service_role;
 
 -- Pipeline Auto Run History

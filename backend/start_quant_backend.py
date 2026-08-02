@@ -237,7 +237,7 @@ SUPABASE_OPERATIONS_LOCK_TIMEOUT_SECONDS = _bounded_float_env(
     'SUPABASE_OPERATIONS_LOCK_TIMEOUT_SECONDS', 1.0, 0.1, 2.0,
 )
 SUPABASE_READINESS_INTERVAL_SECONDS = _bounded_float_env(
-    'SUPABASE_READINESS_INTERVAL_SECONDS', 15.0, 5.0, 60.0,
+    'SUPABASE_READINESS_INTERVAL_SECONDS', 30.0, 10.0, 120.0,
 )
 
 
@@ -444,57 +444,72 @@ def _run_supabase_readiness_probe(*, force=False, now_ts=None):
         lease_rpc_ok = previous.get('leaseRpcOk')
         pipeline_config_merge_rpc_ok = previous.get('pipelineConfigMergeRpcOk')
         migration_contract_failure = bool(previous.get('migrationContractFailure'))
-        probe_stage = 'base'
+        probe_stage = 'runtime_contract'
         try:
-            for table_name in ('user_pipeline_auto_configs', 'user_api_configs'):
-                _execute_postgrest_probe(
-                    probe_client.table(table_name).select('user_id').limit(1)
+            try:
+                contract_response = _execute_postgrest_probe(
+                    probe_client.rpc('probe_runtime_dependencies', {})
                 )
-            _execute_postgrest_probe(
-                probe_client.table('app_worker_leases').select(
-                    'lease_name,owner_id,fencing_token,lease_expires_at'
-                ).limit(1)
-            )
-            # A nonexistent generation returns false without mutating a lease.
-            _execute_postgrest_probe(
-                probe_client.rpc(
-                    'renew_app_worker_lease',
-                    {
-                        'p_lease_name': 'runtime-readiness-contract',
-                        'p_owner_id': 'runtime-readiness-contract',
-                        'p_fencing_token': 1,
-                        'p_ttl_seconds': 5,
-                        'p_metadata': {'component': 'runtime_readiness'},
-                    },
+            except Exception as runtime_contract_error:
+                runtime_contract_text = (
+                    '%s %s'
+                    % (type(runtime_contract_error).__name__, runtime_contract_error)
+                ).lower()
+                if not any(marker in runtime_contract_text for marker in (
+                    'pgrst202', 'could not find the function',
+                    'probe_runtime_dependencies', 'schema cache',
+                )):
+                    raise
+                # Rolling-deploy compatibility: the optimized one-query probe
+                # may reach a backend before its additive migration. The
+                # existing side-effect-free merge probe still proves the live
+                # database and critical runtime schema without any table write.
+                legacy_response = _execute_postgrest_probe(
+                    probe_client.rpc('probe_pipeline_config_atomic_merge', {})
                 )
+                legacy_data = (
+                    legacy_response.get('data')
+                    if isinstance(legacy_response, dict)
+                    else getattr(legacy_response, 'data', None)
+                )
+                if legacy_data != '20260726060000_v2':
+                    raise runtime_contract_error
+                contract_response = {'data': {
+                    'contract': '20260802010716_v1',
+                    'baseTables': True,
+                    'workerLeaseRpc': True,
+                    'pipelineConfigMergeRpc': True,
+                }}
+            contract_data = (
+                contract_response.get('data')
+                if isinstance(contract_response, dict)
+                else getattr(contract_response, 'data', None)
             )
-            migration_ok = True
-            lease_rpc_ok = True
-            probe_stage = 'pipeline_config_merge'
-            pipeline_config_merge_rpc_ok = False
-            merge_contract_response = _execute_postgrest_probe(
-                probe_client.rpc('probe_pipeline_config_atomic_merge', {})
+            if not isinstance(contract_data, dict):
+                raise RuntimeError('runtime dependency RPC returned invalid data')
+            if contract_data.get('contract') != '20260802010716_v1':
+                raise RuntimeError('runtime dependency RPC contract mismatch')
+            migration_ok = bool(contract_data.get('baseTables'))
+            lease_rpc_ok = bool(contract_data.get('workerLeaseRpc'))
+            pipeline_config_merge_rpc_ok = bool(
+                contract_data.get('pipelineConfigMergeRpc')
             )
-            merge_contract_data = (
-                merge_contract_response.get('data')
-                if isinstance(merge_contract_response, dict)
-                else getattr(merge_contract_response, 'data', None)
-            )
-            if merge_contract_data != '20260726060000_v2':
-                raise RuntimeError('pipeline config merge RPC contract mismatch')
-            pipeline_config_merge_rpc_ok = True
             migration_contract_failure = False
-            probe_ok = True
+            probe_ok = bool(
+                migration_ok and lease_rpc_ok and pipeline_config_merge_rpc_ok
+            )
+            if not probe_ok:
+                migration_contract_failure = True
+                raise RuntimeError('runtime dependency RPC contract mismatch')
             probe_failures = 0
             probe_last_success = time.time()
             probe_failure_type = ''
         except Exception as probe_error:
             probe_ok = False
-            if probe_stage == 'pipeline_config_merge':
-                pipeline_config_merge_rpc_ok = False
-            else:
+            if not isinstance(locals().get('contract_data'), dict):
                 migration_ok = False
                 lease_rpc_ok = False
+                pipeline_config_merge_rpc_ok = False
             probe_error_text = (
                 '%s %s' % (type(probe_error).__name__, probe_error)
             ).lower()
@@ -503,7 +518,8 @@ def _run_supabase_readiness_probe(*, force=False, now_ts=None):
                 for marker in (
                     'pgrst202', 'pgrst204', 'pgrst205',
                     'could not find the function', 'does not exist',
-                    'schema cache', 'pipeline config merge rpc contract mismatch',
+                    'schema cache', 'runtime dependency rpc contract mismatch',
+                    'runtime dependency rpc returned invalid data',
                 )
             )
             probe_failures += 1
@@ -2400,15 +2416,23 @@ def _process_discord_retry_queue(user_id):
 
 
 def _discord_retry_scheduler_loop():
+    lease_refresh_at = 0.0
+    owns_cached_lease = False
     while True:
         try:
             owner_id = '%s:%s' % (_DISCORD_RETRY_OWNER, os.getpid())
-            owns_lease = operations_store.claim_worker_lease(
-                'discord-notification-retry',
-                owner_id,
-                ttl_seconds=300,
-                metadata={'component': 'discord_notification_retry'},
-            )
+            now_monotonic = time.monotonic()
+            if owns_cached_lease and now_monotonic < lease_refresh_at:
+                owns_lease = True
+            else:
+                owns_lease = operations_store.claim_worker_lease(
+                    'discord-notification-retry',
+                    owner_id,
+                    ttl_seconds=300,
+                    metadata={'component': 'discord_notification_retry'},
+                )
+                owns_cached_lease = bool(owns_lease)
+                lease_refresh_at = now_monotonic + 90 if owns_lease else 0.0
             if owns_lease:
                 users = operations_store.list_scheduler_artifact_user_ids(
                     _DISCORD_RETRY_ARTIFACT_TYPE,
@@ -40955,6 +40979,7 @@ _PA_MANAGED_CONFIG_WRITE_LOCK = threading.Lock()
 _PA_POSITION_GUARD_STATE = {}
 _PA_POSITION_GUARD_LOCK = threading.Lock()
 _PA_POSITION_GUARD_INTERVAL_SECONDS = 60
+_PA_POSITION_GUARD_DURABLE_HEARTBEAT_SECONDS = 5 * 60
 _PA_PROCESS_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -48281,13 +48306,24 @@ def _pa_maybe_start_position_guard(uid, config, now_et, mode, risk_profile,
             summary['orderLifecycle'] = lifecycle
             summary_error = str(summary.get('error') or '').strip()
             durable_cfg = _pa_get_config(uid) or dict(config or {})
-            _pa_patch_config(uid, {
-                'position_guard_has_open_positions': bool(
-                    int(summary.get('holdingsScanned') or 0) > 0
-                ),
-                'position_guard_last_heartbeat_at': _pa_utc_iso(),
-                'position_guard_last_error': summary_error,
-            })
+            has_open_positions = bool(int(summary.get('holdingsScanned') or 0) > 0)
+            guard_patch = {}
+            if durable_cfg.get('position_guard_has_open_positions') is not has_open_positions:
+                guard_patch['position_guard_has_open_positions'] = has_open_positions
+            if str(durable_cfg.get('position_guard_last_error') or '') != summary_error:
+                guard_patch['position_guard_last_error'] = summary_error
+            last_durable_heartbeat = durable_cfg.get('position_guard_last_heartbeat_at')
+            try:
+                heartbeat_age = (
+                    datetime.now(timezone.utc)
+                    - dateutil.parser.isoparse(str(last_durable_heartbeat)).astimezone(timezone.utc)
+                ).total_seconds()
+            except Exception:
+                heartbeat_age = float('inf')
+            if guard_patch or heartbeat_age >= _PA_POSITION_GUARD_DURABLE_HEARTBEAT_SECONDS:
+                guard_patch['position_guard_last_heartbeat_at'] = _pa_utc_iso()
+            if guard_patch:
+                _pa_patch_config(uid, guard_patch)
             material_signals = [
                 signal for signal in (summary.get('signals') or [])
                 if signal.get('triggerAction') == 'emergency_exit'
@@ -48367,10 +48403,12 @@ def _pa_maybe_start_position_guard(uid, config, now_et, mode, risk_profile,
                 'reason': error,
                 'action': 'Protection monitoring will retry automatically.',
             })
-            _pa_patch_config(uid, {
-                'position_guard_last_heartbeat_at': _pa_utc_iso(),
-                'position_guard_last_error': error,
-            })
+            durable_cfg = _pa_get_config(uid) or dict(config or {})
+            if str(durable_cfg.get('position_guard_last_error') or '') != error:
+                _pa_patch_config(uid, {
+                    'position_guard_last_heartbeat_at': _pa_utc_iso(),
+                    'position_guard_last_error': error,
+                })
         finally:
             with _PA_POSITION_GUARD_LOCK:
                 previous = _PA_POSITION_GUARD_STATE.get(uid, {})
@@ -50816,13 +50854,12 @@ def _pa_scheduler_loop():
                         # No full pipeline is due. Run the lightweight protection
                         # guard under the same per-user routing lease, then save
                         # the scheduling decision for frontend visibility.
-                        config['last_decision'] = decision
-                        if computed_next_run:
-                            config['next_run_at'] = computed_next_run
                         scheduler_patch = {'last_decision': decision}
                         if computed_next_run:
                             scheduler_patch['next_run_at'] = computed_next_run
-                        _pa_patch_config(uid, scheduler_patch)
+                        if any(config.get(key) != value for key, value in scheduler_patch.items()):
+                            _pa_patch_config(uid, scheduler_patch)
+                        config.update(scheduler_patch)
                         _pa_maybe_start_position_guard(
                             uid, config, now_et, mode, _sched_risk, _sched_horizon,
                             _sched_trade, is_open,
@@ -53712,18 +53749,30 @@ _KALSHI_WORKER_OWNER = '{}:{}'.format(
     os.environ.get('RENDER_INSTANCE_ID') or os.environ.get('HOSTNAME') or 'local',
     _uuid.uuid4().hex,
 )
+_KALSHI_LEASE_CACHE_LOCK = threading.Lock()
+_KALSHI_LEASE_REFRESH_AT = 0.0
+_KALSHI_LEASE_REFRESH_SECONDS = 40.0
 
 
 def _kalshi_claim_scheduler_lease():
-    return operations_store.claim_worker_lease(
-        'kalshi-btc15-robot',
-        _KALSHI_WORKER_OWNER,
-        # A complete Real cycle performs several bounded network reads before
-        # persisting state.  Fifteen seconds allowed a second backend host to
-        # take ownership mid-cycle and caused repeated CAS conflicts.
-        ttl_seconds=120,
-        metadata={'component': 'kalshi_robot', 'series': 'KXBTC15M'},
-    )
+    global _KALSHI_LEASE_REFRESH_AT
+    now_monotonic = time.monotonic()
+    with _KALSHI_LEASE_CACHE_LOCK:
+        if now_monotonic < _KALSHI_LEASE_REFRESH_AT:
+            return True
+        claimed = operations_store.claim_worker_lease(
+            'kalshi-btc15-robot',
+            _KALSHI_WORKER_OWNER,
+            # A complete Real cycle performs several bounded network reads before
+            # persisting state.  Fifteen seconds allowed a second backend host to
+            # take ownership mid-cycle and caused repeated CAS conflicts.
+            ttl_seconds=120,
+            metadata={'component': 'kalshi_robot', 'series': 'KXBTC15M'},
+        )
+        _KALSHI_LEASE_REFRESH_AT = (
+            now_monotonic + _KALSHI_LEASE_REFRESH_SECONDS if claimed else 0.0
+        )
+        return bool(claimed)
 
 
 _KALSHI_API_CONTROLS = register_kalshi_api(
