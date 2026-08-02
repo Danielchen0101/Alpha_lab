@@ -1247,7 +1247,7 @@ def test_routine_wait_decisions_never_upload_full_durable_heartbeats(tmp_path):
     assert len(calls) == 1
 
 
-def test_repeated_identical_errors_do_not_rewrite_full_durable_state(tmp_path):
+def test_transient_errors_never_rewrite_full_durable_state(tmp_path):
     calls = []
 
     def save(_user_id, payload):
@@ -1262,10 +1262,18 @@ def test_repeated_identical_errors_do_not_rewrite_full_durable_state(tmp_path):
     store.error("user-a", "ReadTimeout")
     store.error("user-a", "ReadTimeout")
     store.error("user-a", "ReadTimeout")
-    assert len(calls) == 1
+    assert calls == []
 
     store.error("user-a", "OperationsStoreUnavailable")
-    assert len(calls) == 2
+    assert calls == []
+
+    decision = {
+        "action": "WAIT",
+        "config": {"executionMode": "real"},
+        "market": {"ticker": "KXBTC15M-RECOVERED"},
+    }
+    store.record("user-a", decision)
+    assert calls == []
 
 
 def test_durable_payload_omits_rebuildable_mirrors_and_legacy_learning(tmp_path):

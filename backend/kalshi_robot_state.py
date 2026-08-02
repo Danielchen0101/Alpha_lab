@@ -1197,7 +1197,6 @@ class KalshiRobotState:
                 or state.get("config", {}).get("executionMode")
             )
             bucket = self._mode_bucket(state, environment)
-            previous_error = state.get("lastError") or bucket.get("lastError")
             row = {
                 "generatedAt": decision.get("generatedAt") or _now(),
                 "environment": environment,
@@ -1319,7 +1318,6 @@ class KalshiRobotState:
             material_change = bool(
                 order
                 or row["orderFilled"]
-                or previous_error
                 or action not in {"", "WAIT", "HOLD", "SKIP", "NO_TRADE"}
             )
             # Routine WAIT/HOLD decisions are an in-memory operator view.  A
@@ -1608,18 +1606,17 @@ class KalshiRobotState:
         with self._lock:
             state = self._state(user_id)
             normalized_message = str(message)[:300]
-            previous_error = str(state.get("lastError") or "")
             state["lastRunAt"] = _now()
             state["lastError"] = normalized_message
             bucket = self._mode_bucket(state, state.get("activeEnvironment") or (state.get("config") or {}).get("executionMode"))
-            bucket_error = str(bucket.get("lastError") or "")
             bucket["lastRunAt"] = state["lastRunAt"]
             bucket["lastError"] = state["lastError"]
-            if (
-                not callable(self._state_saver)
-                or previous_error != normalized_message
-                or bucket_error != normalized_message
-            ):
+            # Scheduler readiness already reports the current operational
+            # error. Persisting transient public-API failures rewrote the
+            # entire trading ledger on every error/recovery edge, which is
+            # especially expensive during Kalshi 503/rate-limit oscillation.
+            # Local-only mode may still snapshot this operator view.
+            if not callable(self._state_saver):
                 self._save_user(user_id)
 
     def reconcile_settlements(
