@@ -9,7 +9,8 @@ from flask import Flask, request, jsonify, has_request_context
 from datetime import datetime, timedelta, time as dt_time, timezone
 from zoneinfo import ZoneInfo
 from copy import deepcopy
-from io import BytesIO
+from io import BytesIO, StringIO
+import csv
 import html as _html
 import re
 import sys
@@ -18711,18 +18712,166 @@ def _market_intelligence_filter_watchlist_earnings(events, watchlist_symbols):
     )
 
 
+_MARKET_EARNINGS_CALENDAR_CACHE = {}
+_MARKET_EARNINGS_CALENDAR_CACHE_LOCK = threading.Lock()
+_MARKET_EARNINGS_CALENDAR_CACHE_TTL_SECONDS = 12 * 60 * 60
+_MARKET_EARNINGS_CALENDAR_FORCE_REFRESH_MIN_AGE_SECONDS = 30 * 60
+_MARKET_EARNINGS_CALENDAR_STALE_TTL_SECONDS = 7 * 24 * 60 * 60
+
+
+def _market_intelligence_alpha_vantage_config(environ=None):
+    """Resolve the shared server-side calendar provider without exposing its key."""
+    environ = os.environ if environ is None else environ
+    return {
+        'api_key': _safe_str(environ.get('ALPHA_VANTAGE_API_KEY')).strip(),
+        'base_url': _safe_str(
+            environ.get('ALPHA_VANTAGE_BASE_URL') or 'https://www.alphavantage.co/query'
+        ).strip(),
+    }
+
+
+def _market_intelligence_alpha_vantage_hour(value):
+    normalized = re.sub(r'[^a-z]+', '-', _safe_str(value).strip().lower()).strip('-')
+    if normalized in {'pre-market', 'before-market', 'bmo'}:
+        return 'bmo'
+    if normalized in {'post-market', 'after-market', 'amc'}:
+        return 'amc'
+    if normalized in {'during-market', 'market-hours', 'dmh'}:
+        return 'dmh'
+    return None
+
+
+def _market_intelligence_parse_alpha_vantage_earnings(csv_text):
+    text = _safe_str(csv_text).lstrip('\ufeff').strip()
+    if not text:
+        raise ValueError('empty_response')
+    if text.startswith('{'):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError('invalid_response') from exc
+        if isinstance(payload, dict) and any(
+            payload.get(key) for key in ('Error Message', 'Information', 'Note')
+        ):
+            raise ValueError('provider_limit_or_error')
+        raise ValueError('unexpected_json_response')
+
+    reader = csv.DictReader(StringIO(text))
+    required_fields = {'symbol', 'reportDate'}
+    if not reader.fieldnames or not required_fields.issubset(set(reader.fieldnames)):
+        raise ValueError('invalid_csv_header')
+
+    events = []
+    for row in reader:
+        if not isinstance(row, dict):
+            continue
+        symbol = _inst_clean_symbol(row.get('symbol'))
+        report_date = _safe_str(row.get('reportDate')).strip()
+        if not symbol or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', report_date):
+            continue
+        fiscal_date = _safe_str(row.get('fiscalDateEnding')).strip()
+        estimate = _inst_to_float(row.get('estimate'), None)
+        event = {
+            'date': report_date,
+            'symbol': symbol,
+            'hour': _market_intelligence_alpha_vantage_hour(row.get('timeOfTheDay')),
+            'epsEstimate': estimate,
+            'epsActual': None,
+            'revenueEstimate': None,
+            'revenueActual': None,
+            'dateStatus': 'provider_expected',
+            'source': 'Alpha Vantage earnings calendar',
+            'companyName': _safe_str(row.get('name')).strip() or None,
+            'fiscalDateEnding': fiscal_date or None,
+            'currency': _safe_str(row.get('currency')).strip() or None,
+        }
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', fiscal_date):
+            event['year'] = int(fiscal_date[:4])
+            event['quarter'] = ((int(fiscal_date[5:7]) - 1) // 3) + 1
+        events.append(event)
+    return events
+
+
+def _market_intelligence_fetch_shared_earnings(*, force_refresh=False):
+    """Fetch the global calendar once and share the cached result across all users."""
+    config = _market_intelligence_alpha_vantage_config()
+    if not config.get('api_key'):
+        return [], {
+            'status': 'not_configured', 'error': 'alpha_vantage_not_configured',
+            'cache': {'status': 'unavailable'},
+        }
+
+    now = time.time()
+    with _MARKET_EARNINGS_CALENDAR_CACHE_LOCK:
+        cached_events = _MARKET_EARNINGS_CALENDAR_CACHE.get('events')
+        fetched_at = float(_MARKET_EARNINGS_CALENDAR_CACHE.get('fetchedAt') or 0)
+        age_seconds = max(0, int(now - fetched_at)) if fetched_at else None
+        fresh = isinstance(cached_events, list) and age_seconds is not None and (
+            age_seconds < _MARKET_EARNINGS_CALENDAR_CACHE_TTL_SECONDS
+        )
+        refresh_too_soon = bool(force_refresh and fresh and (
+            age_seconds < _MARKET_EARNINGS_CALENDAR_FORCE_REFRESH_MIN_AGE_SECONDS
+        ))
+        if fresh and (not force_refresh or refresh_too_soon):
+            return deepcopy(cached_events), {
+                'status': 'ready', 'error': None,
+                'cache': {'status': 'hit', 'ageSeconds': age_seconds},
+            }
+
+        try:
+            response = requests.get(
+                config.get('base_url'),
+                params={
+                    'function': 'EARNINGS_CALENDAR',
+                    'horizon': '3month',
+                    'apikey': config.get('api_key'),
+                },
+                headers={'Accept': 'text/csv,application/x-download;q=0.9,*/*;q=0.5'},
+                timeout=(3.05, 20),
+            )
+            if response.status_code != 200:
+                raise ValueError('http_%s' % response.status_code)
+            events = _market_intelligence_parse_alpha_vantage_earnings(response.text)
+            if not events:
+                raise ValueError('empty_calendar')
+            _MARKET_EARNINGS_CALENDAR_CACHE.clear()
+            _MARKET_EARNINGS_CALENDAR_CACHE.update({
+                'events': events,
+                'fetchedAt': time.time(),
+            })
+            return deepcopy(events), {
+                'status': 'ready', 'error': None,
+                'cache': {'status': 'refresh' if force_refresh else 'miss', 'ageSeconds': 0},
+            }
+        except Exception as exc:
+            error = 'alpha_vantage_%s' % (
+                _safe_str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+            )
+            stale_age = max(0, int(time.time() - fetched_at)) if fetched_at else None
+            if isinstance(cached_events, list) and stale_age is not None and (
+                stale_age < _MARKET_EARNINGS_CALENDAR_STALE_TTL_SECONDS
+            ):
+                return deepcopy(cached_events), {
+                    'status': 'stale', 'error': error,
+                    'cache': {'status': 'stale', 'ageSeconds': stale_age},
+                }
+            return [], {
+                'status': 'unavailable', 'error': error,
+                'cache': {'status': 'unavailable'},
+            }
+
+
 def _market_intelligence_fetch_watchlist_earnings(
-    finnhub_cfg,
     watchlist_symbols,
     *,
     days_forward=30,
     force_refresh=False,
 ):
-    """Query Finnhub per symbol so its capped global calendar cannot omit Watchlist names."""
+    """Filter the shared Alpha Vantage batch calendar to the current Watchlist."""
     symbols = _market_intelligence_watchlist_symbols({'symbols': watchlist_symbols})[:60]
-    if not symbols or not finnhub_cfg or not finnhub_cfg.get('api_key'):
+    if not symbols:
         return [], {
-            'status': 'not_configured' if symbols else 'empty_watchlist',
+            'status': 'empty_watchlist',
             'requestedSymbols': len(symbols),
             'symbolsWithEvents': [],
             'symbolsWithoutEvents': symbols,
@@ -18730,69 +18879,28 @@ def _market_intelligence_fetch_watchlist_earnings(
         }
     start_date = datetime.now(ZoneInfo('America/New_York')).date()
     end_date = start_date + timedelta(days=max(7, min(int(days_forward or 30), 90)))
-    cache_seed = ','.join(symbols)
-    cache_key = 'market_watchlist_earnings_%s_%s_%s' % (
-        hashlib.sha256(cache_seed.encode('utf-8')).hexdigest()[:16],
-        start_date.isoformat(), end_date.isoformat(),
+    shared_events, provider_status = _market_intelligence_fetch_shared_earnings(
+        force_refresh=force_refresh,
     )
-    cached = None if force_refresh else stock_cache.get(cache_key)
-    if isinstance(cached, dict):
-        return deepcopy(cached.get('events') or []), deepcopy(cached.get('coverage') or {})
-
-    base_url = finnhub_cfg.get('base_url', 'https://finnhub.io/api/v1').rstrip('/')
-    api_key = finnhub_cfg.get('api_key')
-
-    def fetch_symbol(symbol):
-        try:
-            response = requests.get(
-                '%s/calendar/earnings' % base_url,
-                params={
-                    'from': start_date.isoformat(),
-                    'to': end_date.isoformat(),
-                    'symbol': symbol,
-                    'token': api_key,
-                },
-                timeout=(3.05, 12),
-            )
-            if response.status_code != 200:
-                return symbol, [], 'http_%s' % response.status_code
-            payload = response.json() if response.content else {}
-            rows = payload.get('earningsCalendar') if isinstance(payload, dict) else []
-            return symbol, rows if isinstance(rows, list) else [], None
-        except Exception as exc:
-            return symbol, [], type(exc).__name__
-
-    raw_events = []
-    errors = []
-    with ThreadPoolExecutor(max_workers=min(8, max(1, len(symbols)))) as executor:
-        futures = [executor.submit(fetch_symbol, symbol) for symbol in symbols]
-        for future in as_completed(futures):
-            symbol, rows, error = future.result()
-            if error:
-                errors.append('%s_%s' % (symbol, error))
-                continue
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                event = dict(row)
-                event['symbol'] = _inst_clean_symbol(event.get('symbol') or symbol)
-                event['dateStatus'] = 'provider_scheduled'
-                event['source'] = 'Finnhub per-symbol earnings calendar'
-                raw_events.append(event)
-
-    events = _market_intelligence_filter_watchlist_earnings(raw_events, symbols)
+    window_events = [
+        event for event in shared_events
+        if start_date.isoformat() <= _safe_str(event.get('date')) <= end_date.isoformat()
+    ]
+    events = _market_intelligence_filter_watchlist_earnings(window_events, symbols)
     with_events = sorted({_inst_clean_symbol(event.get('symbol')) for event in events})
+    provider_error = provider_status.get('error')
     coverage = {
-        'status': 'ready' if not errors else 'partial',
+        'status': provider_status.get('status') or 'unavailable',
         'requestedSymbols': len(symbols),
         'symbolsWithEvents': with_events,
         'symbolsWithoutEvents': [symbol for symbol in symbols if symbol not in set(with_events)],
-        'errors': errors,
+        'errors': [provider_error] if provider_error else [],
         'windowStart': start_date.isoformat(),
         'windowEnd': end_date.isoformat(),
-        'method': 'per_symbol',
+        'method': 'shared_batch',
+        'provider': 'Alpha Vantage',
+        'cache': provider_status.get('cache') or {},
     }
-    stock_cache.set(cache_key, {'events': events, 'coverage': coverage})
     return events, coverage
 
 
@@ -19368,23 +19476,13 @@ def trade_intelligence_calendar():
     sources = []
     finnhub_cfg, finnhub_status = resolve_finnhub_config_strict_user()
     if watchlist_symbols:
-        if finnhub_status == 'ok':
-            earnings, earnings_coverage = _market_intelligence_fetch_watchlist_earnings(
-                finnhub_cfg,
-                watchlist_symbols,
-                days_forward=days_forward,
-                force_refresh=force_refresh,
-            )
-            earnings_error = '; '.join(earnings_coverage.get('errors') or []) or None
-            sources.append('Finnhub per-symbol earnings calendar')
-        else:
-            earnings_error = 'finnhub_not_configured'
-            earnings_coverage = {
-                **earnings_coverage,
-                'status': 'not_configured',
-                'requestedSymbols': len(watchlist_symbols),
-                'symbolsWithoutEvents': watchlist_symbols,
-            }
+        earnings, earnings_coverage = _market_intelligence_fetch_watchlist_earnings(
+            watchlist_symbols,
+            days_forward=days_forward,
+            force_refresh=force_refresh,
+        )
+        earnings_error = '; '.join(earnings_coverage.get('errors') or []) or None
+        sources.append('Alpha Vantage earnings calendar')
 
     economic_calendar = _market_intelligence_official_economic_events(days_forward, force_refresh=force_refresh)
     economic_events = economic_calendar.get('events') or []
