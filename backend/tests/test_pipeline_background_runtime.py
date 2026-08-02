@@ -2650,6 +2650,49 @@ def test_supabase_readiness_supports_rolling_deploy_before_new_probe(monkeypatch
     assert snapshot["leases"]["healthy"] is True
 
 
+def test_kalshi_scheduler_lease_caches_successful_renewal(monkeypatch):
+    calls = []
+    now = [100.0]
+    monkeypatch.setattr(backend.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        backend.operations_store,
+        "claim_worker_lease",
+        lambda *_args, **_kwargs: calls.append(now[0]) or True,
+    )
+    monkeypatch.setattr(backend, "_KALSHI_LEASE_NEXT_CHECK_AT", 0.0)
+    monkeypatch.setattr(backend, "_KALSHI_LEASE_CACHED_RESULT", False)
+
+    assert backend._kalshi_claim_scheduler_lease() is True
+    now[0] = 110.0
+    assert backend._kalshi_claim_scheduler_lease() is True
+    assert calls == [100.0]
+
+    now[0] = 141.0
+    assert backend._kalshi_claim_scheduler_lease() is True
+    assert calls == [100.0, 141.0]
+
+
+def test_kalshi_scheduler_lease_backs_off_after_dependency_failure(monkeypatch):
+    calls = []
+    now = [200.0]
+    monkeypatch.setattr(backend.time, "monotonic", lambda: now[0])
+
+    def fail(*_args, **_kwargs):
+        calls.append(now[0])
+        raise RuntimeError("Supabase unavailable")
+
+    monkeypatch.setattr(backend.operations_store, "claim_worker_lease", fail)
+    monkeypatch.setattr(backend, "_KALSHI_LEASE_NEXT_CHECK_AT", 0.0)
+    monkeypatch.setattr(backend, "_KALSHI_LEASE_CACHED_RESULT", False)
+
+    with pytest.raises(RuntimeError, match="Supabase unavailable"):
+        backend._kalshi_claim_scheduler_lease()
+
+    now[0] = 205.0
+    assert backend._kalshi_claim_scheduler_lease() is False
+    assert calls == [200.0]
+
+
 def test_supabase_readiness_fails_immediately_for_missing_lease_migration(monkeypatch):
     class Query:
         def select(self, *_args, **_kwargs):
