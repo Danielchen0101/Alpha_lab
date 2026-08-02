@@ -1167,6 +1167,10 @@ def test_robot_state_mutations_persist_only_the_target_user(tmp_path):
         "config": {"executionMode": "paper"},
         "market": {"ticker": "KXBTC15M-TARGET"},
         "edge": {"fairProbability": 0.70, "price": 0.50, "netEdge": 0.10},
+    }, {
+        "order_id": "order-target-1",
+        "status": "resting",
+        "count": 1,
     })
     assert calls == ["user-a"]
     assert store._users["user-a"]["_operationsVersion"] == 3
@@ -1243,6 +1247,18 @@ def test_routine_wait_decisions_never_upload_full_durable_heartbeats(tmp_path):
         "generatedAt": "2026-07-26T12:01:15Z",
         "action": "BUY_YES",
         "blockingReasons": [],
+    })
+    assert calls == []
+
+    store.record("user-a", {
+        **decision,
+        "generatedAt": "2026-07-26T12:01:20Z",
+        "action": "BUY_YES",
+        "blockingReasons": [],
+    }, {
+        "order_id": "order-1",
+        "status": "resting",
+        "count": 1,
     })
     assert len(calls) == 1
 
