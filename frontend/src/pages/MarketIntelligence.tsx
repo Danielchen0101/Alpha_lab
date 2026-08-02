@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, Button, Empty, Skeleton, Tag } from 'antd';
 import {
   CalendarOutlined,
+  BulbOutlined,
+  ClockCircleOutlined,
   FileTextOutlined,
   GlobalOutlined,
   ReloadOutlined,
@@ -67,6 +69,8 @@ const MarketIntelligence: React.FC = () => {
     macroEvents: '项宏观事件', actual: '实际值', forecast: '预期值', previous: '前值', importance: '影响', high: '高', medium: '中', low: '低',
     watchlistSummary: '只显示 Watchlist 中股票的财报', watchlistStocks: '只股票', manageWatchlist: '管理 Watchlist', emptyWatchlist: 'Watchlist 还是空的，请先添加股票。',
     unavailable: '数据暂不可用', retry: '重新加载', source: '数据源', asOf: '截至', noEarnings: 'Watchlist 中的股票未来 30 天暂无已知财报。',
+    aiBrief: 'AI 市场简报', aiDrivers: '主要驱动', aiWatch: '重点观察', aiPending: 'AI 正在后台生成简报，完成后会自动进入缓存。', aiNotConfigured: '配置 AI 后可生成双语市场简报。', aiConfidence: 'AI 置信度',
+    moverScope: '仅限 SPY 与 QQQ 成分股', autoRefresh: '新闻每 5 分钟自动刷新', aiAnalysis: 'AI 双语分析', impactType: '影响类型', horizon: '影响周期', nextCatalyst: '下一个高影响事件',
   } : {
     eyebrow: 'Stock trading · Fundamental intelligence', title: 'Market intelligence', subtitle: 'Connect market breadth, theme rotation, news impact, and key events in one decision surface.',
     pulse: 'Macro pulse', themes: 'Theme breadth', news: 'News impact', calendar: 'Event calendar', refresh: 'Refresh',
@@ -82,6 +86,8 @@ const MarketIntelligence: React.FC = () => {
     macroEvents: 'macro events', actual: 'Actual', forecast: 'Forecast', previous: 'Previous', importance: 'Impact', high: 'High', medium: 'Medium', low: 'Low',
     watchlistSummary: 'Only earnings for Watchlist symbols', watchlistStocks: 'stocks', manageWatchlist: 'Manage Watchlist', emptyWatchlist: 'Your Watchlist is empty. Add stocks to see their earnings dates.',
     unavailable: 'Data unavailable', retry: 'Retry', source: 'Sources', asOf: 'As of', noEarnings: 'No known earnings are scheduled for your Watchlist in the next 30 days.',
+    aiBrief: 'AI market brief', aiDrivers: 'Primary drivers', aiWatch: 'Watchpoints', aiPending: 'The AI brief is being generated in the background and will be cached.', aiNotConfigured: 'Configure an AI provider to generate the bilingual market brief.', aiConfidence: 'AI confidence',
+    moverScope: 'SPY & QQQ constituents only', autoRefresh: 'News refreshes every 5 minutes', aiAnalysis: 'Bilingual AI analysis', impactType: 'Impact type', horizon: 'Horizon', nextCatalyst: 'Next high-impact event',
   };
 
   const load = useCallback(async (force = false) => {
@@ -91,7 +97,7 @@ const MarketIntelligence: React.FC = () => {
       if (view === 'pulse' || view === 'themes') {
         setPulse(await getMarketRiskSnapshot(force));
       } else if (view === 'news') {
-        setNews(await getMarketIntelligenceNews(1));
+        setNews(await getMarketIntelligenceNews(1, force));
       } else {
         setCalendar(await getMarketIntelligenceCalendar(30, force));
       }
@@ -104,16 +110,22 @@ const MarketIntelligence: React.FC = () => {
 
   useEffect(() => { void load(false); }, [load]);
 
+  useEffect(() => {
+    if (view !== 'news') return undefined;
+    const timer = window.setInterval(() => { void load(false); }, 5 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [load, view]);
+
   const openSymbol = (symbol: string) => {
     rememberMarketSymbol(symbol);
     navigate(marketSymbolPath(symbol));
   };
 
   const tabs = [
-    { key: 'pulse', label: copy.pulse, path: '/trade/intelligence', icon: <GlobalOutlined /> },
-    { key: 'themes', label: copy.themes, path: '/trade/intelligence/themes', icon: <RiseOutlined /> },
-    { key: 'news', label: copy.news, path: '/trade/intelligence/news', icon: <FileTextOutlined /> },
-    { key: 'calendar', label: copy.calendar, path: '/trade/intelligence/calendar', icon: <CalendarOutlined /> },
+    { key: 'pulse', label: copy.pulse, path: '/market/intelligence', icon: <GlobalOutlined /> },
+    { key: 'themes', label: copy.themes, path: '/market/intelligence/themes', icon: <RiseOutlined /> },
+    { key: 'news', label: copy.news, path: '/market/intelligence/news', icon: <FileTextOutlined /> },
+    { key: 'calendar', label: copy.calendar, path: '/market/intelligence/calendar', icon: <CalendarOutlined /> },
   ];
 
   const asOf = pulse?.asOf || news?.generatedAt || calendar?.generatedAt;
@@ -166,6 +178,7 @@ const Movers: React.FC<{ title: string; rows: MarketRiskConstituent[]; onSymbol:
 
 const PulseView: React.FC<{ data: MarketRiskSnapshotResponse; copy: any; onSymbol: (symbol: string) => void }> = ({ data, copy, onSymbol }) => {
   const snapshot = data.snapshot;
+  const brief = data.aiBrief;
   return <div className="mi-view">
     <section className="mi-ledger">
       <article><span>{copy.risk}</span><strong>{snapshot.riskScore.toFixed(0)}<i>/100</i></strong><small>{snapshot.riskLevel}</small></article>
@@ -174,13 +187,24 @@ const PulseView: React.FC<{ data: MarketRiskSnapshotResponse; copy: any; onSymbo
       <article><span>{copy.median}</span><strong className={snapshot.medianChangePct >= 0 ? 'is-up' : 'is-down'}>{signedPercent(snapshot.medianChangePct)}</strong><small>{signedPercent(snapshot.equalWeightChangePct)} equal weight</small></article>
       <article><span>{copy.coverage}</span><strong>{snapshot.validCount.toLocaleString()}</strong><small>{snapshot.coveragePct.toFixed(1)}% / {snapshot.universeCount.toLocaleString()}</small></article>
     </section>
+    <section className="mi-ai-brief">
+      <header>
+        <span><BulbOutlined /> {copy.aiBrief}</span>
+        {brief?.status === 'ready' && <Tag color="geekblue">{copy.aiConfidence} {brief.confidence ?? '—'}%</Tag>}
+      </header>
+      {brief?.status === 'ready' ? <div className="mi-ai-brief-grid">
+        <div className="mi-ai-summary"><strong>{copy.regime}</strong><h2>{copy.aiBrief === 'AI 市场简报' ? brief.regimeZh : brief.regimeEn}</h2><p>{copy.aiBrief === 'AI 市场简报' ? brief.summaryZh : brief.summaryEn}</p><small>{brief.provider} · {brief.model}</small></div>
+        <div><strong>{copy.aiDrivers}</strong><ul>{((copy.aiBrief === 'AI 市场简报' ? brief.driversZh : brief.driversEn) || []).map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul></div>
+        <div><strong>{copy.aiWatch}</strong><ul>{((copy.aiBrief === 'AI 市场简报' ? brief.watchpointsZh : brief.watchpointsEn) || []).map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul></div>
+      </div> : <p className="mi-ai-empty">{brief?.status === 'not_configured' ? copy.aiNotConfigured : copy.aiPending}</p>}
+    </section>
     <div className="mi-two-column">
       <MoverStrip title={copy.benchmarks} rows={data.benchmarks} onSymbol={onSymbol} />
       <MoverStrip title={copy.sectors} rows={data.sectorEtfs} onSymbol={onSymbol} />
     </div>
     <div className="mi-two-column">
-      <Movers title={copy.gainers} rows={data.gainers || [...data.movers].sort((a, b) => b.changePct - a.changePct)} onSymbol={onSymbol} />
-      <Movers title={copy.losers} rows={data.losers || [...data.movers].sort((a, b) => a.changePct - b.changePct)} onSymbol={onSymbol} />
+      <Movers title={`${copy.gainers} · ${copy.moverScope}`} rows={data.gainers || [...data.movers].sort((a, b) => b.changePct - a.changePct)} onSymbol={onSymbol} />
+      <Movers title={`${copy.losers} · ${copy.moverScope}`} rows={data.losers || [...data.movers].sort((a, b) => a.changePct - b.changePct)} onSymbol={onSymbol} />
     </div>
   </div>;
 };
@@ -247,18 +271,32 @@ const localizedMarketImpact = (article: MarketNewsArticle, isZh: boolean) => {
 
 const NewsView: React.FC<{ data: MarketNewsResponse; copy: any; isZh: boolean }> = ({ data, copy, isZh }) => (
   <div className="mi-view">
-    <div className="mi-section-heading"><div><h2>{copy.newsTitle}</h2><p>{copy.newsHelp}</p></div><Tag>{data.count}</Tag></div>
+    <div className="mi-section-heading"><div><h2>{copy.newsTitle}</h2><p>{copy.newsHelp}</p><small className="mi-live-note"><ClockCircleOutlined /> {copy.autoRefresh} · AI {data.ai?.analyzedCount || 0}/{data.ai?.eligibleCount || 0}</small></div><Tag>{data.count}</Tag></div>
     {!data.articles.length ? <Empty description={copy.noNews} /> : <section className="mi-news-list">
-      {data.articles.map((article: MarketNewsArticle, index) => <article key={article.id || `${article.headline}-${index}`}>
+      {data.articles.map((article: MarketNewsArticle, index) => {
+        const ai = article.aiAnalysis;
+        const displayedHeadline = isZh && ai?.headlineZh ? ai.headlineZh : article.headline;
+        const displayedAnalysis = isZh ? ai?.analysisZh : ai?.analysisEn;
+        const displayedImpact = isZh ? ai?.marketImpactZh : ai?.marketImpactEn;
+        return <article key={article.id || `${article.headline}-${index}`} className={`mi-news-card is-${article.marketDirection}`}>
         <div className="mi-impact-score"><strong>{article.impactScore}</strong><span>{article.impactLevel}</span></div>
         <div className="mi-news-body">
           <div className="mi-news-tags"><Tag color={article.impactLevel === 'Critical' ? 'red' : article.impactLevel === 'High' ? 'orange' : 'blue'}>{article.impactLevel}</Tag><Tag>{localizedTopic(article.topic, isZh)}</Tag><Tag color={article.marketDirection === 'positive' ? 'green' : article.marketDirection === 'negative' ? 'red' : 'default'}>{article.sentiment}</Tag></div>
-          <h3>{article.headline}</h3>
+          <h3>{displayedHeadline}</h3>
+          {isZh && ai?.headlineZh && <small className="mi-original-headline">{article.headline}</small>}
           {article.summary && <p>{article.summary}</p>}
-          <dl><div><dt>{copy.affected}</dt><dd>{article.symbols?.length ? article.symbols.slice(0, 12).join(' · ') : copy.affectedFallback}{article.symbolImpactSource === 'topic_inference' ? ` · ${copy.inferred}` : ''}</dd></div><div><dt>{copy.marketImpact}</dt><dd>{localizedMarketImpact(article, isZh)}</dd></div></dl>
+          {ai?.status === 'ready' && <section className="mi-news-ai">
+            <header><span><BulbOutlined /> {copy.aiAnalysis}</span><Tag>{ai.confidence ?? '—'}%</Tag></header>
+            {displayedAnalysis && <p>{displayedAnalysis}</p>}
+            {displayedImpact && <blockquote>{displayedImpact}</blockquote>}
+            {!!ai.affectedStocks?.length && <div className="mi-affected-grid">{ai.affectedStocks.map(stock => <button type="button" key={stock.symbol}>
+              <b>{stock.symbol}</b><span className={`is-${stock.direction}`}>{stock.direction}</span><small>{copy.impactType}: {stock.impactType} · {copy.horizon}: {stock.horizon.replace('_', ' ')}</small><p>{isZh ? stock.whyZh : stock.whyEn}</p>
+            </button>)}</div>}
+          </section>}
+          <dl><div><dt>{copy.affected}</dt><dd>{article.symbols?.length ? article.symbols.slice(0, 12).join(' · ') : copy.affectedFallback}{article.symbolImpactSource === 'topic_inference' ? ` · ${copy.inferred}` : ''}</dd></div><div><dt>{copy.marketImpact}</dt><dd>{displayedImpact || localizedMarketImpact(article, isZh)}</dd></div></dl>
           <footer><span>{article.source}{article.createdAt ? ` · ${new Date(article.createdAt).toLocaleString()}` : ''}</span>{article.url && <a href={article.url} target="_blank" rel="noreferrer">{copy.openSource}</a>}</footer>
         </div>
-      </article>)}
+      </article>;})}
     </section>}
   </div>
 );
@@ -274,6 +312,7 @@ export const CalendarView: React.FC<{ data: MarketCalendarResponse; copy: any; i
     (acc[event.dateKey] ||= []).push(event);
     return acc;
   }, {});
+  const nextHighImpact = economicEvents.find(event => String(event.importance || '').toLowerCase() === 'high');
   const hourLabel = (hour?: string) => hour === 'bmo' ? copy.before : hour === 'amc' ? copy.after : copy.unknown;
   const eventValue = (value?: string | number | null) => value === null || value === undefined || value === '' ? '—' : String(value);
   const dateLabel = (date: string) => date === 'TBD'
@@ -286,6 +325,7 @@ export const CalendarView: React.FC<{ data: MarketCalendarResponse; copy: any; i
       : copy.noEarnings;
   return <div className="mi-view">
     <div className="mi-section-heading"><div><h2>{copy.calendarTitle}</h2><p>{data.windowDays || 30} {isZh ? '天窗口' : 'day window'}</p></div></div>
+    {nextHighImpact && <section className="mi-next-catalyst"><CalendarOutlined /><div><span>{copy.nextCatalyst}</span><h3>{nextHighImpact.title}</h3><p>{dateLabel(nextHighImpact.dateKey)} · {nextHighImpact.time || copy.unknown} · {nextHighImpact.source}</p></div><Tag color="red">{copy.high}</Tag></section>}
     <section className="mi-calendar-section" aria-labelledby="macro-events-title">
       <div className="mi-section-heading"><div><h2 id="macro-events-title">{copy.economic}</h2><p>{economicEvents.length} {copy.macroEvents}</p></div></div>
       {data.economicCalendar.status === 'partial' && <Alert type="warning" showIcon message={copy.economic} description={copy.macroPartial} />}

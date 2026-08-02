@@ -12,6 +12,7 @@ const copy = {
   earnings: '财报', manageWatchlist: '管理 Watchlist', unavailable: '数据暂不可用', emptyWatchlist: 'Watchlist 还是空的，请先添加股票。',
   noEarnings: '未来暂无财报', before: '盘前', after: '盘后', estimate: '预期 EPS', revenue: '预期营收',
   showAll: '显示全部', collapse: '收起',
+  nextCatalyst: '下一个高影响事件',
 };
 
 const calendar: MarketCalendarResponse = {
@@ -41,7 +42,7 @@ const calendar: MarketCalendarResponse = {
 describe('MarketIntelligence CalendarView', () => {
   it('renders official macro releases independently from Watchlist earnings', () => {
     const view = renderToStaticMarkup(
-      <StaticRouter location="/trade/intelligence/calendar">
+      <StaticRouter location="/market/intelligence/calendar">
         <CalendarView data={calendar} copy={copy} isZh onSymbol={() => undefined} />
       </StaticRouter>,
     );

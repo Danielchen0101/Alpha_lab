@@ -16,6 +16,28 @@ export interface MarketNewsArticle {
   sentiment: 'Positive' | 'Negative' | 'Neutral';
   marketDirection: 'positive' | 'negative' | 'mixed';
   marketImpact: string;
+  newsFingerprint?: string;
+  aiAnalysis?: {
+    status: 'ready' | 'pending' | 'not_configured' | 'not_required' | string;
+    headlineZh?: string;
+    analysisEn?: string;
+    analysisZh?: string;
+    marketImpactEn?: string;
+    marketImpactZh?: string;
+    confidence?: number;
+    provider?: string;
+    model?: string;
+    analyzedAt?: string;
+    affectedStocks?: Array<{
+      symbol: string;
+      direction: 'positive' | 'negative' | 'mixed';
+      impactType: 'direct' | 'sector' | 'macro' | 'sympathy';
+      horizon: 'intraday' | 'short_term' | 'medium_term';
+      confidence: number;
+      whyEn?: string;
+      whyZh?: string;
+    }>;
+  };
 }
 
 export interface EarningsEvent {
@@ -72,6 +94,15 @@ export interface MarketNewsResponse {
   sources: string[];
   errors: string[];
   generatedAt: string;
+  refreshIntervalSeconds?: number;
+  ai?: {
+    configured: boolean;
+    provider?: string;
+    model?: string;
+    eligibleCount: number;
+    analyzedCount: number;
+    errors?: string[];
+  };
 }
 
 export interface MarketCalendarResponse {
@@ -97,14 +128,14 @@ export interface MarketCalendarResponse {
   generatedAt: string;
 }
 
-export const getMarketIntelligenceNews = async (days = 1): Promise<MarketNewsResponse> => {
-  const response = await api.get('/trade/intelligence/news', { params: { days, limit: 120 }, timeout: 45000 });
+export const getMarketIntelligenceNews = async (days = 1, refresh = false): Promise<MarketNewsResponse> => {
+  const response = await api.get('/market/intelligence/news', { params: { days, limit: 120, refresh: refresh ? 1 : undefined }, timeout: 70000 });
   if (!response.data?.success) throw new Error(response.data?.error || 'Market news is unavailable.');
   return response.data as MarketNewsResponse;
 };
 
 export const getMarketIntelligenceCalendar = async (days = 30, refresh = false): Promise<MarketCalendarResponse> => {
-  const response = await api.get('/trade/intelligence/calendar', { params: { days, refresh: refresh ? 1 : undefined }, timeout: 30000 });
+  const response = await api.get('/market/intelligence/calendar', { params: { days, refresh: refresh ? 1 : undefined }, timeout: 30000 });
   if (!response.data?.success) throw new Error(response.data?.error || 'Market calendar is unavailable.');
   return response.data as MarketCalendarResponse;
 };

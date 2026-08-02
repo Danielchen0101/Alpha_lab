@@ -13,6 +13,7 @@ describe('resolveRouteTitle', () => {
     expect(resolveRouteTitle('/crypto/automation', 'en-US')).toBe('Crypto Quant');
     expect(resolveRouteTitle('/kalshi/markets', 'en-US')).toBe('Kalshi Event Contracts');
     expect(resolveRouteTitle('/trade/intelligence/news', 'en-US')).toBe('Market Intelligence');
+    expect(resolveRouteTitle('/market/intelligence/news', 'en-US')).toBe('Market Intelligence');
     expect(resolveRouteTitle('/crypto-old', 'en-US')).toBe('Page Not Found');
   });
 

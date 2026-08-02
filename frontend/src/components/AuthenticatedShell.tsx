@@ -164,6 +164,7 @@ const sections: ShellSectionConfig[] = [
     matches: (pathname) => (
       isShellPath(pathname, MARKET_SCANNER_PATH) ||
       isShellPath(pathname, LEGACY_MARKET_SYMBOL_ROOT) ||
+      isShellPath(pathname, '/market/intelligence') ||
       isShellPath(pathname, '/watchlist')
     ),
     links: [
@@ -182,6 +183,14 @@ const sections: ShellSectionConfig[] = [
         path: marketSymbolPath(DEFAULT_MARKET_SYMBOL),
         icon: <LineChartOutlined />,
         match: (pathname) => isShellPath(pathname, MARKET_SYMBOL_ROOT) || isShellPath(pathname, LEGACY_MARKET_SYMBOL_ROOT),
+      },
+      {
+        key: 'market-intelligence',
+        label: 'Market intelligence',
+        labelZh: '市场分析',
+        path: '/market/intelligence',
+        icon: <GlobalOutlined />,
+        match: (pathname) => isShellPath(pathname, '/market/intelligence'),
       },
       {
         key: 'watchlist',
@@ -324,7 +333,6 @@ const sections: ShellSectionConfig[] = [
       isShellPath(pathname, '/portfolio')
     ),
     links: [
-      { key: 'market-intelligence', label: 'Market intelligence', labelZh: '市场分析', path: '/trade/intelligence', icon: <GlobalOutlined /> },
       { key: 'execution', label: 'Trade desk', labelZh: '交易台', path: '/trade', icon: <ExperimentOutlined /> },
       { key: 'portfolio', label: 'Portfolio', labelZh: '持仓组合', path: '/portfolio', icon: <PieChartOutlined /> },
     ],

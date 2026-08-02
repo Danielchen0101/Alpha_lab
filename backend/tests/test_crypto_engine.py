@@ -454,22 +454,24 @@ def test_confirmed_fill_state_never_widens_stop_and_clears_only_when_flat():
 # ---------------------------------------------------------------- risk gates
 
 
-def test_risk_circuit_covers_daily_weekly_drawdown_and_stale_data():
+def test_risk_circuit_reports_performance_without_stopping_24x7_trading():
     clear = evaluate_risk_circuit({"daily_return": 0.01})
     assert clear["blocked"] is False
     assert "BUY" in clear["allowed_actions"]
 
     daily = evaluate_risk_circuit({"daily_return": -0.02})
-    assert daily["blocked"] is True
+    assert daily["blocked"] is False
     assert daily["exit_required"] is False
+    assert daily["performance_alerts"][0]["code"] == "daily_loss"
 
     weekly = evaluate_risk_circuit({"seven_day_return": -0.05})
-    assert weekly["cooldown_required"] is True
-    assert weekly["cooldown_hours"] == 72
+    assert weekly["cooldown_required"] is False
+    assert weekly["performance_limits_block_trading"] is False
 
     drawdown = evaluate_risk_circuit({"drawdown": -0.09})
-    assert drawdown["exit_required"] is True
-    assert drawdown["manual_review_required"] is True
+    assert drawdown["exit_required"] is False
+    assert drawdown["manual_review_required"] is False
+    assert "BUY" in drawdown["allowed_actions"]
 
     stale = evaluate_risk_circuit(
         {"last_bar_time": datetime(2026, 1, 1, tzinfo=timezone.utc)},
@@ -479,11 +481,14 @@ def test_risk_circuit_covers_daily_weekly_drawdown_and_stale_data():
     assert any(t["code"] == "data_stale" for t in stale["triggers"])
 
 
-def test_daily_loss_blocks_entries_but_does_not_force_liquidation():
+def test_daily_loss_is_telemetry_and_does_not_block_entries():
     bars = _hourly_bars()
+    clear = generate_signal(bars)
     blocked = generate_signal(bars, risk_state={"daily_return": -0.05})
-    assert blocked["action"] == "HOLD"
-    assert blocked["target_weight"] == 0.0
+    assert blocked["risk"]["entry_blocked"] is False
+    assert blocked["risk"]["performance_alerts"][0]["code"] == "daily_loss"
+    assert blocked["action"] == clear["action"]
+    assert blocked["target_weight"] == clear["target_weight"]
 
     held = generate_signal(
         bars,
@@ -634,8 +639,9 @@ def test_sol_experimental_sleeve_entry_exit_and_cooldown_use_persisted_timestamp
         },
         risk_state={"drawdown": -0.09},
     )
-    assert protected["action"] == "EXIT"
-    assert protected["evidence"]["capital_exit"] is True
+    assert protected["action"] == "HOLD"
+    assert protected["evidence"]["capital_exit"] is False
+    assert protected["risk"]["performance_alerts"][0]["code"] == "max_drawdown"
 
 
 def test_sol_backtest_executes_next_open_and_keeps_full_cost_model():
@@ -664,7 +670,7 @@ def test_sol_backtest_executes_next_open_and_keeps_full_cost_model():
     ])
 
     result = backtest(bars, _sol_config(), symbol="SOL/USD")
-    assert result["version"] == "2.4.0"
+    assert result["version"] == ALGORITHM_VERSION
     assert result["fills"][0]["action"] == "BUY"
     assert result["fills"][0]["timestamp"] == bars[-2]["t"]
     assert result["fills"][0]["execution_price"] == pytest.approx(first_open * 1.0005)

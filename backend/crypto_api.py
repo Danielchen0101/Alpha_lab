@@ -400,6 +400,21 @@ class BrokerError(CryptoApiError):
     pass
 
 
+def _is_transient_cycle_failure(exc: Exception) -> bool:
+    """Return true when a failed cycle should back off and recover itself."""
+
+    if isinstance(exc, BrokerError):
+        return True
+    identity = "%s %s" % (type(exc).__name__, str(exc))
+    lowered = identity.lower()
+    return any(token in lowered for token in (
+        "readtimeout", "connecttimeout", "connectionerror", "timeout",
+        "temporarily unavailable", "service unavailable", "upstream unavailable",
+        "operationsstoreunavailable", "artifact read failed", "artifact update failed",
+        "worker lease claim failed", "supabase", "postgrest",
+    ))
+
+
 class _BoundedTtlCache:
     """Small process-local cache; values never contain credentials."""
 
@@ -1104,7 +1119,7 @@ def _validate_config(payload: Mapping[str, Any], *, base: Optional[Mapping[str, 
         # Fifteen-minute execution does not mean a five-minute holding thesis.
         # Use multi-hour structure and multi-day momentum, then require two
         # completed bars.  This preset is the cost-aware short/swing mandate
-        # validated for v2.4; the former 8/21, one-bar preset repeatedly chased
+        # validated for v2.5; the former 8/21, one-bar preset repeatedly chased
         # local breakouts and churned through tier-1 crypto fees.
         strategy.update({
             "bars_per_day": 96,
@@ -1143,7 +1158,7 @@ def _validate_config(payload: Mapping[str, Any], *, base: Optional[Mapping[str, 
             "reward_to_risk": 1.0,
             "minimum_hold_bars": 4,
             "reentry_cooldown_bars": 4,
-            "time_stop_bars": 96,
+            "time_stop_bars": 48,
             "data_stale_minutes": 25,
         })
     else:
@@ -1215,6 +1230,9 @@ def _runtime_default() -> Dict[str, Any]:
         "message": "Crypto automation is idle.",
         "cooldownUntil": None,
         "manualReviewRequired": False,
+        "retryNotBefore": None,
+        "lastRecoveredError": "",
+        "lastRecoveryAt": None,
         "positionState": {},
         "pendingReconciliations": {},
         "reconciliationRequired": False,
@@ -3229,6 +3247,7 @@ class _CryptoService:
     def _record_failure(self, uid: str, config: Mapping[str, Any], runtime: Mapping[str, Any], exc: Exception):
         result = dict(runtime)
         locked = False
+        transient = _is_transient_cycle_failure(exc)
         message = str(exc)[:500]
         try:
             # Re-read lifecycle state under the same fence used for stop/kill
@@ -3246,16 +3265,20 @@ class _CryptoService:
                         and result.get("status") in {"stopped", "killed"}
                     )
                 )
-                locked = errors >= 3 and not stopped_concurrently
+                locked = errors >= 3 and not stopped_concurrently and not transient
+                retry_delay_seconds = min(
+                    max(30, int(_number(current_config.get("intervalMinutes"), 15)) * 60),
+                    30 * (2 ** min(max(0, errors - 1), 5)),
+                )
                 stage = (
                     "killed" if current_config.get("killSwitch")
                     else "stopped" if stopped_concurrently
                     else "locked" if locked
+                    else "recovering" if transient
                     else "error"
                 )
                 progress_detail = dict(result.get("progressDetail") or {})
                 progress_detail.update({"stage": stage, "currentSymbol": None})
-                interval = max(1, int(_number(current_config.get("intervalMinutes"), 15)))
                 result.update({
                     "status": stage,
                     "enabled": bool(current_config.get("enabled")) and not stopped_concurrently,
@@ -3271,10 +3294,15 @@ class _CryptoService:
                     "currentStage": stage,
                     "progressDetail": progress_detail,
                     "message": message,
+                    "retryNotBefore": (
+                        None
+                        if locked or stopped_concurrently
+                        else (_utc_now() + timedelta(seconds=retry_delay_seconds)).isoformat()
+                    ),
                     "nextRun": (
                         None
                         if locked or stopped_concurrently
-                        else (_utc_now() + timedelta(minutes=interval)).isoformat()
+                        else (_utc_now() + timedelta(seconds=retry_delay_seconds)).isoformat()
                     ),
                 })
                 self.save_runtime(uid, result, f"crypto-runtime-error:{uid}:{time.time_ns()}")
@@ -3286,7 +3314,9 @@ class _CryptoService:
                 )
             except Exception:
                 pass
-        self._audit(uid, "crypto_cycle_error", {"error": str(exc)[:500], "locked": locked}, f"crypto-error:{uid}:{time.time_ns()}")
+        self._audit(uid, "crypto_cycle_error", {
+            "error": str(exc)[:500], "locked": locked, "transient": transient,
+        }, f"crypto-error:{uid}:{time.time_ns()}")
         if locked:
             self._notify(uid, "risk_alert", {
                 "event_id": f"crypto-locked:{type(exc).__name__}",
@@ -3298,6 +3328,19 @@ class _CryptoService:
                 "reasonZh": f"Crypto 周期已连续失败 {errors} 次（{type(exc).__name__}）；订单路由已锁定。",
                 "action": "Review broker/data health and acknowledge the lock before restarting.",
                 "actionZh": "请检查券商与行情健康状态，确认锁定原因后再重新启动。",
+                "consecutiveErrors": errors,
+            })
+        elif transient and errors == 3:
+            self._notify(uid, "risk_alert", {
+                "event_id": f"crypto-recovering:{type(exc).__name__}",
+                "fingerprint": f"crypto-recovering:{type(exc).__name__}",
+                "severity": "medium",
+                "step": "Crypto automation",
+                "status": "attention",
+                "reason": f"Crypto cycles hit {errors} consecutive transient dependency failures ({type(exc).__name__}); trading remains armed and will retry automatically.",
+                "reasonZh": f"Crypto 周期连续出现 {errors} 次临时依赖故障（{type(exc).__name__}）；自动交易仍保持启动并会自动重试。",
+                "action": "No manual restart is required. The next cycle will retry after bounded backoff.",
+                "actionZh": "无需手动重启，系统会在有限退避后自动重试。",
                 "consecutiveErrors": errors,
             })
         return result
@@ -4340,24 +4383,12 @@ class _CryptoService:
                         current_symbol=None,
                     )
 
-            cooldown_until = _parse_utc_datetime(runtime.get("cooldownUntil"))
-            if cooldown_until is not None and cooldown_until <= cycle_now:
-                cooldown_until = None
-            manual_review_required = bool(runtime.get("manualReviewRequired"))
-            for signal in signals:
-                signal_risk = dict(signal.get("risk") or {})
-                if signal_risk.get("cooldown_required") and cooldown_until is None:
-                    cooldown_hours = max(0.0, _number(signal_risk.get("cooldown_hours"), 72.0))
-                    cooldown_until = cycle_now + timedelta(hours=cooldown_hours)
-                if signal_risk.get("manual_review_required"):
-                    manual_review_required = True
-            runtime["cooldownUntil"] = cooldown_until.isoformat() if cooldown_until else None
-            runtime["manualReviewRequired"] = manual_review_required
+            # Performance loss/drawdown thresholds are telemetry only. Crypto
+            # remains 24/7 and does not require a cooldown or acknowledgement.
+            runtime["cooldownUntil"] = None
+            runtime["manualReviewRequired"] = False
+            manual_review_required = False
             persistent_entry_blocks = []
-            if cooldown_until is not None and cooldown_until > cycle_now:
-                persistent_entry_blocks.append("risk_cooldown_active")
-            if manual_review_required:
-                persistent_entry_blocks.append("manual_risk_review_required")
 
             signal_price_by_symbol = {
                 str(row.get("symbol")): max(0.0, _number(row.get("price")))
@@ -4952,6 +4983,9 @@ class _CryptoService:
                         "killSwitch": False,
                         "consecutiveErrors": 0,
                         "lastError": "",
+                        "retryNotBefore": None,
+                        "lastRecoveredError": str(runtime.get("lastError") or "")[:500],
+                        "lastRecoveryAt": now.isoformat() if runtime.get("lastError") else runtime.get("lastRecoveryAt"),
                         "lastRun": now.isoformat(),
                         "nextRun": (now + timedelta(minutes=interval)).isoformat() if config.get("enabled") else None,
                         "lastRunBucket": bucket,
@@ -5211,6 +5245,9 @@ class _CryptoService:
                 or config.get("killSwitch")
                 or not config.get("enabled")
             ):
+                return
+            retry_not_before = _parse_utc_datetime(runtime.get("retryNotBefore"))
+            if retry_not_before is not None and retry_not_before > _utc_now():
                 return
             interval = int(config["intervalMinutes"])
             bucket = int(time.time() // (interval * 60))
@@ -6080,13 +6117,9 @@ def register_crypto_api(
                         status=423,
                         code="reconciliation_required",
                     )
-                risk_acknowledged = bool(runtime.get("manualReviewRequired")) and acknowledge_risk
-                if runtime.get("manualReviewRequired") and not acknowledge_risk:
-                    raise CryptoApiError(
-                        "Manual review of the crypto drawdown circuit must be acknowledged before restart",
-                        status=409,
-                        code="risk_acknowledgement_required",
-                    )
+                # Performance-based manual review was retired for continuous
+                # 24/7 operation. Keep the request field for older clients.
+                risk_acknowledged = bool(runtime.get("manualReviewRequired"))
                 requested_mode = _request_mode(data.get("mode"), config["mode"])
                 if requested_mode != config["mode"]:
                     raise CryptoApiError(
@@ -6120,8 +6153,9 @@ def register_crypto_api(
                 runtime.update({
                     "status": "armed", "enabled": True, "locked": False,
                     "consecutiveErrors": 0, "lastError": "", "killSwitch": False,
+                    "retryNotBefore": None,
                     "nextRun": _iso(), "coverage": "24/7", "marketClockRequired": False,
-                    "manualReviewRequired": False if risk_acknowledged else bool(runtime.get("manualReviewRequired")),
+                    "cooldownUntil": None, "manualReviewRequired": False,
                     "currentStage": "armed", "progress": 0,
                     "progressDetail": {
                         "stage": "armed", "completedSymbols": 0,
@@ -6175,6 +6209,9 @@ def register_crypto_api(
                 heartbeat = _iso()
                 runtime.update({
                     "status": "stopped", "enabled": False, "nextRun": None,
+                    "locked": False, "consecutiveErrors": 0,
+                    "retryNotBefore": None, "cooldownUntil": None,
+                    "manualReviewRequired": False,
                     "lastHeartbeat": heartbeat, "heartbeat": heartbeat, "cycleStartedAt": None,
                     "currentStage": "stopped", "progress": 0,
                     "progressDetail": {

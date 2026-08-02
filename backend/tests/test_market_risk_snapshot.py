@@ -1,5 +1,7 @@
 from datetime import date
+from io import BytesIO
 import time
+import zipfile
 
 import start_quant_backend as backend
 from start_quant_backend import (
@@ -12,6 +14,8 @@ from start_quant_backend import (
     _market_intelligence_enrich_news,
     _market_intelligence_theme_breadth,
     _market_intelligence_watchlist_symbols,
+    _market_index_parse_spy_xlsx,
+    _market_news_normalize_analysis,
     _market_risk_aggregate,
     _market_risk_snapshot_row,
 )
@@ -90,6 +94,52 @@ def test_theme_breadth_groups_named_industries_and_counts_direction():
     assert by_key['storage_memory']['declining'] == 1
     assert by_key['space']['advancing'] == 2
     assert by_key['space']['averageChangePct'] == 3.0
+
+
+def test_theme_breadth_returns_five_leaders_when_available():
+    rows = [
+        {'symbol': symbol, 'name': symbol, 'changePct': change}
+        for symbol, change in zip(('NVDA', 'AMD', 'AVGO', 'INTC', 'QCOM', 'ARM'), (6, 5, 4, 3, 2, 1))
+    ]
+    theme = next(item for item in _market_intelligence_theme_breadth(rows) if item['key'] == 'ai_semiconductors')
+    assert [item['symbol'] for item in theme['leaders']] == ['NVDA', 'AMD', 'AVGO', 'INTC', 'QCOM']
+
+
+def test_spy_workbook_reads_ticker_column_not_company_name_column():
+    shared_strings = ('APPLE INC', 'AAPL', 'MICROSOFT CORP', 'MSFT', 'Ticker')
+    shared_xml = '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">%s</sst>' % ''.join(
+        '<si><t>%s</t></si>' % value for value in shared_strings
+    )
+    sheet_xml = '''<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>
+      <row r="5"><c r="A5" t="s"><v>0</v></c><c r="B5" t="s"><v>4</v></c></row>
+      <row r="6"><c r="A6" t="s"><v>0</v></c><c r="B6" t="s"><v>1</v></c></row>
+      <row r="7"><c r="A7" t="s"><v>2</v></c><c r="B7" t="s"><v>3</v></c></row>
+    </sheetData></worksheet>'''
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, 'w') as workbook:
+        workbook.writestr('xl/sharedStrings.xml', shared_xml)
+        workbook.writestr('xl/worksheets/sheet1.xml', sheet_xml)
+    assert _market_index_parse_spy_xlsx(buffer.getvalue()) == {'AAPL', 'MSFT'}
+
+
+def test_news_ai_analysis_rejects_unverified_tickers_and_keeps_bilingual_fields():
+    normalized = _market_news_normalize_analysis(
+        {
+            'headlineZh': '美联储消息影响市场',
+            'analysisEn': 'Rates may affect equity duration.',
+            'analysisZh': '利率变化可能影响股票久期。',
+            'confidence': 78,
+            'affectedStocks': [
+                {'symbol': 'QQQ', 'direction': 'negative', 'impactType': 'macro', 'horizon': 'short_term', 'confidence': 80, 'whyEn': 'Duration', 'whyZh': '久期'},
+                {'symbol': 'FAKE', 'direction': 'positive'},
+            ],
+        },
+        {'symbols': ['SPY', 'QQQ'], 'marketDirection': 'negative', 'topic': 'Monetary policy'},
+        {'provider': 'DeepSeek', 'model': 'deepseek-v4-flash'},
+    )
+    assert normalized['status'] == 'ready'
+    assert {item['symbol'] for item in normalized['affectedStocks']} == {'SPY', 'QQQ'}
+    assert normalized['analysisZh'] == '利率变化可能影响股票久期。'
 
 
 def test_news_impact_explains_topic_direction_and_affected_symbols():

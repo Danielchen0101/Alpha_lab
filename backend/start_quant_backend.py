@@ -13,6 +13,8 @@ from io import BytesIO
 import html as _html
 import re
 import sys
+import zipfile
+import xml.etree.ElementTree as ET
 
 APP_VERSION = '3.0.0'
 _RENDER_GIT_COMMIT_PATTERN = re.compile(r'[0-9a-fA-F]{12,64}')
@@ -13945,6 +13947,12 @@ _MARKET_RISK_CACHE = {}
 _MARKET_RISK_CACHE_LOCK = threading.Lock()
 _MARKET_RISK_CACHE_TTL_SECONDS = 5 * 60
 _MARKET_RISK_STALE_TTL_SECONDS = 30 * 60
+_MARKET_INDEX_UNIVERSE_CACHE = {'storedAt': 0.0, 'symbols': [], 'sources': [], 'errors': []}
+_MARKET_INDEX_UNIVERSE_CACHE_LOCK = threading.Lock()
+_MARKET_INDEX_UNIVERSE_TTL_SECONDS = 24 * 60 * 60
+_MARKET_INDEX_UNIVERSE_STALE_TTL_SECONDS = 7 * 24 * 60 * 60
+_MARKET_NASDAQ_100_URL = 'https://api.nasdaq.com/api/quote/list-type/nasdaq100'
+_MARKET_SPY_HOLDINGS_URL = 'https://www.ssga.com/library-content/products/fund-data/etfs/us/holdings-daily-us-en-spy.xlsx'
 _INST_SCANNER_CACHE_TTL_SECONDS = 60 * 60 * 12
 _INST_SCANNER_DEFAULT_MAX_SYMBOLS = 1500
 _INST_SCANNER_DEFAULT_MAX_RESULTS = 100
@@ -17707,6 +17715,89 @@ def _market_risk_snapshot_row(symbol, snapshot, metadata=None):
     }
 
 
+def _market_index_parse_spy_xlsx(content):
+    """Read the symbol column from State Street's public SPY workbook.
+
+    The workbook is deliberately parsed with the standard library so this
+    lightweight endpoint does not add an Excel dependency to the backend.
+    """
+    symbols = set()
+    with zipfile.ZipFile(BytesIO(content)) as workbook:
+        shared = []
+        if 'xl/sharedStrings.xml' in workbook.namelist():
+            root = ET.fromstring(workbook.read('xl/sharedStrings.xml'))
+            for item in root.findall('.//{*}si'):
+                shared.append(''.join(node.text or '' for node in item.findall('.//{*}t')))
+        sheet = ET.fromstring(workbook.read('xl/worksheets/sheet1.xml'))
+        for cell in sheet.findall('.//{*}c'):
+            reference = _safe_str(cell.get('r')).upper()
+            if not reference.startswith('B'):
+                continue
+            value_node = cell.find('{*}v')
+            inline_node = cell.find('.//{*}t')
+            value = inline_node.text if inline_node is not None else value_node.text if value_node is not None else ''
+            if cell.get('t') == 's' and value:
+                try:
+                    value = shared[int(value)]
+                except (ValueError, IndexError):
+                    value = ''
+            symbol = _inst_clean_symbol(value)
+            if symbol and re.fullmatch(r'[A-Z][A-Z0-9.\-]{0,9}', symbol) and symbol not in {'TICKER', 'SYMBOL'}:
+                symbols.add(symbol.replace('.', '-'))
+    return symbols
+
+
+def _market_index_constituents(force_refresh=False):
+    """Return the current union of official Nasdaq-100 and SPY holdings."""
+    now = time.time()
+    with _MARKET_INDEX_UNIVERSE_CACHE_LOCK:
+        cached = deepcopy(_MARKET_INDEX_UNIVERSE_CACHE)
+    age = max(0.0, now - float(cached.get('storedAt') or 0)) if cached.get('symbols') else None
+    if cached.get('symbols') and not force_refresh and age < _MARKET_INDEX_UNIVERSE_TTL_SECONDS:
+        return set(cached['symbols']), cached.get('sources') or [], cached.get('errors') or [], {'status': 'hit', 'ageSeconds': round(age, 1)}
+
+    symbols = set()
+    sources = []
+    errors = []
+    request_headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, */*',
+        'Referer': 'https://www.nasdaq.com/market-activity/quotes/nasdaq-ndx-index',
+    }
+    try:
+        response = requests.get(_MARKET_NASDAQ_100_URL, headers=request_headers, timeout=(3.05, 20))
+        response.raise_for_status()
+        rows = (((response.json() or {}).get('data') or {}).get('data') or {}).get('rows') or []
+        nasdaq_symbols = {_inst_clean_symbol(row.get('symbol')) for row in rows if isinstance(row, dict)}
+        nasdaq_symbols.discard('')
+        if not nasdaq_symbols:
+            raise RuntimeError('empty_nasdaq100')
+        symbols.update(nasdaq_symbols)
+        sources.append('Nasdaq-100 official constituent API')
+    except Exception as exc:
+        errors.append('nasdaq100_%s' % str(exc)[:100])
+    try:
+        response = requests.get(_MARKET_SPY_HOLDINGS_URL, headers=request_headers, timeout=(3.05, 15))
+        response.raise_for_status()
+        spy_symbols = _market_index_parse_spy_xlsx(response.content)
+        if len(spy_symbols) < 400:
+            raise RuntimeError('incomplete_spy_holdings_%d' % len(spy_symbols))
+        symbols.update(spy_symbols)
+        sources.append('State Street SPY official holdings')
+    except Exception as exc:
+        errors.append('spy_%s' % str(exc)[:100])
+
+    if symbols:
+        payload = {'storedAt': now, 'symbols': sorted(symbols), 'sources': sources, 'errors': errors}
+        with _MARKET_INDEX_UNIVERSE_CACHE_LOCK:
+            _MARKET_INDEX_UNIVERSE_CACHE.clear()
+            _MARKET_INDEX_UNIVERSE_CACHE.update(deepcopy(payload))
+        return symbols, sources, errors, {'status': 'miss', 'ageSeconds': 0}
+    if cached.get('symbols') and age is not None and age < _MARKET_INDEX_UNIVERSE_STALE_TTL_SECONDS:
+        return set(cached['symbols']), cached.get('sources') or [], list(dict.fromkeys((cached.get('errors') or []) + errors)), {'status': 'stale-if-error', 'ageSeconds': round(age, 1)}
+    return set(), sources, errors, {'status': 'unavailable', 'ageSeconds': None}
+
+
 _MARKET_INTELLIGENCE_THEMES = (
     ('storage_memory', 'Storage & Memory', {'STX', 'WDC', 'PSTG', 'NTAP', 'MU', 'SNDK'}, ('data storage', 'memory', 'disk drive')),
     ('space', 'Space Economy', {'RKLB', 'LUNR', 'RDW', 'PL', 'SPCE', 'ASTS', 'BKSY', 'MNTS'}, ('satellite', 'orbital', 'rocket')),
@@ -17746,7 +17837,7 @@ def _market_intelligence_theme_breadth(rows):
             'advanceDeclineRatio': round(advancing / max(1, declining), 3),
             'leaders': [
                 {'symbol': row.get('symbol'), 'changePct': row.get('changePct')}
-                for row in sorted(members, key=lambda item: float(item.get('changePct') or 0), reverse=True)[:3]
+                for row in sorted(members, key=lambda item: float(item.get('changePct') or 0), reverse=True)[:5]
             ],
         })
     return sorted(result, key=lambda item: abs(float(item.get('averageChangePct') or 0)), reverse=True)
@@ -17839,10 +17930,10 @@ def _market_intelligence_enrich_news(item):
     return cleaned
 
 
-def _market_intelligence_fetch_news(market_cfg, finnhub_cfg, days=1, limit=100):
+def _market_intelligence_fetch_news(market_cfg, finnhub_cfg, days=1, limit=100, user_id=None, force_refresh=False):
     start_iso = (datetime.now(timezone.utc) - timedelta(days=max(1, days))).strftime('%Y-%m-%dT%H:%M:%SZ')
-    cache_key = 'market_intelligence_news_%s_%s' % (days, limit)
-    cached = stock_cache.get(cache_key)
+    cache_key = 'market_intelligence_news_%s_%s_%s' % (user_id or 'anonymous', days, limit)
+    cached = None if force_refresh else stock_cache.get(cache_key)
     if isinstance(cached, dict):
         return cached.get('articles') or [], cached.get('sources') or [], cached.get('errors') or []
     articles = []
@@ -17924,6 +18015,237 @@ def _market_intelligence_fetch_news(market_cfg, finnhub_cfg, days=1, limit=100):
     )[:limit]
     stock_cache.set(cache_key, {'articles': ranked, 'sources': sources, 'errors': errors})
     return ranked, sources, errors
+
+
+_MARKET_NEWS_AI_ARTIFACT_TYPE = 'market_news_intelligence'
+_MARKET_NEWS_AI_ARTIFACT_KEY = 'current'
+_MARKET_NEWS_AI_MAX_STORED = 300
+_MARKET_NEWS_AI_INFLIGHT = set()
+_MARKET_NEWS_AI_INFLIGHT_LOCK = threading.Lock()
+
+
+def _market_news_fingerprint(article):
+    seed = '%s|%s|%s' % (
+        _safe_str(article.get('headline')).strip().lower(),
+        _safe_str(article.get('source')).strip().lower(),
+        _safe_str(article.get('createdAt'))[:13],
+    )
+    return hashlib.sha256(seed.encode('utf-8')).hexdigest()[:24]
+
+
+def _market_news_ai_state(uid):
+    try:
+        row = operations_store.get_artifact(uid, _MARKET_NEWS_AI_ARTIFACT_TYPE, _MARKET_NEWS_AI_ARTIFACT_KEY)
+        payload = deepcopy((row or {}).get('payload') or {})
+        return payload if isinstance(payload, dict) else {}
+    except Exception as exc:
+        safe_print('[MarketNewsAI] state read failed: %s' % exc)
+        return {}
+
+
+def _market_news_save_ai_state(uid, state):
+    analyses = state.get('analyses') if isinstance(state.get('analyses'), dict) else {}
+    ordered = sorted(
+        analyses.items(),
+        key=lambda item: _safe_str((item[1] or {}).get('analyzedAt')),
+        reverse=True,
+    )[:_MARKET_NEWS_AI_MAX_STORED]
+    payload = {
+        'schemaVersion': 1,
+        'analyses': dict(ordered),
+        'updatedAt': datetime.now(timezone.utc).isoformat(),
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(',', ':'), default=str)
+    try:
+        operations_store.put_artifact(
+            uid,
+            _MARKET_NEWS_AI_ARTIFACT_TYPE,
+            _MARKET_NEWS_AI_ARTIFACT_KEY,
+            payload=payload,
+            idempotency_key=hashlib.sha256(('market-news-ai:%s:%s' % (uid, serialized)).encode('utf-8')).hexdigest(),
+        )
+    except Exception as exc:
+        safe_print('[MarketNewsAI] state write failed: %s' % exc)
+
+
+def _market_news_normalize_analysis(raw, article, ai_cfg):
+    raw = raw if isinstance(raw, dict) else {}
+    allowed_symbols = list(dict.fromkeys(
+        _inst_clean_symbol(value)
+        for value in (article.get('symbols') or [])
+        if _inst_clean_symbol(value)
+    ))
+    affected = []
+    for item in (raw.get('affectedStocks') or [])[:12]:
+        if not isinstance(item, dict):
+            continue
+        symbol = _inst_clean_symbol(item.get('symbol'))
+        if not symbol or (allowed_symbols and symbol not in allowed_symbols):
+            continue
+        direction = _safe_str(item.get('direction')).lower()
+        impact_type = _safe_str(item.get('impactType')).lower()
+        horizon = _safe_str(item.get('horizon')).lower()
+        affected.append({
+            'symbol': symbol,
+            'direction': direction if direction in ('positive', 'negative', 'mixed') else article.get('marketDirection', 'mixed'),
+            'impactType': impact_type if impact_type in ('direct', 'sector', 'macro', 'sympathy') else 'direct',
+            'horizon': horizon if horizon in ('intraday', 'short_term', 'medium_term') else 'short_term',
+            'confidence': max(0, min(100, int(_inst_to_float(item.get('confidence'), 60) or 60))),
+            'whyEn': _inst_trim_text(item.get('whyEn'), 300),
+            'whyZh': _inst_trim_text(item.get('whyZh'), 300),
+        })
+    existing = {item['symbol'] for item in affected}
+    for symbol in allowed_symbols:
+        if symbol not in existing:
+            affected.append({
+                'symbol': symbol,
+                'direction': article.get('marketDirection', 'mixed'),
+                'impactType': 'macro' if article.get('topic') in ('Monetary policy', 'Economy & labor', 'Geopolitics & trade') else 'direct',
+                'horizon': 'short_term',
+                'confidence': 55,
+                'whyEn': 'Included by the verified news provider or deterministic topic mapping.',
+                'whyZh': '由新闻数据源或确定性主题映射识别为可能受影响标的。',
+            })
+    return {
+        'status': 'ready',
+        'headlineZh': _inst_trim_text(raw.get('headlineZh'), 240),
+        'analysisEn': _inst_trim_text(raw.get('analysisEn'), 900),
+        'analysisZh': _inst_trim_text(raw.get('analysisZh'), 900),
+        'marketImpactEn': _inst_trim_text(raw.get('marketImpactEn'), 500),
+        'marketImpactZh': _inst_trim_text(raw.get('marketImpactZh'), 500),
+        'affectedStocks': affected[:12],
+        'confidence': max(0, min(100, int(_inst_to_float(raw.get('confidence'), 60) or 60))),
+        'provider': _safe_str(ai_cfg.get('provider') or 'AI'),
+        'model': _safe_str(ai_cfg.get('model') or ''),
+        'analyzedAt': datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _market_news_ai_enrich(uid, articles, *, notify=True, run_ai=True):
+    """Attach durable bilingual AI analysis to High/Critical news only."""
+    state = _market_news_ai_state(uid)
+    analyses = state.get('analyses') if isinstance(state.get('analyses'), dict) else {}
+    ai_cfg, ai_source = resolve_ai_config_for_user(uid)
+    candidates = []
+    for article in articles:
+        fingerprint = _market_news_fingerprint(article)
+        article['newsFingerprint'] = fingerprint
+        if article.get('impactLevel') in ('High', 'Critical') and fingerprint not in analyses:
+            candidates.append(article)
+
+    errors = []
+    if run_ai and candidates and ai_cfg.get('apiKey'):
+        try:
+            owns_ai_lease = operations_store.claim_worker_lease(
+                'market-news-ai-%s' % uid,
+                _MARKET_NEWS_WORKER_OWNER,
+                ttl_seconds=240,
+                metadata={'component': 'market_news_ai', 'user': uid[:8]},
+            )
+        except Exception as exc:
+            owns_ai_lease = False
+            errors.append('ai_lease_%s' % str(exc)[:100])
+        if not owns_ai_lease:
+            candidates = []
+        for offset in range(0, min(len(candidates), 24), 8):
+            batch = candidates[offset:offset + 8]
+            request_rows = [{
+                'id': item['newsFingerprint'],
+                'headline': item.get('headline'),
+                'summary': _inst_trim_text(item.get('summary'), 700),
+                'source': item.get('source'),
+                'topic': item.get('topic'),
+                'impactLevel': item.get('impactLevel'),
+                'sentiment': item.get('sentiment'),
+                'affectedSymbols': item.get('symbols') or [],
+            } for item in batch]
+            system_prompt = (
+                'You are AlphaLab Market News Intelligence. Analyze only the supplied facts; do not invent prices, '
+                'earnings numbers, quotations, or affected tickers. Return one JSON object with an analyses array. '
+                'Each item must preserve id and contain headlineZh, analysisEn, analysisZh, marketImpactEn, '
+                'marketImpactZh, confidence (0-100), and affectedStocks. Each affectedStocks item must use only an '
+                'affectedSymbols ticker and contain symbol, direction (positive/negative/mixed), impactType '
+                '(direct/sector/macro/sympathy), horizon (intraday/short_term/medium_term), confidence, whyEn, whyZh. '
+                'Be concise, professional, bilingual, and explicitly state uncertainty.'
+            )
+            parsed, error = _inst_call_ai_trader(ai_cfg, system_prompt, json.dumps({'articles': request_rows}, separators=(',', ':'), default=str))
+            if error or not isinstance(parsed, dict):
+                errors.append(str(error or 'invalid_ai_response')[:160])
+                continue
+            returned = {
+                _safe_str(item.get('id')): item
+                for item in (parsed.get('analyses') or [])
+                if isinstance(item, dict) and item.get('id')
+            }
+            for article in batch:
+                raw = returned.get(article['newsFingerprint'])
+                if raw:
+                    analyses[article['newsFingerprint']] = _market_news_normalize_analysis(raw, article, ai_cfg)
+        state['analyses'] = analyses
+        _market_news_save_ai_state(uid, state)
+
+    for article in articles:
+        fingerprint = article.get('newsFingerprint') or _market_news_fingerprint(article)
+        analysis = analyses.get(fingerprint)
+        if analysis:
+            article['aiAnalysis'] = analysis
+        elif article.get('impactLevel') in ('High', 'Critical'):
+            article['aiAnalysis'] = {
+                'status': 'not_configured' if not ai_cfg.get('apiKey') else 'pending',
+                'provider': _safe_str(ai_cfg.get('provider')),
+                'model': _safe_str(ai_cfg.get('model')),
+            }
+        else:
+            article['aiAnalysis'] = {'status': 'not_required'}
+
+        if notify and analysis and article.get('marketDirection') in ('positive', 'negative'):
+            symbols = [item.get('symbol') for item in analysis.get('affectedStocks') or [] if item.get('symbol')]
+            send_discord_notification(uid, 'risk_alert', {
+                'event_id': 'market-news:%s' % fingerprint,
+                'notificationScope': 'equity',
+                'source': 'Market News AI',
+                'step': 'News Intelligence',
+                'component': 'Market Analysis',
+                'symbol': ', '.join(symbols[:8]) or 'MARKET',
+                'severity': 'high' if article.get('impactLevel') == 'High' else 'critical',
+                'status': article.get('marketDirection'),
+                'reason': '%s\n\n%s' % (_inst_trim_text(article.get('headline'), 240), analysis.get('analysisEn') or article.get('marketImpact')),
+                'reasonZh': '%s\n\n%s' % (analysis.get('headlineZh') or _inst_trim_text(article.get('headline'), 240), analysis.get('analysisZh') or analysis.get('marketImpactZh')),
+                'action': 'Review the affected stocks, impact direction, time horizon, and source before acting.',
+                'actionZh': '请结合受影响股票、方向、影响周期及原始新闻来源后再做决策。',
+            })
+    return articles, {
+        'configured': bool(ai_cfg.get('apiKey')),
+        'source': ai_source,
+        'provider': _safe_str(ai_cfg.get('provider')),
+        'model': _safe_str(ai_cfg.get('model')),
+        'eligibleCount': sum(1 for item in articles if item.get('impactLevel') in ('High', 'Critical')),
+        'analyzedCount': sum(1 for item in articles if (item.get('aiAnalysis') or {}).get('status') == 'ready'),
+        'errors': errors,
+    }
+
+
+def _market_news_schedule_ai(uid, articles):
+    eligible = [deepcopy(item) for item in articles if item.get('impactLevel') in ('High', 'Critical')]
+    if not eligible:
+        return False
+    with _MARKET_NEWS_AI_INFLIGHT_LOCK:
+        if uid in _MARKET_NEWS_AI_INFLIGHT:
+            return False
+        _MARKET_NEWS_AI_INFLIGHT.add(uid)
+
+    def worker():
+        try:
+            with headless_user_context(uid):
+                _market_news_ai_enrich(uid, eligible, notify=True, run_ai=True)
+        except Exception as exc:
+            safe_print('[MarketNewsAI] background analysis failed: %s' % exc)
+        finally:
+            with _MARKET_NEWS_AI_INFLIGHT_LOCK:
+                _MARKET_NEWS_AI_INFLIGHT.discard(uid)
+
+    threading.Thread(target=worker, daemon=True, name='market-news-ai-%s' % uid[:8]).start()
+    return True
 
 
 def _market_risk_aggregate(rows, benchmarks=None, universe_count=None, source='Alpaca'):
@@ -18035,6 +18357,106 @@ def _market_risk_aggregate(rows, benchmarks=None, universe_count=None, source='A
     }
 
 
+_MARKET_AI_BRIEF_INFLIGHT = set()
+_MARKET_AI_BRIEF_INFLIGHT_LOCK = threading.Lock()
+
+
+def _market_ai_brief(uid, payload, *, allow_generate=False):
+    """Create a short bilingual interpretation without replacing raw metrics."""
+    artifact_type = 'market_ai_brief'
+    artifact_key = 'current'
+    input_payload = {
+        'snapshot': payload.get('snapshot'),
+        'benchmarks': payload.get('benchmarks'),
+        'sectorEtfs': payload.get('sectorEtfs'),
+        'themes': (payload.get('themeBreadth') or [])[:9],
+    }
+    fingerprint = hashlib.sha256(json.dumps(input_payload, sort_keys=True, separators=(',', ':'), default=str).encode('utf-8')).hexdigest()[:24]
+    try:
+        row = operations_store.get_artifact(uid, artifact_type, artifact_key)
+        cached = deepcopy((row or {}).get('payload') or {})
+        cached_at = datetime.fromisoformat(_safe_str(cached.get('generatedAt')).replace('Z', '+00:00')) if cached.get('generatedAt') else None
+        if cached_at and cached_at.tzinfo is None:
+            cached_at = cached_at.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - cached_at).total_seconds() if cached_at else None
+        if cached and (cached.get('fingerprint') == fingerprint or (age is not None and age < 15 * 60)):
+            cached['cache'] = {'status': 'hit', 'ageSeconds': round(max(0.0, age or 0.0), 1)}
+            return cached
+    except Exception:
+        cached = {}
+
+    ai_cfg, source = resolve_ai_config_for_user(uid)
+    if not ai_cfg.get('apiKey'):
+        return {'status': 'not_configured', 'source': source}
+    if not allow_generate:
+        with _MARKET_AI_BRIEF_INFLIGHT_LOCK:
+            should_start = uid not in _MARKET_AI_BRIEF_INFLIGHT
+            if should_start:
+                _MARKET_AI_BRIEF_INFLIGHT.add(uid)
+        if should_start:
+            def worker():
+                try:
+                    with headless_user_context(uid):
+                        owns_ai_lease = operations_store.claim_worker_lease(
+                            'market-ai-brief-%s' % uid,
+                            _MARKET_NEWS_WORKER_OWNER,
+                            ttl_seconds=120,
+                            metadata={'component': 'market_ai_brief', 'user': uid[:8]},
+                        )
+                        if owns_ai_lease:
+                            _market_ai_brief(uid, deepcopy(payload), allow_generate=True)
+                except Exception as exc:
+                    safe_print('[MarketAI] background brief failed: %s' % exc)
+                finally:
+                    with _MARKET_AI_BRIEF_INFLIGHT_LOCK:
+                        _MARKET_AI_BRIEF_INFLIGHT.discard(uid)
+            threading.Thread(target=worker, daemon=True, name='market-ai-brief-%s' % uid[:8]).start()
+        return {'status': 'pending', 'source': source}
+    system_prompt = (
+        'You are AlphaLab Market Strategist. Interpret only the supplied market breadth, benchmark, sector, and theme '
+        'metrics. Do not invent prices or news and do not issue personalized buy/sell instructions. Return one JSON '
+        'object with summaryEn, summaryZh, regimeEn, regimeZh, driversEn, driversZh, watchpointsEn, watchpointsZh, '
+        'dataQualityEn, dataQualityZh, and confidence (0-100). drivers/watchpoints must be arrays of at most 4 concise strings.'
+    )
+    parsed, error = _inst_call_ai_trader(ai_cfg, system_prompt, json.dumps(input_payload, separators=(',', ':'), default=str))
+    if error or not isinstance(parsed, dict):
+        if cached:
+            cached['cache'] = {'status': 'stale-if-error'}
+            cached['warning'] = str(error or 'invalid_ai_response')[:160]
+            return cached
+        return {'status': 'unavailable', 'error': str(error or 'invalid_ai_response')[:160]}
+    result = {
+        'status': 'ready',
+        'fingerprint': fingerprint,
+        'summaryEn': _inst_trim_text(parsed.get('summaryEn'), 900),
+        'summaryZh': _inst_trim_text(parsed.get('summaryZh'), 900),
+        'regimeEn': _inst_trim_text(parsed.get('regimeEn'), 180),
+        'regimeZh': _inst_trim_text(parsed.get('regimeZh'), 180),
+        'driversEn': [_inst_trim_text(value, 240) for value in (parsed.get('driversEn') or [])[:4]],
+        'driversZh': [_inst_trim_text(value, 240) for value in (parsed.get('driversZh') or [])[:4]],
+        'watchpointsEn': [_inst_trim_text(value, 240) for value in (parsed.get('watchpointsEn') or [])[:4]],
+        'watchpointsZh': [_inst_trim_text(value, 240) for value in (parsed.get('watchpointsZh') or [])[:4]],
+        'dataQualityEn': _inst_trim_text(parsed.get('dataQualityEn'), 360),
+        'dataQualityZh': _inst_trim_text(parsed.get('dataQualityZh'), 360),
+        'confidence': max(0, min(100, int(_inst_to_float(parsed.get('confidence'), 60) or 60))),
+        'provider': _safe_str(ai_cfg.get('provider')),
+        'model': _safe_str(ai_cfg.get('model')),
+        'generatedAt': datetime.now(timezone.utc).isoformat(),
+        'cache': {'status': 'miss', 'ageSeconds': 0},
+    }
+    try:
+        operations_store.put_artifact(
+            uid,
+            artifact_type,
+            artifact_key,
+            payload=result,
+            idempotency_key='market-ai-brief:%s:%s' % (uid, fingerprint),
+        )
+    except Exception as exc:
+        safe_print('[MarketAI] brief persistence failed: %s' % exc)
+    return result
+
+
 @app.route('/api/market/risk-snapshot', methods=['GET'])
 def market_risk_snapshot():
     """Broad-market risk state from liquid active US equities, not a default ticker list."""
@@ -18106,9 +18528,17 @@ def market_risk_snapshot():
             else:
                 bucket['unchanged'] += 1
         exchange_breadth = sorted(exchange_groups.values(), key=lambda row: row['total'], reverse=True)[:5]
-        movers = sorted(selected_rows, key=lambda row: abs(row['changePct']), reverse=True)[:12]
-        gainers = sorted(selected_rows, key=lambda row: float(row.get('changePct') or 0), reverse=True)[:12]
-        losers = sorted(selected_rows, key=lambda row: float(row.get('changePct') or 0))[:12]
+        index_symbols, index_sources, index_errors, index_cache = _market_index_constituents(force_refresh=force_refresh)
+        index_rows = [row for row in selected_rows if row.get('symbol') in index_symbols]
+        # Movers remain useful only when they refer to recognizable, liquid
+        # large-cap names. If both official sources are temporarily unavailable,
+        # fail visibly to the benchmark/sector confirmation set instead of
+        # silently reverting to obscure whole-market symbols.
+        if not index_rows:
+            index_rows = [row for row in selected_rows if row.get('symbol') in set(_INST_BENCHMARK_SYMBOLS + _INST_SECTOR_ETF_SYMBOLS)]
+        movers = sorted(index_rows, key=lambda row: abs(row['changePct']), reverse=True)[:12]
+        gainers = sorted(index_rows, key=lambda row: float(row.get('changePct') or 0), reverse=True)[:12]
+        losers = sorted(index_rows, key=lambda row: float(row.get('changePct') or 0))[:12]
         timestamps = [str(row.get('dayBarTime')) for row in selected_rows if row.get('dayBarTime')]
         payload = {
             'success': True,
@@ -18120,6 +18550,14 @@ def market_risk_snapshot():
             'gainers': gainers,
             'losers': losers,
             'themeBreadth': _market_intelligence_theme_breadth(selected_rows),
+            'moverUniverse': {
+                'name': 'SPY + Nasdaq-100 constituents',
+                'constituentCount': len(index_symbols),
+                'matchedSnapshotCount': len(index_rows),
+                'sources': index_sources,
+                'errors': index_errors,
+                'cache': index_cache,
+            },
             'asOf': max(timestamps) if timestamps else datetime.now(timezone.utc).isoformat(),
             'generatedAt': datetime.now(timezone.utc).isoformat(),
             'universeSource': universe_source,
@@ -18129,6 +18567,7 @@ def market_risk_snapshot():
             'confirmationErrorCount': len(confirmation_errors),
             'cache': {'status': 'miss', 'ageSeconds': 0},
         }
+        payload['aiBrief'] = _market_ai_brief(user['id'], payload)
         with _MARKET_RISK_CACHE_LOCK:
             _MARKET_RISK_CACHE[cache_key] = {'storedAt': now, 'payload': deepcopy(payload)}
         return jsonify(payload)
@@ -18142,6 +18581,7 @@ def market_risk_snapshot():
         return jsonify({'success': False, 'error': str(exc)}), 503
 
 
+@app.route('/api/market/intelligence/news', methods=['GET'])
 @app.route('/api/trade/intelligence/news', methods=['GET'])
 def trade_intelligence_news():
     user = require_auth()
@@ -18150,6 +18590,7 @@ def trade_intelligence_news():
     try:
         days = max(1, min(int(_inst_to_float(request.args.get('days'), 1) or 1), 7))
         limit = max(20, min(int(_inst_to_float(request.args.get('limit'), 100) or 100), 200))
+        force_refresh = str(request.args.get('refresh') or '').lower() in ('1', 'true', 'yes')
         market_cfg, market_status = resolve_alpaca_config_strict_user('market_data')
         finnhub_cfg, finnhub_status = resolve_finnhub_config_strict_user()
         articles, sources, errors = _market_intelligence_fetch_news(
@@ -18157,13 +18598,20 @@ def trade_intelligence_news():
             finnhub_cfg if finnhub_status == 'ok' else {},
             days=days,
             limit=limit,
+            user_id=user['id'],
+            force_refresh=force_refresh,
         )
+        articles, ai_status = _market_news_ai_enrich(user['id'], articles, notify=False, run_ai=False)
+        if ai_status.get('configured') and ai_status.get('analyzedCount', 0) < ai_status.get('eligibleCount', 0):
+            _market_news_schedule_ai(user['id'], articles)
         return jsonify({
             'success': True,
             'articles': articles,
             'count': len(articles),
             'sources': sources,
             'errors': errors,
+            'ai': ai_status,
+            'refreshIntervalSeconds': 300,
             'windowDays': days,
             'generatedAt': datetime.now(timezone.utc).isoformat(),
         })
@@ -18643,6 +19091,7 @@ def _market_intelligence_official_economic_events(days_forward=30, force_refresh
     }
 
 
+@app.route('/api/market/intelligence/calendar', methods=['GET'])
 @app.route('/api/trade/intelligence/calendar', methods=['GET'])
 def trade_intelligence_calendar():
     user = require_auth()
@@ -54823,6 +55272,93 @@ _BACKGROUND_SERVICES_LOCK = threading.RLock()
 _BACKGROUND_SERVICES_PID = None
 _BACKGROUND_SERVICES_LAST_CHECK = 0.0
 _BACKGROUND_SERVICES_CHECK_INTERVAL_SECONDS = 5.0
+_MARKET_NEWS_SCHEDULER_LOCK = threading.RLock()
+_MARKET_NEWS_SCHEDULER_THREAD = None
+_MARKET_NEWS_SCHEDULER_PID = None
+_MARKET_NEWS_SCHEDULER_STOP = threading.Event()
+_MARKET_NEWS_REFRESH_SECONDS = max(120, min(int(os.getenv('MARKET_NEWS_REFRESH_SECONDS', '300') or 300), 1800))
+_MARKET_NEWS_WORKER_OWNER = '%s:%s' % (
+    os.environ.get('RENDER_INSTANCE_ID') or os.environ.get('HOSTNAME') or 'local',
+    hashlib.sha256(str(time.time_ns()).encode('utf-8')).hexdigest()[:16],
+)
+
+
+def _market_news_scheduler_users():
+    client = _pa_supabase_client()
+    if not client:
+        return []
+    response = _supabase_execute(
+        lambda: client.table('user_api_configs').select('user_id,config_type').execute(),
+        'market news scheduler users read',
+    )
+    by_user = {}
+    for row in response.data or []:
+        if not isinstance(row, dict) or not row.get('user_id'):
+            continue
+        config_type = _safe_str(row.get('config_type'))
+        if config_type in ('alpaca', 'ai_provider', 'finnhub'):
+            by_user.setdefault(row['user_id'], set()).add(config_type)
+    return sorted(uid for uid, config_types in by_user.items() if 'ai_provider' in config_types and ('alpaca' in config_types or 'finnhub' in config_types))
+
+
+def _market_news_scheduler_loop():
+    while not _MARKET_NEWS_SCHEDULER_STOP.is_set():
+        started = time.monotonic()
+        try:
+            if _supabase_background_io_blocked():
+                _MARKET_NEWS_SCHEDULER_STOP.wait(60)
+                continue
+            owns_lease = operations_store.claim_worker_lease(
+                'market-news-intelligence',
+                _MARKET_NEWS_WORKER_OWNER,
+                ttl_seconds=max(180, _MARKET_NEWS_REFRESH_SECONDS + 90),
+                metadata={'component': 'market_news_ai', 'cadenceSeconds': _MARKET_NEWS_REFRESH_SECONDS},
+            )
+            if not owns_lease:
+                _MARKET_NEWS_SCHEDULER_STOP.wait(60)
+                continue
+            for uid in _market_news_scheduler_users():
+                if _MARKET_NEWS_SCHEDULER_STOP.is_set():
+                    break
+                try:
+                    with headless_user_context(uid):
+                        market_cfg = resolve_alpaca_config_for_user(uid, 'market_data')
+                        finnhub_cfg = resolve_finnhub_config_for_user(uid)
+                        articles, _sources, _errors = _market_intelligence_fetch_news(
+                            market_cfg,
+                            finnhub_cfg,
+                            days=1,
+                            limit=120,
+                            user_id=uid,
+                            force_refresh=True,
+                        )
+                        _market_news_ai_enrich(uid, articles, notify=True)
+                except Exception as exc:
+                    safe_print('[MarketNewsScheduler] user refresh failed: %s' % exc)
+        except Exception as exc:
+            safe_print('[MarketNewsScheduler] cycle failed: %s' % exc)
+        elapsed = time.monotonic() - started
+        _MARKET_NEWS_SCHEDULER_STOP.wait(max(15.0, _MARKET_NEWS_REFRESH_SECONDS - elapsed))
+
+
+def _ensure_market_news_scheduler():
+    global _MARKET_NEWS_SCHEDULER_THREAD, _MARKET_NEWS_SCHEDULER_PID
+    current_pid = os.getpid()
+    with _MARKET_NEWS_SCHEDULER_LOCK:
+        if (
+            _MARKET_NEWS_SCHEDULER_PID == current_pid
+            and _MARKET_NEWS_SCHEDULER_THREAD
+            and _MARKET_NEWS_SCHEDULER_THREAD.is_alive()
+        ):
+            return
+        _MARKET_NEWS_SCHEDULER_STOP.clear()
+        _MARKET_NEWS_SCHEDULER_PID = current_pid
+        _MARKET_NEWS_SCHEDULER_THREAD = threading.Thread(
+            target=_market_news_scheduler_loop,
+            daemon=True,
+            name='market-news-intelligence',
+        )
+        _MARKET_NEWS_SCHEDULER_THREAD.start()
 
 
 def start_background_services():
@@ -54884,6 +55420,7 @@ def start_background_services():
         kalshi_start()
         _pa_ensure_scheduler()
         _ensure_discord_retry_scheduler()
+        _ensure_market_news_scheduler()
 
         process_changed = _BACKGROUND_SERVICES_PID != current_pid
         _BACKGROUND_SERVICES_PID = current_pid
