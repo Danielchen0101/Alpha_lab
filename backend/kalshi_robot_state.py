@@ -61,8 +61,16 @@ _LEGACY_NON_TRADING_FIELDS = (
 # in their own fields.  Persisting these feature-heavy rows made one robot
 # artifact exceed a megabyte in production.
 _EPHEMERAL_MODE_FIELDS = (
-    "decisions",
     "decisionLimit",
+    "lastRunAt",
+    "lastError",
+    "runs",
+)
+
+_EPHEMERAL_TOP_LEVEL_FIELDS = (
+    "lastRunAt",
+    "lastError",
+    "runs",
 )
 
 
@@ -540,6 +548,7 @@ class KalshiRobotState:
         self._lock = threading.RLock()
         self._users: Dict[str, Dict[str, Any]] = {}
         self._last_persisted_monotonic: Dict[str, float] = {}
+        self._last_durable_payload: Dict[str, Dict[str, Any]] = {}
         if path and os.path.exists(path) and not callable(self._state_loader):
             try:
                 with open(path, "r", encoding="utf-8") as handle:
@@ -770,6 +779,10 @@ class KalshiRobotState:
                 restored_existing_state
                 and self._requires_durable_compaction(restored)
             )
+            if restored_existing_state and not durable_compaction_required:
+                self._last_durable_payload[key] = (
+                    self._durable_comparison_payload(restored)
+                )
             self._users[key] = dict(restored) if isinstance(restored, Mapping) else self._initial()
             if int(self._users[key].get("storageVersion") or 0) < 8:
                 self._apply_v8_strategy_defaults(self._users[key])
@@ -854,19 +867,25 @@ class KalshiRobotState:
         state = self._users.get(key)
         if not isinstance(state, dict) or not callable(self._state_saver):
             return
+        durable_payload = self._durable_payload(state)
+        comparison_payload = self._durable_comparison_payload(durable_payload)
+        if self._last_durable_payload.get(key) == comparison_payload:
+            return
         try:
             saved = self._state_saver(
                 key,
-                self._durable_payload(state),
+                durable_payload,
             )
         except Exception:
             # A failed compare-and-swap means another runtime owns a newer
             # state. Invalidate only this user's cache so the next operation
             # reloads that canonical version without disturbing other users.
             self._users.pop(key, None)
+            self._last_durable_payload.pop(key, None)
             raise
         if isinstance(saved, Mapping) and saved.get("version") is not None:
             state["_operationsVersion"] = int(saved.get("version") or 0)
+        self._last_durable_payload[key] = comparison_payload
         self._last_persisted_monotonic[key] = time.monotonic()
 
     @staticmethod
@@ -881,6 +900,8 @@ class KalshiRobotState:
         payload = copy.deepcopy(dict(state))
         for field in _TOP_LEVEL_MODE_MIRRORS:
             payload.pop(field, None)
+        for field in _EPHEMERAL_TOP_LEVEL_FIELDS:
+            payload.pop(field, None)
         for field in _LEGACY_NON_TRADING_FIELDS:
             payload.pop(field, None)
         mode_state = payload.get("modeState")
@@ -888,6 +909,20 @@ class KalshiRobotState:
             for bucket in mode_state.values():
                 if not isinstance(bucket, dict):
                     continue
+                durable_order_decisions = [
+                    dict(row)
+                    for row in list(bucket.get("decisions") or [])
+                    if isinstance(row, Mapping)
+                    and (
+                        row.get("orderSubmitted")
+                        or row.get("orderId")
+                        or row.get("clientOrderId")
+                    )
+                ][:MAX_DECISION_RECORDS]
+                if durable_order_decisions:
+                    bucket["decisions"] = durable_order_decisions
+                else:
+                    bucket.pop("decisions", None)
                 for field in _LEGACY_NON_TRADING_FIELDS:
                     bucket.pop(field, None)
                 for field in _EPHEMERAL_MODE_FIELDS:
@@ -897,10 +932,22 @@ class KalshiRobotState:
                     strategy.pop("learning", None)
         return payload
 
+    @classmethod
+    def _durable_comparison_payload(
+        cls,
+        state: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        """Return durable content without local compare-and-swap metadata."""
+        payload = cls._durable_payload(state)
+        payload.pop("_operationsVersion", None)
+        return payload
+
     @staticmethod
     def _requires_durable_compaction(state: Mapping[str, Any]) -> bool:
         """Detect one legacy full-row layout without mutating loaded state."""
         if any(field in state for field in _TOP_LEVEL_MODE_MIRRORS):
+            return True
+        if any(field in state for field in _EPHEMERAL_TOP_LEVEL_FIELDS):
             return True
         if any(field in state for field in _LEGACY_NON_TRADING_FIELDS):
             return True
@@ -913,6 +960,20 @@ class KalshiRobotState:
             if any(field in bucket for field in _LEGACY_NON_TRADING_FIELDS):
                 return True
             if any(field in bucket for field in _EPHEMERAL_MODE_FIELDS):
+                return True
+            decisions = bucket.get("decisions")
+            if decisions is not None and (
+                not isinstance(decisions, list)
+                or any(
+                    not isinstance(row, Mapping)
+                    or not (
+                        row.get("orderSubmitted")
+                        or row.get("orderId")
+                        or row.get("clientOrderId")
+                    )
+                    for row in decisions
+                )
+            ):
                 return True
             strategy = bucket.get("strategy")
             if isinstance(strategy, Mapping) and "learning" in strategy:

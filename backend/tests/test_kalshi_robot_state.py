@@ -1353,6 +1353,40 @@ def test_transient_errors_never_rewrite_full_durable_state(tmp_path):
     assert calls == []
 
 
+def test_durable_writer_skips_runtime_only_changes_at_the_final_boundary(tmp_path):
+    saves = []
+
+    def save(_user_id, payload):
+        saves.append(copy.deepcopy(payload))
+        return {"version": len(saves)}
+
+    store = KalshiRobotState(
+        str(tmp_path / "state.json"),
+        state_saver=save,
+    )
+    store.configure("user-a", True, {"executionMode": "real"})
+    assert len(saves) == 1
+
+    state = store._users["user-a"]
+    bucket = state["modeState"]["real"]
+    state["runs"] = 99
+    state["lastRunAt"] = "2026-08-02T12:00:00Z"
+    state["lastError"] = "temporary"
+    bucket["runs"] = 99
+    bucket["lastRunAt"] = "2026-08-02T12:00:00Z"
+    bucket["lastError"] = "temporary"
+    store._save_user("user-a")
+    assert len(saves) == 1
+
+    bucket["arming"]["reason"] = "durable_change"
+    store._save_user("user-a")
+    assert len(saves) == 2
+    assert "runs" not in saves[-1]
+    assert "lastRunAt" not in saves[-1]
+    assert "lastError" not in saves[-1]
+    assert "runs" not in saves[-1]["modeState"]["real"]
+
+
 def test_durable_payload_omits_rebuildable_mirrors_and_legacy_learning(tmp_path):
     durable = {}
     saves = []
