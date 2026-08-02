@@ -36,6 +36,7 @@ import {
   registerEntryPlanRun, unregisterEntryPlanRun, isEntryPlanRunning,
 } from '../services/scannerRunnerService';
 import { resolveResearchStrategyPolicy } from './researchStrategyPolicy';
+import { DEEPSEEK_DEFAULT_MODEL, normalizeAIModel } from '../config/aiProviders';
 import './AgentEditorial.css';
 
 const { Option } = Select;
@@ -1011,7 +1012,7 @@ const Agent: React.FC = (): React.ReactElement => {
   const [aiConfig, setAiConfig] = useState({
     apiKey: '',
     baseUrl: 'https://api.deepseek.com',
-    model: 'deepseek-chat',
+    model: DEEPSEEK_DEFAULT_MODEL,
     provider: 'DeepSeek'
   });
 
@@ -2120,13 +2121,13 @@ const Agent: React.FC = (): React.ReactElement => {
         type AIProvider = typeof allowedProviders[number];
 
         let provider = config.provider || 'DeepSeek';
-        let model = config.model || 'deepseek-chat';
+        let model = normalizeAIModel(config.provider, config.model) || DEEPSEEK_DEFAULT_MODEL;
 
         // 如果provider不在允许列表中，重置为默认值
         if (!allowedProviders.includes(provider as AIProvider)) {
           console.warn(`非法provider值: ${provider}，重置为DeepSeek`);
           provider = 'DeepSeek';
-          model = 'deepseek-chat';
+          model = DEEPSEEK_DEFAULT_MODEL;
         }
 
         // 更新本地状态

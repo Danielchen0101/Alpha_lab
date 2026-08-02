@@ -2801,6 +2801,24 @@ def ai_chat_request(url, headers=None, json_data=None, timeout=30, provider=None
 
 # AI Provider 配置状态
 
+DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash'
+DEEPSEEK_RETIRED_MODELS = {
+    'deepseek-chat',
+    'deepseek-coder',
+    'deepseek-reasoner',
+}
+
+
+def _normalize_ai_model(provider, model):
+    """Map retired DeepSeek model IDs to the current low-cost V4 model."""
+    normalized_provider = str(provider or '').strip().lower()
+    normalized_model = str(model or '').strip()
+    if normalized_provider == 'deepseek' and (
+        not normalized_model or normalized_model.lower() in DEEPSEEK_RETIRED_MODELS
+    ):
+        return DEEPSEEK_DEFAULT_MODEL
+    return normalized_model
+
 ai_provider_config_state = {
 
     'provider': 'DeepSeek',
@@ -2809,7 +2827,7 @@ ai_provider_config_state = {
 
     'baseURL': 'https://api.deepseek.com',
 
-    'model': 'deepseek-chat',
+    'model': DEEPSEEK_DEFAULT_MODEL,
 
     # AI test status tracking
     'aiTestStatus': 'not_tested',  # not_tested | saved | connected | error
@@ -2863,6 +2881,11 @@ def load_ai_config_from_file():
                          'aiTestStatus', 'lastTestedAt', 'lastTestError']:
                 if key in saved_config:
                     ai_provider_config_state[key] = saved_config[key]
+
+            ai_provider_config_state['model'] = _normalize_ai_model(
+                ai_provider_config_state.get('provider'),
+                ai_provider_config_state.get('model'),
+            )
 
             # Auto-downgrade inconsistent state: connected with empty key
             if ai_provider_config_state.get('aiTestStatus') == 'connected' and \
@@ -7628,7 +7651,7 @@ def ai_provider_config():
                 'provider': resolved.get('provider', 'DeepSeek'),
                 'apiKey': display_key,
                 'baseUrl': resolved.get('baseURL', 'https://api.deepseek.com'),
-                'model': resolved.get('model', 'deepseek-chat'),
+                'model': resolved.get('model', DEEPSEEK_DEFAULT_MODEL),
             }
 
             # Read testStatus from Supabase user config
@@ -7682,6 +7705,10 @@ def ai_provider_config():
                         if key == 'apiKey' and data[key] != existing.get('apiKey'):
                             key_changed = True
                         existing[key] = data[key]
+                existing['model'] = _normalize_ai_model(
+                    existing.get('provider', 'DeepSeek'),
+                    existing.get('model'),
+                )
                 # Only reset test status if the API key actually changed
                 if key_changed:
                     existing['aiTestStatus'] = 'saved'
@@ -7700,6 +7727,10 @@ def ai_provider_config():
                     ai_provider_config_state['baseURL'] = data['baseURL']
                 if 'model' in data:
                     ai_provider_config_state['model'] = data['model']
+                ai_provider_config_state['model'] = _normalize_ai_model(
+                    ai_provider_config_state.get('provider'),
+                    ai_provider_config_state.get('model'),
+                )
                 ai_provider_config_state['aiTestStatus'] = 'saved'
                 ai_provider_config_state['lastTestError'] = None
                 save_ai_config_to_file()
@@ -7713,7 +7744,7 @@ def ai_provider_config():
                 'provider': resolved.get('provider', 'DeepSeek'),
                 'apiKey': display_key,
                 'baseUrl': resolved.get('baseURL', 'https://api.deepseek.com'),
-                'model': resolved.get('model', 'deepseek-chat'),
+                'model': resolved.get('model', DEEPSEEK_DEFAULT_MODEL),
             }
 
             response = {
@@ -7795,10 +7826,9 @@ def ai_provider_test():
         # Default base_url/model/provider if still empty
         if not base_url:
             base_url = 'https://api.deepseek.com'
-        if not model:
-            model = 'deepseek-chat'
         if not provider:
             provider = 'DeepSeek'
+        model = _normalize_ai_model(provider, model)
 
         # 测试 API 密钥
         headers = {
@@ -7842,19 +7872,24 @@ def ai_provider_test():
                 test_response = requests.post(test_url, headers=gemini_headers, json=test_payload, timeout=15)
             else:
                 # OpenAI-compatible (DeepSeek, OpenAI, NVIDIA, Mimo, Custom)
+                test_payload = {
+                    'model': model,
+                    'messages': [
+                        {'role': 'system', 'content': 'You are a connection test.'},
+                        {'role': 'user', 'content': 'Reply with OK only.'}
+                    ],
+                    'temperature': 0,
+                    'max_tokens': 16,
+                    'stream': False,
+                }
+                # A connection check should be fast and verify usable text output,
+                # not spend its tiny token budget on V4 reasoning tokens.
+                if provider_upper == 'DEEPSEEK':
+                    test_payload['thinking'] = {'type': 'disabled'}
                 test_response = ai_chat_request(
                     f'{base_url}/chat/completions',
                     headers=headers,
-                    json_data={
-                        'model': model,
-                        'messages': [
-                            {'role': 'system', 'content': 'You are a connection test.'},
-                            {'role': 'user', 'content': 'Reply with OK only.'}
-                        ],
-                        'temperature': 0,
-                        'max_tokens': 16,
-                        'stream': False
-                    },
+                    json_data=test_payload,
                     timeout=15,
                     provider=provider
                 )
@@ -9992,7 +10027,9 @@ def resolve_ai_config(require_user_config=False):
                 result = {
                     'apiKey': api_key,
                     'baseURL': user_cfg.get('baseURL', user_cfg.get('baseUrl', '')),
-                    'model': user_cfg.get('model', 'deepseek-chat'),
+                    'model': _normalize_ai_model(
+                        user_cfg.get('provider', 'DeepSeek'), user_cfg.get('model')
+                    ),
                     'provider': user_cfg.get('provider', 'DeepSeek'),
                     'testStatus': user_cfg.get('aiTestStatus', 'not_tested'),
                     'lastTestedAt': user_cfg.get('lastTestedAt'),
@@ -10005,7 +10042,9 @@ def resolve_ai_config(require_user_config=False):
                 return ({
                     'apiKey': '',
                     'baseURL': user_cfg.get('baseURL', user_cfg.get('baseUrl', '')),
-                    'model': user_cfg.get('model', 'deepseek-chat'),
+                    'model': _normalize_ai_model(
+                        user_cfg.get('provider', 'DeepSeek'), user_cfg.get('model')
+                    ),
                     'provider': user_cfg.get('provider', 'DeepSeek'),
                     'testStatus': user_cfg.get('aiTestStatus', 'not_tested'),
                     'lastTestedAt': user_cfg.get('lastTestedAt'),
@@ -10171,7 +10210,9 @@ def resolve_ai_config_for_user(uid):
             return ({
                 'apiKey': api_key,
                 'baseURL': user_cfg.get('baseURL', user_cfg.get('baseUrl', '')),
-                'model': user_cfg.get('model', 'deepseek-chat'),
+                'model': _normalize_ai_model(
+                    user_cfg.get('provider', 'DeepSeek'), user_cfg.get('model')
+                ),
                 'provider': user_cfg.get('provider', 'DeepSeek'),
                 'testStatus': user_cfg.get('aiTestStatus', 'not_tested'),
                 'lastTestedAt': user_cfg.get('lastTestedAt'),
@@ -10180,10 +10221,18 @@ def resolve_ai_config_for_user(uid):
             }, 'user_config/supabase')
         elif key_is_masked:
             safe_print('[resolve_ai_config_for_user] user=%s key appears masked' % uid[:8])
-            return ({'apiKey': '', 'baseURL': user_cfg.get('baseURL', ''), 'model': user_cfg.get('model', ''),
-                     'provider': user_cfg.get('provider', ''), 'testStatus': user_cfg.get('aiTestStatus', 'not_tested'),
-                     'lastTestedAt': user_cfg.get('lastTestedAt'), 'lastTestError': user_cfg.get('lastTestError'),
-                     'keyIsMasked': True}, 'user_config/supabase')
+            return ({
+                'apiKey': '',
+                'baseURL': user_cfg.get('baseURL', ''),
+                'model': _normalize_ai_model(
+                    user_cfg.get('provider', 'DeepSeek'), user_cfg.get('model')
+                ),
+                'provider': user_cfg.get('provider', ''),
+                'testStatus': user_cfg.get('aiTestStatus', 'not_tested'),
+                'lastTestedAt': user_cfg.get('lastTestedAt'),
+                'lastTestError': user_cfg.get('lastTestError'),
+                'keyIsMasked': True,
+            }, 'user_config/supabase')
         else:
             safe_print('[resolve_ai_config_for_user] user=%s hasKey=False' % uid[:8])
     else:
@@ -11009,7 +11058,9 @@ def config_status():
             ai_test_status = 'invalid_key_saved'
             ai_last_test_error = 'Stored AI key is masked. Re-enter the real API key in Settings.'
         ai_provider = user_cfg.get('provider', '')
-        ai_model = user_cfg.get('model', '')
+        ai_model = _normalize_ai_model(
+            user_cfg.get('provider', 'DeepSeek'), user_cfg.get('model')
+        )
         if not key_is_masked:
             ai_test_status = user_cfg.get('aiTestStatus', 'not_tested')
         ai_last_tested_at = user_cfg.get('lastTestedAt')
@@ -11130,6 +11181,9 @@ def settings_ai_config():
             # Return masked key for display — never expose real key
             masked_key = mask_key(raw_key) if has_valid_key else ''
             result = {k: v for k, v in config.items() if k != 'apiKey'}
+            result['model'] = _normalize_ai_model(
+                config.get('provider', 'DeepSeek'), config.get('model')
+            )
             # Normalize baseURL → baseUrl for frontend form field consistency
             if 'baseURL' in result and 'baseUrl' not in result:
                 result['baseUrl'] = result.pop('baseURL')
@@ -11174,6 +11228,9 @@ def settings_ai_config():
     # Only reset test status if the API key actually changed
     key_changed = 'apiKey' in config_data and config_data.get('apiKey') != existing.get('apiKey')
     existing.update(config_data)
+    existing['model'] = _normalize_ai_model(
+        existing.get('provider', 'DeepSeek'), existing.get('model')
+    )
     if key_changed:
         existing['aiTestStatus'] = 'saved'
         existing['lastTestError'] = None
@@ -16755,7 +16812,7 @@ def _inst_extract_ai_response_text(resp_data, provider):
 def _inst_call_ai_trader(ai_cfg, system_prompt, user_prompt):
     api_key = ai_cfg.get('apiKey', '')
     base_url = _safe_str(ai_cfg.get('baseURL') or ai_cfg.get('baseUrl')).rstrip('/')
-    model = _safe_str(ai_cfg.get('model') or 'deepseek-chat')
+    model = _safe_str(ai_cfg.get('model') or DEEPSEEK_DEFAULT_MODEL)
     provider = _safe_str(ai_cfg.get('provider') or 'DeepSeek')
     if not base_url:
         base_url = 'https://api.deepseek.com'
@@ -18897,7 +18954,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data,
 
         payload = {
 
-            'model': _resolved_ai.get('model', 'deepseek-chat'),
+            'model': _resolved_ai.get('model', DEEPSEEK_DEFAULT_MODEL),
 
             'messages': [{'role': 'user', 'content': prompt}],
 
@@ -19124,7 +19181,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data,
                 analysis_result['aiUsed'] = True
                 analysis_result['symbol'] = symbol
                 analysis_result['provider'] = _resolved_ai.get('provider', 'DeepSeek')
-                analysis_result['model'] = _resolved_ai.get('model', 'deepseek-chat')
+                analysis_result['model'] = _resolved_ai.get('model', DEEPSEEK_DEFAULT_MODEL)
                 analysis_result['configSource'] = _ai_source
 
                 return analysis_result
@@ -28631,7 +28688,7 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         payload = {
 
-            'model': _resolved_ai.get('model', 'deepseek-chat'),
+            'model': _resolved_ai.get('model', DEEPSEEK_DEFAULT_MODEL),
 
             'messages': [{'role': 'user', 'content': prompt}],
 
@@ -29747,7 +29804,7 @@ def ai_analyze_single():
                 analysis_source = ai_analysis.get('analysisSource', 'rule_based')
                 ai_called = analysis_source == 'deepseek'
                 ai_source_label = ai_config.get('provider', 'DeepSeek') if ai_called else 'Local Rules'
-                ai_model_name = ai_config.get('model', 'deepseek-chat') if ai_called else None
+                ai_model_name = ai_config.get('model', DEEPSEEK_DEFAULT_MODEL) if ai_called else None
 
                 # Market data fields — sourced from Alpaca snapshot (fetched above)
                 _md_price = market_data.get('price') if market_data else None
@@ -30079,7 +30136,7 @@ Return ONLY the JSON. No preamble."""
 
         provider = _resolved_ai.get('provider', 'deepseek')
         base_url = _resolved_ai.get('baseURL', 'https://api.deepseek.com')
-        model = _resolved_ai.get('model', 'deepseek-chat')
+        model = _resolved_ai.get('model', DEEPSEEK_DEFAULT_MODEL)
 
         ai_headers = {
             'Authorization': f'Bearer {api_key}',
@@ -33554,7 +33611,7 @@ Example: MEDIUM | mixed news, moderate liquidity"""
 
                     provider = _resolved_ai.get('provider', 'deepseek')
                     base_url = _resolved_ai.get('baseURL', 'https://api.deepseek.com')
-                    model = _resolved_ai.get('model', 'deepseek-chat')
+                    model = _resolved_ai.get('model', DEEPSEEK_DEFAULT_MODEL)
 
                     ai_headers = {
                         'Authorization': f'Bearer {api_key}',
@@ -34864,7 +34921,7 @@ Rules:
         }
         
         payload = {
-            'model': _resolved_ai.get('model', 'deepseek-chat'),
+            'model': _resolved_ai.get('model', DEEPSEEK_DEFAULT_MODEL),
             'messages': [{'role': 'user', 'content': prompt}],
             'max_tokens': 800,
             'temperature': 0.3,
@@ -35061,7 +35118,7 @@ Return ONLY valid JSON (no markdown):
 
         provider = _resolved_ai.get('provider', 'deepseek')
         base_url = _resolved_ai.get('baseURL', 'https://api.deepseek.com')
-        model = _resolved_ai.get('model', 'deepseek-chat')
+        model = _resolved_ai.get('model', DEEPSEEK_DEFAULT_MODEL)
         
         ai_headers = {
             'Authorization': f'Bearer {api_key}',
@@ -36833,7 +36890,7 @@ Return ONLY valid JSON, no markdown."""
         if not base_url.startswith('http'):
             base_url = 'https://' + base_url
         payload = {
-            'model': _ai_cfg.get('model', 'deepseek-chat'),
+            'model': _ai_cfg.get('model', DEEPSEEK_DEFAULT_MODEL),
             'messages': [{'role': 'user', 'content': prompt}],
             'max_tokens': 520, 'temperature': 0.15,
             'response_format': {'type': 'json_object'},
@@ -37480,7 +37537,7 @@ def _call_ai_entry_final_decision(plans, execution_mode, account_mode, risk_prof
 
     provider = _resolved_ai.get('provider', 'deepseek')
     base_url = _resolved_ai.get('baseURL', 'https://api.deepseek.com')
-    model = _resolved_ai.get('model', 'deepseek-chat')
+    model = _resolved_ai.get('model', DEEPSEEK_DEFAULT_MODEL)
 
     if not base_url.startswith('http'):
         base_url = 'https://' + base_url
@@ -42986,7 +43043,7 @@ def _pa_admission_ai_challenge(uid, rows, enabled=True):
     api_key = ai_cfg.get('apiKey') or ''
     base_url = (ai_cfg.get('baseURL') or 'https://api.deepseek.com').rstrip('/')
     provider = ai_cfg.get('provider') or 'AI'
-    model = ai_cfg.get('model') or 'deepseek-chat'
+    model = ai_cfg.get('model') or DEEPSEEK_DEFAULT_MODEL
     stats.update({
         'configured': bool(api_key),
         'provider': provider,
@@ -47013,7 +47070,7 @@ def _pa_exit_ai_challenge(uid, signals, enabled=True):
     if not api_key:
         return stats
     provider = ai_cfg.get('provider') or 'AI'
-    model = ai_cfg.get('model') or 'deepseek-chat'
+    model = ai_cfg.get('model') or DEEPSEEK_DEFAULT_MODEL
     base_url = (ai_cfg.get('baseURL') or 'https://api.deepseek.com').rstrip('/')
     stats.update({'configured': True, 'provider': provider, 'model': model, 'configSource': source})
     packets = [{

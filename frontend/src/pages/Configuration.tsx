@@ -15,6 +15,7 @@ import { supabase } from '../lib/supabaseClient';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTradeMode } from '../contexts/TradeModeContext';
 import kalshiAPI, { KalshiConnectionConfigResponse, KalshiEnvironment } from '../services/kalshiApi';
+import { DEEPSEEK_MODELS, normalizeAIModel } from '../config/aiProviders';
 import './ConfigurationEditorial.css';
 
 const { Text } = Typography;
@@ -680,7 +681,7 @@ const MarketDataSection: React.FC<{ reloadKey?: number; t: any; isZh?: boolean }
 const PROVIDER_MODELS: Record<string, { baseUrl: string; models: string[] }> = {
   DeepSeek: {
     baseUrl: 'https://api.deepseek.com',
-    models: ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-chat', 'deepseek-coder', 'deepseek-reasoner'],
+    models: [...DEEPSEEK_MODELS],
   },
   OpenAI: {
     baseUrl: 'https://api.openai.com/v1',
@@ -735,7 +736,7 @@ const AIProviderSection: React.FC<{ t: any }> = ({ t }) => {
       if (res.data?.success) {
         const cfg = res.data.config || {};
         const provider = cfg.provider || 'DeepSeek';
-        const model = cfg.model || PROVIDER_MODELS[provider]?.models[0] || '';
+        const model = normalizeAIModel(provider, cfg.model) || PROVIDER_MODELS[provider]?.models[0] || '';
         const providerModels = PROVIDER_MODELS[provider]?.models || [];
         const isKnown = providerModels.includes(model);
         setCustomModel(!isKnown);
