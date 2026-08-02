@@ -188,6 +188,19 @@ export interface MarketRiskSnapshotResponse {
     unchanged: number;
   }>;
   movers: MarketRiskConstituent[];
+  gainers?: MarketRiskConstituent[];
+  losers?: MarketRiskConstituent[];
+  themeBreadth?: Array<{
+    key: string;
+    label: string;
+    total: number;
+    advancing: number;
+    declining: number;
+    unchanged: number;
+    averageChangePct: number;
+    advanceDeclineRatio: number;
+    leaders: Array<{ symbol: string; changePct: number }>;
+  }>;
   asOf: string;
   generatedAt: string;
   universeSource: string;

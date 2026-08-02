@@ -46,6 +46,8 @@ describe('authenticated workspace navigation', () => {
     ['/compare', 'strategies', 'comparison'],
     ['/ranking', 'strategies', 'ranking'],
     ['/trade', 'trade', 'execution'],
+    ['/trade/intelligence', 'trade', 'market-intelligence'],
+    ['/trade/intelligence/news', 'trade', 'market-intelligence'],
     ['/portfolio', 'trade', 'portfolio'],
     ['/settings', 'settings', 'preferences'],
     ['/settings/configuration', 'settings', 'connections'],
