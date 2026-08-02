@@ -40,15 +40,15 @@ const calendar: MarketCalendarResponse = {
 
 describe('MarketIntelligence CalendarView', () => {
   it('renders official macro releases independently from Watchlist earnings', () => {
-    const html = renderToStaticMarkup(
+    const view = renderToStaticMarkup(
       <StaticRouter location="/trade/intelligence/calendar">
         <CalendarView data={calendar} copy={copy} isZh onSymbol={() => undefined} />
       </StaticRouter>,
     );
 
-    expect(html).toContain('Employment Situation (Nonfarm Payrolls)');
-    expect(html).toContain('08:30 ET');
-    expect(html).toContain('U.S. Bureau of Labor Statistics');
-    expect(html).toContain('未来暂无财报');
+    expect(view).toContain('Employment Situation (Nonfarm Payrolls)');
+    expect(view).toContain('08:30 ET');
+    expect(view).toContain('U.S. Bureau of Labor Statistics');
+    expect(view).toContain('未来暂无财报');
   });
 });
