@@ -87,6 +87,7 @@ MAX_PENDING_RECONCILIATIONS = 100
 PENDING_RECONCILIATION_MAX_AGE = timedelta(days=30)
 SCHEDULER_SCAN_INTERVAL_SECONDS = 30.0
 SCHEDULER_LOCK_RETRY_SECONDS = 5.0
+SCHEDULER_DEPENDENCY_BACKOFF_MAX_SECONDS = 120.0
 SCHEDULER_HEARTBEAT_STALE_SECONDS = 75.0
 SCHEDULER_DURABLE_LEASE_NAME = "crypto-automation-scheduler-v1"
 SCHEDULER_DURABLE_LEASE_TTL_SECONDS = 90
@@ -1522,6 +1523,7 @@ class _CryptoService:
         ai_reviewer=None,
         ai_status_resolver=None,
         notifier=None,
+        background_dependency_available=None,
     ):
         self.require_auth = require_auth
         self.resolve_alpaca = resolve_alpaca_config_for_user
@@ -1532,6 +1534,7 @@ class _CryptoService:
         self.ai_reviewer = ai_reviewer
         self.ai_status_resolver = ai_status_resolver
         self.notifier = notifier
+        self.background_dependency_available = background_dependency_available
         self._lifecycle_lock = threading.RLock()
         self._scheduler_state_guard = threading.RLock()
         self._scheduler_execution_state = threading.local()
@@ -5314,6 +5317,30 @@ class _CryptoService:
                     while not active_stop.is_set():
                         self._scheduler_heartbeat()
                         try:
+                            dependency_available = self.background_dependency_available
+                            if callable(dependency_available):
+                                try:
+                                    dependency_ready = bool(dependency_available())
+                                except Exception:
+                                    dependency_ready = False
+                                if not dependency_ready:
+                                    with self._scheduler_state_guard:
+                                        self._scheduler_durable_lease_owner = False
+                                        self._scheduler_last_error = (
+                                            "SupabaseDependencyUnavailable"
+                                        )
+                                        self._scheduler_last_error_at = _iso()
+                                        self._scheduler_consecutive_errors += 1
+                                        failures = self._scheduler_consecutive_errors
+                                    self._scheduler_heartbeat()
+                                    delay = min(
+                                        SCHEDULER_DEPENDENCY_BACKOFF_MAX_SECONDS,
+                                        SCHEDULER_SCAN_INTERVAL_SECONDS
+                                        * (2 ** min(max(0, failures - 1), 2)),
+                                    )
+                                    if active_stop.wait(delay):
+                                        return
+                                    continue
                             if not self._claim_durable_scheduler_lease():
                                 with self._scheduler_state_guard:
                                     had_error = bool(self._scheduler_last_error)
@@ -5428,6 +5455,7 @@ def register_crypto_api(
     ai_reviewer=None,
     ai_status_resolver=None,
     notifier=None,
+    background_dependency_available=None,
     start_background=True,
 ):
     """Register user-scoped crypto routes and optionally start the scheduler.
@@ -5454,6 +5482,7 @@ def register_crypto_api(
         ai_reviewer=ai_reviewer,
         ai_status_resolver=ai_status_resolver,
         notifier=notifier,
+        background_dependency_available=background_dependency_available,
     )
     blueprint = Blueprint("crypto_api", __name__)
 
