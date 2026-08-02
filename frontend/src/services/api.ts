@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { supabase, supabaseConfigError } from '../lib/supabaseClient';
-import { hasSessionAwayExpired, readAwaySince, refreshSessionOnce } from './authSession';
+import { getSessionWithTimeout, hasSessionAwayExpired, readAwaySince, refreshSessionOnce } from './authSession';
 
 const rawApiBaseUrl = process.env.REACT_APP_API_BASE_URL || '';
 
@@ -62,7 +62,7 @@ function isTokenExpired(token: string): boolean {
 
 // Attach Supabase access token to all requests, refreshing if needed
 const attachSupabaseToken = async (config: any) => {
-  let { data: { session } } = await supabase.auth.getSession();
+  let session = await getSessionWithTimeout();
   // If token is expired, attempt refresh
   if (session?.access_token && isTokenExpired(session.access_token)) {
     try {
@@ -109,7 +109,14 @@ const handle401 = async (error: any) => {
     }
   }
 
-  const { data: { session } } = await supabase.auth.getSession();
+  let session = null;
+  try {
+    session = await getSessionWithTimeout();
+  } catch {
+    // A timed-out session read is an availability failure, not proof that the
+    // user signed out. Keep local credentials and let the next request retry.
+    return Promise.reject(error);
+  }
   const awayExpired = hasSessionAwayExpired(readAwaySince());
   if (session && !awayExpired) {
     return Promise.reject(error);
@@ -234,6 +241,7 @@ export const clearConfigStatusCache = () => {
 
 export const loadConfigStatus = async (options: {
   force?: boolean;
+  retry?: boolean;
   timeoutMs?: number;
   onRetry?: (result: ConfigStatusLoadResult) => void;
 } = {}): Promise<ConfigStatusLoadResult> => {
@@ -279,7 +287,7 @@ export const loadConfigStatus = async (options: {
       return result;
     } catch (error: any) {
       const firstFailure = statusErrorResult(error);
-      if (isRetryableStatusError(error)) {
+      if (options.retry !== false && isRetryableStatusError(error)) {
         const wakingResult = {
           ...firstFailure,
           errorCode: firstFailure.errorCode === 'backend_timeout' ? 'backend_waking' : firstFailure.errorCode,

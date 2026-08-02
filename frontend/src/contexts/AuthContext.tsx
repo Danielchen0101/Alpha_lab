@@ -3,10 +3,12 @@ import { Session, User, AuthChangeEvent } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabaseClient';
 import {
   clearSessionAway,
+  AUTH_SESSION_READ_TIMEOUT_MS,
   getAwayTimeRemaining,
   hasSessionAwayExpired,
   markSessionAway,
   readAwaySince,
+  withAuthTimeout,
 } from '../services/authSession';
 import { getSessionAssuranceKey } from '../lib/sessionAssurance';
 
@@ -24,6 +26,8 @@ interface AuthContextType {
 }
 
 export type MfaAssuranceStatus = 'checking' | 'not_required' | 'required' | 'verified' | 'unknown';
+const MFA_ASSURANCE_TIMEOUT_MS = 5_000;
+const INTERACTIVE_AUTH_TIMEOUT_MS = 10_000;
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
@@ -62,8 +66,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const refreshMfaAssurance = useCallback(async (): Promise<boolean> => {
     const requestId = ++assuranceRequestRef.current;
     setMfaStatus('checking');
+    const startedAt = Date.now();
     try {
-      const { data, error } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      const { data, error } = await withAuthTimeout(
+        supabase.auth.mfa.getAuthenticatorAssuranceLevel(),
+        MFA_ASSURANCE_TIMEOUT_MS,
+        'MFA assurance check',
+      );
       if (error) throw error;
       if (requestId !== assuranceRequestRef.current) return false;
       const nextStatus: MfaAssuranceStatus = data?.currentLevel === 'aal2'
@@ -75,7 +84,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // If AAL cannot be read, independently confirm whether the account has a
       // verified factor. An enrolled or indeterminate account fails closed.
       try {
-        const { data, error } = await supabase.auth.mfa.listFactors();
+        const remainingMs = Math.max(1, MFA_ASSURANCE_TIMEOUT_MS - (Date.now() - startedAt));
+        const { data, error } = await withAuthTimeout(
+          supabase.auth.mfa.listFactors(),
+          remainingMs,
+          'MFA factor check',
+        );
         if (error) throw error;
         if (requestId !== assuranceRequestRef.current) return false;
         const hasVerifiedFactor = Boolean(data?.totp?.some((factor) => factor.status === 'verified'));
@@ -90,21 +104,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     let active = true;
-    supabase.auth.getSession().then(({ data: { session: currentSession } }: { data: { session: Session | null } }) => {
-      if (!active) return;
-      assuranceSessionKeyRef.current = getSessionAssuranceKey(currentSession);
-      setSession(currentSession);
-      setUser(mapSupabaseUser(currentSession?.user ?? null));
-      if (!currentSession) setSignedOutState();
-      setLoading(false);
-    }).catch(() => {
-      if (!active) return;
-      setSession(null);
-      setUser(null);
-      setSignedOutState();
-      setLoading(false);
-    });
-
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event: AuthChangeEvent, newSession: Session | null) => {
         const previousAssuranceKey = assuranceSessionKeyRef.current;
@@ -127,6 +126,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setLoading(false);
       }
     );
+
+    withAuthTimeout(
+      supabase.auth.getSession(),
+      AUTH_SESSION_READ_TIMEOUT_MS,
+      'Initial session restore',
+    ).then(({ data: { session: currentSession } }: { data: { session: Session | null } }) => {
+      if (!active) return;
+      assuranceSessionKeyRef.current = getSessionAssuranceKey(currentSession);
+      setSession(currentSession);
+      setUser(mapSupabaseUser(currentSession?.user ?? null));
+      if (!currentSession) setSignedOutState();
+      setLoading(false);
+    }).catch(() => {
+      if (!active) return;
+      // Do not destroy persisted credentials when Supabase Auth is briefly
+      // unavailable. The auth-state subscription can still apply a late
+      // session, while public/sign-in pages stop showing an endless loader.
+      setSignedOutState();
+      setLoading(false);
+    });
 
     return () => {
       active = false;
@@ -222,7 +241,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const login = async (email: string, password: string, captchaToken?: string) => {
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password, options: { captchaToken } });
+      const { data, error } = await withAuthTimeout(
+        supabase.auth.signInWithPassword({ email, password, options: { captchaToken } }),
+        INTERACTIVE_AUTH_TIMEOUT_MS,
+        'Password sign in',
+      );
       if (error) {
         return { success: false, message: error.message };
       }
@@ -240,15 +263,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signUp = async (email: string, password: string, captchaToken?: string, fullName?: string, emailRedirectTo?: string) => {
     try {
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: { full_name: fullName || '' },
-          captchaToken,
-          emailRedirectTo,
-        },
-      });
+      const { data, error } = await withAuthTimeout(
+        supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: { full_name: fullName || '' },
+            captchaToken,
+            emailRedirectTo,
+          },
+        }),
+        INTERACTIVE_AUTH_TIMEOUT_MS,
+        'Account sign up',
+      );
       if (error) {
         return { success: false, message: error.message };
       }

@@ -9,6 +9,18 @@ ATOMIC_MERGE_MIGRATION = (
     / "migrations"
     / "20260726060000_pipeline_config_atomic_merge.sql"
 )
+WRITE_AMPLIFICATION_MIGRATION = (
+    BACKEND_ROOT.parent
+    / "supabase"
+    / "migrations"
+    / "20260802010716_reduce_runtime_write_amplification.sql"
+)
+REMOVE_UNUSED_INDEX_MIGRATION = (
+    BACKEND_ROOT.parent
+    / "supabase"
+    / "migrations"
+    / "20260802012440_remove_unused_artifact_scheduler_index.sql"
+)
 
 
 class _Response:
@@ -318,3 +330,24 @@ def test_deployment_contract_lists_and_verifies_atomic_merge_migration():
     )
     assert "public.probe_pipeline_config_atomic_merge()" in normalized
     assert "ALPHALAB_DISABLE_BACKGROUND_SERVICES=true" in deployment
+
+
+def test_runtime_write_amplification_migration_is_bounded_and_side_effect_free():
+    sql = WRITE_AMPLIFICATION_MIGRATION.read_text(encoding="utf-8")
+
+    assert "v_merged IS NOT DISTINCT FROM v_current" in sql
+    assert "CREATE OR REPLACE FUNCTION public.probe_runtime_dependencies()" in sql
+    assert "RETURNS JSONB" in sql
+    assert "STABLE" in sql
+    assert "SECURITY INVOKER" in sql
+    assert "20260802010716_v1" in sql
+    assert "NOTIFY pgrst, 'reload schema';" in sql
+
+
+def test_followup_migration_removes_write_heavy_low_cardinality_index():
+    sql = REMOVE_UNUSED_INDEX_MIGRATION.read_text(encoding="utf-8")
+
+    assert (
+        "DROP INDEX IF EXISTS "
+        "public.user_operation_artifacts_scheduler_lookup_idx"
+    ) in sql

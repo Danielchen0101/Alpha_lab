@@ -7,6 +7,7 @@ import json
 import math
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Mapping, Optional
 
@@ -25,6 +26,7 @@ MAX_SETTLEMENT_RECORDS = 1000
 MAX_TRADED_TICKERS = 2000
 PAPER_STATE_VERSION = 11
 KALSHI_MODES = ("paper", "real")
+ROBOT_STATE_HEARTBEAT_SECONDS = 60.0
 
 
 def _number(value: Any, default: float = 0.0) -> float:
@@ -500,6 +502,7 @@ class KalshiRobotState:
         self._persist_migrations = bool(persist_migrations)
         self._lock = threading.RLock()
         self._users: Dict[str, Dict[str, Any]] = {}
+        self._last_persisted_monotonic: Dict[str, float] = {}
         if path and os.path.exists(path) and not callable(self._state_loader):
             try:
                 with open(path, "r", encoding="utf-8") as handle:
@@ -819,6 +822,7 @@ class KalshiRobotState:
             raise
         if isinstance(saved, Mapping) and saved.get("version") is not None:
             state["_operationsVersion"] = int(saved.get("version") or 0)
+        self._last_persisted_monotonic[key] = time.monotonic()
 
     def _save_local_snapshot(self) -> None:
         if not self.path:
@@ -1098,6 +1102,12 @@ class KalshiRobotState:
                 or state.get("config", {}).get("executionMode")
             )
             bucket = self._mode_bucket(state, environment)
+            previous_decision = (
+                dict(bucket["decisions"][0])
+                if bucket.get("decisions") and isinstance(bucket["decisions"][0], Mapping)
+                else {}
+            )
+            previous_error = state.get("lastError") or bucket.get("lastError")
             row = {
                 "generatedAt": decision.get("generatedAt") or _now(),
                 "environment": environment,
@@ -1215,7 +1225,27 @@ class KalshiRobotState:
             bucket["lastError"] = None
             bucket["runs"] = int(bucket.get("runs") or 0) + 1
             self._sync_mode_mirror(state, environment)
-            self._save_user(user_id)
+            action = str(row.get("action") or "").strip().upper()
+            previous_action = str(previous_decision.get("action") or "").strip().upper()
+            material_change = bool(
+                order
+                or row["orderFilled"]
+                or previous_error
+                or action not in {"", "WAIT", "HOLD", "SKIP", "NO_TRADE"}
+                or previous_action != action
+                or previous_decision.get("ticker") != row.get("ticker")
+                or list(previous_decision.get("blockingReasons") or [])
+                    != row["blockingReasons"]
+            )
+            persist_age = time.monotonic() - self._last_persisted_monotonic.get(
+                str(user_id), 0.0,
+            )
+            if (
+                not callable(self._state_saver)
+                or material_change
+                or persist_age >= ROBOT_STATE_HEARTBEAT_SECONDS
+            ):
+                self._save_user(user_id)
             return copy.deepcopy(state)
 
     def reconcile_live_fills(

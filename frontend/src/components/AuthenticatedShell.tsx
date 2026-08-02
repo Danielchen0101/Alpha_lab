@@ -678,7 +678,11 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
       return () => { active = false; };
     }
     setAlpacaStatus('checking');
-    void loadConfigStatus({ timeoutMs: 6000, force: true }).then((result) => {
+    void loadConfigStatus({
+      timeoutMs: 5000,
+      force: onConfigurationRoute,
+      retry: onConfigurationRoute,
+    }).then((result) => {
       if (!active) return;
       const alpaca = result.data?.alpaca;
       const configured = tradeMode === 'real' ? alpaca?.liveConfigured : alpaca?.paperConfigured;

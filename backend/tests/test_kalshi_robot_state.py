@@ -1199,6 +1199,39 @@ def test_robot_state_mutations_persist_only_the_target_user(tmp_path):
     assert store._users["user-b"]["_operationsVersion"] == 1
 
 
+def test_routine_wait_decisions_use_bounded_durable_heartbeat(tmp_path):
+    calls = []
+
+    def save(_user_id, payload):
+        calls.append(payload)
+        return {"version": len(calls)}
+
+    store = KalshiRobotState(
+        str(tmp_path / "state.json"),
+        state_saver=save,
+    )
+    decision = {
+        "generatedAt": "2026-07-26T12:00:00Z",
+        "action": "WAIT",
+        "side": "YES",
+        "blockingReasons": ["net_edge"],
+        "config": {"executionMode": "paper"},
+        "market": {"ticker": "KXBTC15M-WAIT"},
+        "edge": {"fairProbability": 0.55, "price": 0.56, "netEdge": -0.01},
+    }
+
+    store.record("user-a", decision)
+    store.record("user-a", {**decision, "generatedAt": "2026-07-26T12:00:05Z"})
+    assert len(calls) == 1
+
+    store.record("user-a", {
+        **decision,
+        "generatedAt": "2026-07-26T12:00:10Z",
+        "blockingReasons": ["liquidity"],
+    })
+    assert len(calls) == 2
+
+
 def test_paper_reconciliation_removes_stale_conflict_artifacts_for_same_market(tmp_path):
     store = KalshiRobotState(str(tmp_path / "state.json"))
     state = store._state("u")
