@@ -283,40 +283,78 @@ def test_empty_watchlist_skips_all_earnings():
     ) == []
 
 
-def test_watchlist_earnings_queries_each_symbol_instead_of_capped_global_calendar(monkeypatch):
+def test_alpha_vantage_earnings_csv_is_normalized():
+    events = backend._market_intelligence_parse_alpha_vantage_earnings(
+        'symbol,name,reportDate,fiscalDateEnding,estimate,currency,timeOfTheDay\n'
+        'AMD,ADVANCED MICRO DEVICES,2026-08-04,2026-06-30,0.48,USD,post-market\n'
+        'NVDA,NVIDIA CORPORATION,2026-08-26,2026-07-31,1.02,USD,pre-market\n'
+    )
+
+    assert events == [
+        {
+            'date': '2026-08-04', 'symbol': 'AMD', 'hour': 'amc',
+            'epsEstimate': 0.48, 'epsActual': None,
+            'revenueEstimate': None, 'revenueActual': None,
+            'dateStatus': 'provider_expected',
+            'source': 'Alpha Vantage earnings calendar',
+            'companyName': 'ADVANCED MICRO DEVICES',
+            'fiscalDateEnding': '2026-06-30', 'currency': 'USD',
+            'year': 2026, 'quarter': 2,
+        },
+        {
+            'date': '2026-08-26', 'symbol': 'NVDA', 'hour': 'bmo',
+            'epsEstimate': 1.02, 'epsActual': None,
+            'revenueEstimate': None, 'revenueActual': None,
+            'dateStatus': 'provider_expected',
+            'source': 'Alpha Vantage earnings calendar',
+            'companyName': 'NVIDIA CORPORATION',
+            'fiscalDateEnding': '2026-07-31', 'currency': 'USD',
+            'year': 2026, 'quarter': 3,
+        },
+    ]
+
+
+def test_watchlist_earnings_uses_one_shared_batch_request(monkeypatch):
     class Response:
         status_code = 200
-        content = b'{}'
-
-        def __init__(self, symbol):
-            self.symbol = symbol
-
-        def json(self):
-            return {'earningsCalendar': [{
-                'date': (backend.datetime.now(backend.ZoneInfo('America/New_York')).date() + backend.timedelta(days=2)).isoformat(),
-                'symbol': self.symbol,
-                'hour': 'amc',
-                'epsEstimate': 1.25,
-            }]}
+        report_date = (
+            backend.datetime.now(backend.ZoneInfo('America/New_York')).date()
+            + backend.timedelta(days=2)
+        ).isoformat()
+        text = (
+            'symbol,name,reportDate,fiscalDateEnding,estimate,currency,timeOfTheDay\n'
+            f'AMD,AMD,{report_date},2026-06-30,1.25,USD,post-market\n'
+            f'NVDA,NVIDIA,{report_date},2026-07-31,1.50,USD,post-market\n'
+            f'MSFT,MICROSOFT,{report_date},2026-06-30,2.00,USD,post-market\n'
+        )
 
     requested = []
 
     def fake_get(_url, params=None, **_kwargs):
-        requested.append(params['symbol'])
-        return Response(params['symbol'])
+        requested.append(dict(params or {}))
+        return Response()
 
     monkeypatch.setattr(backend.requests, 'get', fake_get)
+    monkeypatch.setattr(
+        backend,
+        '_market_intelligence_alpha_vantage_config',
+        lambda: {'api_key': 'server-only-test', 'base_url': 'https://example.test'},
+    )
+    backend._MARKET_EARNINGS_CALENDAR_CACHE.clear()
     events, coverage = backend._market_intelligence_fetch_watchlist_earnings(
-        {'api_key': 'test', 'base_url': 'https://example.test'},
         ['AMD', 'NVDA'],
         days_forward=30,
         force_refresh=True,
     )
 
-    assert sorted(requested) == ['AMD', 'NVDA']
+    assert len(requested) == 1
+    assert requested[0]['function'] == 'EARNINGS_CALENDAR'
+    assert requested[0]['horizon'] == '3month'
     assert [event['symbol'] for event in events] == ['AMD', 'NVDA']
     assert coverage['symbolsWithEvents'] == ['AMD', 'NVDA']
-    assert coverage['method'] == 'per_symbol'
+    assert coverage['method'] == 'shared_batch'
+    assert coverage['provider'] == 'Alpha Vantage'
+    backend._MARKET_EARNINGS_CALENDAR_CACHE.clear()
 
 
 def test_news_ai_analyzes_each_article_separately_to_avoid_truncated_batches(monkeypatch):
@@ -547,4 +585,4 @@ def test_calendar_endpoint_combines_watchlist_earnings_with_public_macro_events(
     assert payload['economicEvents'][0]['name'] == 'Employment Situation (Nonfarm Payrolls)'
     assert payload['economicCalendar']['status'] == 'ready'
     assert payload['earningsCoverage']['symbolsWithEvents'] == ['AAPL']
-    assert payload['sources'] == ['Finnhub per-symbol earnings calendar', 'U.S. Bureau of Labor Statistics']
+    assert payload['sources'] == ['Alpha Vantage earnings calendar', 'U.S. Bureau of Labor Statistics']

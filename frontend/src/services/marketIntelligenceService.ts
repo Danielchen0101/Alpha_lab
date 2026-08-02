@@ -50,6 +50,9 @@ export interface EarningsEvent {
   revenueActual?: number | null;
   quarter?: number;
   year?: number;
+  companyName?: string | null;
+  fiscalDateEnding?: string | null;
+  currency?: string | null;
   dateStatus?: 'provider_scheduled' | 'estimated' | string;
   source?: string;
 }
@@ -129,6 +132,8 @@ export interface MarketCalendarResponse {
     windowStart?: string;
     windowEnd?: string;
     method?: string;
+    provider?: string;
+    cache?: { status?: string; ageSeconds?: number };
   };
   watchlistSymbols: string[];
   watchlistCount: number;
