@@ -21,7 +21,12 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-MAX_DECISION_RECORDS = 250
+# Decision rows are a short-lived operator view, not the durable trade ledger.
+# Filled trades and market observations are persisted separately, so retaining a
+# few minutes here is enough while keeping each heartbeat write small on Nano
+# Postgres compute.  The state mirrors the active bucket at the top level, which
+# means every extra decision would otherwise be serialized twice.
+MAX_DECISION_RECORDS = 50
 MAX_SETTLEMENT_RECORDS = 1000
 MAX_TRADED_TICKERS = 2000
 PAPER_STATE_VERSION = 11
@@ -1102,11 +1107,6 @@ class KalshiRobotState:
                 or state.get("config", {}).get("executionMode")
             )
             bucket = self._mode_bucket(state, environment)
-            previous_decision = (
-                dict(bucket["decisions"][0])
-                if bucket.get("decisions") and isinstance(bucket["decisions"][0], Mapping)
-                else {}
-            )
             previous_error = state.get("lastError") or bucket.get("lastError")
             row = {
                 "generatedAt": decision.get("generatedAt") or _now(),
@@ -1226,16 +1226,11 @@ class KalshiRobotState:
             bucket["runs"] = int(bucket.get("runs") or 0) + 1
             self._sync_mode_mirror(state, environment)
             action = str(row.get("action") or "").strip().upper()
-            previous_action = str(previous_decision.get("action") or "").strip().upper()
             material_change = bool(
                 order
                 or row["orderFilled"]
                 or previous_error
                 or action not in {"", "WAIT", "HOLD", "SKIP", "NO_TRADE"}
-                or previous_action != action
-                or previous_decision.get("ticker") != row.get("ticker")
-                or list(previous_decision.get("blockingReasons") or [])
-                    != row["blockingReasons"]
             )
             persist_age = time.monotonic() - self._last_persisted_monotonic.get(
                 str(user_id), 0.0,
