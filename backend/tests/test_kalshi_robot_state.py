@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from kalshi_robot_state import (
     KalshiRobotState,
+    ROBOT_STATE_HEARTBEAT_SECONDS,
     _order_fill_count,
     _settlement_result,
 )
@@ -697,7 +698,7 @@ def test_decision_log_retains_compact_audit_history_and_filled_trade_evidence(tm
 
     state = store.get("user-1")
 
-    assert state["decisionLimit"] == 250
+    assert state["decisionLimit"] == 50
     assert len(state["decisions"]) == 3
     assert [row["ticker"] for row in state["decisions"]] == [
         "KXBTC15M-2", "KXBTC15M-1", "KXBTC15M-0",
@@ -1227,6 +1228,14 @@ def test_routine_wait_decisions_use_bounded_durable_heartbeat(tmp_path):
     store.record("user-a", {
         **decision,
         "generatedAt": "2026-07-26T12:00:10Z",
+        "blockingReasons": ["liquidity"],
+    })
+    assert len(calls) == 1
+
+    store._last_persisted_monotonic["user-a"] -= ROBOT_STATE_HEARTBEAT_SECONDS
+    store.record("user-a", {
+        **decision,
+        "generatedAt": "2026-07-26T12:01:10Z",
         "blockingReasons": ["liquidity"],
     })
     assert len(calls) == 2
