@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Empty, Skeleton, Tag } from 'antd';
 import {
   CalendarOutlined,
@@ -42,6 +42,26 @@ const compactNumber = (value?: number | null) => {
   return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(Number(value));
 };
 
+export const marketIntelligenceRefreshTimestamp = (
+  view: IntelligenceView,
+  pulse: MarketRiskSnapshotResponse | null,
+  news: MarketNewsResponse | null,
+  calendar: MarketCalendarResponse | null,
+) => {
+  if (view === 'pulse' || view === 'themes') return pulse?.generatedAt;
+  if (view === 'news') return news?.generatedAt;
+  return calendar?.generatedAt;
+};
+
+const formatTimestamp = (value: string | undefined, locale: string, dateOnly = false) => {
+  if (!value) return '—';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return '—';
+  return dateOnly
+    ? parsed.toLocaleString(locale)
+    : parsed.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
+};
+
 const MarketIntelligence: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -53,6 +73,7 @@ const MarketIntelligence: React.FC = () => {
   const [calendar, setCalendar] = useState<MarketCalendarResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const requestSequence = useRef(0);
 
   const copy = isZh ? {
     eyebrow: '股票交易 · 基本面情报', title: '市场分析', subtitle: '把大盘广度、主题轮动、新闻冲击与关键事件放在同一条决策链上。',
@@ -97,20 +118,27 @@ const MarketIntelligence: React.FC = () => {
   };
 
   const load = useCallback(async (force = false) => {
+    const requestId = ++requestSequence.current;
     setLoading(true);
     setError('');
     try {
+      let result: MarketRiskSnapshotResponse | MarketNewsResponse | MarketCalendarResponse;
       if (view === 'pulse' || view === 'themes') {
-        setPulse(await getMarketRiskSnapshot(force));
+        result = await getMarketRiskSnapshot(force);
       } else if (view === 'news') {
-        setNews(await getMarketIntelligenceNews(1, force));
+        result = await getMarketIntelligenceNews(1, force);
       } else {
-        setCalendar(await getMarketIntelligenceCalendar(30, force));
+        result = await getMarketIntelligenceCalendar(30, force);
       }
+      if (requestId !== requestSequence.current) return;
+      if (view === 'pulse' || view === 'themes') setPulse(result as MarketRiskSnapshotResponse);
+      else if (view === 'news') setNews(result as MarketNewsResponse);
+      else setCalendar(result as MarketCalendarResponse);
     } catch (requestError: any) {
+      if (requestId !== requestSequence.current) return;
       setError(requestError?.response?.data?.error || requestError?.message || copy.unavailable);
     } finally {
-      setLoading(false);
+      if (requestId === requestSequence.current) setLoading(false);
     }
   }, [copy.unavailable, view]);
 
@@ -143,10 +171,17 @@ const MarketIntelligence: React.FC = () => {
     { key: 'calendar', label: copy.calendar, path: '/market/intelligence/calendar', icon: <CalendarOutlined /> },
   ];
 
-  const asOf = pulse?.asOf || news?.generatedAt || calendar?.generatedAt;
+  const refreshedAt = marketIntelligenceRefreshTimestamp(view, pulse, news, calendar);
+  const activeData = view === 'pulse' || view === 'themes' ? pulse : view === 'news' ? news : calendar;
+  const dataAsOf = view === 'pulse' || view === 'themes' ? pulse?.asOf : refreshedAt;
+  const activeSources = view === 'news'
+    ? (news?.sources || [])
+    : view === 'calendar'
+      ? (calendar?.sources || [])
+      : [pulse?.snapshot.source].filter(Boolean) as string[];
 
   return (
-    <main className="market-intelligence">
+    <main className="market-intelligence-page">
       <header className="mi-header">
         <div>
           <p>{copy.eyebrow}</p>
@@ -154,8 +189,8 @@ const MarketIntelligence: React.FC = () => {
           <span>{copy.subtitle}</span>
         </div>
         <div className="mi-refresh-control">
-          <small>{copy.lastUpdated}<b>{asOf ? new Date(asOf).toLocaleTimeString(isZh ? 'zh-CN' : 'en-US', { hour: '2-digit', minute: '2-digit' }) : '—'}</b></small>
-          <Button className="mi-refresh-button" icon={<ReloadOutlined />} loading={loading} onClick={() => void load(true)}>{loading ? copy.refreshing : copy.refresh}</Button>
+          <small>{copy.lastUpdated}<b>{formatTimestamp(refreshedAt, isZh ? 'zh-CN' : 'en-US')}</b></small>
+          <Button className="mi-refresh-button" icon={<ReloadOutlined />} loading={loading} disabled={loading} onClick={() => void load(true)}>{loading ? copy.refreshing : copy.refresh}</Button>
         </div>
       </header>
 
@@ -168,14 +203,14 @@ const MarketIntelligence: React.FC = () => {
       </nav>
 
       {error && <Alert type="warning" showIcon message={copy.unavailable} description={error} action={<Button onClick={() => void load(true)}>{copy.retry}</Button>} />}
-      {loading && !pulse && !news && !calendar ? <Skeleton active paragraph={{ rows: 10 }} /> : null}
+      {loading && !activeData ? <Skeleton active paragraph={{ rows: 10 }} /> : null}
 
       {view === 'pulse' && pulse && <PulseView data={pulse} copy={copy} onSymbol={openSymbol} />}
       {view === 'themes' && pulse && <ThemesView data={pulse} copy={copy} onSymbol={openSymbol} />}
       {view === 'news' && news && <NewsView data={news} copy={copy} isZh={isZh} />}
       {view === 'calendar' && calendar && <CalendarView data={calendar} copy={copy} isZh={isZh} onSymbol={openSymbol} />}
 
-      {asOf && <footer className="mi-source-line">{copy.asOf} {new Date(asOf).toLocaleString(isZh ? 'zh-CN' : 'en-US')} · {copy.source}: {(news?.sources || calendar?.sources || [pulse?.snapshot.source]).filter(Boolean).join(' · ')}</footer>}
+      {dataAsOf && <footer className="mi-source-line">{copy.asOf} {formatTimestamp(dataAsOf, isZh ? 'zh-CN' : 'en-US', true)} · {copy.source}: {activeSources.join(' · ')}</footer>}
     </main>
   );
 };

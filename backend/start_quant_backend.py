@@ -55669,6 +55669,20 @@ def _market_news_scheduler_users():
     return sorted(uid for uid, config_types in by_user.items() if 'ai_provider' in config_types and ('alpaca' in config_types or 'finnhub' in config_types))
 
 
+def _market_news_scheduler_refresh_user(uid):
+    market_cfg = resolve_alpaca_config_for_user(uid, 'market_data')
+    finnhub_cfg, _finnhub_source = resolve_finnhub_config_for_user(uid)
+    articles, _sources, _errors = _market_intelligence_fetch_news(
+        market_cfg,
+        finnhub_cfg,
+        days=1,
+        limit=120,
+        user_id=uid,
+        force_refresh=True,
+    )
+    _market_news_ai_enrich(uid, articles, notify=True)
+
+
 def _market_news_scheduler_loop():
     while not _MARKET_NEWS_SCHEDULER_STOP.is_set():
         started = time.monotonic()
@@ -55690,17 +55704,7 @@ def _market_news_scheduler_loop():
                     break
                 try:
                     with headless_user_context(uid):
-                        market_cfg = resolve_alpaca_config_for_user(uid, 'market_data')
-                        finnhub_cfg = resolve_finnhub_config_for_user(uid)
-                        articles, _sources, _errors = _market_intelligence_fetch_news(
-                            market_cfg,
-                            finnhub_cfg,
-                            days=1,
-                            limit=120,
-                            user_id=uid,
-                            force_refresh=True,
-                        )
-                        _market_news_ai_enrich(uid, articles, notify=True)
+                        _market_news_scheduler_refresh_user(uid)
                 except Exception as exc:
                     safe_print('[MarketNewsScheduler] user refresh failed: %s' % exc)
         except Exception as exc:
