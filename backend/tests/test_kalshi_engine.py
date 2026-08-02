@@ -918,6 +918,7 @@ def test_default_quality_floors_and_risk_scale_invariants():
     assert defaults["smallAccountRiskTargetPct"] == pytest.approx(1.50)
     assert defaults["recoveryMultipleTarget"] == pytest.approx(2.0)
     assert defaults["entryConfirmationSnapshots"] == 2
+    assert defaults["entryConfirmationMaxGapSeconds"] == 25
     assert defaults["btc15EntryConfirmationMaxGapSeconds"] == 25
     assert defaults["protectiveExitConfirmations"] == 3
     assert defaults["btc15ProtectiveExitConfirmationMaxGapSeconds"] == 30

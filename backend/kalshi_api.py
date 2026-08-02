@@ -1858,9 +1858,14 @@ def _entry_confirmation(
         if _market_family(ticker) == "btc15m"
         else "entryConfirmationMaxGapSeconds"
     )
-    gap_default = 25.0 if gap_setting.startswith("btc15") else 15.0
+    is_btc15 = gap_setting.startswith("btc15")
+    gap_default = 25.0
+    # The hourly loop itself runs every 15 seconds.  Network and evaluation
+    # latency make an exact 15-second maximum self-defeating, so enforce a
+    # cadence-aware floor while preserving the two-snapshot confirmation gate.
+    gap_floor = 5.0 if is_btc15 else 25.0
     max_gap = max(
-        5.0,
+        gap_floor,
         min(
             60.0,
             _finite_number(

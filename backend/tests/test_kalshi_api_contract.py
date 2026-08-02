@@ -5452,7 +5452,7 @@ def test_entry_confirmation_resets_when_hourly_selected_strike_changes():
     assert switched["streak"] == 1
 
 
-def test_btc15_entry_confirmation_uses_latency_calibrated_gap():
+def test_entry_confirmation_uses_family_latency_calibrated_gap():
     now = datetime.now(timezone.utc)
     current = {
         "generatedAt": now.isoformat(),
@@ -5479,13 +5479,13 @@ def test_btc15_entry_confirmation_uses_latency_calibrated_gap():
         "KXBTCD-LATENCY-T65000",
         "YES",
         current,
-        {},
+        {"entryConfirmationMaxGapSeconds": 15},
     )
 
     assert btc15["maxGapSeconds"] == pytest.approx(25.0)
     assert btc15["confirmed"] is True
-    assert hourly["maxGapSeconds"] == pytest.approx(15.0)
-    assert hourly["confirmed"] is False
+    assert hourly["maxGapSeconds"] == pytest.approx(25.0)
+    assert hourly["confirmed"] is True
 
 
 def test_series_fee_policy_reads_current_and_scheduled_fee_metadata():

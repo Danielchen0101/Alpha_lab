@@ -213,6 +213,14 @@ def _safe_strategy_config(
     configured["riskPerTradePct"] = min(
         0.50, _number(configured.get("riskPerTradePct"), 0.50)
     )
+    # Hourly scans run on a 15-second cadence.  A 15-second confirmation gap
+    # is therefore impossible once normal request latency is included; keep
+    # the persisted/effective setting above that cadence without weakening
+    # the requirement for two consecutive qualifying decisions.
+    configured["entryConfirmationMaxGapSeconds"] = max(
+        25.0,
+        _number(configured.get("entryConfirmationMaxGapSeconds"), 25.0),
+    )
     configured["fractionalKelly"] = min(
         0.15, _number(configured.get("fractionalKelly"), 0.15)
     )
