@@ -201,6 +201,31 @@ export interface MarketRiskSnapshotResponse {
     advanceDeclineRatio: number;
     leaders: Array<{ symbol: string; changePct: number }>;
   }>;
+  moverUniverse?: {
+    name: string;
+    constituentCount: number;
+    matchedSnapshotCount: number;
+    sources: string[];
+    errors?: string[];
+    cache?: { status: string; ageSeconds?: number | null };
+  };
+  aiBrief?: {
+    status: 'ready' | 'not_configured' | 'unavailable' | string;
+    summaryEn?: string;
+    summaryZh?: string;
+    regimeEn?: string;
+    regimeZh?: string;
+    driversEn?: string[];
+    driversZh?: string[];
+    watchpointsEn?: string[];
+    watchpointsZh?: string[];
+    dataQualityEn?: string;
+    dataQualityZh?: string;
+    confidence?: number;
+    provider?: string;
+    model?: string;
+    generatedAt?: string;
+  };
   asOf: string;
   generatedAt: string;
   universeSource: string;

@@ -45,7 +45,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
 ALGORITHM_NAME = "Helios Intraday Regime"
-ALGORITHM_VERSION = "2.4.0"
+ALGORITHM_VERSION = "2.5.0"
 SUPPORTED_SYMBOLS: Tuple[str, ...] = ("BTC/USD", "ETH/USD", "SOL/USD")
 BAR_INTERVAL_SECONDS = 60 * 60
 SUPPORTED_BARS_PER_DAY = frozenset({24, 96})
@@ -127,7 +127,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "reward_to_risk": 1.0,
     "minimum_hold_bars": 4,          # 1h on 15m; 4h on hourly
     "reentry_cooldown_bars": 4,
-    "time_stop_bars": 96,            # 1d on 15m; 4d on hourly
+    "time_stop_bars": 48,            # 12h on 15m; 2d on hourly
     # ---- Retired ML fields (kept only so older saved configs still validate) ----
     "ml_gate_enabled": False,
     "ml_max_adjust": 12.0,
@@ -834,12 +834,12 @@ def evaluate_risk_circuit(
     *,
     now: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Evaluate deterministic daily, seven-day, drawdown, and freshness gates.
+    """Evaluate 24/7 operational safety and performance telemetry.
 
-    This function reports policy requirements but deliberately does not keep
-    a clock or acknowledgement ledger.  The durable controller owns the start
-    of a 72-hour cooldown and the explicit acknowledgement of a drawdown
-    review.
+    Loss and drawdown thresholds remain visible as monitoring alerts, but do
+    not pause entries, force liquidation, or require a manual restart. Broker
+    eligibility, reconciliation, duplicate-order, exposure, quote-quality,
+    and connectivity controls remain binding in the routing controller.
     """
 
     cfg = validate_config(config)
@@ -850,14 +850,14 @@ def evaluate_risk_circuit(
     seven_day_return = _finite_number(values.get("seven_day_return", 0.0), "seven_day_return")
     drawdown = _finite_number(values.get("drawdown", 0.0), "drawdown")
     drawdown_depth = abs(min(drawdown, 0.0)) if drawdown <= 0 else drawdown
-    triggers: List[Dict[str, Any]] = []
+    performance_alerts: List[Dict[str, Any]] = []
 
     if daily_return <= -cfg["daily_loss_limit"]:
-        triggers.append({"code": "daily_loss", "observed": daily_return, "limit": -cfg["daily_loss_limit"]})
+        performance_alerts.append({"code": "daily_loss", "observed": daily_return, "limit": -cfg["daily_loss_limit"]})
     if seven_day_return <= -cfg["seven_day_loss_limit"]:
-        triggers.append({"code": "seven_day_loss", "observed": seven_day_return, "limit": -cfg["seven_day_loss_limit"]})
+        performance_alerts.append({"code": "seven_day_loss", "observed": seven_day_return, "limit": -cfg["seven_day_loss_limit"]})
     if drawdown_depth >= cfg["max_drawdown_limit"]:
-        triggers.append({"code": "max_drawdown", "observed": drawdown_depth, "limit": cfg["max_drawdown_limit"]})
+        performance_alerts.append({"code": "max_drawdown", "observed": drawdown_depth, "limit": cfg["max_drawdown_limit"]})
 
     stale = False
     stale_minutes: Optional[float] = None
@@ -867,34 +867,24 @@ def evaluate_risk_circuit(
         stale = stale_minutes > cfg["data_stale_minutes"]
     elif values.get("require_fresh_data", False):
         stale = True
-    if stale:
-        triggers.append(
-            {
-                "code": "data_stale",
-                "observed_minutes": stale_minutes,
-                "limit_minutes": cfg["data_stale_minutes"],
-            }
-        )
-
-    codes = [item["code"] for item in triggers]
-    cooldown_required = "seven_day_loss" in codes
-    manual_review_required = "max_drawdown" in codes
+    triggers = ([{
+        "code": "data_stale",
+        "observed_minutes": stale_minutes,
+        "limit_minutes": cfg["data_stale_minutes"],
+    }] if stale else [])
     return {
         "blocked": bool(triggers),
         "entry_blocked": bool(triggers),
-        # Daily loss and a seven-day cooldown block fresh risk but do not
-        # liquidate an otherwise valid holding.  A max-drawdown breach is the
-        # sole performance circuit that requires an immediate exit.
-        "exit_required": manual_review_required,
-        "cooldown_required": cooldown_required,
-        "cooldown_hours": SEVEN_DAY_COOLDOWN_HOURS if cooldown_required else 0,
-        "cooldown_active": cooldown_required,
-        "cooldown_remaining_bars": (
-            SEVEN_DAY_COOLDOWN_HOURS if cooldown_required else 0
-        ),
-        "manual_review_required": manual_review_required,
+        "exit_required": False,
+        "cooldown_required": False,
+        "cooldown_hours": 0,
+        "cooldown_active": False,
+        "cooldown_remaining_bars": 0,
+        "manual_review_required": False,
         "data_stale": stale,
         "triggers": triggers,
+        "performance_alerts": performance_alerts,
+        "performance_limits_block_trading": False,
         "allowed_actions": ["HOLD", "REDUCE", "EXIT"] if triggers else ["BUY", "ADD", "HOLD", "REDUCE", "EXIT"],
     }
 
@@ -1683,10 +1673,23 @@ def _signal_from_indicator(
         and rsi_fast_value <= (68.0 if intraday else 72.0)
         and fast_channel_position < 0.985
     )
+    # The live 15-minute cohort showed that very high composite scores can be
+    # late-cycle momentum rather than better forward edge. Keep strong scores
+    # eligible only when the fast oscillator and channel location still look
+    # like a retest instead of a chase. This is intentionally structural (not
+    # a fitted score ceiling) so it can survive a regime change.
+    late_momentum_guard = (
+        score < cfg["add_score"]
+        or (
+            fast_channel_position <= (0.90 if intraday else 0.94)
+            and rsi_fast_value <= (62.0 if intraday else 68.0)
+        )
+    )
     trend_setup = (
         regime == "trend_up"
         and score >= cfg["entry_score"]
         and not_overextended
+        and late_momentum_guard
         and momentum_fast > (-0.0005 if intraday else 0.0)
         and momentum_context > 0
         and close >= ema_fast
@@ -1694,6 +1697,7 @@ def _signal_from_indicator(
     breakout_retest_setup = (
         regime == "trend_up"
         and not_overextended
+        and late_momentum_guard
         and score >= cfg["entry_score"] + 2.0
         and float(row.get("volume_z") or 0.0) >= (-0.25 if intraday else -0.5)
         and momentum_slow > 0
@@ -1937,6 +1941,7 @@ def _signal_from_indicator(
             "entry_qualified": entry_qualified,
             "entry_mode": entry_mode,
             "setup_mode": setup_mode,
+            "late_momentum_guard": late_momentum_guard,
             "cost_qualified": cost_qualified,
             "edge_proxy_pct": round(edge_proxy, 6),
             "cost_hurdle_pct": round(required_edge, 6),

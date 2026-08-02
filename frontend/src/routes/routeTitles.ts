@@ -26,7 +26,7 @@ const exactRouteTitles: Record<string, RouteTitle> = {
   '/optimize': title('Strategy Lab', '策略研究'),
   '/ranking': title('Strategy Lab', '策略研究'),
   '/trade': title('Trade Desk', '交易台'),
-  '/trade/intelligence': title('Market Intelligence', '市场分析'),
+  '/market/intelligence': title('Market Intelligence', '市场分析'),
   '/portfolio': title('Portfolio', '投资组合'),
   '/settings': title('Settings', '设置'),
   '/settings/configuration': title('Connections', '连接管理'),
@@ -71,7 +71,10 @@ export const resolveRouteTitle = (pathname: string, language: string): string =>
     routeTitle = title('Crypto Quant', '虚拟币量化');
   } else if (!routeTitle && isPathWithin(normalizedPathname, '/kalshi')) {
     routeTitle = title('Kalshi Event Contracts', 'Kalshi 事件合约');
-  } else if (!routeTitle && isPathWithin(normalizedPathname, '/trade/intelligence')) {
+  } else if (!routeTitle && (
+    isPathWithin(normalizedPathname, '/market/intelligence')
+    || isPathWithin(normalizedPathname, '/trade/intelligence')
+  )) {
     routeTitle = title('Market Intelligence', '市场分析');
   } else if (
     !routeTitle

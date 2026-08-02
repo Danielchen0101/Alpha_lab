@@ -1278,13 +1278,22 @@ const Crypto: React.FC = () => {
     </aside>
   </section>;
 
-  const automationDisabledReason = !overview?.account?.configured
+  const startDisabledReason = !overview?.account?.configured
     ? (zh ? '需要先配置经纪商账户' : 'Broker account setup is required')
     : runtime.reconciliationRequired
       ? (zh ? '需要先完成订单对账' : 'Order reconciliation is required first')
-      : overview?.automation?.locked || runtime.locked
-        ? (zh ? '运行时安全锁已开启' : 'Runtime safety lock is active')
+      : overview?.automation?.killSwitch || runtime.killSwitch
+        ? (zh ? '需要先重置紧急停止开关' : 'Reset the kill switch before restarting')
         : '';
+  const cycleDisabledReason = startDisabledReason || (
+    overview?.automation?.locked || runtime.locked
+      ? (zh ? '请先重新启动以清除可恢复的运行时锁' : 'Restart automation to clear the recoverable runtime lock')
+      : ''
+  );
+  const recoverableRuntimeLock = Boolean(overview?.automation?.locked || runtime.locked)
+    && !runtime.reconciliationRequired
+    && !overview?.automation?.killSwitch
+    && !runtime.killSwitch;
   const progress = Math.max(0, Math.min(100, numberOf(runtime.progress) ?? 0));
   const automation = <>
     <OperationsStrip zh={zh} overview={overview} runtime={runtime} health={health} />
@@ -1297,10 +1306,10 @@ const Crypto: React.FC = () => {
         <div className="cx-automation-actions">
           {active
             ? <button className="cx-danger" type="button" onClick={() => void actLifecycle('stop', () => cryptoAPI.stopAutomation(), zh ? '自动交易已停止。' : 'Automation stopped.')} disabled={Boolean(busy)}>{busy === 'stop' ? <LoadingOutlined /> : <PauseCircleOutlined />} {zh ? '停止自动交易' : 'Stop automation'}</button>
-            : <button className="cx-primary" type="button" onClick={() => void actLifecycle('start', () => cryptoAPI.startAutomation(mode, false), zh ? '24/7 自动交易已启动。' : '24/7 automation started.')} disabled={Boolean(busy) || Boolean(automationDisabledReason)}>{busy === 'start' ? <LoadingOutlined /> : <PlayCircleOutlined />} {zh ? '启动 24/7 自动交易' : 'Start 24/7 automation'}</button>}
-          <button className="cx-secondary" type="button" onClick={() => void act('cycle', () => cryptoAPI.runCycle(mode, false), zh ? '交易周期已完成。' : 'Trading cycle completed.')} disabled={Boolean(busy) || Boolean(automationDisabledReason)}>{busy === 'cycle' ? <LoadingOutlined /> : <ThunderboltOutlined />} {zh ? '立即运行一次' : 'Run one cycle now'}</button>
+            : <button className="cx-primary" type="button" onClick={() => void actLifecycle('start', () => cryptoAPI.startAutomation(mode, false), zh ? '24/7 自动交易已启动。' : '24/7 automation started.')} disabled={Boolean(busy) || Boolean(startDisabledReason)}>{busy === 'start' ? <LoadingOutlined /> : <PlayCircleOutlined />} {recoverableRuntimeLock ? (zh ? '清除故障锁并重新启动' : 'Clear lock and restart') : (zh ? '启动 24/7 自动交易' : 'Start 24/7 automation')}</button>}
+          <button className="cx-secondary" type="button" onClick={() => void act('cycle', () => cryptoAPI.runCycle(mode, false), zh ? '交易周期已完成。' : 'Trading cycle completed.')} disabled={Boolean(busy) || Boolean(cycleDisabledReason)}>{busy === 'cycle' ? <LoadingOutlined /> : <ThunderboltOutlined />} {zh ? '立即运行一次' : 'Run one cycle now'}</button>
         </div>
-        {automationDisabledReason && <div className="cx-inline-warning"><AlertOutlined /> {automationDisabledReason}</div>}
+        {(startDisabledReason || cycleDisabledReason) && <div className="cx-inline-warning"><AlertOutlined /> {startDisabledReason || cycleDisabledReason}</div>}
       </article>
       <article className="cx-panel">
         <div className="cx-panel-head"><div><span className="cx-kicker">SCHEDULER TELEMETRY</span><h2>{zh ? '运行时与恢复状态' : 'Runtime and recovery state'}</h2></div><span>{recoveryLabel(runtime.recoveryState, zh)}</span></div>
