@@ -575,6 +575,67 @@ def test_settlement_calibration_is_idempotent(tmp_path):
     assert second["strategy"]["settledSamples"] == 1
 
 
+def test_same_timestamp_settlement_analytics_do_not_flip_or_repersist(tmp_path):
+    saves = []
+
+    def save(_user_id, payload):
+        saves.append(copy.deepcopy(payload))
+        return {"version": len(saves)}
+
+    store = KalshiRobotState(
+        str(tmp_path / "state.json"),
+        state_saver=save,
+    )
+    store.configure("user-1", True, {"executionMode": "real"})
+    bucket = store._users["user-1"]["modeState"]["real"]
+    bucket["strategy"]["settlementRecords"] = [
+        {
+            "key": "real:A:shared:YES",
+            "environment": "real",
+            "ticker": "A",
+            "settledAt": "2026-08-01T00:00:00Z",
+            "pnl": 1.0,
+            "side": "YES",
+            "result": "YES",
+        },
+        {
+            "key": "real:B:shared:YES",
+            "environment": "real",
+            "ticker": "B",
+            "settledAt": "2026-08-01T00:00:00Z",
+            "pnl": 2.0,
+            "side": "YES",
+            "result": "YES",
+        },
+    ]
+    bucket["processedSettlements"] = [
+        "real:B:shared:YES",
+        "real:A:shared:YES",
+    ]
+
+    first = store.reconcile_settlements(
+        "user-1", [], fills=[], environment="real"
+    )
+    writes_after_first = len(saves)
+    second = store.reconcile_settlements(
+        "user-1", [], fills=[], environment="real"
+    )
+    third = store.reconcile_settlements(
+        "user-1", [], fills=[], environment="real"
+    )
+
+    first_order = [
+        row["ticker"] for row in first["strategy"]["realizedTradeRecords"]
+    ]
+    assert first_order == [
+        row["ticker"] for row in second["strategy"]["realizedTradeRecords"]
+    ]
+    assert first_order == [
+        row["ticker"] for row in third["strategy"]["realizedTradeRecords"]
+    ]
+    assert len(saves) == writes_after_first
+
+
 def test_explicit_zero_fp_settlement_count_never_revives_legacy_position(tmp_path):
     store = KalshiRobotState(str(tmp_path / "state.json"))
     ticker = "KXBTC15M-ZERO-FP"
