@@ -53750,29 +53750,40 @@ _KALSHI_WORKER_OWNER = '{}:{}'.format(
     _uuid.uuid4().hex,
 )
 _KALSHI_LEASE_CACHE_LOCK = threading.Lock()
-_KALSHI_LEASE_REFRESH_AT = 0.0
+_KALSHI_LEASE_NEXT_CHECK_AT = 0.0
+_KALSHI_LEASE_CACHED_RESULT = False
 _KALSHI_LEASE_REFRESH_SECONDS = 40.0
+_KALSHI_LEASE_FAILURE_BACKOFF_SECONDS = 15.0
 
 
 def _kalshi_claim_scheduler_lease():
-    global _KALSHI_LEASE_REFRESH_AT
+    global _KALSHI_LEASE_NEXT_CHECK_AT, _KALSHI_LEASE_CACHED_RESULT
     now_monotonic = time.monotonic()
     with _KALSHI_LEASE_CACHE_LOCK:
-        if now_monotonic < _KALSHI_LEASE_REFRESH_AT:
-            return True
-        claimed = operations_store.claim_worker_lease(
-            'kalshi-btc15-robot',
-            _KALSHI_WORKER_OWNER,
-            # A complete Real cycle performs several bounded network reads before
-            # persisting state.  Fifteen seconds allowed a second backend host to
-            # take ownership mid-cycle and caused repeated CAS conflicts.
-            ttl_seconds=120,
-            metadata={'component': 'kalshi_robot', 'series': 'KXBTC15M'},
+        if now_monotonic < _KALSHI_LEASE_NEXT_CHECK_AT:
+            return _KALSHI_LEASE_CACHED_RESULT
+        try:
+            claimed = bool(operations_store.claim_worker_lease(
+                'kalshi-btc15-robot',
+                _KALSHI_WORKER_OWNER,
+                # A complete Real cycle performs several bounded network reads before
+                # persisting state. Fifteen seconds allowed a second backend host to
+                # take ownership mid-cycle and caused repeated CAS conflicts.
+                ttl_seconds=120,
+                metadata={'component': 'kalshi_robot', 'series': 'KXBTC15M'},
+            ))
+        except Exception:
+            _KALSHI_LEASE_CACHED_RESULT = False
+            _KALSHI_LEASE_NEXT_CHECK_AT = (
+                now_monotonic + _KALSHI_LEASE_FAILURE_BACKOFF_SECONDS
+            )
+            raise
+        _KALSHI_LEASE_CACHED_RESULT = claimed
+        _KALSHI_LEASE_NEXT_CHECK_AT = now_monotonic + (
+            _KALSHI_LEASE_REFRESH_SECONDS
+            if claimed else _KALSHI_LEASE_FAILURE_BACKOFF_SECONDS
         )
-        _KALSHI_LEASE_REFRESH_AT = (
-            now_monotonic + _KALSHI_LEASE_REFRESH_SECONDS if claimed else 0.0
-        )
-        return bool(claimed)
+        return claimed
 
 
 _KALSHI_API_CONTROLS = register_kalshi_api(
