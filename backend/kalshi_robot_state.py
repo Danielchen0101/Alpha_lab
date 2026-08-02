@@ -55,6 +55,16 @@ _LEGACY_NON_TRADING_FIELDS = (
     "strategyLibrary",
 )
 
+# Evaluation decisions are a live operator view and already have a dedicated,
+# bounded observation table.  They are intentionally kept in memory for entry
+# and exit confirmation, while fills and settlement provenance remain durable
+# in their own fields.  Persisting these feature-heavy rows made one robot
+# artifact exceed a megabyte in production.
+_EPHEMERAL_MODE_FIELDS = (
+    "decisions",
+    "decisionLimit",
+)
+
 
 def _number(value: Any, default: float = 0.0) -> float:
     try:
@@ -880,13 +890,11 @@ class KalshiRobotState:
                     continue
                 for field in _LEGACY_NON_TRADING_FIELDS:
                     bucket.pop(field, None)
+                for field in _EPHEMERAL_MODE_FIELDS:
+                    bucket.pop(field, None)
                 strategy = bucket.get("strategy")
                 if isinstance(strategy, dict):
                     strategy.pop("learning", None)
-                bucket["decisions"] = list(
-                    bucket.get("decisions") or []
-                )[:MAX_DECISION_RECORDS]
-                bucket["decisionLimit"] = MAX_DECISION_RECORDS
         return payload
 
     @staticmethod
@@ -903,6 +911,8 @@ class KalshiRobotState:
             if not isinstance(bucket, Mapping):
                 continue
             if any(field in bucket for field in _LEGACY_NON_TRADING_FIELDS):
+                return True
+            if any(field in bucket for field in _EPHEMERAL_MODE_FIELDS):
                 return True
             strategy = bucket.get("strategy")
             if isinstance(strategy, Mapping) and "learning" in strategy:
