@@ -1314,18 +1314,18 @@ class KalshiRobotState:
             bucket["lastError"] = None
             bucket["runs"] = int(bucket.get("runs") or 0) + 1
             self._sync_mode_mirror(state, environment)
-            action = str(row.get("action") or "").strip().upper()
             material_change = bool(
                 order
                 or row["orderFilled"]
-                or action not in {"", "WAIT", "HOLD", "SKIP", "NO_TRADE"}
             )
             # Routine WAIT/HOLD decisions are an in-memory operator view.  A
             # full-state heartbeat previously uploaded hundreds of kilobytes
             # to Supabase every minute, even though scheduler liveness and the
             # lease are tracked separately.  Persist immediately only for
-            # execution-relevant mutations; local-only mode can still snapshot
-            # every decision without generating network bandwidth.
+            # an actual order mutation. No-order signals and blocked actions
+            # already have a bounded observation row and must not rewrite the
+            # trading ledger. Local-only mode can still snapshot every
+            # decision without generating network bandwidth.
             if (
                 not callable(self._state_saver)
                 or material_change
