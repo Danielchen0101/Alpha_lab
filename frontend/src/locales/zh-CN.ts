@@ -2364,7 +2364,7 @@ const messages = {
     dataPrefix: '数据: ',
     limitedSampleTag: '样本有限',
     localRulesTag: '本地规则',
-    deepseekTag: 'DEEPSEEK V3',
+    deepseekTag: 'DEEPSEEK V4 FLASH',
     // 精细扫描详情 - 溯源芯片
     provenanceMkt: '市场扫描器',
     provenanceBt: '回测引擎',
@@ -2714,7 +2714,7 @@ const messages = {
     primaryModel: '主模型',
     customModel: '自定义模型',
     modelIdentifier: '模型标识',
-    modelPlaceholder: '例如 gpt-4o 或 deepseek-reasoner',
+    modelPlaceholder: '例如 gpt-4o 或 deepseek-v4-flash',
     apiKeyLabel: 'API 密钥',
     apiBaseUrl: 'API 基础 URL',
     testAiConnection: '测试连接',

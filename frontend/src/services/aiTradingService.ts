@@ -1,5 +1,6 @@
 import api from './api';
 import { devLog } from '../utils/logger';
+import { DEEPSEEK_DEFAULT_MODEL, normalizeAIModel } from '../config/aiProviders';
 
 export interface AIDecision {
   // 核心动作字段
@@ -691,7 +692,7 @@ class AITradingService {
         apiKey: backendConfig.apiKey || '',
         // 处理 baseURL/baseUrl 字段名不一致问题
         baseUrl: backendConfig.baseUrl || backendConfig.baseURL || 'https://api.deepseek.com',
-        model: backendConfig.model || 'deepseek-chat'
+        model: normalizeAIModel(backendConfig.provider || 'DeepSeek', backendConfig.model) || DEEPSEEK_DEFAULT_MODEL
       };
       
       return {
@@ -706,7 +707,7 @@ class AITradingService {
           provider: 'DeepSeek',
           apiKey: '',
           baseUrl: 'https://api.deepseek.com',
-          model: 'deepseek-chat'
+          model: DEEPSEEK_DEFAULT_MODEL
         }
       };
     }
