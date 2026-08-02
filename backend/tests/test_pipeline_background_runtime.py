@@ -98,7 +98,9 @@ def test_supabase_execute_retries_transient_transport_failure(monkeypatch):
 
     monkeypatch.setattr(backend.time, "sleep", lambda _seconds: None)
 
-    assert backend._supabase_execute(operation, "test read") == "ok"
+    assert backend._supabase_execute(
+        operation, "test read", attempts=3,
+    ) == "ok"
     assert len(attempts) == 3
 
 
@@ -2613,6 +2615,71 @@ def test_supabase_readiness_requires_two_final_failures_and_recovers(monkeypatch
     assert recovered["leases"]["healthy"] is True
 
 
+def test_supabase_execute_does_not_replay_timeout_by_default():
+    calls = []
+
+    def fail():
+        calls.append("called")
+        raise TimeoutError("PostgREST read timed out")
+
+    with pytest.raises(TimeoutError, match="PostgREST read timed out"):
+        backend._supabase_execute(fail, "test outage")
+
+    assert calls == ["called"]
+
+
+def test_supabase_readiness_does_not_treat_pgrst002_as_missing_contract(
+    monkeypatch,
+):
+    calls = []
+
+    class Rpc:
+        def execute(self):
+            raise RuntimeError(
+                "PGRST002 could not query the database for the schema cache"
+            )
+
+    class Client:
+        def rpc(self, name, _arguments):
+            calls.append(name)
+            return Rpc()
+
+    monkeypatch.setattr(backend, "supabase_admin", Client())
+    monkeypatch.setattr(backend, "SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setattr(backend, "SUPABASE_SERVICE_ROLE_KEY", "service-key")
+    monkeypatch.setattr(backend, "_strict_production_runtime", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        backend,
+        "_SUPABASE_READINESS_CACHE",
+        {"checkedAt": 0.0, "probeOk": None},
+    )
+
+    snapshot = backend._supabase_dependency_snapshot(force_probe=True)
+
+    assert calls == ["probe_runtime_dependencies"]
+    assert snapshot["consecutiveFailures"] == 1
+    assert snapshot["migrations"]["contractFailure"] is False
+
+
+def test_supabase_background_outage_gate_and_probe_backoff(monkeypatch):
+    monkeypatch.setattr(
+        backend,
+        "_SUPABASE_READINESS_CACHE",
+        {"probeOk": False, "consecutiveFailures": 1},
+    )
+    assert backend._supabase_background_io_blocked() is False
+
+    backend._SUPABASE_READINESS_CACHE["consecutiveFailures"] = 2
+    assert backend._supabase_background_io_blocked() is True
+
+    monkeypatch.setattr(backend, "SUPABASE_READINESS_INTERVAL_SECONDS", 30.0)
+    assert backend._supabase_readiness_retry_delay(0) == 30.0
+    assert backend._supabase_readiness_retry_delay(1) == 30.0
+    assert backend._supabase_readiness_retry_delay(2) == 60.0
+    assert backend._supabase_readiness_retry_delay(3) == 120.0
+    assert backend._supabase_readiness_retry_delay(10) == 120.0
+
+
 def test_supabase_readiness_supports_rolling_deploy_before_new_probe(monkeypatch):
     class Rpc:
         def __init__(self, result=None, error=None):
@@ -2691,6 +2758,24 @@ def test_kalshi_scheduler_lease_backs_off_after_dependency_failure(monkeypatch):
     now[0] = 205.0
     assert backend._kalshi_claim_scheduler_lease() is False
     assert calls == [200.0]
+
+
+def test_kalshi_scheduler_lease_skips_io_during_confirmed_supabase_outage(
+    monkeypatch,
+):
+    monkeypatch.setattr(backend.time, "monotonic", lambda: 300.0)
+    monkeypatch.setattr(backend, "_supabase_background_io_blocked", lambda: True)
+    monkeypatch.setattr(backend, "_KALSHI_LEASE_NEXT_CHECK_AT", 0.0)
+    monkeypatch.setattr(backend, "_KALSHI_LEASE_CACHED_RESULT", True)
+    monkeypatch.setattr(
+        backend.operations_store,
+        "claim_worker_lease",
+        lambda *_args, **_kwargs: pytest.fail("lease I/O must be suppressed"),
+    )
+
+    assert backend._kalshi_claim_scheduler_lease() is False
+    assert backend._KALSHI_LEASE_CACHED_RESULT is False
+    assert backend._KALSHI_LEASE_NEXT_CHECK_AT == 315.0
 
 
 def test_supabase_readiness_fails_immediately_for_missing_lease_migration(monkeypatch):

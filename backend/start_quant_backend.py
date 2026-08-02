@@ -241,8 +241,15 @@ SUPABASE_READINESS_INTERVAL_SECONDS = _bounded_float_env(
 )
 
 
-def _supabase_execute(operation, label='query', attempts=3, lock_timeout=None):
-    """Serialize the shared sync client and retry transient transport failures."""
+def _supabase_execute(operation, label='query', attempts=1, lock_timeout=None):
+    """Serialize the shared sync client without replaying failed calls by default.
+
+    The PostgREST client already applies its own safe transport policy.  An
+    additional three-attempt wrapper turned a five-second dependency outage
+    into long request queues and multiplied traffic against an unhealthy
+    connection pool.  Callers with an explicitly idempotent operation may
+    still opt into a bounded retry by passing ``attempts``.
+    """
     last_error = None
     transient_markers = (
         'temporarily unavailable', 'resource temporarily unavailable',
@@ -457,7 +464,7 @@ def _run_supabase_readiness_probe(*, force=False, now_ts=None):
                 ).lower()
                 if not any(marker in runtime_contract_text for marker in (
                     'pgrst202', 'could not find the function',
-                    'probe_runtime_dependencies', 'schema cache',
+                    'function public.probe_runtime_dependencies',
                 )):
                     raise
                 # Rolling-deploy compatibility: the optimized one-query probe
@@ -518,7 +525,7 @@ def _run_supabase_readiness_probe(*, force=False, now_ts=None):
                 for marker in (
                     'pgrst202', 'pgrst204', 'pgrst205',
                     'could not find the function', 'does not exist',
-                    'schema cache', 'runtime dependency rpc contract mismatch',
+                    'runtime dependency rpc contract mismatch',
                     'runtime dependency rpc returned invalid data',
                 )
             )
@@ -647,6 +654,29 @@ def _supabase_dependency_snapshot(force_probe=False, now_ts=None):
     }
 
 
+def _supabase_background_io_blocked():
+    """Fail background work closed while the dedicated probe sees an outage.
+
+    Request handlers remain free to surface fresh user-driven results.  Only
+    autonomous schedulers are held back, leaving the low-rate readiness probe
+    as the recovery signal instead of letting every scheduler hammer the same
+    unavailable PostgREST pool.
+    """
+    with _SUPABASE_READINESS_LOCK:
+        cached = dict(_SUPABASE_READINESS_CACHE)
+    return bool(
+        cached.get('probeOk') is False
+        and int(cached.get('consecutiveFailures') or 0) >= 2
+    )
+
+
+def _supabase_readiness_retry_delay(failure_count):
+    """Return an outage-aware probe delay capped at four base intervals."""
+    failures = max(0, int(failure_count or 0))
+    multiplier = 1 if failures <= 1 else 2 ** min(failures - 1, 2)
+    return SUPABASE_READINESS_INTERVAL_SECONDS * multiplier
+
+
 def _supabase_readiness_monitor_loop(stop_event):
     while not stop_event.is_set():
         try:
@@ -656,7 +686,11 @@ def _supabase_readiness_monitor_loop(stop_event):
                 '[Supabase] readiness monitor error=%s'
                 % type(exc).__name__
             )
-        stop_event.wait(SUPABASE_READINESS_INTERVAL_SECONDS)
+        with _SUPABASE_READINESS_LOCK:
+            failures = int(
+                _SUPABASE_READINESS_CACHE.get('consecutiveFailures') or 0
+            )
+        stop_event.wait(_supabase_readiness_retry_delay(failures))
 
 
 def _ensure_supabase_readiness_monitor():
@@ -50567,6 +50601,27 @@ def _pa_scheduler_loop():
                         % type(watchdog_error).__name__
                     )
 
+                # The readiness monitor is the low-rate recovery signal during
+                # a confirmed PostgREST outage. Position protection and trading
+                # remain fail-closed; pausing discovery prevents repeated config
+                # reads from extending the dependency incident.
+                if _supabase_background_io_blocked():
+                    consecutive_errors += 1
+                    _PA_SCHEDULER_CONSECUTIVE_ERRORS = consecutive_errors
+                    _pa_touch_scheduler_heartbeat(
+                        error='supabase_dependency_backoff'
+                    )
+                    dependency_sleep = min(
+                        300.0,
+                        30.0 * (2 ** min(consecutive_errors - 1, 3)),
+                    )
+                    _pa_log(
+                        'scheduler paused reason=supabase_dependency_backoff '
+                        'retrySeconds=%d' % dependency_sleep
+                    )
+                    _PA_SCHEDULER_STOP.wait(dependency_sleep)
+                    continue
+
                 # Global tick uses the calendar fallback only. Each enabled user is
                 # checked again below with that user's selected Alpaca account.
                 is_open, mkt_status, mkt_source, next_open, next_close, market_stage_sched = _pa_check_market_open(None)
@@ -53762,6 +53817,12 @@ def _kalshi_claim_scheduler_lease():
     with _KALSHI_LEASE_CACHE_LOCK:
         if now_monotonic < _KALSHI_LEASE_NEXT_CHECK_AT:
             return _KALSHI_LEASE_CACHED_RESULT
+        if _supabase_background_io_blocked():
+            _KALSHI_LEASE_CACHED_RESULT = False
+            _KALSHI_LEASE_NEXT_CHECK_AT = (
+                now_monotonic + _KALSHI_LEASE_FAILURE_BACKOFF_SECONDS
+            )
+            return False
         try:
             claimed = bool(operations_store.claim_worker_lease(
                 'kalshi-btc15-robot',
