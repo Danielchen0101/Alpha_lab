@@ -5347,6 +5347,44 @@ def test_protective_exit_streak_rejects_persisted_stale_marker():
     assert accepted["streak"] == 2
 
 
+def test_btc15_protective_exit_uses_latency_calibrated_gap():
+    now = datetime.now(timezone.utc)
+    economics = {
+        "protectiveLossExit": True,
+        "emergencyLossExit": False,
+    }
+
+    def state(ticker):
+        return {"decisions": [{
+            "generatedAt": (now - timedelta(seconds=25)).isoformat(),
+            "ticker": ticker,
+            "account": {"heldSide": "YES"},
+            "blockingReasons": ["protective_exit_confirmation"],
+        }]}
+
+    btc15 = _protective_exit_confirmation(
+        state("KXBTC15M-LATENCY"),
+        "KXBTC15M-LATENCY",
+        "YES",
+        economics,
+        {"protectiveExitConfirmations": 2},
+        generated_at=now,
+    )
+    hourly = _protective_exit_confirmation(
+        state("KXBTCD-LATENCY-T65000"),
+        "KXBTCD-LATENCY-T65000",
+        "YES",
+        economics,
+        {"protectiveExitConfirmations": 2},
+        generated_at=now,
+    )
+
+    assert btc15["maxGapSeconds"] == pytest.approx(30.0)
+    assert btc15["confirmed"] is True
+    assert hourly["maxGapSeconds"] == pytest.approx(20.0)
+    assert hourly["confirmed"] is False
+
+
 def test_entry_confirmation_resets_when_hourly_selected_strike_changes():
     now = datetime.now(timezone.utc)
     current = {
@@ -5382,6 +5420,42 @@ def test_entry_confirmation_resets_when_hourly_selected_strike_changes():
     assert same["streak"] == 2
     assert switched["confirmed"] is False
     assert switched["streak"] == 1
+
+
+def test_btc15_entry_confirmation_uses_latency_calibrated_gap():
+    now = datetime.now(timezone.utc)
+    current = {
+        "generatedAt": now.isoformat(),
+        "action": "BUY_YES",
+    }
+
+    def state(ticker):
+        return {"decisions": [{
+            "generatedAt": (now - timedelta(seconds=20)).isoformat(),
+            "ticker": ticker,
+            "side": "YES",
+            "blockingReasons": ["entry_confirmation"],
+        }]}
+
+    btc15 = _entry_confirmation(
+        state("KXBTC15M-LATENCY"),
+        "KXBTC15M-LATENCY",
+        "YES",
+        current,
+        {},
+    )
+    hourly = _entry_confirmation(
+        state("KXBTCD-LATENCY-T65000"),
+        "KXBTCD-LATENCY-T65000",
+        "YES",
+        current,
+        {},
+    )
+
+    assert btc15["maxGapSeconds"] == pytest.approx(25.0)
+    assert btc15["confirmed"] is True
+    assert hourly["maxGapSeconds"] == pytest.approx(15.0)
+    assert hourly["confirmed"] is False
 
 
 def test_series_fee_policy_reads_current_and_scheduled_fee_metadata():
