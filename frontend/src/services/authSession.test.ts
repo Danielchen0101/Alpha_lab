@@ -38,8 +38,7 @@ describe('bounded auth operations', () => {
   it('stops waiting when Supabase Auth does not answer', async () => {
     jest.useFakeTimers();
     const bounded = withAuthTimeout(new Promise<void>(() => {}), 250, 'Auth test');
-    const assertion = expect(bounded).rejects.toBeInstanceOf(AuthOperationTimeoutError);
     jest.advanceTimersByTime(250);
-    await assertion;
+    await expect(bounded).rejects.toBeInstanceOf(AuthOperationTimeoutError);
   });
 });
