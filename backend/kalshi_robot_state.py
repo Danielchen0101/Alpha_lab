@@ -1518,7 +1518,11 @@ class KalshiRobotState:
             })
         realized = sorted(
             realized,
-            key=lambda row: _utc_time_sort_key(row.get("settledAt")),
+            key=lambda row: (
+                _utc_time_sort_key(row.get("settledAt")),
+                str(row.get("key") or row.get("orderId") or ""),
+                str(row.get("ticker") or ""),
+            ),
         )[-MAX_SETTLEMENT_RECORDS:]
         cumulative = 0.0
         equity_peak = 0.0
@@ -1714,7 +1718,11 @@ class KalshiRobotState:
             if closed_by_order:
                 closed_records = sorted(
                     closed_by_order.values(),
-                    key=lambda row: _utc_time_sort_key(row.get("closedAt")),
+                    key=lambda row: (
+                        _utc_time_sort_key(row.get("closedAt")),
+                        str(row.get("orderId") or ""),
+                        str(row.get("ticker") or ""),
+                    ),
                 )[-MAX_SETTLEMENT_RECORDS:]
                 strategy["closedTradeRecords"] = closed_records
                 strategy["closedTradeSamples"] = len(closed_records)
@@ -1973,7 +1981,11 @@ class KalshiRobotState:
 
             records = sorted(
                 existing_records.values(),
-                key=lambda row: _utc_time_sort_key(row.get("settledAt")),
+                key=lambda row: (
+                    _utc_time_sort_key(row.get("settledAt")),
+                    str(row.get("key") or ""),
+                    str(row.get("ticker") or ""),
+                ),
             )[-MAX_SETTLEMENT_RECORDS:]
             strategy = bucket["strategy"]
             strategy["settlementRecords"] = list(reversed(records))
@@ -1992,7 +2004,9 @@ class KalshiRobotState:
                     str(value) for value in (bucket.get("processedSettlements") or [])
                     if not str(value).startswith(f"{environment}:")
                 ][-1000:]
-                bucket["processedSettlements"] = (preserved_processed + list(processed))[-1000:]
+                bucket["processedSettlements"] = (
+                    preserved_processed + sorted(processed)
+                )[-1000:]
                 self._sync_mode_mirror(state, environment)
                 if persist:
                     self._save_user(user_id)
