@@ -5537,6 +5537,84 @@ def test_entry_confirmation_uses_family_latency_calibrated_gap():
     assert hourly["confirmed"] is True
 
 
+def test_entry_confirmation_uses_compact_durable_progress_after_refresh():
+    now = datetime.now(timezone.utc)
+    state = {
+        "strategy": {
+            "entryConfirmations": {
+                "btc15m": {
+                    "ticker": "KXBTC15M-DURABLE",
+                    "side": "YES",
+                    "generatedAt": (now - timedelta(seconds=5)).isoformat(),
+                    "streak": 1,
+                    "requiredSnapshots": 2,
+                    "confirmed": False,
+                    "dataQualityEligible": True,
+                    "maxGapSeconds": 25.0,
+                },
+            },
+        },
+        # Authoritative state intentionally excludes feature-heavy WAIT rows.
+        "decisions": [],
+    }
+
+    confirmation = _entry_confirmation(
+        state,
+        "KXBTC15M-DURABLE",
+        "YES",
+        {
+            "generatedAt": now.isoformat(),
+            "action": "BUY_YES",
+        },
+        {},
+    )
+
+    assert confirmation["confirmed"] is True
+    assert confirmation["streak"] == 2
+    assert confirmation["durableProgressUsed"] is True
+
+
+def test_entry_confirmation_rejects_stale_or_changed_durable_progress():
+    now = datetime.now(timezone.utc)
+
+    def confirmation(progress):
+        return _entry_confirmation(
+            {
+                "strategy": {
+                    "entryConfirmations": {"btchourly": progress},
+                },
+                "decisions": [],
+            },
+            "KXBTCD-E-T65000",
+            "YES",
+            {
+                "generatedAt": now.isoformat(),
+                "action": "BUY_YES",
+            },
+            {},
+        )
+
+    stale = confirmation({
+        "ticker": "KXBTCD-E-T65000",
+        "side": "YES",
+        "generatedAt": (now - timedelta(seconds=40)).isoformat(),
+        "streak": 1,
+        "dataQualityEligible": True,
+    })
+    changed = confirmation({
+        "ticker": "KXBTCD-E-T65100",
+        "side": "YES",
+        "generatedAt": (now - timedelta(seconds=5)).isoformat(),
+        "streak": 1,
+        "dataQualityEligible": True,
+    })
+
+    assert stale["confirmed"] is False
+    assert stale["streak"] == 1
+    assert changed["confirmed"] is False
+    assert changed["streak"] == 1
+
+
 def test_series_fee_policy_reads_current_and_scheduled_fee_metadata():
     calls = []
 
@@ -5788,6 +5866,67 @@ def test_real_preflight_uses_cent_rounded_fractional_cash_debit():
         )
 
     assert blocked.value.code == "kalshi_live_cash_changed"
+
+
+def test_real_preflight_accepts_authoritative_durable_entry_confirmation():
+    now = datetime.now(timezone.utc)
+    ticker = "KXBTC15M-DURABLE-PREFLIGHT"
+    controller = _PaperRobotController(None, None, None)
+    decision = {
+        "generatedAt": now.isoformat(),
+        "action": "BUY_YES",
+        "side": "YES",
+        "edge": {
+            "price": 0.50,
+            "netEdge": 0.08,
+            "conservativeEdge": 0.05,
+            "feePerContract": 0.02,
+        },
+        "sizing": {"plannedContractsFp": 1.0},
+        "entryConfirmation": {
+            "required": True,
+            "requiredSnapshots": 2,
+            "streak": 2,
+            "confirmed": True,
+        },
+        "config": {"executionMode": "real"},
+    }
+    payload = _paper_order_payload(decision, ticker)
+    state = {
+        "config": {"executionMode": "real"},
+        "strategy": {
+            "entryConfirmations": {
+                "btc15m": {
+                    "ticker": ticker,
+                    "side": "YES",
+                    "generatedAt": (
+                        now - timedelta(seconds=5)
+                    ).isoformat(),
+                    "streak": 1,
+                    "requiredSnapshots": 2,
+                    "confirmed": False,
+                    "dataQualityEligible": True,
+                    "maxGapSeconds": 25.0,
+                },
+            },
+        },
+        "filledTrades": [],
+        "decisions": [],
+    }
+
+    result = controller._validate_live_order_preflight(
+        state,
+        {
+            "balance": {"balance": 10_000, "portfolio_value": 0},
+            "positions": [],
+            "orders": [],
+        },
+        payload,
+        _live_order_payload(payload),
+        decision,
+    )
+
+    assert result is None
 
 
 def test_fee_reconciliation_includes_fractional_cent_rounding():

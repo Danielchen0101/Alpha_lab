@@ -1902,6 +1902,57 @@ def _entry_confirmation(
     streak = 1
     family = _market_family(normalized_ticker)
     previous_time = generated
+    durable_progress = (
+        (robot_state.get("strategy") or {}).get("entryConfirmations")
+        if isinstance(robot_state.get("strategy"), Mapping)
+        else None
+    )
+    persisted = (
+        durable_progress.get(family)
+        if isinstance(durable_progress, Mapping) and family
+        else None
+    )
+    if isinstance(persisted, Mapping):
+        persisted_time = _parse_utc(persisted.get("generatedAt"))
+        elapsed = (
+            (generated - persisted_time).total_seconds()
+            if persisted_time is not None
+            else None
+        )
+        if (
+            str(persisted.get("ticker") or "") == normalized_ticker
+            and str(persisted.get("side") or "").upper()
+            == normalized_side
+            and persisted.get("dataQualityEligible") is True
+            and elapsed is not None
+            and elapsed >= -1e-6
+            and elapsed <= max_gap
+        ):
+            prior_streak = max(
+                1,
+                min(
+                    required,
+                    int(
+                        round(
+                            _finite_number(
+                                persisted.get("streak"),
+                                1.0,
+                            )
+                        )
+                    ),
+                ),
+            )
+            streak = min(required, prior_streak + 1)
+            return {
+                "required": True,
+                "requiredSnapshots": required,
+                "streak": streak,
+                "confirmed": streak >= required,
+                "maxGapSeconds": max_gap,
+                "ticker": normalized_ticker,
+                "side": normalized_side,
+                "durableProgressUsed": True,
+            }
     # The most recent decision in this same strategy family must describe the
     # same ticker and side.  This deliberately resets an hourly confirmation
     # whenever the selected strike changes, even if an older strike reappears.

@@ -1328,6 +1328,77 @@ def test_routine_wait_decisions_never_upload_full_durable_heartbeats(tmp_path):
     assert len(calls) == 1
 
 
+def test_entry_confirmation_persists_only_compact_authoritative_cursor(tmp_path):
+    durable = {}
+    saves = []
+
+    def save(user_id, payload):
+        durable[user_id] = copy.deepcopy(payload)
+        saves.append(copy.deepcopy(payload))
+        return {"version": len(saves)}
+
+    store = KalshiRobotState(
+        str(tmp_path / "state.json"),
+        state_loader=durable.get,
+        state_saver=save,
+    )
+    candidate = {
+        "generatedAt": "2026-08-03T12:00:00Z",
+        "action": "WAIT",
+        "intendedAction": "BUY_YES",
+        "side": "YES",
+        "blockingReasons": ["entry_confirmation"],
+        "config": {"executionMode": "real"},
+        "market": {"ticker": "KXBTC15M-DURABLE"},
+        "edge": {
+            "fairProbability": 0.72,
+            "price": 0.55,
+            "netEdge": 0.12,
+            "conservativeEdge": 0.08,
+        },
+        "entryConfirmation": {
+            "required": True,
+            "requiredSnapshots": 2,
+            "streak": 1,
+            "confirmed": False,
+            "maxGapSeconds": 25.0,
+        },
+    }
+
+    store.record("user-a", candidate)
+
+    assert len(saves) == 1
+    persisted_bucket = saves[-1]["modeState"]["real"]
+    assert "decisions" not in persisted_bucket
+    assert persisted_bucket["strategy"]["entryConfirmations"]["btc15m"] == {
+        "ticker": "KXBTC15M-DURABLE",
+        "side": "YES",
+        "generatedAt": "2026-08-03T12:00:00Z",
+        "streak": 1,
+        "requiredSnapshots": 2,
+        "confirmed": False,
+        "dataQualityEligible": True,
+        "maxGapSeconds": 25.0,
+    }
+
+    store.record("user-a", {
+        **candidate,
+        "generatedAt": "2026-08-03T12:00:05Z",
+        "blockingReasons": ["net_edge"],
+        "entryConfirmation": {},
+    })
+    assert len(saves) == 1
+
+    restored = KalshiRobotState(
+        str(tmp_path / "restored.json"),
+        state_loader=durable.get,
+        state_saver=save,
+    ).get("user-a", environment="real")
+    progress = restored["strategy"]["entryConfirmations"]["btc15m"]
+    assert progress["ticker"] == "KXBTC15M-DURABLE"
+    assert progress["streak"] == 1
+
+
 def test_transient_errors_never_rewrite_full_durable_state(tmp_path):
     calls = []
 

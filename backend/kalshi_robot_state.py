@@ -21,6 +21,15 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _entry_confirmation_family(ticker: Any) -> Optional[str]:
+    normalized = str(ticker or "").upper()
+    if normalized.startswith("KXBTC15M"):
+        return "btc15m"
+    if normalized.startswith("KXBTCD"):
+        return "btchourly"
+    return None
+
+
 # Decision rows are a short-lived operator view, not the durable trade ledger.
 # Filled trades and market observations are persisted separately, so retaining a
 # few minutes here is enough while keeping each heartbeat write small on Nano
@@ -1318,6 +1327,9 @@ class KalshiRobotState:
                 "executionIntent": decision.get("executionIntent"),
                 "exitTrigger": (decision.get("exitAnalysis") or {}).get("trigger"),
                 "account": dict(decision.get("account") or {}),
+                "entryConfirmation": dict(
+                    decision.get("entryConfirmation") or {}
+                ),
                 "engine": decision.get("engine"),
                 "features": {
                     "selectedSide": decision.get("side"),
@@ -1350,6 +1362,115 @@ class KalshiRobotState:
                 },
                 "strategyVersion": bucket["strategy"]["version"],
             }
+            ticker = str(market.get("ticker") or "")
+            confirmation_family = _entry_confirmation_family(ticker)
+            entry_confirmation = dict(
+                decision.get("entryConfirmation") or {}
+            )
+            confirmation_progress_changed = False
+            confirmation_eligible = bool(
+                confirmation_family
+                and entry_confirmation.get("required")
+                and entry_confirmation.get("dataQualityEligible") is not False
+                and str(decision.get("side") or "").upper() in {"YES", "NO"}
+                and int(_number(entry_confirmation.get("streak"), 0.0)) >= 1
+                and (
+                    "entry_confirmation" in set(
+                        str(value)
+                        for value in (decision.get("blockingReasons") or [])
+                    )
+                    or bool(entry_confirmation.get("confirmed"))
+                )
+            )
+            if confirmation_eligible:
+                strategy = bucket["strategy"]
+                durable_progress = dict(
+                    strategy.get("entryConfirmations") or {}
+                )
+                previous = dict(
+                    durable_progress.get(confirmation_family) or {}
+                )
+                required_snapshots = max(
+                    1,
+                    min(
+                        5,
+                        int(
+                            _number(
+                                entry_confirmation.get(
+                                    "requiredSnapshots"
+                                ),
+                                2.0,
+                            )
+                        ),
+                    ),
+                )
+                max_gap_seconds = max(
+                    1.0,
+                    _number(
+                        entry_confirmation.get("maxGapSeconds"),
+                        25.0,
+                    ),
+                )
+                progress = {
+                    "ticker": ticker,
+                    "side": str(decision.get("side") or "").upper(),
+                    "generatedAt": row["generatedAt"],
+                    "streak": min(
+                        required_snapshots,
+                        max(
+                            1,
+                            int(
+                                _number(
+                                    entry_confirmation.get("streak"),
+                                    1.0,
+                                )
+                            ),
+                        ),
+                    ),
+                    "requiredSnapshots": required_snapshots,
+                    "confirmed": bool(
+                        entry_confirmation.get("confirmed")
+                    ),
+                    "dataQualityEligible": True,
+                    "maxGapSeconds": max_gap_seconds,
+                }
+                previous_time = _utc_time_sort_key(
+                    previous.get("generatedAt")
+                )[1]
+                progress_time = _utc_time_sort_key(
+                    progress.get("generatedAt")
+                )[1]
+                confirmation_progress_changed = bool(
+                    not previous
+                    or previous.get("ticker") != progress["ticker"]
+                    or previous.get("side") != progress["side"]
+                    or int(_number(previous.get("streak"), 0.0))
+                    != progress["streak"]
+                    or bool(previous.get("confirmed"))
+                    != progress["confirmed"]
+                    or int(
+                        _number(previous.get("requiredSnapshots"), 0.0)
+                    ) != progress["requiredSnapshots"]
+                    or previous_time <= 0.0
+                    or progress_time < previous_time
+                    or progress_time - previous_time > max_gap_seconds
+                )
+                durable_progress[confirmation_family] = progress
+                strategy["entryConfirmations"] = durable_progress
+
+            if (
+                order
+                and confirmation_family
+                and str(decision.get("action") or "").startswith("BUY_")
+            ):
+                strategy = bucket["strategy"]
+                durable_progress = dict(
+                    strategy.get("entryConfirmations") or {}
+                )
+                if confirmation_family in durable_progress:
+                    durable_progress.pop(confirmation_family, None)
+                    strategy["entryConfirmations"] = durable_progress
+                    confirmation_progress_changed = True
             bucket["decisions"].insert(0, row)
             bucket["decisions"] = bucket["decisions"][:MAX_DECISION_RECORDS]
             bucket["decisionLimit"] = MAX_DECISION_RECORDS
@@ -1367,7 +1488,6 @@ class KalshiRobotState:
                     # page changes, and process restarts.
                     bucket["strategy"]["lastExitTicker"] = row.get("ticker")
                     bucket["strategy"]["lastExitAt"] = row.get("generatedAt")
-            ticker = str(market.get("ticker") or "")
             if _order_fill_count(order) > 0 and ticker and ticker not in bucket["tradedTickers"]:
                 bucket["tradedTickers"].append(ticker)
                 # Decision history is intentionally ephemeral, but the traded-ticker
@@ -1386,15 +1506,16 @@ class KalshiRobotState:
             material_change = bool(
                 order
                 or row["orderFilled"]
+                or confirmation_progress_changed
             )
-            # Routine WAIT/HOLD decisions are an in-memory operator view.  A
+            # Routine WAIT/HOLD decisions are an in-memory operator view. A
             # full-state heartbeat previously uploaded hundreds of kilobytes
             # to Supabase every minute, even though scheduler liveness and the
-            # lease are tracked separately.  Persist immediately only for
-            # an actual order mutation. No-order signals and blocked actions
-            # already have a bounded observation row and must not rewrite the
-            # trading ledger. Local-only mode can still snapshot every
-            # decision without generating network bandwidth.
+            # lease are tracked separately. Persist immediately for an actual
+            # order mutation or the tiny confirmation cursor required by the
+            # authoritative Real preflight. Feature-heavy decision rows remain
+            # excluded from the durable payload, so this restores executable
+            # confirmation without restoring the former bandwidth problem.
             if (
                 not callable(self._state_saver)
                 or material_change
