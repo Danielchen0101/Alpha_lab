@@ -1166,7 +1166,12 @@ const Kalshi: React.FC = () => {
     setRobotBusy(true);
     try {
       writeStoredConfig(scopedConfig, false);
-      const response = await kalshiAPI.setPaperRobot(requestedEnabled, scopedConfig, expectedMode);
+      const response = await kalshiAPI.setPaperRobot(
+        requestedEnabled,
+        scopedConfig,
+        expectedMode,
+        'kalshi-workspace-toggle',
+      );
       if (!writeOperationIsCurrent(token)) return;
       if (!response.data?.success) {
         throw new Error(response.data?.message || 'Kalshi robot update failed');

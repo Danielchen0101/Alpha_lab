@@ -8063,6 +8063,7 @@ def register_kalshi_api(
     observation_loader=None,
     scheduler_lease_acquirer=None,
     worker_lease_store=None,
+    audit_recorder=None,
 ):
     """Register Kalshi research and per-user connection APIs once per app."""
     existing = app.extensions.get("alphalab_kalshi_api")
@@ -8093,6 +8094,60 @@ def register_kalshi_api(
 
     def configuration_available():
         return callable(get_user_config) and callable(save_user_config)
+
+    def record_robot_control_audit(user_id, body, previous, state, mode):
+        if not callable(audit_recorder):
+            return
+        context = body.get("controlContext") or {}
+        if not isinstance(context, Mapping):
+            context = {}
+        source = str(context.get("source") or "api").strip()
+        if source not in {"api", "kalshi-workspace-toggle", "shell-mode-switch"}:
+            source = "api"
+        session_id = str(context.get("sessionId") or "").strip()[:80]
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", session_id):
+            session_id = ""
+        page = str(context.get("page") or "").strip().split("?", 1)[0][:160]
+        if not page.startswith("/"):
+            page = ""
+        referrer_path = ""
+        try:
+            referrer_path = urlsplit(str(request.referrer or "")).path[:160]
+        except ValueError:
+            referrer_path = ""
+        user_agent_hash = hashlib.sha256(
+            str(request.user_agent.string or "").encode("utf-8")
+        ).hexdigest()[:16]
+        requested_enabled = bool(body.get("enabled"))
+        actual_enabled = bool(state.get("enabled"))
+        occurred_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        try:
+            audit_recorder(
+                user_id,
+                "kalshi_robot_control",
+                f"kalshi-control:{user_id}:{time.time_ns()}",
+                actor="user",
+                source=f"kalshi-control:{source}",
+                resource_type="kalshi_robot",
+                resource_id=mode,
+                payload={
+                    "occurredAt": occurred_at,
+                    "requestedEnabled": requested_enabled,
+                    "previousEnabled": bool(previous.get("enabled")),
+                    "actualEnabled": actual_enabled,
+                    "changed": bool(previous.get("enabled")) != actual_enabled,
+                    "mode": mode,
+                    "controlSource": source,
+                    "clientSessionId": session_id,
+                    "page": page,
+                    "referrerPath": referrer_path,
+                    "userAgentHash": user_agent_hash,
+                },
+            )
+        except Exception as exc:
+            safe_print(
+                f"[KalshiAPI] control audit skipped error={type(exc).__name__}"
+            )
 
     connection_cache: Dict[str, Dict[str, Any]] = {}
     connection_cache_lock = threading.RLock()
@@ -8898,6 +8953,7 @@ def register_kalshi_api(
                     body["enabled"],
                     config,
                 )
+            record_robot_control_audit(user["id"], body, previous, state, mode)
             actually_enabled = bool(state.get("enabled"))
             payload = {
                 "success": True,

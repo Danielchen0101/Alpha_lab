@@ -2,6 +2,31 @@ import api from './api';
 
 export type KalshiDecisionAction = 'BUY_YES' | 'BUY_NO' | 'SELL_YES' | 'SELL_NO' | 'WAIT';
 export type KalshiExecutionMode = 'paper' | 'real';
+export type KalshiControlSource = 'kalshi-workspace-toggle' | 'shell-mode-switch' | 'api';
+
+const KALSHI_CONTROL_SESSION_KEY = 'alphalab:kalshi:control-session';
+
+const kalshiControlContext = (source: KalshiControlSource) => {
+  let sessionId = '';
+  if (typeof window !== 'undefined') {
+    try {
+      sessionId = window.sessionStorage.getItem(KALSHI_CONTROL_SESSION_KEY) || '';
+      if (!sessionId) {
+        sessionId = typeof window.crypto?.randomUUID === 'function'
+          ? window.crypto.randomUUID()
+          : `session-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        window.sessionStorage.setItem(KALSHI_CONTROL_SESSION_KEY, sessionId);
+      }
+    } catch {
+      sessionId = '';
+    }
+  }
+  return {
+    source,
+    sessionId,
+    page: typeof window !== 'undefined' ? window.location.pathname : '',
+  };
+};
 
 // v7 adds the official BRTI stream, normal-CDF calibration, and ladder fitting.
 export const KALSHI_CONFIG_STORAGE_KEY = 'alphalab:kalshi:btc15m:config:v7';
@@ -579,9 +604,14 @@ const kalshiAPI = {
     { timeout: 20000 },
   ),
   paperRobotStatus: (mode?: KalshiExecutionMode) => api.get<KalshiPaperResponse>('/kalshi/paper/robot', { params: mode ? { mode } : undefined, timeout: 10000 }),
-  setPaperRobot: (enabled: boolean, config: KalshiBotConfig, mode: KalshiExecutionMode = config.executionMode || 'paper') => api.post<KalshiPaperResponse>(
+  setPaperRobot: (
+    enabled: boolean,
+    config: KalshiBotConfig,
+    mode: KalshiExecutionMode = config.executionMode || 'paper',
+    source: KalshiControlSource = 'api',
+  ) => api.post<KalshiPaperResponse>(
     '/kalshi/paper/robot',
-    { enabled, mode, config: { ...config, executionMode: mode } },
+    { enabled, mode, config: { ...config, executionMode: mode }, controlContext: kalshiControlContext(source) },
     { timeout: 25000 },
   ),
   savePaperRobotConfig: (config: KalshiBotConfig, mode: KalshiExecutionMode = config.executionMode || 'paper') => api.post<KalshiPaperResponse>(

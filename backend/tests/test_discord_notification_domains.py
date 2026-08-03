@@ -105,6 +105,7 @@ def test_discord_rate_limit_is_durably_deferred(monkeypatch):
     assert result["sent"] is False
     assert result["deferred"] is True
     assert queued[0][3] == 42_000
+    assert queued[0][2]["occurredAt"].endswith("Z")
     assert recorded[0][2]["deferred"] is True
 
 
@@ -148,6 +149,61 @@ def test_discord_retry_queue_survives_then_removes_confirmed_delivery(monkeypatc
     assert backend._process_discord_retry_queue("user-1") == 1
     assert store.row["payload"]["pending"] is False
     assert store.row["payload"]["entries"] == []
+
+
+def test_discord_stale_kalshi_status_retry_is_dropped(monkeypatch):
+    class QueueStore:
+        def __init__(self):
+            self.row = None
+
+        def get_artifact(self, *_args):
+            return self.row
+
+        def put_artifact(self, _uid, _kind, _key, *, payload, idempotency_key, expected_version):
+            current_version = int((self.row or {}).get("version") or 0)
+            assert expected_version == current_version
+            self.row = {"version": current_version + 1, "payload": payload}
+            return self.row
+
+    store = QueueStore()
+    sends = []
+    monkeypatch.setattr(backend, "operations_store", store)
+    monkeypatch.setattr(
+        backend,
+        "send_discord_notification",
+        lambda *_args, **_kwargs: sends.append((_args, _kwargs)) or {"sent": True},
+    )
+
+    assert backend._enqueue_discord_retry(
+        "user-1",
+        "lifecycle",
+        {"event_id": "kalshi-old-stop", "notificationScope": "kalshi"},
+        60,
+    ) is True
+    entry = store.row["payload"]["entries"][0]
+    entry["createdAt"] = "2000-01-01T00:00:00+00:00"
+    entry["expiresAt"] = "2000-01-01T00:15:00+00:00"
+    entry["nextAttemptAt"] = "2099-01-01T00:00:00+00:00"
+
+    assert backend._process_discord_retry_queue("user-1") == 1
+    assert sends == []
+    assert store.row["payload"]["pending"] is False
+
+
+def test_discord_embed_uses_original_event_time():
+    embed = backend._discord_embed(
+        "lifecycle",
+        {
+            "notificationScope": "kalshi",
+            "source": "Kalshi Robot",
+            "state": "stopped",
+            "occurredAt": "2026-08-02T03:46:27Z",
+        },
+    )
+
+    assert embed["timestamp"] == "2026-08-02T03:46:27Z"
+    event_time = next(field for field in embed["fields"] if field["name"] == "Event time")
+    assert event_time["value"].startswith("<t:")
 
 
 def test_suffixed_order_stays_urgent_in_digest_mode(monkeypatch):
