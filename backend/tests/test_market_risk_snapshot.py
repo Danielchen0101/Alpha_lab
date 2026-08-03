@@ -398,6 +398,101 @@ def test_news_ai_analyzes_each_article_separately_to_avoid_truncated_batches(mon
     assert len(saved['analyses']) == 3
 
 
+def test_market_news_notification_claim_is_durable_and_terminal(monkeypatch):
+    class Store:
+        def __init__(self):
+            self.row = {
+                'version': 1,
+                'payload': {
+                    'schemaVersion': 2,
+                    'analyses': {},
+                },
+            }
+
+        def get_artifact(self, *_args, **_kwargs):
+            return backend.deepcopy(self.row)
+
+        def put_artifact(self, *_args, payload, expected_version, **_kwargs):
+            assert expected_version == self.row['version']
+            self.row = {
+                'version': self.row['version'] + 1,
+                'payload': backend.deepcopy(payload),
+            }
+            return backend.deepcopy(self.row)
+
+    store = Store()
+    monkeypatch.setattr(backend, 'operations_store', store)
+
+    assert backend._market_news_notification_claim('user-news', 'fingerprint-a') is True
+    assert backend._market_news_notification_claim('user-news', 'fingerprint-a') is False
+    assert backend._market_news_notification_complete(
+        'user-news', 'fingerprint-a', {'sent': True},
+    ) is True
+    assert backend._market_news_notification_claim('user-news', 'fingerprint-a') is False
+    receipt = store.row['payload']['notificationReceipts']['fingerprint-a']
+    assert receipt['status'] == 'sent'
+    assert receipt['notifiedAt']
+
+
+def test_market_news_existing_delivery_history_prevents_repeat(monkeypatch):
+    article = backend._market_intelligence_enrich_news({
+        'headline': 'Federal Reserve rate cut lifts broad market stocks',
+        'summary': 'Stocks rose after the decision.',
+        'source': 'Test News',
+        'createdAt': '2026-08-03T12:00:00Z',
+        'symbols': ['SPY'],
+    })
+    article['marketDirection'] = 'positive'
+    fingerprint = backend._market_news_fingerprint(article)
+    analysis = {
+        'status': 'ready',
+        'headlineZh': '美联储降息提振市场',
+        'analysisEn': 'The supplied event may support equities.',
+        'analysisZh': '该事件可能对股票构成支持。',
+        'marketImpactEn': 'Watch market confirmation.',
+        'marketImpactZh': '关注市场确认。',
+        'affectedStocks': [{'symbol': 'SPY'}],
+        'confidence': 70,
+    }
+    monkeypatch.setattr(
+        backend,
+        '_market_news_ai_state',
+        lambda _uid: {'analyses': {fingerprint: analysis}},
+    )
+    monkeypatch.setattr(
+        backend,
+        'resolve_ai_config_for_user',
+        lambda _uid: ({'apiKey': '', 'provider': '', 'model': ''}, 'none'),
+    )
+    monkeypatch.setattr(
+        backend,
+        '_market_news_historical_notification_event_ids',
+        lambda _uid: {'market-news:%s' % fingerprint},
+    )
+    completed = []
+    monkeypatch.setattr(
+        backend,
+        '_market_news_notification_complete',
+        lambda uid, value, result, source='send': completed.append(
+            (uid, value, result, source)
+        ) or True,
+    )
+    monkeypatch.setattr(
+        backend,
+        'send_discord_notification',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError('historical news must not be sent again')
+        ),
+    )
+
+    backend._market_news_ai_enrich('user-news', [article], notify=True, run_ai=False)
+
+    assert completed == [(
+        'user-news', fingerprint,
+        {'sent': True, 'reason': 'historical_delivery'}, 'history',
+    )]
+
+
 def test_official_ics_calendar_unfolds_titles_and_converts_to_eastern_time():
     events = _market_calendar_parse_ics(
         """BEGIN:VCALENDAR

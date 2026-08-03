@@ -18105,6 +18105,10 @@ def _market_intelligence_fetch_news(market_cfg, finnhub_cfg, days=1, limit=100, 
 _MARKET_NEWS_AI_ARTIFACT_TYPE = 'market_news_intelligence'
 _MARKET_NEWS_AI_ARTIFACT_KEY = 'current'
 _MARKET_NEWS_AI_MAX_STORED = 300
+_MARKET_NEWS_NOTIFICATION_CLAIM_TTL_SECONDS = 600
+_MARKET_NEWS_NOTIFICATION_FINAL_STATUSES = frozenset({
+    'sent', 'deferred', 'history', 'skipped',
+})
 _MARKET_NEWS_AI_INFLIGHT = set()
 _MARKET_NEWS_AI_INFLIGHT_LOCK = threading.Lock()
 
@@ -18132,6 +18136,11 @@ def _market_news_save_ai_state(uid, state):
     """Merge AI results into the durable cache without losing another worker's batch."""
     requested_analyses = state.get('analyses') if isinstance(state.get('analyses'), dict) else {}
     requested_errors = state.get('errors') if isinstance(state.get('errors'), dict) else {}
+    requested_receipts = (
+        state.get('notificationReceipts')
+        if isinstance(state.get('notificationReceipts'), dict)
+        else {}
+    )
     for attempt in range(3):
         try:
             current = operations_store.get_artifact(
@@ -18149,10 +18158,22 @@ def _market_news_save_ai_state(uid, state):
             merged_errors.update(requested_errors)
             for fingerprint in requested_analyses:
                 merged_errors.pop(fingerprint, None)
+            merged_receipts = dict(current_payload.get('notificationReceipts') or {})
+            merged_receipts.update(requested_receipts)
+            ordered_receipts = sorted(
+                merged_receipts.items(),
+                key=lambda item: _safe_str(
+                    (item[1] or {}).get('notifiedAt')
+                    or (item[1] or {}).get('attemptedAt')
+                    or (item[1] or {}).get('claimedAt')
+                ),
+                reverse=True,
+            )[:_MARKET_NEWS_AI_MAX_STORED]
             payload = {
-                'schemaVersion': 2,
+                'schemaVersion': 3,
                 'analyses': dict(ordered),
                 'errors': dict(list(merged_errors.items())[-100:]),
+                'notificationReceipts': dict(ordered_receipts),
                 'lastAttemptAt': state.get('lastAttemptAt') or current_payload.get('lastAttemptAt'),
                 'lastSuccessAt': state.get('lastSuccessAt') or current_payload.get('lastSuccessAt'),
                 'updatedAt': datetime.now(timezone.utc).isoformat(),
@@ -18175,6 +18196,162 @@ def _market_news_save_ai_state(uid, state):
             safe_print('[MarketNewsAI] state write failed: %s' % exc)
             break
     return False
+
+
+def _market_news_notification_is_final(receipt):
+    return (
+        isinstance(receipt, dict)
+        and _safe_str(receipt.get('status')).lower()
+        in _MARKET_NEWS_NOTIFICATION_FINAL_STATUSES
+    )
+
+
+def _market_news_notification_receipts(payload):
+    receipts = payload.get('notificationReceipts') if isinstance(payload, dict) else None
+    return dict(receipts) if isinstance(receipts, dict) else {}
+
+
+def _market_news_prune_notification_receipts(receipts):
+    ordered = sorted(
+        receipts.items(),
+        key=lambda item: _safe_str(
+            (item[1] or {}).get('notifiedAt')
+            or (item[1] or {}).get('attemptedAt')
+            or (item[1] or {}).get('claimedAt')
+        ),
+        reverse=True,
+    )[:_MARKET_NEWS_AI_MAX_STORED]
+    return dict(ordered)
+
+
+def _market_news_notification_claim(uid, fingerprint):
+    """Atomically reserve one Discord delivery across workers and restarts."""
+    now = datetime.now(timezone.utc)
+    for attempt in range(3):
+        try:
+            current = operations_store.get_artifact(
+                uid, _MARKET_NEWS_AI_ARTIFACT_TYPE, _MARKET_NEWS_AI_ARTIFACT_KEY,
+            )
+            payload = deepcopy((current or {}).get('payload') or {})
+            receipts = _market_news_notification_receipts(payload)
+            receipt = receipts.get(fingerprint)
+            if _market_news_notification_is_final(receipt):
+                return False
+            claimed_at = _discord_parse_event_time((receipt or {}).get('claimedAt'))
+            if (
+                _safe_str((receipt or {}).get('status')).lower() == 'claimed'
+                and claimed_at is not None
+                and (now - claimed_at).total_seconds()
+                < _MARKET_NEWS_NOTIFICATION_CLAIM_TTL_SECONDS
+            ):
+                return False
+            receipts[fingerprint] = {
+                'status': 'claimed',
+                'claimedAt': now.isoformat(),
+            }
+            payload['schemaVersion'] = max(3, int(payload.get('schemaVersion') or 0))
+            payload['notificationReceipts'] = _market_news_prune_notification_receipts(receipts)
+            payload['updatedAt'] = now.isoformat()
+            serialized = json.dumps(payload, sort_keys=True, separators=(',', ':'), default=str)
+            operations_store.put_artifact(
+                uid,
+                _MARKET_NEWS_AI_ARTIFACT_TYPE,
+                _MARKET_NEWS_AI_ARTIFACT_KEY,
+                payload=payload,
+                idempotency_key=hashlib.sha256(
+                    ('market-news-notification-claim:%s:%s' % (uid, serialized)).encode('utf-8')
+                ).hexdigest(),
+                expected_version=int((current or {}).get('version') or 0),
+            )
+            return True
+        except OperationsVersionConflict:
+            if attempt < 2:
+                continue
+        except Exception as exc:
+            safe_print('[MarketNewsAI] notification claim failed: %s' % type(exc).__name__)
+            break
+    return False
+
+
+def _market_news_notification_complete(uid, fingerprint, result, *, source='send'):
+    """Persist the terminal outcome, or release a transiently failed claim."""
+    result = result if isinstance(result, dict) else {}
+    if result.get('sent'):
+        status = 'history' if source == 'history' else 'sent'
+    elif result.get('deferred'):
+        status = 'deferred'
+    elif result.get('reason') == 'deduped':
+        status = 'sent'
+    elif result.get('reason') in {
+        'disabled_or_missing', 'event_disabled',
+        'workspace_discord_disabled', 'workspace_event_disabled',
+        'workspace_digest_mode', 'workspace_quiet_hours',
+    }:
+        status = 'skipped'
+    else:
+        status = 'failed'
+    now = datetime.now(timezone.utc)
+    for attempt in range(3):
+        try:
+            current = operations_store.get_artifact(
+                uid, _MARKET_NEWS_AI_ARTIFACT_TYPE, _MARKET_NEWS_AI_ARTIFACT_KEY,
+            )
+            payload = deepcopy((current or {}).get('payload') or {})
+            receipts = _market_news_notification_receipts(payload)
+            receipt = dict(receipts.get(fingerprint) or {})
+            receipt.update({
+                'status': status,
+                'attemptedAt': now.isoformat(),
+                'reason': _safe_str(result.get('reason')),
+                'source': source,
+            })
+            if status in _MARKET_NEWS_NOTIFICATION_FINAL_STATUSES:
+                receipt['notifiedAt'] = now.isoformat()
+            else:
+                # A transient failure may retry on a later scheduler pass.
+                receipt.pop('claimedAt', None)
+            receipts[fingerprint] = receipt
+            payload['schemaVersion'] = max(3, int(payload.get('schemaVersion') or 0))
+            payload['notificationReceipts'] = _market_news_prune_notification_receipts(receipts)
+            payload['updatedAt'] = now.isoformat()
+            serialized = json.dumps(payload, sort_keys=True, separators=(',', ':'), default=str)
+            operations_store.put_artifact(
+                uid,
+                _MARKET_NEWS_AI_ARTIFACT_TYPE,
+                _MARKET_NEWS_AI_ARTIFACT_KEY,
+                payload=payload,
+                idempotency_key=hashlib.sha256(
+                    ('market-news-notification-complete:%s:%s' % (uid, serialized)).encode('utf-8')
+                ).hexdigest(),
+                expected_version=int((current or {}).get('version') or 0),
+            )
+            return True
+        except OperationsVersionConflict:
+            if attempt < 2:
+                continue
+        except Exception as exc:
+            safe_print('[MarketNewsAI] notification completion failed: %s' % type(exc).__name__)
+            break
+    return False
+
+
+def _market_news_historical_notification_event_ids(uid):
+    """Backfill receipts from delivery history created before schema v3."""
+    event_ids = set()
+    try:
+        rows = []
+        for status in ('sent', 'deferred'):
+            rows.extend(operations_store.list_notifications(uid, limit=300, status=status))
+        for row in rows:
+            payload = row.get('payload') if isinstance(row, dict) else None
+            if not isinstance(payload, dict) or payload.get('source') != 'Market News AI':
+                continue
+            event_id = _safe_str(payload.get('event_id') or payload.get('eventId'))
+            if event_id:
+                event_ids.add(event_id)
+    except Exception as exc:
+        safe_print('[MarketNewsAI] notification history read failed: %s' % type(exc).__name__)
+    return event_ids
 
 
 def _market_news_normalize_analysis(raw, article, ai_cfg):
@@ -18317,6 +18494,9 @@ def _market_news_ai_enrich(uid, articles, *, notify=True, run_ai=True):
             state['lastSuccessAt'] = state['lastAttemptAt']
         _market_news_save_ai_state(uid, state)
 
+    notification_receipts = _market_news_notification_receipts(state)
+    historical_notification_ids = None
+    handled_notification_fingerprints = set()
     for article in articles:
         fingerprint = article.get('newsFingerprint') or _market_news_fingerprint(article)
         analysis = analyses.get(fingerprint)
@@ -18331,10 +18511,32 @@ def _market_news_ai_enrich(uid, articles, *, notify=True, run_ai=True):
         else:
             article['aiAnalysis'] = {'status': 'not_required'}
 
-        if notify and analysis and article.get('marketDirection') in ('positive', 'negative'):
+        if (
+            notify
+            and analysis
+            and article.get('marketDirection') in ('positive', 'negative')
+            and fingerprint not in handled_notification_fingerprints
+        ):
+            handled_notification_fingerprints.add(fingerprint)
+            if _market_news_notification_is_final(notification_receipts.get(fingerprint)):
+                continue
+            event_id = 'market-news:%s' % fingerprint
+            if historical_notification_ids is None:
+                historical_notification_ids = _market_news_historical_notification_event_ids(uid)
+            if event_id in historical_notification_ids:
+                _market_news_notification_complete(
+                    uid,
+                    fingerprint,
+                    {'sent': True, 'reason': 'historical_delivery'},
+                    source='history',
+                )
+                continue
+            if not _market_news_notification_claim(uid, fingerprint):
+                continue
             symbols = [item.get('symbol') for item in analysis.get('affectedStocks') or [] if item.get('symbol')]
-            send_discord_notification(uid, 'risk_alert', {
-                'event_id': 'market-news:%s' % fingerprint,
+            result = send_discord_notification(uid, 'risk_alert', {
+                'event_id': event_id,
+                'fingerprint': fingerprint,
                 'notificationScope': 'equity',
                 'source': 'Market News AI',
                 'step': 'News Intelligence',
@@ -18347,6 +18549,7 @@ def _market_news_ai_enrich(uid, articles, *, notify=True, run_ai=True):
                 'action': 'Review the affected stocks, impact direction, time horizon, and source before acting.',
                 'actionZh': '请结合受影响股票、方向、影响周期及原始新闻来源后再做决策。',
             })
+            _market_news_notification_complete(uid, fingerprint, result)
     return articles, {
         'configured': bool(ai_cfg.get('apiKey')),
         'source': ai_source,
