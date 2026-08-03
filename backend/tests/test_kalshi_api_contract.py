@@ -3414,6 +3414,55 @@ def test_real_control_mutation_routes_share_the_routing_fence(tmp_path):
     assert [event[0] for event in lease_store.events].count("release") == 6
 
 
+def test_robot_control_mutation_records_page_and_session_audit(tmp_path):
+    audits = []
+    app = Flask(__name__)
+    controls = register_kalshi_api(
+        app,
+        require_auth=lambda: {"id": "user-1"},
+        robot_state_path=str(tmp_path / "state.json"),
+        paper_account_path=str(tmp_path / "paper.json"),
+        audit_recorder=lambda *args, **kwargs: audits.append((args, kwargs)),
+    )
+    controls["robot_state"].configure(
+        "user-1",
+        True,
+        {"executionMode": "paper"},
+    )
+
+    response = app.test_client().post(
+        "/api/kalshi/paper/robot",
+        json={
+            "enabled": False,
+            "mode": "paper",
+            "config": {"executionMode": "paper"},
+            "controlContext": {
+                "source": "kalshi-workspace-toggle",
+                "sessionId": "browser-session-1",
+                "page": "/kalshi/markets/btc-15m",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(audits) == 1
+    args, kwargs = audits[0]
+    assert args[0:2] == ("user-1", "kalshi_robot_control")
+    assert kwargs["actor"] == "user"
+    assert kwargs["source"] == "kalshi-control:kalshi-workspace-toggle"
+    assert kwargs["payload"]["requestedEnabled"] is False
+    assert kwargs["payload"]["previousEnabled"] is True
+    assert kwargs["payload"]["actualEnabled"] is False
+    assert kwargs["payload"]["changed"] is True
+    assert kwargs["payload"]["mode"] == "paper"
+    assert kwargs["payload"]["controlSource"] == "kalshi-workspace-toggle"
+    assert kwargs["payload"]["clientSessionId"] == "browser-session-1"
+    assert kwargs["payload"]["page"] == "/kalshi/markets/btc-15m"
+    assert kwargs["payload"]["referrerPath"] == ""
+    assert len(kwargs["payload"]["userAgentHash"]) == 16
+    assert kwargs["payload"]["occurredAt"].endswith("Z")
+
+
 def test_real_control_mutation_fails_closed_without_durable_fence(tmp_path):
     connection = {
         "production_api_key_id": "key-id-12345678",

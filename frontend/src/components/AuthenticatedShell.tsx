@@ -468,7 +468,12 @@ export const stopKalshiRobotAndSaveMode = async (
   nextMode: KalshiExecutionMode,
 ): Promise<KalshiBotConfig> => {
   const currentMode: KalshiExecutionMode = currentConfig.executionMode === 'real' ? 'real' : 'paper';
-  const stopped = await apiClient.setPaperRobot(false, currentConfig, currentMode);
+  const stopped = await apiClient.setPaperRobot(
+    false,
+    currentConfig,
+    currentMode,
+    'shell-mode-switch',
+  );
   if (stopped.data?.success === false) {
     throw new Error(stopped.data?.message || 'Kalshi robot could not be stopped before switching modes.');
   }

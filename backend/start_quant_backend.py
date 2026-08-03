@@ -1722,6 +1722,52 @@ def _discord_forget_dedupe(user_id, event_type, payload):
             _discord_error_counts.pop(key, None)
 
 
+def _discord_parse_event_time(value):
+    try:
+        parsed = datetime.fromisoformat(str(value or '').replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _discord_payload_occurred_at(payload, *, fallback=None):
+    payload = payload or {}
+    for key in (
+        'occurredAt', 'occurred_at', 'eventAt', 'event_at', 'generatedAt',
+        'createdAt', 'created_at', 'detectedAt', 'settledAt',
+    ):
+        parsed = _discord_parse_event_time(payload.get(key))
+        if parsed is not None:
+            return parsed
+    return fallback
+
+
+def _discord_retry_ttl_seconds(event_type, payload):
+    """Expire stale Kalshi status alerts without dropping trade confirmations."""
+    if _discord_notification_scope(event_type, payload) != 'kalshi':
+        return None
+    if _discord_base_event_type(str(event_type or '').lower()) in {
+        'lifecycle', 'risk_alert', 'error',
+    }:
+        return 15 * 60
+    return None
+
+
+def _discord_retry_entry_expired(item, now):
+    expires_at = _discord_parse_event_time(item.get('expiresAt'))
+    if expires_at is not None:
+        return expires_at <= now
+    ttl_seconds = _discord_retry_ttl_seconds(
+        item.get('eventType'), item.get('payload') or {},
+    )
+    if ttl_seconds is None:
+        return False
+    queued_at = _discord_parse_event_time(item.get('createdAt'))
+    return bool(queued_at and queued_at + timedelta(seconds=ttl_seconds) <= now)
+
+
 def _discord_embed(event_type, payload):
     base_event_type = _discord_base_event_type(event_type)
     language = str(payload.get('_language') or payload.get('language') or 'en-US')
@@ -2145,12 +2191,23 @@ def _discord_embed(event_type, payload):
             embed_color = 0xF59E0B
         elif state in {'STARTED', 'ARMED', 'ACTIVE', 'RECOVERED', 'RESUMED', 'ENABLED'}:
             embed_color = 0x22C55E
+    occurred_at = _discord_payload_occurred_at(
+        payload, fallback=datetime.now(timezone.utc),
+    )
+    occurred_epoch = int(occurred_at.timestamp())
+    if len(fields) >= 25:
+        fields = fields[:24]
+    fields.append({
+        'name': cp('Event time', '事件发生时间'),
+        'value': '<t:%s:F> · <t:%s:R>' % (occurred_epoch, occurred_epoch),
+        'inline': False,
+    })
     return {
         'title': _embed_title,
         'description': description[:350] if description else '',
         'color': embed_color,
         'fields': fields[:25],
-        'timestamp': datetime.utcnow().isoformat() + 'Z',
+        'timestamp': occurred_at.isoformat().replace('+00:00', 'Z'),
     }
 
 
@@ -2344,15 +2401,24 @@ def _discord_retry_put(user_id, entries, *, expected_version):
 
 def _enqueue_discord_retry(user_id, event_type, payload, retry_after_seconds):
     """Durably defer a provider-limited notification without blocking trading."""
-    queue_id = _discord_retry_queue_event_id(user_id, event_type, payload)
+    now = datetime.now(timezone.utc)
+    retry_payload = dict(payload or {})
+    occurred_at = _discord_payload_occurred_at(retry_payload, fallback=now)
+    retry_payload.setdefault(
+        'occurredAt', occurred_at.isoformat().replace('+00:00', 'Z'),
+    )
+    queue_id = _discord_retry_queue_event_id(user_id, event_type, retry_payload)
+    ttl_seconds = _discord_retry_ttl_seconds(event_type, retry_payload)
     entry = {
         'queueId': queue_id,
         'eventType': str(event_type or 'unknown')[:100],
-        'payload': dict(payload or {}),
+        'payload': retry_payload,
         'attempts': 0,
-        'createdAt': datetime.now(timezone.utc).isoformat(),
+        'createdAt': now.isoformat(),
         'nextAttemptAt': _discord_retry_iso_after(retry_after_seconds),
     }
+    if ttl_seconds is not None:
+        entry['expiresAt'] = (now + timedelta(seconds=ttl_seconds)).isoformat()
     with _DISCORD_RETRY_LOCK:
         for _attempt in range(3):
             row = operations_store.get_artifact(
@@ -2395,11 +2461,22 @@ def _process_discord_retry_queue(user_id):
     now = datetime.now(timezone.utc)
     # Keep one lease-owned pass well below the lease TTL even when every HTTP
     # attempt consumes the full timeout budget.
-    due = [item for item in entries if _discord_retry_due(item.get('nextAttemptAt'), now)][:5]
-    if not due:
+    expired = [item for item in entries if _discord_retry_entry_expired(item, now)]
+    expired_ids = {str(item.get('queueId') or '') for item in expired}
+    due = [
+        item for item in entries
+        if str(item.get('queueId') or '') not in expired_ids
+        and _discord_retry_due(item.get('nextAttemptAt'), now)
+    ][:5]
+    if not due and not expired:
         return 0
 
-    outcomes = {}
+    outcomes = {queue_id: None for queue_id in expired_ids}
+    if expired:
+        safe_print(
+            '[DiscordRetry] dropped stale events user=%s count=%s'
+            % (_discord_user_label(user_id), len(expired))
+        )
     terminal_reasons = {
         'disabled_or_missing', 'event_disabled', 'deduped',
         'workspace_discord_disabled', 'workspace_event_disabled',
@@ -2448,7 +2525,7 @@ def _process_discord_retry_queue(user_id):
                     merged,
                     expected_version=int((latest or {}).get('version') or 0),
                 )
-                return len(due)
+                return len(due) + len(expired)
             except OperationsVersionConflict:
                 continue
     return 0
@@ -2501,7 +2578,14 @@ def _ensure_discord_retry_scheduler():
 
 def send_discord_notification(user_id, event_type, payload, *, defer_on_rate_limit=True):
     """Best-effort Discord webhook notification. Never raises into trading/pipeline flows."""
-    original_payload = dict(payload or {})
+    initial_payload = dict(payload or {})
+    occurred_at = _discord_payload_occurred_at(
+        initial_payload, fallback=datetime.now(timezone.utc),
+    )
+    initial_payload.setdefault(
+        'occurredAt', occurred_at.isoformat().replace('+00:00', 'Z'),
+    )
+    original_payload = dict(initial_payload)
 
     def finish(result):
         try:
@@ -2514,7 +2598,7 @@ def send_discord_notification(user_id, event_type, payload, *, defer_on_rate_lim
 
     try:
         cfg = get_discord_config(user_id)
-        payload = dict(payload or {})
+        payload = dict(initial_payload)
         payload['_language'] = _discord_notification_language(user_id, payload)
         allowed, preference_reason = _workspace_notification_allows(user_id, event_type, payload)
         if not allowed:
@@ -55630,6 +55714,7 @@ _KALSHI_API_CONTROLS = register_kalshi_api(
     observation_loader=lambda user_id, **kwargs: operations_store.list_kalshi_observations(user_id, **kwargs),
     scheduler_lease_acquirer=_kalshi_claim_scheduler_lease,
     worker_lease_store=operations_store,
+    audit_recorder=_record_operations_audit,
 )
 
 _pa_load_managed_positions()
