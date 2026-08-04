@@ -7621,6 +7621,9 @@ def health_check():
         capacity = limiter.snapshot()
         payload['scannerCapacity'] = capacity
         payload['heavyWorkCapacity'] = capacity
+    scanner_traffic_reader = globals().get('_inst_scanner_traffic_snapshot')
+    if callable(scanner_traffic_reader):
+        payload['scannerTraffic'] = scanner_traffic_reader()
     scheduler_reader = globals().get('_pa_scheduler_health_snapshot')
     if callable(scheduler_reader):
         scheduler = scheduler_reader()
@@ -14028,6 +14031,40 @@ def ai_market_scanner():
 _INST_SCANNER_UNIVERSE_CACHE = {
     'alpaca_assets': {'fetched_at': 0, 'symbols': [], 'metadata': {}, 'source': ''},
 }
+_INST_SCANNER_INTRADAY_CACHE = {}
+_INST_SCANNER_INTRADAY_CACHE_LOCK = threading.Lock()
+_INST_SCANNER_INTRADAY_CACHE_LIMIT = max(
+    1,
+    min(int(os.getenv('MARKET_SCAN_INTRADAY_CACHE_USERS', '20') or 20), 100),
+)
+_INST_SCANNER_INTRADAY_POOL_SIZE = max(
+    100,
+    min(int(os.getenv('MARKET_SCAN_INTRADAY_POOL_SIZE', '300') or 300), 500),
+)
+_INST_SCANNER_INTRADAY_TTL_SECONDS = max(
+    60 * 60,
+    min(int(os.getenv('MARKET_SCAN_INTRADAY_TTL_SECONDS', str(20 * 60 * 60)) or (20 * 60 * 60)), 36 * 60 * 60),
+)
+_INST_SCANNER_AUTO_MAX_SYMBOLS = max(
+    300,
+    min(int(os.getenv('MARKET_SCAN_AUTO_MAX_SYMBOLS', '800') or 800), 1500),
+)
+_INST_SCANNER_AUTO_AI_REVIEW_TOP_N = max(
+    0,
+    min(int(os.getenv('MARKET_SCAN_AUTO_AI_REVIEW_TOP_N', '12') or 12), 25),
+)
+_INST_SCANNER_TRAFFIC_LOCK = threading.Lock()
+_INST_SCANNER_TRAFFIC = {
+    'startedAt': datetime.now(timezone.utc).isoformat(),
+    'snapshotRequests': 0,
+    'snapshotSymbols': 0,
+    'barRequests': 0,
+    'barSymbols': 0,
+    'responseBytes': 0,
+    'dailySeedScans': 0,
+    'intradayCacheHits': 0,
+    'manualFullScans': 0,
+}
 _MARKET_RISK_CACHE = {}
 _MARKET_RISK_CACHE_LOCK = threading.Lock()
 _MARKET_RISK_CACHE_TTL_SECONDS = 5 * 60
@@ -14104,6 +14141,96 @@ _INST_NEWS_EVENT_TERMS = (
     'investigation', 'fda', 'merger', 'acquisition', 'buyback', 'recall',
     'bankruptcy', 'contract', 'approval'
 )
+
+
+def _inst_scanner_traffic_snapshot():
+    with _INST_SCANNER_TRAFFIC_LOCK:
+        return dict(_INST_SCANNER_TRAFFIC)
+
+
+def _inst_record_market_data_response(kind, symbol_count, response=None):
+    """Track process-local provider traffic without retaining response bodies."""
+    response_bytes = 0
+    try:
+        header_value = (getattr(response, 'headers', None) or {}).get('Content-Length')
+        if header_value is not None:
+            response_bytes = max(0, int(header_value))
+        else:
+            response_bytes = len(getattr(response, 'content', b'') or b'')
+    except Exception:
+        response_bytes = 0
+    with _INST_SCANNER_TRAFFIC_LOCK:
+        if kind == 'snapshots':
+            _INST_SCANNER_TRAFFIC['snapshotRequests'] += 1
+            _INST_SCANNER_TRAFFIC['snapshotSymbols'] += max(0, int(symbol_count or 0))
+        elif kind == 'bars':
+            _INST_SCANNER_TRAFFIC['barRequests'] += 1
+            _INST_SCANNER_TRAFFIC['barSymbols'] += max(0, int(symbol_count or 0))
+        _INST_SCANNER_TRAFFIC['responseBytes'] += response_bytes
+
+
+def _inst_intraday_trading_date():
+    return datetime.now(ZoneInfo('America/New_York')).date().isoformat()
+
+
+def _inst_intraday_cache_key(user_id, alpaca_mode, feed, risk_profile,
+                             time_horizon, pipeline_mode, history_period,
+                             max_symbols, filters):
+    identity = {
+        'user': str(user_id or 'anonymous'),
+        'alpacaMode': str(alpaca_mode or 'paper').lower(),
+        'feed': str(feed or 'iex').lower(),
+        'riskProfile': str(risk_profile or 'medium').lower(),
+        'timeHorizon': str(time_horizon or 'mid').lower(),
+        'pipelineMode': str(pipeline_mode or 'hybrid').lower(),
+        'historyPeriod': str(history_period or '18mo').lower(),
+        'maxSymbols': int(max_symbols or 0),
+        'filters': filters or {},
+    }
+    serialized = json.dumps(identity, sort_keys=True, separators=(',', ':'), default=str)
+    return hashlib.sha256(serialized.encode('utf-8')).hexdigest()
+
+
+def _inst_get_intraday_seed(cache_key):
+    now = time.time()
+    trading_date = _inst_intraday_trading_date()
+    with _INST_SCANNER_INTRADAY_CACHE_LOCK:
+        cached = _INST_SCANNER_INTRADAY_CACHE.get(cache_key)
+        if not isinstance(cached, dict):
+            return None
+        if (
+            cached.get('tradingDate') != trading_date
+            or now - float(cached.get('storedAt') or 0) > _INST_SCANNER_INTRADAY_TTL_SECONDS
+        ):
+            _INST_SCANNER_INTRADAY_CACHE.pop(cache_key, None)
+            return None
+        cached['lastAccessedAt'] = now
+        return deepcopy(cached)
+
+
+def _inst_store_intraday_seed(cache_key, rows, benchmark_context, metadata):
+    now = time.time()
+    compact_metadata = {
+        str(row.get('symbol') or ''): deepcopy(metadata.get(str(row.get('symbol') or ''), {}))
+        for row in (rows or [])
+        if str(row.get('symbol') or '')
+    }
+    cached = {
+        'tradingDate': _inst_intraday_trading_date(),
+        'storedAt': now,
+        'lastAccessedAt': now,
+        'rows': deepcopy(list(rows or [])),
+        'benchmarkContext': deepcopy(benchmark_context or {}),
+        'metadata': compact_metadata,
+    }
+    with _INST_SCANNER_INTRADAY_CACHE_LOCK:
+        _INST_SCANNER_INTRADAY_CACHE[cache_key] = cached
+        while len(_INST_SCANNER_INTRADAY_CACHE) > _INST_SCANNER_INTRADAY_CACHE_LIMIT:
+            oldest_key = min(
+                _INST_SCANNER_INTRADAY_CACHE,
+                key=lambda key: float(_INST_SCANNER_INTRADAY_CACHE[key].get('lastAccessedAt') or 0),
+            )
+            _INST_SCANNER_INTRADAY_CACHE.pop(oldest_key, None)
 
 
 class _BackendMemoryPressure(RuntimeError):
@@ -14594,6 +14721,7 @@ def _inst_fetch_alpaca_snapshots(symbols, market_cfg, feed=None, batch_size=200)
     headers = _inst_alpaca_headers(market_cfg)
     feed = str(feed or _MARKET_DATA_FEED or 'iex').lower()
     for start in range(0, len(symbols), batch_size):
+        _backend_enforce_runtime_budget()
         batch = symbols[start:start + batch_size]
         try:
             resp = requests.get(
@@ -14602,6 +14730,8 @@ def _inst_fetch_alpaca_snapshots(symbols, market_cfg, feed=None, batch_size=200)
                 params={'symbols': ','.join(batch), 'feed': feed},
                 timeout=20,
             )
+            _inst_record_market_data_response('snapshots', len(batch), resp)
+            _backend_enforce_runtime_budget()
             if resp.status_code != 200:
                 err = f'snapshots status={resp.status_code}: {resp.text[:160]}'
                 print(f'[InstitutionalScanner] snapshots failed batch={start}-{start+len(batch)} {err}')
@@ -14730,12 +14860,14 @@ def _inst_iter_alpaca_bar_batches(symbols, market_cfg, period='18mo', feed=None,
     feed = str(feed or _MARKET_DATA_FEED or 'iex').lower()
 
     for start in range(0, len(symbols), batch_size):
+        _backend_enforce_runtime_budget()
         batch = symbols[start:start + batch_size]
         batch_history = {}
         batch_errors = {}
         page_token = None
         pages = 0
         while True:
+            _backend_enforce_runtime_budget()
             params = {
                 'symbols': ','.join(batch),
                 'timeframe': '1Day',
@@ -14756,6 +14888,8 @@ def _inst_iter_alpaca_bar_batches(symbols, market_cfg, period='18mo', feed=None,
                     params=params,
                     timeout=25,
                 )
+                _inst_record_market_data_response('bars', len(batch), resp)
+                _backend_enforce_runtime_budget()
                 if resp.status_code != 200:
                     err = f'bars status={resp.status_code}: {resp.text[:180]}'
                     print(f'[InstitutionalScanner] bars failed batch={start}-{start+len(batch)} {err}')
@@ -15031,6 +15165,112 @@ def _inst_apply_trading_cost_metrics(row):
     row['participation10pctDollar'] = round(adv * 0.10, 2) if adv else None
     row.setdefault('dataSources', {})['tradingCost'] = 'Alpaca quote + ADV20 cost model'
     row.setdefault('provenance', {})['tradingCost'] = 'Estimated spread, impact, and 10% ADV capacity from Alpaca quote/bars'
+    return row
+
+
+def _inst_refresh_cached_metric_row(base_row, snapshot_meta):
+    """Refresh intraday fields while preserving the daily historical factors."""
+    row = deepcopy(base_row or {})
+    snapshot_meta = snapshot_meta or {}
+    old_price = _inst_to_float(row.get('price'), None)
+    new_price = _inst_to_float(snapshot_meta.get('snapshotPrice'), old_price)
+    if new_price is None or new_price <= 0:
+        new_price = old_price
+    if new_price is None or new_price <= 0:
+        return row
+
+    previous_close = _inst_to_float(
+        snapshot_meta.get('snapshotPrevClose'),
+        _inst_to_float(row.get('previousClose'), None),
+    )
+    row['price'] = round(new_price, 4)
+    row['priceSource'] = (
+        'Alpaca snapshot'
+        if _inst_to_float(snapshot_meta.get('snapshotPrice'), None)
+        else row.get('priceSource') or 'Cached Alpaca daily bars'
+    )
+    row['previousClose'] = round(previous_close, 4) if previous_close else None
+    row['change'] = round(new_price - previous_close, 4) if previous_close else None
+    change_pct = (
+        (new_price - previous_close) / previous_close * 100.0
+        if previous_close and previous_close > 0 else None
+    )
+    row['changePct'] = round(change_pct, 3) if change_pct is not None else None
+    row['changePercent'] = row['changePct']
+
+    direct_fields = (
+        'latestTradeSize', 'latestTradeTime', 'bidSize', 'askSize',
+        'latestQuoteTime', 'dayBarTime', 'snapshotCurrentVolume',
+        'snapshotPreviousVolume', 'snapshotCurrentDollarVolume',
+        'snapshotPreviousDollarVolume', 'snapshotLiquidityProxyDollarVolume',
+    )
+    rounded_fields = (
+        'latestTradePrice', 'bidPrice', 'askPrice', 'bidAskSpread',
+        'bidAskSpreadPct', 'dayOpen', 'dayHigh', 'dayLow', 'dayClose', 'dayVWAP',
+    )
+    for field in direct_fields:
+        if field in snapshot_meta:
+            row[field] = snapshot_meta.get(field)
+    for field in rounded_fields:
+        value = _inst_to_float(snapshot_meta.get(field), None)
+        row[field] = round(value, 4) if value is not None else None
+
+    snapshot_volume = _inst_to_float(snapshot_meta.get('snapshotVolume'), None)
+    if snapshot_volume is not None and snapshot_volume >= 0:
+        row['volume'] = snapshot_volume
+    avg_volume = _inst_to_float(row.get('avgVolume20'), 0) or 0
+    row['avgDollarVolume20'] = round(avg_volume * new_price, 2) if avg_volume else 0
+    current_volume = _inst_to_float(snapshot_meta.get('snapshotCurrentVolume'), None)
+    previous_volume = _inst_to_float(snapshot_meta.get('snapshotPreviousVolume'), None)
+    daily_complete = _inst_daily_snapshot_is_complete(snapshot_meta.get('dayBarTime'))
+    row['dailySnapshotComplete'] = daily_complete
+    if avg_volume:
+        comparable_volume = current_volume if daily_complete and current_volume else previous_volume
+        if comparable_volume is not None:
+            row['volumeRatio'] = round(comparable_volume / avg_volume, 3)
+            row['volumeRatioSource'] = (
+                'completed current session' if daily_complete and current_volume
+                else 'previous completed session'
+            )
+        if current_volume is not None:
+            row['intradayVolumeRatioRaw'] = round(current_volume / avg_volume, 3)
+
+    if old_price and old_price > 0 and new_price != old_price:
+        for key in ('momentum1m', 'momentum3m', 'momentum6m', 'momentum12m'):
+            old_momentum = _inst_to_float(row.get(key), None)
+            if old_momentum is None or old_momentum <= -99.9:
+                continue
+            historical_base = old_price / (1.0 + old_momentum / 100.0)
+            if historical_base > 0:
+                row[key] = round((new_price / historical_base - 1.0) * 100.0, 3)
+                delta = row[key] - old_momentum
+                relative_keys = {
+                    'momentum1m': ('relativeStrength1m',),
+                    'momentum3m': ('relativeStrength3m', 'qqqRelativeStrength3m'),
+                    'momentum6m': ('relativeStrength6m', 'qqqRelativeStrength6m'),
+                    'momentum12m': ('relativeStrength12m',),
+                }.get(key, ())
+                for relative_key in relative_keys:
+                    old_relative = _inst_to_float(row.get(relative_key), None)
+                    if old_relative is not None:
+                        row[relative_key] = round(old_relative + delta, 3)
+
+        ma50 = _inst_to_float(row.get('ma50'), None)
+        ma200 = _inst_to_float(row.get('ma200'), None)
+        recent_high = _inst_to_float(row.get('recentHigh20'), None)
+        recent_low = _inst_to_float(row.get('recentLow20'), None)
+        row['closeVs50dma'] = round((new_price - ma50) / ma50 * 100.0, 3) if ma50 else None
+        row['closeVs200dma'] = round((new_price - ma200) / ma200 * 100.0, 3) if ma200 else None
+        row['distanceTo20dHighPct'] = round((recent_high - new_price) / new_price * 100.0, 3) if recent_high else None
+        row['distanceFrom20dLowPct'] = round((new_price - recent_low) / new_price * 100.0, 3) if recent_low else None
+        old_atr_pct = _inst_to_float(row.get('atrPercent'), None)
+        if old_atr_pct is not None:
+            row['atrPercent'] = round(old_atr_pct * old_price / new_price, 3)
+
+    row['dataSource'] = 'Alpaca intraday snapshot + cached daily factors'
+    row.setdefault('dataSources', {})['marketData'] = 'Alpaca snapshot + daily seed cache'
+    row.setdefault('provenance', {})['marketData'] = 'Fresh Alpaca snapshot; historical factors seeded once per trading day'
+    _inst_apply_trading_cost_metrics(row)
     return row
 
 
@@ -15331,6 +15571,7 @@ def _inst_stream_alpaca_symbol_metrics(
         feed=feed,
         batch_size=batch_size,
     ):
+        _backend_enforce_runtime_budget()
         if headless_uid and callable(stop_checker) and stop_checker(headless_uid):
             batch_history.clear()
             raise _BackendScanCancelled('Market scanner stopped by user')
@@ -15339,6 +15580,7 @@ def _inst_stream_alpaca_symbol_metrics(
         batch_failed = False
         try:
             for symbol in batch_symbols:
+                _backend_enforce_runtime_budget()
                 symbol_bars = batch_history.get(symbol)
                 row = _inst_compute_symbol_metrics(
                     symbol,
@@ -17352,6 +17594,7 @@ def _institutional_market_scanner_impl():
         }
         scanner_user = get_supabase_user()
         scanner_user_id = scanner_user.get('id') if isinstance(scanner_user, dict) else None
+        scanner_user_id = scanner_user_id or getattr(_headless_auth_context, 'user_id', None)
         strategy_policy = _apply_account_hard_risk_limits(
             _strategy_policy(risk_profile, time_horizon, pipeline_mode, leverage_enabled),
             scanner_user_id,
@@ -17375,6 +17618,7 @@ def _institutional_market_scanner_impl():
             return jsonify({'success': False, 'message': message, 'error': message}), 400
 
         requested_symbols = data.get('symbols') or []
+        efficient_intraday = bool(data.get('efficientIntraday')) and not requested_symbols
         if requested_symbols:
             symbols = [s for s in list(dict.fromkeys(_inst_clean_symbol(s) for s in requested_symbols if _inst_clean_symbol(s))) if s in metadata][:max_symbols]
         else:
@@ -17392,48 +17636,108 @@ def _institutional_market_scanner_impl():
                 'error': 'No symbols available from Alpaca assets',
                 'message': 'No symbols available from Alpaca assets',
             }), 400
-
-        snapshots, snapshot_errors = _inst_fetch_alpaca_snapshots(symbols, market_cfg, feed=feed, batch_size=200)
-        snapshot_ranked = []
-        min_price = _inst_to_float(filters.get('minPrice'), 5) or 5
-        for symbol in symbols:
-            snap_meta = _inst_snapshot_metrics(symbol, snapshots.get(symbol, {}))
-            price = _inst_to_float(snap_meta.get('snapshotPrice'), None)
-            if price is not None and price < min_price:
-                continue
-            snapshot_ranked.append((symbol, snap_meta))
-
-        snapshot_ranked.sort(
-            key=lambda item: _inst_to_float(item[1].get('snapshotLiquidityProxyDollarVolume'), 0) or 0,
-            reverse=True,
-        )
-        if snapshot_ranked:
-            selected_pairs = snapshot_ranked[:max_symbols]
-        else:
-            selected_pairs = [(symbol, {}) for symbol in symbols[:max_symbols]]
-        selected_symbols = [symbol for symbol, _snap in selected_pairs]
-        snapshot_meta_by_symbol = {symbol: snap for symbol, snap in selected_pairs}
-
         benchmark_symbols = list(dict.fromkeys(list(_INST_BENCHMARK_SYMBOLS) + list(_INST_SECTOR_ETF_SYMBOLS)))
-        benchmark_history, benchmark_errors = _inst_fetch_alpaca_bars(
-            benchmark_symbols,
-            market_cfg,
-            period=history_period,
-            feed=feed,
-            batch_size=25,
+        intraday_cache_key = _inst_intraday_cache_key(
+            scanner_user_id,
+            alpaca_mode,
+            feed,
+            risk_profile,
+            time_horizon,
+            pipeline_mode,
+            history_period,
+            max_symbols,
+            filters,
         )
-        benchmark_context = _inst_build_benchmark_context(benchmark_history)
+        intraday_seed = _inst_get_intraday_seed(intraday_cache_key) if efficient_intraday else None
+        scan_mode = 'intraday_incremental' if intraday_seed else ('daily_seed' if efficient_intraday else 'full')
 
-        raw_rows, failed_count, history_errors = _inst_stream_alpaca_symbol_metrics(
-            selected_symbols,
-            market_cfg,
-            metadata,
-            snapshot_meta_by_symbol,
-            benchmark_context,
-            period=history_period,
-            feed=feed,
-            batch_size=25,
-        )
+        if intraday_seed:
+            cached_rows = intraday_seed.get('rows') or []
+            cached_metadata = intraday_seed.get('metadata') or {}
+            selected_symbols = [
+                _inst_clean_symbol(row.get('symbol'))
+                for row in cached_rows
+                if _inst_clean_symbol(row.get('symbol')) not in excluded_symbols
+            ][:max(_INST_SCANNER_INTRADAY_POOL_SIZE, max_results)]
+            snapshots, snapshot_errors = _inst_fetch_alpaca_snapshots(
+                selected_symbols,
+                market_cfg,
+                feed=feed,
+                batch_size=200,
+            )
+            snapshot_meta_by_symbol = {
+                symbol: _inst_snapshot_metrics(symbol, snapshots.get(symbol, {}))
+                for symbol in selected_symbols
+            }
+            row_by_symbol = {
+                _inst_clean_symbol(row.get('symbol')): row
+                for row in cached_rows
+                if _inst_clean_symbol(row.get('symbol'))
+            }
+            raw_rows = [
+                _inst_refresh_cached_metric_row(
+                    row_by_symbol[symbol],
+                    snapshot_meta_by_symbol.get(symbol, {}),
+                )
+                for symbol in selected_symbols
+                if symbol in row_by_symbol
+            ]
+            metadata.update(cached_metadata)
+            benchmark_context = intraday_seed.get('benchmarkContext') or {}
+            benchmark_errors = {}
+            history_errors = {}
+            failed_count = max(0, len(selected_symbols) - len(raw_rows))
+            with _INST_SCANNER_TRAFFIC_LOCK:
+                _INST_SCANNER_TRAFFIC['intradayCacheHits'] += 1
+        else:
+            snapshots, snapshot_errors = _inst_fetch_alpaca_snapshots(
+                symbols,
+                market_cfg,
+                feed=feed,
+                batch_size=200,
+            )
+            snapshot_ranked = []
+            min_price = _inst_to_float(filters.get('minPrice'), 5) or 5
+            for symbol in symbols:
+                snap_meta = _inst_snapshot_metrics(symbol, snapshots.get(symbol, {}))
+                price = _inst_to_float(snap_meta.get('snapshotPrice'), None)
+                if price is not None and price < min_price:
+                    continue
+                snapshot_ranked.append((symbol, snap_meta))
+
+            snapshot_ranked.sort(
+                key=lambda item: _inst_to_float(item[1].get('snapshotLiquidityProxyDollarVolume'), 0) or 0,
+                reverse=True,
+            )
+            if snapshot_ranked:
+                selected_pairs = snapshot_ranked[:max_symbols]
+            else:
+                selected_pairs = [(symbol, {}) for symbol in symbols[:max_symbols]]
+            selected_symbols = [symbol for symbol, _snap in selected_pairs]
+            snapshot_meta_by_symbol = {symbol: snap for symbol, snap in selected_pairs}
+
+            benchmark_history, benchmark_errors = _inst_fetch_alpaca_bars(
+                benchmark_symbols,
+                market_cfg,
+                period=history_period,
+                feed=feed,
+                batch_size=25,
+            )
+            benchmark_context = _inst_build_benchmark_context(benchmark_history)
+
+            raw_rows, failed_count, history_errors = _inst_stream_alpaca_symbol_metrics(
+                selected_symbols,
+                market_cfg,
+                metadata,
+                snapshot_meta_by_symbol,
+                benchmark_context,
+                period=history_period,
+                feed=feed,
+                batch_size=25,
+            )
+            with _INST_SCANNER_TRAFFIC_LOCK:
+                traffic_key = 'dailySeedScans' if efficient_intraday else 'manualFullScans'
+                _INST_SCANNER_TRAFFIC[traffic_key] += 1
 
         passed_rows = []
         filtered_reasons = {}
@@ -17451,6 +17755,14 @@ def _institutional_market_scanner_impl():
             _inst_to_float(r.get('factorScores', {}).get('liquidity'), 0) or 0,
             _inst_to_float(r.get('avgDollarVolume20'), 0) or 0,
         ), reverse=True)
+        if efficient_intraday and not intraday_seed:
+            pool_size = max(max_results, _INST_SCANNER_INTRADAY_POOL_SIZE)
+            _inst_store_intraday_seed(
+                intraday_cache_key,
+                scored[:pool_size],
+                benchmark_context,
+                metadata,
+            )
         results = scored[:max_results]
 
         finnhub_cfg, finnhub_status = resolve_finnhub_config_strict_user()
@@ -17534,6 +17846,12 @@ def _institutional_market_scanner_impl():
         summary = {
             'universe': 'ALPACA_MARKET',
             'universeSource': universe_source,
+            'scanMode': scan_mode,
+            'intradayCacheHit': bool(intraday_seed),
+            'intradaySeedTradingDate': (
+                intraday_seed.get('tradingDate') if intraday_seed
+                else (_inst_intraday_trading_date() if efficient_intraday else None)
+            ),
             'rawUniverseCount': raw_universe_count,
             'snapshotAvailable': len(snapshots),
             'universeScanned': len(selected_symbols),
@@ -17585,6 +17903,7 @@ def _institutional_market_scanner_impl():
             'aiWatchCount': sum(1 for r in results if r.get('aiTraderDecision') == 'Watch'),
             'aiAvoidCount': sum(1 for r in results if r.get('aiTraderDecision') == 'Avoid'),
             'scoreVersion': 'institutional_cross_section_v6_strategy_mandate',
+            'providerTraffic': _inst_scanner_traffic_snapshot(),
             'dataCoverage': {
                 'assets': 'Alpaca /v2/assets',
                 'snapshots': 'Alpaca /v2/stocks/snapshots',
@@ -17617,7 +17936,7 @@ def _institutional_market_scanner_impl():
             'success': True,
             'results': results,
             'summary': summary,
-            'message': 'Alpaca whole-market scan completed: %d candidates from %d selected symbols (%d Alpaca assets)' % (len(results), len(selected_symbols), raw_universe_count),
+            'message': 'Alpaca %s scan completed: %d candidates from %d selected symbols (%d Alpaca assets)' % (scan_mode, len(results), len(selected_symbols), raw_universe_count),
             'completed': True,
             'scan_stats': {
                 'total_symbols': len(selected_symbols),
@@ -17643,7 +17962,9 @@ def _institutional_market_scanner_impl():
                 'ai_reviewed_symbols': ai_review_stats.get('reviewedSymbols', 0),
                 'ai_review_status': ai_review_stats.get('status'),
                 'total_time_seconds': round(total_time, 2),
-                'method': 'alpaca_whole_market_scan_v6_strategy_mandate',
+                'method': 'alpaca_%s_scan_v7_daily_seed_cache' % scan_mode,
+                'scan_mode': scan_mode,
+                'intraday_cache_hit': bool(intraday_seed),
             }
         })
     except (_BackendMemoryPressure, _BackendScanCancelled, _BackendStageDeadlineExceeded):
@@ -46328,22 +46649,33 @@ def _pa_market_scanner_settings_for_user(uid):
 
 def _pa_market_scanner_headless(uid, trade_mode='paper', risk_profile='medium',
                                 time_horizon='mid', pipeline_mode='hybrid',
-                                leverage_enabled=False):
-    """Run the exact institutional scanner used by the AI Agent page.
+                                leverage_enabled=False, efficient_intraday=True):
+    """Run the institutional scanner used by the AI Agent page.
 
-    Keeping the settings here mirrors scannerRunnerService defaults while the
-    endpoint remains the single implementation of universe selection, factor
-    scoring, enrichment, and AI review. The browser is never involved.
+    Manual runs preserve the configured full scan. Unattended runs bound the
+    daily seed and reuse its candidate pool for fresh intraday snapshots. The
+    endpoint remains the single implementation; the browser is never involved.
     """
     scanner_settings = _pa_market_scanner_settings_for_user(uid)
+    effective_settings = dict(scanner_settings)
+    if efficient_intraday:
+        effective_settings['maxSymbols'] = min(
+            int(scanner_settings.get('maxSymbols') or _INST_SCANNER_DEFAULT_MAX_SYMBOLS),
+            _INST_SCANNER_AUTO_MAX_SYMBOLS,
+        )
+        effective_settings['aiReviewTopN'] = min(
+            int(scanner_settings.get('aiReviewTopN') or 0),
+            _INST_SCANNER_AUTO_AI_REVIEW_TOP_N,
+        )
     payload = {
-        **scanner_settings,
+        **effective_settings,
         'filters': dict(scanner_settings['filters']),
         'alpacaMode': 'live' if str(trade_mode).lower() in ('real', 'live') else 'paper',
         'riskProfile': risk_profile,
         'timeHorizon': time_horizon,
         'pipelineMode': pipeline_mode,
         'leverageEnabled': bool(leverage_enabled),
+        'efficientIntraday': bool(efficient_intraday),
         'suppressDiscord': True,
     }
     response, status = _pa_call_endpoint(
@@ -51064,15 +51396,23 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
 
     try:
         # ── Step 1: Market Scanner ──
-        # Manual and unattended runs share the exact institutional endpoint used
-        # by the AI Agent page: Alpaca whole-market universe -> 1500 daily-bar
-        # candidates -> top 100 cross-sectional results -> AI review.
+        # Manual and unattended runs share the institutional endpoint. Manual
+        # runs preserve full configured coverage; unattended runs seed daily
+        # history once and refresh the compact candidate pool intraday.
         scanner_settings = _pa_market_scanner_settings_for_user(uid)
-        requested_symbols = int(scanner_settings['maxSymbols'])
+        efficient_intraday = not is_manual
+        requested_symbols = min(
+            int(scanner_settings['maxSymbols']),
+            _INST_SCANNER_AUTO_MAX_SYMBOLS,
+        ) if efficient_intraday else int(scanner_settings['maxSymbols'])
+        requested_ai_reviews = min(
+            int(scanner_settings['aiReviewTopN']),
+            _INST_SCANNER_AUTO_AI_REVIEW_TOP_N,
+        ) if efficient_intraday else int(scanner_settings['aiReviewTopN'])
         _pa_log('[AutoPipeline] stage=market_scanner start universe=alpaca_market maxSymbols=%d maxResults=%d aiReview=%d' % (
             requested_symbols,
             scanner_settings['maxResults'],
-            scanner_settings['aiReviewTopN'],
+            requested_ai_reviews,
         ))
         _pa_active_run_step(
             uid,
@@ -51101,6 +51441,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
             time_horizon=time_horizon,
             pipeline_mode=mode,
             leverage_enabled=leverage_enabled,
+            efficient_intraday=efficient_intraday,
         )
         _check_stopped()
         _check_timeout('market_scanner')
@@ -55732,7 +56073,12 @@ _KALSHI_PORTFOLIO_DISPLAY_ARTIFACT_TYPE = 'kalshi_portfolio_display'
 _KALSHI_ARTIFACT_KEY = 'current'
 _KALSHI_PERSISTENCE_TRAFFIC_LOCK = threading.Lock()
 _KALSHI_OBSERVATION_WRITE_CACHE = {}
+_KALSHI_OBSERVATION_STATE_CACHE = {}
 _KALSHI_OBSERVATION_WRITE_CACHE_LIMIT = 4096
+_KALSHI_ROUTINE_OBSERVATION_SAMPLE_SECONDS = max(
+    30.0,
+    min(float(os.getenv('KALSHI_ROUTINE_OBSERVATION_SAMPLE_SECONDS', '120') or 120), 600.0),
+)
 _KALSHI_PERSISTENCE_TRAFFIC = {
     'startedAt': datetime.now(timezone.utc).isoformat(),
     'artifactWrites': 0,
@@ -55818,6 +56164,16 @@ def _kalshi_save_observation(user_id, observation):
         'blockedReasons': list(row.get('blocked_reasons') or []),
         'orderResult': row.get('order_result'),
     }, sort_keys=True, separators=(',', ':'), default=str)
+    state_key = '{}:{}:{}'.format(
+        str(user_id),
+        str(row.get('environment') or ''),
+        str(row.get('ticker') or ''),
+    )
+    now_monotonic = time.monotonic()
+    force_material_write = bool(
+        row.get('order_result')
+        or str(row.get('action') or 'WAIT').upper() not in ('WAIT', 'NO_ACTION', 'HOLD')
+    )
     with _KALSHI_PERSISTENCE_TRAFFIC_LOCK:
         _KALSHI_PERSISTENCE_TRAFFIC['observationAttempts'] += 1
         if _KALSHI_OBSERVATION_WRITE_CACHE.get(cache_key) == material_signature:
@@ -55826,14 +56182,37 @@ def _kalshi_save_observation(user_id, observation):
                 **row,
                 'persistenceDeduplicated': True,
             }
+        prior_state = _KALSHI_OBSERVATION_STATE_CACHE.get(state_key) or {}
+        if (
+            not force_material_write
+            and prior_state.get('signature') == material_signature
+            and now_monotonic - float(prior_state.get('writtenAt') or 0)
+            < _KALSHI_ROUTINE_OBSERVATION_SAMPLE_SECONDS
+        ):
+            _KALSHI_OBSERVATION_WRITE_CACHE[cache_key] = material_signature
+            _KALSHI_PERSISTENCE_TRAFFIC['observationDeduplicated'] += 1
+            return {
+                **row,
+                'persistenceDeduplicated': True,
+                'persistenceSampleWindowSeconds': _KALSHI_ROUTINE_OBSERVATION_SAMPLE_SECONDS,
+            }
 
     saved = operations_store.put_kalshi_observation(user_id, row)
     serialized = json.dumps(row, sort_keys=True, separators=(',', ':'), default=str)
     with _KALSHI_PERSISTENCE_TRAFFIC_LOCK:
         _KALSHI_OBSERVATION_WRITE_CACHE[cache_key] = material_signature
+        _KALSHI_OBSERVATION_STATE_CACHE[state_key] = {
+            'signature': material_signature,
+            'writtenAt': now_monotonic,
+        }
         while len(_KALSHI_OBSERVATION_WRITE_CACHE) > _KALSHI_OBSERVATION_WRITE_CACHE_LIMIT:
             _KALSHI_OBSERVATION_WRITE_CACHE.pop(
                 next(iter(_KALSHI_OBSERVATION_WRITE_CACHE)),
+                None,
+            )
+        while len(_KALSHI_OBSERVATION_STATE_CACHE) > _KALSHI_OBSERVATION_WRITE_CACHE_LIMIT:
+            _KALSHI_OBSERVATION_STATE_CACHE.pop(
+                next(iter(_KALSHI_OBSERVATION_STATE_CACHE)),
                 None,
             )
         _KALSHI_PERSISTENCE_TRAFFIC['observationWrites'] += 1

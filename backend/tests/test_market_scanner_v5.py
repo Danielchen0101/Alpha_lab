@@ -508,3 +508,165 @@ def test_market_ai_batches_cover_every_requested_candidate(monkeypatch):
     assert stats["reviewedSymbols"] == 12
     assert stats["status"] == "ok"
     assert all(row["aiSuccess"] for row in rows)
+
+
+def test_intraday_refresh_updates_live_fields_without_losing_daily_factors(monkeypatch):
+    monkeypatch.setattr(backend, "_inst_daily_snapshot_is_complete", lambda *_args, **_kwargs: False)
+    row = {
+        **_row("TEST"),
+        "price": 100.0,
+        "previousClose": 98.0,
+        "avgVolume20": 1_000_000,
+        "ma50": 95.0,
+        "ma200": 90.0,
+        "recentHigh20": 110.0,
+        "recentLow20": 85.0,
+        "latestQuoteTime": None,
+    }
+
+    refreshed = backend._inst_refresh_cached_metric_row(row, {
+        "snapshotPrice": 105.0,
+        "snapshotPrevClose": 98.0,
+        "snapshotVolume": 400_000,
+        "snapshotCurrentVolume": 400_000,
+        "snapshotPreviousVolume": 900_000,
+        "bidPrice": 104.9,
+        "askPrice": 105.1,
+        "bidAskSpread": 0.2,
+        "bidAskSpreadPct": 0.2 / 105.0 * 100.0,
+    })
+
+    assert refreshed["price"] == 105.0
+    assert refreshed["changePct"] == round((105.0 - 98.0) / 98.0 * 100.0, 3)
+    assert refreshed["volume"] == 400_000
+    assert refreshed["volumeRatio"] == 0.9
+    assert refreshed["momentum3m"] > row["momentum3m"]
+    assert refreshed["historyDays"] == row["historyDays"]
+    assert refreshed["dataSource"] == "Alpaca intraday snapshot + cached daily factors"
+
+
+def test_intraday_seed_cache_is_scoped_and_expires(monkeypatch):
+    original = dict(backend._INST_SCANNER_INTRADAY_CACHE)
+    backend._INST_SCANNER_INTRADAY_CACHE.clear()
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(backend.time, "time", lambda: clock["now"])
+    monkeypatch.setattr(backend, "_inst_intraday_trading_date", lambda: "2026-08-04")
+    try:
+        backend._inst_store_intraday_seed(
+            "user-a-key",
+            [{"symbol": "AAPL", "price": 200.0}],
+            {"trend": "Risk-On"},
+            {"AAPL": {"name": "Apple"}},
+        )
+
+        cached = backend._inst_get_intraday_seed("user-a-key")
+        cached["rows"][0]["price"] = 1.0
+        assert backend._inst_get_intraday_seed("user-a-key")["rows"][0]["price"] == 200.0
+        assert backend._inst_get_intraday_seed("user-b-key") is None
+
+        clock["now"] += backend._INST_SCANNER_INTRADAY_TTL_SECONDS + 1
+        assert backend._inst_get_intraday_seed("user-a-key") is None
+    finally:
+        backend._INST_SCANNER_INTRADAY_CACHE.clear()
+        backend._INST_SCANNER_INTRADAY_CACHE.update(original)
+
+
+def test_efficient_scanner_downloads_history_once_then_refreshes_candidates(monkeypatch):
+    original = dict(backend._INST_SCANNER_INTRADAY_CACHE)
+    backend._INST_SCANNER_INTRADAY_CACHE.clear()
+    symbols = ["T%02d" % index for index in range(30)]
+    stream_calls = {"count": 0}
+    snapshot_batches = []
+
+    monkeypatch.setattr(backend, "get_supabase_user", lambda: {"id": "user-cache-test"})
+    monkeypatch.setattr(backend, "_apply_account_hard_risk_limits", lambda policy, _uid: policy)
+    monkeypatch.setattr(
+        backend,
+        "_inst_resolve_alpaca_scanner_configs",
+        lambda _mode: ({}, [{}], "ok", ""),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_inst_fetch_alpaca_assets",
+        lambda _cfgs, _filters: (
+            symbols,
+            {symbol: {"name": symbol} for symbol in symbols},
+            "test-assets",
+            None,
+        ),
+    )
+
+    def fake_snapshots(requested, *_args, **_kwargs):
+        snapshot_batches.append(list(requested))
+        return ({
+            symbol: {
+                "latestTrade": {"p": 100 + index},
+                "latestQuote": {"bp": 99.9 + index, "ap": 100.1 + index},
+                "dailyBar": {"c": 100 + index, "v": 1_000_000},
+                "prevDailyBar": {"c": 99 + index, "v": 1_000_000},
+            }
+            for index, symbol in enumerate(requested)
+        }, {})
+
+    def fake_stream(selected, *_args, **_kwargs):
+        stream_calls["count"] += 1
+        return ([{
+            **_row(symbol),
+            "price": 100.0,
+            "previousClose": 99.0,
+            "avgVolume20": 1_000_000,
+            "latestQuoteTime": None,
+            "recentHigh20": 110.0,
+            "recentLow20": 90.0,
+        } for symbol in selected], 0, {})
+
+    monkeypatch.setattr(backend, "_inst_fetch_alpaca_snapshots", fake_snapshots)
+    monkeypatch.setattr(backend, "_inst_fetch_alpaca_bars", lambda *_args, **_kwargs: ({}, {}))
+    monkeypatch.setattr(backend, "_inst_stream_alpaca_symbol_metrics", fake_stream)
+    monkeypatch.setattr(backend, "resolve_finnhub_config_strict_user", lambda: ({}, "not_configured"))
+    monkeypatch.setattr(backend, "_inst_apply_finnhub_enrichment", lambda *_args, **_kwargs: {
+        "profileEnriched": 0, "metricsEnriched": 0, "ratingsEnriched": 0,
+        "source": "disabled",
+    })
+    monkeypatch.setattr(backend, "_inst_apply_sector_overlays", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(backend, "_inst_apply_news_enrichment", lambda *_args, **_kwargs: {
+        "source": "disabled", "symbolsWithNews": 0, "articlesFetched": 0,
+    })
+    monkeypatch.setattr(backend, "_inst_apply_earnings_calendar", lambda *_args, **_kwargs: {
+        "source": "disabled", "symbolsWithEarnings": 0,
+    })
+    monkeypatch.setattr(backend, "_inst_apply_finra_short_volume", lambda *_args, **_kwargs: {
+        "source": "disabled", "symbolsWithShortVolume": 0,
+    })
+    monkeypatch.setattr(backend, "_inst_apply_ai_trader_review", lambda *_args, **_kwargs: {
+        "used": False, "status": "disabled", "reviewedSymbols": 0,
+        "challengedSymbols": 0,
+    })
+
+    payload = {
+        "efficientIntraday": True,
+        "maxSymbols": 25,
+        "maxResults": 5,
+        "aiReviewTopN": 0,
+        "filters": {
+            "minPrice": 0,
+            "minDollarVolume": 0,
+            "minHistoryDays": 0,
+            "includeETFs": True,
+        },
+    }
+    try:
+        with backend.app.test_request_context("/api/market/scanner", method="POST", json=payload):
+            first = backend._institutional_market_scanner_impl().get_json()
+        with backend.app.test_request_context("/api/market/scanner", method="POST", json=payload):
+            second = backend._institutional_market_scanner_impl().get_json()
+
+        assert first["summary"]["scanMode"] == "daily_seed"
+        assert second["summary"]["scanMode"] == "intraday_incremental"
+        assert second["summary"]["intradayCacheHit"] is True
+        assert stream_calls["count"] == 1
+        assert len(snapshot_batches[0]) == 30
+        assert len(snapshot_batches[1]) == 25
+    finally:
+        backend._INST_SCANNER_INTRADAY_CACHE.clear()
+        backend._INST_SCANNER_INTRADAY_CACHE.update(original)
