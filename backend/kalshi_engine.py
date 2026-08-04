@@ -93,10 +93,11 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "fractionalContractSizingEnabled": True,
     "contractStep": 0.01,
     "minimumEconomicContracts": 0.10,
-    # A small account may use a still-bounded 1.5% target only for signals that
-    # clear the existing stronger micro-edge floors.  Validation hard-caps the
-    # setting at 2%; Kelly, cash, book and exposure limits remain authoritative.
-    "smallAccountRiskTargetPct": 1.50,
+    # A small account may use a still-bounded 2% target only for signals that
+    # clear the existing stronger micro-edge floors.  The target is multiplied
+    # by the same signal-quality and high-price tail-risk scale as ordinary
+    # sizing; Kelly, cash, book and exposure limits remain authoritative.
+    "smallAccountRiskTargetPct": 2.00,
     # Per-order cash debit is rounded up to the next cent.  Tiny orders whose
     # all-in fee consumes too much of the possible binary payout fail closed.
     "maxAllInFeeToPotentialProfitPct": 20.0,
@@ -1271,6 +1272,7 @@ def evaluate_btc15_contract(
     fractional_sizing_applied = False
     small_account_sizing_applied = False
     small_account_risk_budget = 0.0
+    small_account_unscaled_risk_target = 0.0
     risk_budget_utilization = 0.0
     planned_contracts_fp = 0.0
     micro_position_loss_cap = min(
@@ -1324,8 +1326,11 @@ def evaluate_btc15_contract(
             and standard_risk_budget < unit_cost
         )
         if small_account_eligible:
+            small_account_unscaled_risk_target = (
+                bankroll * settings["smallAccountRiskTargetPct"] / 100.0
+            )
             small_account_risk_budget = min(
-                bankroll * settings["smallAccountRiskTargetPct"] / 100.0,
+                small_account_unscaled_risk_target * applied_risk_scale,
                 kelly_budget,
                 micro_position_loss_cap,
             )
@@ -1624,6 +1629,7 @@ def evaluate_btc15_contract(
             "fractionalSizingApplied": fractional_sizing_applied,
             "smallAccountSizingApplied": small_account_sizing_applied,
             "smallAccountRiskTargetPct": settings["smallAccountRiskTargetPct"],
+            "smallAccountUnscaledRiskTarget": small_account_unscaled_risk_target,
             "smallAccountRiskBudget": small_account_risk_budget,
             "contractStep": contract_step,
             "minimumEconomicContracts": minimum_economic_contracts,
