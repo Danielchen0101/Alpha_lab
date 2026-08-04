@@ -91,14 +91,31 @@ def test_headless_pipeline_reuses_institutional_whole_market_scanner(monkeypatch
 
     assert captured["path"] == "/api/market/scanner"
     assert captured["view_func"] is backend.institutional_market_scanner
-    assert captured["payload"]["maxSymbols"] == 1500
+    assert captured["payload"]["maxSymbols"] == backend._INST_SCANNER_AUTO_MAX_SYMBOLS
     assert captured["payload"]["maxResults"] == 100
-    assert captured["payload"]["aiReviewTopN"] == 100
+    assert captured["payload"]["aiReviewTopN"] == backend._INST_SCANNER_AUTO_AI_REVIEW_TOP_N
+    assert captured["payload"]["efficientIntraday"] is True
     assert captured["payload"]["alpacaMode"] == "live"
     assert captured["payload"]["suppressDiscord"] is True
     assert rows[0]["symbol"] == "AAPL"
     assert summary["universeScanned"] == 1500
     assert stats["total_symbols"] == 1500
+
+
+def test_manual_headless_scan_preserves_full_user_settings(monkeypatch):
+    captured = {}
+
+    def fake_call(uid, path, view_func, payload=None, method="POST", query_string=None):
+        captured["payload"] = payload
+        return {"success": True, "results": [], "summary": {}, "scan_stats": {}}, 200
+
+    monkeypatch.setattr(backend, "_pa_call_endpoint", fake_call)
+
+    backend._pa_market_scanner_headless("user-1", efficient_intraday=False)
+
+    assert captured["payload"]["maxSymbols"] == 1500
+    assert captured["payload"]["aiReviewTopN"] == 100
+    assert captured["payload"]["efficientIntraday"] is False
 
 
 def test_headless_pipeline_stops_when_institutional_scanner_fails(monkeypatch):

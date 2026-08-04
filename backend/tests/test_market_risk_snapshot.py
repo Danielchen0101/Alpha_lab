@@ -182,8 +182,10 @@ def test_kalshi_observation_writes_dedupe_same_15_second_sample(monkeypatch):
     monkeypatch.setattr(backend, 'operations_store', store)
     with backend._KALSHI_PERSISTENCE_TRAFFIC_LOCK:
         original_cache = dict(backend._KALSHI_OBSERVATION_WRITE_CACHE)
+        original_state_cache = dict(backend._KALSHI_OBSERVATION_STATE_CACHE)
         original_stats = dict(backend._KALSHI_PERSISTENCE_TRAFFIC)
         backend._KALSHI_OBSERVATION_WRITE_CACHE.clear()
+        backend._KALSHI_OBSERVATION_STATE_CACHE.clear()
         backend._KALSHI_PERSISTENCE_TRAFFIC.update({
             'artifactWrites': 0,
             'artifactPayloadBytes': 0,
@@ -236,6 +238,62 @@ def test_kalshi_observation_writes_dedupe_same_15_second_sample(monkeypatch):
         with backend._KALSHI_PERSISTENCE_TRAFFIC_LOCK:
             backend._KALSHI_OBSERVATION_WRITE_CACHE.clear()
             backend._KALSHI_OBSERVATION_WRITE_CACHE.update(original_cache)
+            backend._KALSHI_OBSERVATION_STATE_CACHE.clear()
+            backend._KALSHI_OBSERVATION_STATE_CACHE.update(original_state_cache)
+            backend._KALSHI_PERSISTENCE_TRAFFIC.clear()
+            backend._KALSHI_PERSISTENCE_TRAFFIC.update(original_stats)
+
+
+def test_kalshi_routine_wait_observations_are_sampled_across_buckets(monkeypatch):
+    class Store:
+        def __init__(self):
+            self.rows = []
+
+        def put_kalshi_observation(self, user_id, observation):
+            row = {'user_id': user_id, **dict(observation)}
+            self.rows.append(row)
+            return row
+
+    store = Store()
+    clock = {'now': 1000.0}
+    monkeypatch.setattr(backend, 'operations_store', store)
+    monkeypatch.setattr(backend.time, 'monotonic', lambda: clock['now'])
+    with backend._KALSHI_PERSISTENCE_TRAFFIC_LOCK:
+        original_cache = dict(backend._KALSHI_OBSERVATION_WRITE_CACHE)
+        original_state_cache = dict(backend._KALSHI_OBSERVATION_STATE_CACHE)
+        original_stats = dict(backend._KALSHI_PERSISTENCE_TRAFFIC)
+        backend._KALSHI_OBSERVATION_WRITE_CACHE.clear()
+        backend._KALSHI_OBSERVATION_STATE_CACHE.clear()
+    base = {
+        'environment': 'real',
+        'ticker': 'KXBTC15M-TEST',
+        'observation_key': 'KXBTC15M-TEST:1000',
+        'action': 'WAIT',
+        'side': 'YES',
+        'blocked_reasons': ['net_edge'],
+        'order_result': None,
+    }
+    try:
+        backend._kalshi_save_observation('user-a', base)
+        sampled = backend._kalshi_save_observation('user-a', {
+            **base,
+            'observation_key': 'KXBTC15M-TEST:1015',
+        })
+        clock['now'] += backend._KALSHI_ROUTINE_OBSERVATION_SAMPLE_SECONDS + 1
+        persisted = backend._kalshi_save_observation('user-a', {
+            **base,
+            'observation_key': 'KXBTC15M-TEST:1135',
+        })
+
+        assert sampled['persistenceDeduplicated'] is True
+        assert persisted['observation_key'].endswith(':1135')
+        assert len(store.rows) == 2
+    finally:
+        with backend._KALSHI_PERSISTENCE_TRAFFIC_LOCK:
+            backend._KALSHI_OBSERVATION_WRITE_CACHE.clear()
+            backend._KALSHI_OBSERVATION_WRITE_CACHE.update(original_cache)
+            backend._KALSHI_OBSERVATION_STATE_CACHE.clear()
+            backend._KALSHI_OBSERVATION_STATE_CACHE.update(original_state_cache)
             backend._KALSHI_PERSISTENCE_TRAFFIC.clear()
             backend._KALSHI_PERSISTENCE_TRAFFIC.update(original_stats)
 

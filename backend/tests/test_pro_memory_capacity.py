@@ -39,6 +39,8 @@ def test_health_reports_memory_budget_and_scan_capacity(monkeypatch):
     assert payload["memory"]["pressure"] is False
     assert payload["scannerCapacity"] == {"active": 0, "capacity": 2, "available": 2}
     assert payload["heavyWorkCapacity"] == payload["scannerCapacity"]
+    assert payload["scannerTraffic"]["barRequests"] >= 0
+    assert payload["scannerTraffic"]["intradayCacheHits"] >= 0
     assert payload["threads"]["healthy"] is True
     assert payload["migrations"]["healthy"] is True
     assert payload["leases"]["healthy"] is True
