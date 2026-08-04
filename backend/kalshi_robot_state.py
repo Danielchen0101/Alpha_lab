@@ -38,7 +38,7 @@ def _entry_confirmation_family(ticker: Any) -> Optional[str]:
 MAX_DECISION_RECORDS = 50
 MAX_SETTLEMENT_RECORDS = 1000
 MAX_TRADED_TICKERS = 2000
-PAPER_STATE_VERSION = 11
+PAPER_STATE_VERSION = 12
 KALSHI_MODES = ("paper", "real")
 
 # These fields mirror the active mode bucket for older API consumers.  Keeping
@@ -546,6 +546,64 @@ class KalshiRobotState:
             for environment, bucket in mode_state.items():
                 if isinstance(bucket, dict):
                     update_bucket(bucket, environment)
+        state["storageVersion"] = max(11, int(state.get("storageVersion") or 0))
+
+    @staticmethod
+    def _apply_v12_quality_scaled_sizing(state: Dict[str, Any]) -> None:
+        """Raise only quality-scaled small-account risk without rearming Real."""
+        migrated_at = _now()
+
+        def update_bucket(bucket: Dict[str, Any], environment: Optional[str] = None) -> None:
+            raw_config = dict(bucket.get("config") or {})
+            prior_target = _number(
+                raw_config.get("smallAccountRiskTargetPct"),
+                1.50,
+            )
+            # The v11 default was 1.5%. Preserve an explicitly lower or already
+            # higher user setting; migrate only the old default used in Real.
+            if abs(prior_target - 1.50) <= 1e-9:
+                raw_config["smallAccountRiskTargetPct"] = (
+                    DEFAULT_STRATEGY_CONFIG["smallAccountRiskTargetPct"]
+                )
+            bucket["config"] = _safe_strategy_config(raw_config, environment)
+            strategy = bucket.setdefault("strategy", {})
+            strategy.update({
+                "name": "BTC15 Settlement-Aligned v8",
+                "version": 8,
+            })
+            components = list(strategy.get("components") or [])
+            quality_component = (
+                "quality-scaled fractional sizing with high-price tail-risk haircuts"
+            )
+            if quality_component not in components:
+                components.append(quality_component)
+            strategy["components"] = components
+            changes = list(strategy.get("changes") or [])
+            if not changes or "quality-scaled sizing v8" not in str(
+                changes[0].get("summary") or ""
+            ).lower():
+                changes.insert(0, {
+                    "at": migrated_at,
+                    "version": 8,
+                    "summary": (
+                        "Quality-scaled sizing v8: allow a bounded 2% small-account "
+                        "target only after stronger edge gates clear, then haircut it "
+                        "by signal quality and high-price tail risk before Kelly, cash, "
+                        "liquidity, and exposure caps."
+                    ),
+                })
+            strategy["changes"] = changes[:50]
+
+        active_environment = _execution_environment(
+            state.get("activeEnvironment")
+            or (state.get("config") or {}).get("executionMode")
+        )
+        update_bucket(state, active_environment)
+        mode_state = state.get("modeState")
+        if isinstance(mode_state, dict):
+            for environment, bucket in mode_state.items():
+                if isinstance(bucket, dict):
+                    update_bucket(bucket, environment)
         state["storageVersion"] = PAPER_STATE_VERSION
 
     def __init__(
@@ -618,6 +676,8 @@ class KalshiRobotState:
                     self._apply_v10_mode_safety(self._users[user_id])
                 if int(self._users[user_id].get("storageVersion") or 0) < 11:
                     self._apply_v11_micro_account_sizing(self._users[user_id])
+                if int(self._users[user_id].get("storageVersion") or 0) < 12:
+                    self._apply_v12_quality_scaled_sizing(self._users[user_id])
                 migrated = True
         if migrated and self._persist_migrations:
             self._save_all()
@@ -811,6 +871,8 @@ class KalshiRobotState:
                     self._apply_v10_mode_safety(self._users[key])
                 if int(self._users[key].get("storageVersion") or 0) < 11:
                     self._apply_v11_micro_account_sizing(self._users[key])
+                if int(self._users[key].get("storageVersion") or 0) < 12:
+                    self._apply_v12_quality_scaled_sizing(self._users[key])
                 migrated = True
             migrated = bool(migrated or durable_compaction_required)
         else:
