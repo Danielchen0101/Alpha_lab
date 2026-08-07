@@ -14085,6 +14085,17 @@ _INST_SCANNER_AI_REVIEW_MAX_N = 100
 _INST_SCANNER_AI_REVIEW_BATCH_SIZE = 5
 _INST_SCANNER_AI_MAX_ATTEMPTS = 2
 _INST_SCANNER_AI_TIMEOUT_SECONDS = 60
+_PA_FINE_SCAN_AUTO_AI_REVIEW_TOP_N = max(
+    0,
+    min(int(os.getenv('FINE_SCAN_AUTO_AI_REVIEW_TOP_N', '12') or 12), 20),
+)
+_PA_FINE_SCAN_AUTO_AI_MAX_ATTEMPTS = 1
+_PA_UNATTENDED_PIPELINE_TRIGGERS = frozenset({
+    'market_auto_run',
+    'headless_market_auto_run',
+    'toggle_on',
+    'auto_run_now',
+})
 _INST_SCANNER_OPTION_REVIEW_TOP_N = 25
 _INST_SCANNER_EARNINGS_LOOKAHEAD_DAYS = 30
 _INST_SCANNER_MAX_CONCURRENT = max(1, min(int(os.getenv('MARKET_SCAN_MAX_CONCURRENT', '2') or 2), 4))
@@ -47305,24 +47316,76 @@ def _pa_fine_scan_decision_policy(score, gate, required_evidence_missing=None,
     return 'Reject'
 
 
-def _pa_apply_fine_scan_ai_reviews(uid, rows, enabled=True):
-    """Batch-review every Fine Scan row with the configured AI challenge layer."""
+def _pa_apply_fine_scan_ai_reviews(uid, rows, enabled=True, max_symbols=None,
+                                   max_attempts=None, actionable_only=False):
+    """Apply a bounded AI challenge without making pipeline progress depend on AI.
+
+    Unattended runs only review candidates that deterministic rules can still
+    advance. Hard-blocked, rejected, and incomplete rows cannot be promoted by
+    AI, so sending them to the provider adds latency and cost without changing
+    the routing decision.
+    """
+    input_rows = list(rows or [])
+    if max_symbols is None:
+        max_symbols = len(input_rows)
+    max_symbols = max(0, min(int(max_symbols or 0), len(input_rows)))
+    if max_attempts is None:
+        max_attempts = _INST_SCANNER_AI_MAX_ATTEMPTS
+    max_attempts = max(1, min(int(max_attempts or 1), _INST_SCANNER_AI_MAX_ATTEMPTS))
     stats = {
         'configured': False,
         'used': False,
         'status': 'disabled' if not enabled else 'not_configured',
-        'requestedSymbols': len(rows or []) if enabled else 0,
+        'inputSymbols': len(input_rows),
+        'eligibleSymbols': 0,
+        'requestedSymbols': 0,
+        'skippedSymbols': 0,
         'reviewedSymbols': 0,
         'challengedSymbols': 0,
         'batchSize': _INST_SCANNER_AI_REVIEW_BATCH_SIZE,
         'batchCount': 0,
         'retryAttempts': 0,
+        'maxSymbols': max_symbols,
+        'maxAttempts': max_attempts,
+        'actionableOnly': bool(actionable_only),
         'errors': {},
         'provider': None,
         'model': None,
         'source': 'Settings AI provider',
     }
-    if not enabled or not rows:
+    if not enabled or not input_rows:
+        return stats
+
+    def is_actionable(row):
+        deterministic = row.get('deterministicDecision') or row.get('decision')
+        gate = row.get('riskGateStatus') or row.get('riskGate')
+        return (
+            deterministic in ('Continue', 'Watch')
+            and gate != 'BLOCK'
+            and not (row.get('decisionBlockers') or [])
+        )
+
+    eligible_rows = [row for row in input_rows if not actionable_only or is_actionable(row)]
+    eligible_rows.sort(key=lambda row: (
+        0 if (row.get('deterministicDecision') or row.get('decision')) == 'Continue' else 1,
+        -(_inst_to_float(row.get('fineScanScore') or row.get('score'), 0) or 0),
+    ))
+    target_rows = eligible_rows[:max_symbols]
+    target_ids = {id(row) for row in target_rows}
+    stats['eligibleSymbols'] = len(eligible_rows)
+    stats['requestedSymbols'] = len(target_rows)
+    stats['skippedSymbols'] = len(input_rows) - len(target_rows)
+    for row in input_rows:
+        if id(row) not in target_ids:
+            row['fineScanAiStatus'] = (
+                'not_needed'
+                if actionable_only and not is_actionable(row)
+                else 'capacity_skipped'
+            )
+            row['aiCalled'] = False
+            row['aiSuccess'] = False
+    if not target_rows:
+        stats['status'] = 'not_needed'
         return stats
 
     try:
@@ -47341,10 +47404,15 @@ def _pa_apply_fine_scan_ai_reviews(uid, rows, enabled=True):
     })
     if not api_key:
         stats['error'] = 'AI key is not configured in Settings'
+        for row in target_rows:
+            row['fineScanAiStatus'] = 'not_configured'
+            row['aiCalled'] = False
+            row['aiSuccess'] = False
         return stats
 
-    row_by_symbol = {_inst_clean_symbol(row.get('symbol')): row for row in rows}
-    target_rows = [row for row in rows if _inst_clean_symbol(row.get('symbol'))]
+    row_by_symbol = {_inst_clean_symbol(row.get('symbol')): row for row in target_rows}
+    target_rows = [row for row in target_rows if _inst_clean_symbol(row.get('symbol'))]
+    stats['requestedSymbols'] = len(target_rows)
     for row in target_rows:
         row['aiCalled'] = True
         row['aiSuccess'] = False
@@ -47522,7 +47590,7 @@ def _pa_apply_fine_scan_ai_reviews(uid, rows, enabled=True):
                 apply_reviews(reviews)
 
     missing_rows = [row for row in target_rows if _inst_clean_symbol(row.get('symbol')) not in reviewed]
-    if missing_rows and _INST_SCANNER_AI_MAX_ATTEMPTS > 1:
+    if missing_rows and max_attempts > 1:
         retry_batches = [missing_rows[i:i + batch_size] for i in range(0, len(missing_rows), batch_size)]
         stats['retryAttempts'] = len(retry_batches)
         with ThreadPoolExecutor(max_workers=min(2, max(1, len(retry_batches)))) as executor:
@@ -47543,8 +47611,14 @@ def _pa_apply_fine_scan_ai_reviews(uid, rows, enabled=True):
     stats['status'] = 'ok' if len(reviewed) == len(target_rows) else 'partial' if reviewed else 'error'
     if stats['status'] != 'ok':
         stats['error'] = 'AI reviewed %d/%d Fine Scan candidates' % (len(reviewed), len(target_rows))
-    for row in rows:
-        row['fineScanAiStatus'] = stats['status']
+    for row in input_rows:
+        if id(row) not in target_ids:
+            continue
+        row['fineScanAiStatus'] = (
+            'ok'
+            if _inst_clean_symbol(row.get('symbol')) in reviewed
+            else stats['status']
+        )
         row['fineScanAiStats'] = stats
         row.setdefault('dataSources', {})['ai'] = (
             '%s %s batched Fine Scan challenge' % (provider, model)
@@ -47599,7 +47673,9 @@ def _pa_fine_scan_execution_cost(adv20, realized_vol20, fresh_spread_bps,
 
 def _pa_fine_scan_headless(uid, candidates,
                             risk_profile='medium', time_horizon='mid',
-                            pipeline_mode='ai', trade_mode='paper'):
+                            pipeline_mode='ai', trade_mode='paper',
+                            ai_review_top_n=None, ai_max_attempts=None,
+                            ai_actionable_only=False):
     """Institutional-style Fine Scan.
 
     Market Scanner is the coarse universe pull. Fine Scan is the trade-desk
@@ -48621,7 +48697,14 @@ def _pa_fine_scan_headless(uid, candidates,
             })
             results.append(failed)
 
-    ai_stats = _pa_apply_fine_scan_ai_reviews(uid, results, enabled=ai_review_requested)
+    ai_stats = _pa_apply_fine_scan_ai_reviews(
+        uid,
+        results,
+        enabled=ai_review_requested,
+        max_symbols=ai_review_top_n,
+        max_attempts=ai_max_attempts,
+        actionable_only=ai_actionable_only,
+    )
     for rec in results:
         rec['fineScanAiStats'] = ai_stats
         rec.setdefault('institutionalFineScan', {})['aiReview'] = {
@@ -51196,7 +51279,9 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
     PIPELINE_TIMEOUT = 1800  # 30-minute hard timeout for the entire pipeline (50 symbols + AI)
     STAGE_TIMEOUTS = {
         'market_scanner': 900,  # 15 min for scanner with 50 symbols + AI analysis
-        'fine_scan': 120,
+        # Auto Fine Scan is bounded to actionable candidates and one AI attempt.
+        # Leave enough margin for a provider timeout plus deterministic work.
+        'fine_scan': 180,
         # Leveraged alternatives that may replace a capital-blocked underlying
         # receive their own targeted scanner, Fine Scan, and DV pass here.
         'deeper_validation': 240,
@@ -51280,6 +51365,17 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                 raise _PipelineTimeout(stage, stage_elapsed, stage_limit)
 
     _pa_log('[PipelineAuto] headless pipeline started user=%s trigger=%s dryRun=%s' % (uid[:8], trigger, dry_run))
+    _unattended_run = trigger in _PA_UNATTENDED_PIPELINE_TRIGGERS
+    _fine_scan_ai_options = {
+        'ai_review_top_n': _PA_FINE_SCAN_AUTO_AI_REVIEW_TOP_N if _unattended_run else None,
+        'ai_max_attempts': _PA_FINE_SCAN_AUTO_AI_MAX_ATTEMPTS if _unattended_run else None,
+        'ai_actionable_only': _unattended_run,
+    }
+    if _unattended_run:
+        _pa_log('[AutoPipeline] Fine Scan AI policy actionableOnly=true maxSymbols=%d maxAttempts=%d' % (
+            _PA_FINE_SCAN_AUTO_AI_REVIEW_TOP_N,
+            _PA_FINE_SCAN_AUTO_AI_MAX_ATTEMPTS,
+        ))
 
     if trigger in ('market_auto_run', 'toggle_on'):
         fresh_config = _pa_get_config(uid) or {}
@@ -51573,7 +51669,8 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
             with headless_user_context(uid):
                 fine_results = _pa_fine_scan_headless(uid, continue_results,
                                                           risk_profile=risk_profile, time_horizon=time_horizon,
-                                                          pipeline_mode=mode, trade_mode=trade_mode)
+                                                          pipeline_mode=mode, trade_mode=trade_mode,
+                                                          **_fine_scan_ai_options)
             _check_timeout('fine_scan')
         else:
             _pa_log('[AutoPipeline] stage=fine_scan skipped reason=no_candidates')
@@ -51732,6 +51829,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                             time_horizon=time_horizon,
                             pipeline_mode=mode,
                             trade_mode=trade_mode,
+                            **_fine_scan_ai_options,
                         ) or []
                 for row in leveraged_fine_results:
                     target = _target_by_alt_symbol.get(

@@ -203,3 +203,141 @@ def test_fine_scan_ai_batches_cover_every_candidate_and_cannot_promote(monkeypat
     assert all(row["aiUsed"] for row in rows)
     assert rows[0]["decision"] == "Watch"
     assert rows[0]["aiOverrideBlocked"] is True
+
+
+def test_auto_fine_scan_ai_reviews_only_top_actionable_candidates(monkeypatch):
+    monkeypatch.setattr(
+        backend,
+        "resolve_ai_config",
+        lambda **_kwargs: ({"apiKey": "test", "provider": "TestAI", "model": "test-model"}, "test"),
+    )
+    calls = []
+
+    def fake_ai(_config, _system_prompt, user_prompt):
+        symbols_line = next(line for line in user_prompt.splitlines() if line.startswith("Symbols:"))
+        symbols = [symbol for symbol in symbols_line.replace("Symbols:", "").strip().split(",") if symbol]
+        calls.append(symbols)
+        return {
+            "reviews": [
+                {
+                    "symbol": symbol,
+                    "decision": "Watch",
+                    "confidence": 70,
+                    "rationale": "Actionable evidence reviewed.",
+                    "strengths": [],
+                    "warnings": [],
+                    "contradictions": [],
+                    "missingChecks": [],
+                    "urgency": "Low",
+                    "nextStep": "Continue deterministic workflow.",
+                }
+                for symbol in symbols
+            ]
+        }, None
+
+    monkeypatch.setattr(backend, "_inst_call_ai_trader", fake_ai)
+    rows = [
+        {
+            "symbol": "CONT",
+            "decision": "Continue",
+            "deterministicDecision": "Continue",
+            "fineScanScore": 72,
+            "riskGateStatus": "REVIEW",
+            "decisionBlockers": [],
+            "entryPlanFine": {},
+            "fineScanFactorScores": {},
+            "dataSources": {},
+        },
+        {
+            "symbol": "WATCHHI",
+            "decision": "Watch",
+            "deterministicDecision": "Watch",
+            "fineScanScore": 85,
+            "riskGateStatus": "REVIEW",
+            "decisionBlockers": [],
+            "entryPlanFine": {},
+            "fineScanFactorScores": {},
+            "dataSources": {},
+        },
+        {
+            "symbol": "WATCHLO",
+            "decision": "Watch",
+            "deterministicDecision": "Watch",
+            "fineScanScore": 60,
+            "riskGateStatus": "REVIEW",
+            "decisionBlockers": [],
+            "entryPlanFine": {},
+            "fineScanFactorScores": {},
+            "dataSources": {},
+        },
+        {
+            "symbol": "REJECT",
+            "decision": "Reject",
+            "deterministicDecision": "Reject",
+            "fineScanScore": 95,
+            "riskGateStatus": "BLOCK",
+            "decisionBlockers": ["hard gate"],
+            "entryPlanFine": {},
+            "fineScanFactorScores": {},
+            "dataSources": {},
+        },
+    ]
+
+    stats = backend._pa_apply_fine_scan_ai_reviews(
+        "user-test",
+        rows,
+        enabled=True,
+        max_symbols=2,
+        max_attempts=1,
+        actionable_only=True,
+    )
+
+    assert stats["eligibleSymbols"] == 3
+    assert stats["requestedSymbols"] == 2
+    assert stats["skippedSymbols"] == 2
+    assert stats["maxAttempts"] == 1
+    assert calls == [["CONT", "WATCHHI"]]
+    assert rows[2]["fineScanAiStatus"] == "capacity_skipped"
+    assert rows[3]["fineScanAiStatus"] == "not_needed"
+    assert rows[3]["aiCalled"] is False
+
+
+def test_auto_fine_scan_ai_failure_is_non_fatal_and_not_retried(monkeypatch):
+    monkeypatch.setattr(
+        backend,
+        "resolve_ai_config",
+        lambda **_kwargs: ({"apiKey": "test", "provider": "TestAI", "model": "test-model"}, "test"),
+    )
+    calls = []
+
+    def failed_ai(*_args):
+        calls.append(1)
+        return None, "ai_timeout"
+
+    monkeypatch.setattr(backend, "_inst_call_ai_trader", failed_ai)
+    row = {
+        "symbol": "KEEP",
+        "decision": "Continue",
+        "deterministicDecision": "Continue",
+        "fineScanScore": 80,
+        "riskGateStatus": "REVIEW",
+        "decisionBlockers": [],
+        "entryPlanFine": {},
+        "fineScanFactorScores": {},
+        "dataSources": {},
+    }
+
+    stats = backend._pa_apply_fine_scan_ai_reviews(
+        "user-test",
+        [row],
+        enabled=True,
+        max_symbols=12,
+        max_attempts=1,
+        actionable_only=True,
+    )
+
+    assert calls == [1]
+    assert stats["status"] == "error"
+    assert stats["retryAttempts"] == 0
+    assert row["decision"] == "Continue"
+    assert row["deterministicDecision"] == "Continue"
