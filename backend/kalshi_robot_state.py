@@ -23,7 +23,7 @@ def _now() -> str:
 MAX_DECISION_RECORDS = 250
 MAX_SETTLEMENT_RECORDS = 1000
 MAX_TRADED_TICKERS = 2000
-PAPER_STATE_VERSION = 11
+PAPER_STATE_VERSION = 13
 KALSHI_MODES = ("paper", "real")
 
 
@@ -482,6 +482,58 @@ class KalshiRobotState:
             for environment, bucket in mode_state.items():
                 if isinstance(bucket, dict):
                     update_bucket(bucket, environment)
+        state["storageVersion"] = max(11, int(state.get("storageVersion") or 0))
+
+    @staticmethod
+    def _apply_v13_outcome_calibration(state: Dict[str, Any]) -> None:
+        """Record the dual-market v9 calibration without changing arming."""
+        migrated_at = _now()
+
+        def update_bucket(
+            bucket: Dict[str, Any],
+            environment: Optional[str] = None,
+        ) -> None:
+            bucket["config"] = _safe_strategy_config(
+                bucket.get("config") or {},
+                environment,
+            )
+            strategy = bucket.setdefault("strategy", {})
+            strategy.update({
+                "name": "BTC Dual-Market Outcome-Calibrated v9",
+                "version": 9,
+                "philosophy": (
+                    "Use separate BTC15 and hourly entry envelopes, require "
+                    "fee- and uncertainty-adjusted edge, and size only after "
+                    "the selected market survives payoff-asymmetry controls."
+                ),
+            })
+            changes = list(strategy.get("changes") or [])
+            if not changes or "outcome-calibrated v9" not in str(
+                changes[0].get("summary") or ""
+            ).lower():
+                changes.insert(0, {
+                    "at": migrated_at,
+                    "version": 9,
+                    "summary": (
+                        "Outcome-calibrated v9: cap BTC15 favorites at 80c "
+                        "with a 1.5pp conservative-edge floor; recalibrate "
+                        "KXBTCD with a stronger market prior, compressed "
+                        "distance forecast, 20-minute window, 78c cap, and "
+                        "larger multiple-candidate penalty."
+                    ),
+                })
+            strategy["changes"] = changes[:50]
+
+        active_environment = _execution_environment(
+            state.get("activeEnvironment")
+            or (state.get("config") or {}).get("executionMode")
+        )
+        update_bucket(state, active_environment)
+        mode_state = state.get("modeState")
+        if isinstance(mode_state, dict):
+            for environment, bucket in mode_state.items():
+                if isinstance(bucket, dict):
+                    update_bucket(bucket, environment)
         state["storageVersion"] = PAPER_STATE_VERSION
 
     def __init__(
@@ -552,6 +604,8 @@ class KalshiRobotState:
                     self._apply_v10_mode_safety(self._users[user_id])
                 if int(self._users[user_id].get("storageVersion") or 0) < 11:
                     self._apply_v11_micro_account_sizing(self._users[user_id])
+                if int(self._users[user_id].get("storageVersion") or 0) < 13:
+                    self._apply_v13_outcome_calibration(self._users[user_id])
                 migrated = True
         if migrated and self._persist_migrations:
             self._save_all()
@@ -737,6 +791,8 @@ class KalshiRobotState:
                     self._apply_v10_mode_safety(self._users[key])
                 if int(self._users[key].get("storageVersion") or 0) < 11:
                     self._apply_v11_micro_account_sizing(self._users[key])
+                if int(self._users[key].get("storageVersion") or 0) < 13:
+                    self._apply_v13_outcome_calibration(self._users[key])
                 migrated = True
         else:
             initial = self._initial()

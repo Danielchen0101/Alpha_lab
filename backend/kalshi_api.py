@@ -1956,6 +1956,107 @@ def _hourly_candidate_diagnostic(
     }
 
 
+def _btc15_live_strategy_config(
+    strategy_config: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Apply the outcome-calibrated BTC15 entry envelope.
+
+    These are execution-policy floors, deliberately separate from the pure
+    research engine defaults.  Recent live labels showed that 81c+ favorites
+    and sub-1.5pp conservative edges had negative payoff asymmetry even when
+    the headline hit rate looked acceptable.
+    """
+    return normalize_strategy_config({
+        **dict(strategy_config or {}),
+        "maxPrice": min(
+            0.80,
+            _finite_number(strategy_config.get("maxPrice"), 0.80),
+        ),
+        "minConservativeEdge": max(
+            0.015,
+            _finite_number(
+                strategy_config.get("minConservativeEdge"),
+                0.015,
+            ),
+        ),
+    })
+
+
+def _hourly_live_strategy_config(
+    strategy_config: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Return a separately calibrated policy for the KXBTCD strike ladder.
+
+    Selecting the best of many correlated strikes creates a winner's-curse
+    that the BTC15 single-contract model does not have.  The hourly policy
+    therefore uses a stronger market prior, a compressed distance forecast,
+    a shorter horizon and a lower favorite-price ceiling.
+    """
+    return normalize_strategy_config({
+        **dict(strategy_config or {}),
+        "riskPerTradePct": min(
+            _finite_number(strategy_config.get("riskPerTradePct"), 0.50),
+            0.50,
+        ),
+        "minNetEdge": max(
+            0.015,
+            _finite_number(strategy_config.get("minNetEdge"), 0.015),
+        ),
+        "minConservativeEdge": max(
+            0.015,
+            _finite_number(
+                strategy_config.get("minConservativeEdge"),
+                0.015,
+            ),
+        ),
+        "marketBlendWeight": max(
+            0.60,
+            min(
+                _finite_number(
+                    strategy_config.get("marketBlendWeight"),
+                    0.60,
+                ),
+                0.75,
+            ),
+        ),
+        "probabilityLogitScale": min(
+            1.50,
+            _finite_number(
+                strategy_config.get("probabilityLogitScale"),
+                1.50,
+            ),
+        ),
+        "minSecondsToClose": 120,
+        "maxSecondsToClose": 1200,
+        "minPrice": 0.48,
+        "maxPrice": min(
+            0.78,
+            _finite_number(strategy_config.get("maxPrice"), 0.78),
+        ),
+        "minModelProbability": max(
+            0.64,
+            _finite_number(
+                strategy_config.get("minModelProbability"),
+                0.64,
+            ),
+        ),
+        "hourlyCandidatePenaltyWeight": max(
+            0.15,
+            _finite_number(
+                strategy_config.get("hourlyCandidatePenaltyWeight"),
+                0.15,
+            ),
+        ),
+        "maxSingleMarketExposurePct": min(
+            _finite_number(
+                strategy_config.get("maxSingleMarketExposurePct"),
+                2.0,
+            ),
+            2.0,
+        ),
+    })
+
+
 def _hourly_candidate_management_priority(
     candidate: Mapping[str, Any],
     market: Mapping[str, Any],
@@ -6348,47 +6449,7 @@ class _PaperRobotController:
             if reference_override is not None:
                 hourly_snapshot_args["reference_override"] = reference_override
             ladder = self.client.hourly_snapshot(**hourly_snapshot_args)
-            hourly_config = {
-                **strategy_config,
-                "riskPerTradePct": min(_finite_number(strategy_config.get("riskPerTradePct"), 0.50), 0.50),
-                "minNetEdge": max(
-                    0.01,
-                    _finite_number(strategy_config.get("minNetEdge"), 0.01),
-                ),
-                "minConservativeEdge": max(
-                    0.0075,
-                    _finite_number(
-                        strategy_config.get("minConservativeEdge"),
-                        0.0075,
-                    ),
-                ),
-                "marketBlendWeight": max(
-                    0.45,
-                    min(_finite_number(strategy_config.get("marketBlendWeight"), 0.45), 0.65),
-                ),
-                "minSecondsToClose": 120,
-                "maxSecondsToClose": 1800,
-                "minPrice": 0.48,
-                "maxPrice": min(
-                    0.92,
-                    _finite_number(strategy_config.get("maxPrice"), 0.92),
-                ),
-                "minModelProbability": max(
-                    0.64,
-                    _finite_number(
-                        strategy_config.get("minModelProbability"),
-                        0.64,
-                    ),
-                ),
-                "maxSingleMarketExposurePct": min(
-                    _finite_number(
-                        strategy_config.get("maxSingleMarketExposurePct"),
-                        2.0,
-                    ),
-                    2.0,
-                ),
-            }
-            hourly_config = normalize_strategy_config(hourly_config)
+            hourly_config = _hourly_live_strategy_config(strategy_config)
             hourly_fee_rate = _finite_number(
                 (ladder.get("feePolicy") or {}).get("takerFeeCoefficient"),
                 None,
@@ -6624,6 +6685,7 @@ class _PaperRobotController:
                 "candidateSummary": compact_candidates,
             }
         else:
+            strategy_config = _btc15_live_strategy_config(strategy_config)
             snapshot_args: Dict[str, Any] = {"base_url": KALSHI_PUBLIC_BASE}
             if reference_override is not None:
                 snapshot_args["reference_override"] = reference_override
@@ -6654,7 +6716,8 @@ class _PaperRobotController:
             )
         decision = dict(decision)
         decision["marketFamily"] = family
-        decision["engine"] = "btchourly-strike-ladder-v2" if family == "btchourly" else decision.get("engine")
+        decision["engine"] = "btchourly-strike-ladder-v3" if family == "btchourly" else "btc15_settlement_aligned_v9"
+        decision["outcomeCalibrationPolicy"] = "btc_dual_market_live_v9"
         account_warnings = (
             list(portfolio.get("warnings") or [])
             if execution_mode == "real"

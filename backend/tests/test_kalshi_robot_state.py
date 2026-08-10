@@ -326,7 +326,7 @@ def test_v10_real_migration_preserves_ledger_and_disarms_live_mode(tmp_path):
     restored = KalshiRobotState(str(path)).get("user-1")
     real = restored["modeState"]["real"]
 
-    assert restored["storageVersion"] == 11
+    assert restored["storageVersion"] == 13
     assert restored["enabled"] is False
     assert real["arming"]["awaitingExplicitEnable"] is True
     assert real["displayBaseline"]["alphaLabOnly"] is True
@@ -367,13 +367,13 @@ def test_v11_micro_sizing_migration_preserves_live_arming(tmp_path):
     restored = KalshiRobotState(str(path)).get("user-1")
     real = restored["modeState"]["real"]
 
-    assert restored["storageVersion"] == 11
+    assert restored["storageVersion"] == 13
     assert restored["enabled"] is True
     assert real["arming"]["armed"] is True
     assert real["arming"]["awaitingExplicitEnable"] is False
     assert real["config"]["microPositionMaxLossDollars"] == 1.0
     assert real["config"]["microPositionMaxLossPct"] == 5.0
-    assert real["strategy"]["version"] == 7
+    assert real["strategy"]["version"] == 9
 
 
 def test_v10_repairs_partial_real_display_baselines_and_persists_them(
@@ -501,7 +501,7 @@ def test_pre_v6_trade_and_learning_data_is_removed_during_upgrade(tmp_path):
 
     restored = KalshiRobotState(str(path)).get("user-1")
 
-    assert restored["storageVersion"] == 11
+    assert restored["storageVersion"] == 13
     assert restored["enabled"] is True
     assert restored["decisions"] == []
     assert restored["filledTrades"] == []
@@ -530,12 +530,12 @@ def test_v6_state_adopts_calibrated_defaults_without_losing_records(tmp_path):
 
     restored = KalshiRobotState(str(path)).get("user-1")
 
-    assert restored["storageVersion"] == 11
+    assert restored["storageVersion"] == 13
     assert restored["config"]["minNetEdge"] == 0.015
     assert restored["config"]["minModelProbability"] == 0.64
     assert restored["config"]["marketBlendWeight"] == 0.45
     assert restored["config"]["probabilityLogitScale"] == 1.70
-    assert restored["strategy"]["version"] == 7
+    assert restored["strategy"]["version"] == 9
     assert restored["decisions"][0]["ticker"] == "KXBTC15M-KEEP"
     assert restored["filledTrades"][0]["ticker"] == "KXBTC15M-KEEP"
 

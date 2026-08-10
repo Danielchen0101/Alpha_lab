@@ -29,6 +29,7 @@ from kalshi_api import (
     _exit_economic_state,
     _hourly_candidate_management_priority,
     _hourly_candidate_diagnostic,
+    _hourly_live_strategy_config,
     _hourly_reference_policy,
     _intent_client_order_id,
     _kalshi_response_error_detail,
@@ -49,9 +50,34 @@ from kalshi_api import (
     _real_preflight_account_health,
     _apply_real_preflight_health_gate,
     _venue_quote,
+    _btc15_live_strategy_config,
     _PublicDataClient,
     register_kalshi_api,
 )
+
+
+def test_dual_market_live_policies_are_separately_calibrated():
+    base = {
+        "maxPrice": 0.92,
+        "minConservativeEdge": 0.0075,
+        "marketBlendWeight": 0.45,
+        "probabilityLogitScale": 1.70,
+        "maxSecondsToClose": 1800,
+        "hourlyCandidatePenaltyWeight": 0.10,
+    }
+
+    btc15 = _btc15_live_strategy_config(base)
+    hourly = _hourly_live_strategy_config(base)
+
+    assert btc15["maxPrice"] == pytest.approx(0.80)
+    assert btc15["minConservativeEdge"] == pytest.approx(0.015)
+    assert hourly["maxPrice"] == pytest.approx(0.78)
+    assert hourly["maxSecondsToClose"] == 1200
+    assert hourly["minNetEdge"] == pytest.approx(0.015)
+    assert hourly["minConservativeEdge"] == pytest.approx(0.015)
+    assert hourly["marketBlendWeight"] == pytest.approx(0.60)
+    assert hourly["probabilityLogitScale"] == pytest.approx(1.50)
+    assert hourly["hourlyCandidatePenaltyWeight"] == pytest.approx(0.15)
 
 
 def test_portfolio_display_baseline_filters_only_the_visible_projection():
