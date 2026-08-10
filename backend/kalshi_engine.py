@@ -93,18 +93,31 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "fractionalContractSizingEnabled": True,
     "contractStep": 0.01,
     "minimumEconomicContracts": 0.10,
-    # A small account may use a still-bounded 1.5% target only for signals that
-    # clear the existing stronger micro-edge floors.  Validation hard-caps the
-    # setting at 2%; Kelly, cash, book and exposure limits remain authoritative.
-    "smallAccountRiskTargetPct": 1.50,
+    # A small account may use a still-bounded 2% target only for signals that
+    # clear the existing stronger micro-edge floors.  The target is multiplied
+    # by the same signal-quality and high-price tail-risk scale as ordinary
+    # sizing; Kelly, cash, book and exposure limits remain authoritative.
+    "smallAccountRiskTargetPct": 2.00,
     # Per-order cash debit is rounded up to the next cent.  Tiny orders whose
     # all-in fee consumes too much of the possible binary payout fail closed.
     "maxAllInFeeToPotentialProfitPct": 20.0,
     "takerFeeRate": 0.07,
     "entryConfirmationSnapshots": 2,
-    "entryConfirmationMaxGapSeconds": 15,
+    # The hourly robot runs every 15 seconds.  Leave enough room for the
+    # market/reference/account request latency so two genuinely consecutive
+    # scheduler decisions can confirm instead of resetting at ~16 seconds.
+    "entryConfirmationMaxGapSeconds": 25,
+    # BTC15 production cycles include reference, order-book, and account reads.
+    # Their observed cadence is slower and more variable than the five-second
+    # scheduler target, so use a family-specific window while still requiring
+    # two consecutive qualifying decisions.
+    "btc15EntryConfirmationMaxGapSeconds": 25,
     "protectiveExitConfirmations": 3,
     "protectiveExitConfirmationMaxGapSeconds": 20,
+    # Loss exits require three confirmations.  Give BTC15 enough wall-clock
+    # room to complete that streak without weakening the probability or
+    # executable-loss thresholds that authorize the exit.
+    "btc15ProtectiveExitConfirmationMaxGapSeconds": 30,
     "hourlyCandidatePenaltyWeight": 0.10,
     "executionPriceTolerance": 0.01,
     "exitProbabilityThreshold": 0.35,
@@ -218,8 +231,10 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
         "takerFeeRate": (0.0, 0.20),
         "entryConfirmationSnapshots": (1.0, 5.0),
         "entryConfirmationMaxGapSeconds": (5.0, 60.0),
+        "btc15EntryConfirmationMaxGapSeconds": (10.0, 60.0),
         "protectiveExitConfirmations": (2.0, 6.0),
         "protectiveExitConfirmationMaxGapSeconds": (10.0, 60.0),
+        "btc15ProtectiveExitConfirmationMaxGapSeconds": (15.0, 90.0),
         "hourlyCandidatePenaltyWeight": (0.0, 0.50),
         "executionPriceTolerance": (0.0, 0.03),
         "exitProbabilityThreshold": (0.10, 0.49),
@@ -1257,6 +1272,7 @@ def evaluate_btc15_contract(
     fractional_sizing_applied = False
     small_account_sizing_applied = False
     small_account_risk_budget = 0.0
+    small_account_unscaled_risk_target = 0.0
     risk_budget_utilization = 0.0
     planned_contracts_fp = 0.0
     micro_position_loss_cap = min(
@@ -1310,8 +1326,11 @@ def evaluate_btc15_contract(
             and standard_risk_budget < unit_cost
         )
         if small_account_eligible:
+            small_account_unscaled_risk_target = (
+                bankroll * settings["smallAccountRiskTargetPct"] / 100.0
+            )
             small_account_risk_budget = min(
-                bankroll * settings["smallAccountRiskTargetPct"] / 100.0,
+                small_account_unscaled_risk_target * applied_risk_scale,
                 kelly_budget,
                 micro_position_loss_cap,
             )
@@ -1610,6 +1629,7 @@ def evaluate_btc15_contract(
             "fractionalSizingApplied": fractional_sizing_applied,
             "smallAccountSizingApplied": small_account_sizing_applied,
             "smallAccountRiskTargetPct": settings["smallAccountRiskTargetPct"],
+            "smallAccountUnscaledRiskTarget": small_account_unscaled_risk_target,
             "smallAccountRiskBudget": small_account_risk_budget,
             "contractStep": contract_step,
             "minimumEconomicContracts": minimum_economic_contracts,

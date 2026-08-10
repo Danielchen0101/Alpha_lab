@@ -9,8 +9,13 @@ from flask import Flask, request, jsonify, has_request_context
 from datetime import datetime, timedelta, time as dt_time, timezone
 from zoneinfo import ZoneInfo
 from copy import deepcopy
+from io import BytesIO, StringIO
+import csv
+import html as _html
 import re
 import sys
+import zipfile
+import xml.etree.ElementTree as ET
 
 APP_VERSION = '3.0.0'
 _RENDER_GIT_COMMIT_PATTERN = re.compile(r'[0-9a-fA-F]{12,64}')
@@ -163,9 +168,14 @@ def _validate_production_secrets(environ=None):
 _validate_production_secrets()
 
 supabase_admin = None
+supabase_operations_client = None
+supabase_readiness_client = None
 fernet = None
 _SUPABASE_IO_LOCK = threading.RLock()
+_SUPABASE_OPERATIONS_IO_LOCK = threading.RLock()
 _SUPABASE_HTTP_CLIENT = None
+_SUPABASE_OPERATIONS_HTTP_CLIENT = None
+_SUPABASE_READINESS_HTTP_CLIENT = None
 _SUPABASE_HEALTH_LOCK = threading.RLock()
 _SUPABASE_LAST_SUCCESS_AT = 0.0
 _SUPABASE_LAST_FAILURE_AT = 0.0
@@ -173,6 +183,11 @@ _SUPABASE_CONSECUTIVE_FAILURES = 0
 _SUPABASE_LAST_FAILURE_LABEL = ''
 _SUPABASE_LAST_FAILURE_TYPE = ''
 _SUPABASE_READINESS_LOCK = threading.Lock()
+_SUPABASE_READINESS_PROBE_LOCK = threading.Lock()
+_SUPABASE_READINESS_MONITOR_LOCK = threading.RLock()
+_SUPABASE_READINESS_MONITOR_THREAD = None
+_SUPABASE_READINESS_MONITOR_STOP = None
+_SUPABASE_READINESS_MONITOR_PID = None
 _SUPABASE_READINESS_CACHE = {
     'checkedAt': 0.0,
     'probeOk': None,
@@ -223,10 +238,23 @@ SUPABASE_HTTP_TIMEOUT_SECONDS = _bounded_float_env(
 SUPABASE_CONNECT_TIMEOUT_SECONDS = _bounded_float_env(
     'SUPABASE_CONNECT_TIMEOUT_SECONDS', 2.5, 1, 5,
 )
+SUPABASE_OPERATIONS_LOCK_TIMEOUT_SECONDS = _bounded_float_env(
+    'SUPABASE_OPERATIONS_LOCK_TIMEOUT_SECONDS', 1.0, 0.1, 2.0,
+)
+SUPABASE_READINESS_INTERVAL_SECONDS = _bounded_float_env(
+    'SUPABASE_READINESS_INTERVAL_SECONDS', 30.0, 10.0, 120.0,
+)
 
 
-def _supabase_execute(operation, label='query', attempts=3, lock_timeout=None):
-    """Serialize the shared sync client and retry transient transport failures."""
+def _supabase_execute(operation, label='query', attempts=1, lock_timeout=None):
+    """Serialize the shared sync client without replaying failed calls by default.
+
+    The PostgREST client already applies its own safe transport policy.  An
+    additional three-attempt wrapper turned a five-second dependency outage
+    into long request queues and multiplied traffic against an unhealthy
+    connection pool.  Callers with an explicitly idempotent operation may
+    still opt into a bounded retry by passing ``attempts``.
+    """
     last_error = None
     transient_markers = (
         'temporarily unavailable', 'resource temporarily unavailable',
@@ -265,6 +293,41 @@ def _supabase_execute(operation, label='query', attempts=3, lock_timeout=None):
             time.sleep(0.15 * (2 ** attempt))
     raise last_error
 
+
+def _operations_supabase_execute(operation, label='operations query'):
+    """Bound durable-state queueing so schedulers cannot starve HTTP workers.
+
+    The current Supabase Python client already retries idempotent PostgREST
+    reads. OperationsStore also performs explicit conflict recovery for writes,
+    so another outer retry layer only lengthens an outage and can replay an
+    ambiguous mutation. A busy shared client therefore fails fast and the
+    fail-closed scheduler retries on its next cycle.
+    """
+    acquired = _SUPABASE_OPERATIONS_IO_LOCK.acquire(
+        timeout=SUPABASE_OPERATIONS_LOCK_TIMEOUT_SECONDS
+    )
+    if not acquired:
+        exc = TimeoutError('Operations Supabase I/O queue is busy')
+        _supabase_note_health(False, label, exc)
+        raise exc
+    try:
+        result = operation()
+        _supabase_note_health(True, label)
+        return result
+    except Exception as exc:
+        _supabase_note_health(False, label, exc)
+        raise
+    finally:
+        _SUPABASE_OPERATIONS_IO_LOCK.release()
+
+
+def _execute_postgrest_probe(query):
+    """Execute one probe without the SDK's multi-second GET retry backoff."""
+    retry = getattr(query, 'retry', None)
+    if callable(retry):
+        query = retry(False)
+    return query.execute()
+
 try:
     import httpx
     from supabase import ClientOptions as SupabaseClientOptions
@@ -290,6 +353,47 @@ try:
             storage_client_timeout=SUPABASE_HTTP_TIMEOUT_SECONDS,
             function_client_timeout=SUPABASE_HTTP_TIMEOUT_SECONDS,
             httpx_client=_SUPABASE_HTTP_CLIENT,
+        ),
+    )
+    _SUPABASE_OPERATIONS_HTTP_CLIENT = httpx.Client(
+        timeout=httpx.Timeout(
+            min(SUPABASE_HTTP_TIMEOUT_SECONDS, 4.0),
+            connect=min(SUPABASE_CONNECT_TIMEOUT_SECONDS, 2.0),
+        ),
+        limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
+    )
+    supabase_operations_client = create_supabase_client(
+        SUPABASE_URL,
+        SUPABASE_SERVICE_ROLE_KEY,
+        options=SupabaseClientOptions(
+            auto_refresh_token=False,
+            persist_session=False,
+            postgrest_client_timeout=min(SUPABASE_HTTP_TIMEOUT_SECONDS, 4.0),
+            storage_client_timeout=min(SUPABASE_HTTP_TIMEOUT_SECONDS, 4.0),
+            function_client_timeout=min(SUPABASE_HTTP_TIMEOUT_SECONDS, 4.0),
+            httpx_client=_SUPABASE_OPERATIONS_HTTP_CLIENT,
+        ),
+    )
+    # Dependency probes must never queue behind application traffic or mutate
+    # the shared service-role client's request state. They use a tiny dedicated
+    # pool and update only the readiness cache consumed by HTTP endpoints.
+    _SUPABASE_READINESS_HTTP_CLIENT = httpx.Client(
+        timeout=httpx.Timeout(
+            min(SUPABASE_HTTP_TIMEOUT_SECONDS, 3.0),
+            connect=min(SUPABASE_CONNECT_TIMEOUT_SECONDS, 2.0),
+        ),
+        limits=httpx.Limits(max_connections=2, max_keepalive_connections=1),
+    )
+    supabase_readiness_client = create_supabase_client(
+        SUPABASE_URL,
+        SUPABASE_SERVICE_ROLE_KEY,
+        options=SupabaseClientOptions(
+            auto_refresh_token=False,
+            persist_session=False,
+            postgrest_client_timeout=min(SUPABASE_HTTP_TIMEOUT_SECONDS, 3.0),
+            storage_client_timeout=min(SUPABASE_HTTP_TIMEOUT_SECONDS, 3.0),
+            function_client_timeout=min(SUPABASE_HTTP_TIMEOUT_SECONDS, 3.0),
+            httpx_client=_SUPABASE_READINESS_HTTP_CLIENT,
         ),
     )
     print(f"[Supabase] Service role client initialized (URL: {SUPABASE_URL[:40]}...)")
@@ -320,204 +424,175 @@ if not os.getenv('FERNET_KEY'):
     print("[WARNING] FERNET_KEY not set — using ephemeral key. Encrypted config values will be "
           "unreadable after backend restart. Set FERNET_KEY in Render environment variables.")
 
-# 导入技术指标模块
-def _supabase_dependency_snapshot(force_probe=False, now_ts=None):
-    """Return a cached, bounded persistence readiness snapshot.
-
-    One failed probe receives a grace interval so a transient packet loss does
-    not restart an otherwise healthy service. Two consecutive readiness-probe
-    failures make production readiness fail closed until a probe succeeds.
-    Ordinary application queries are reported separately and cannot mask a
-    broken probe by resetting its failure streak.
-    """
-    now_ts = time.time() if now_ts is None else float(now_ts)
-    required = _strict_production_runtime()
-    configured = bool(
+def _supabase_is_configured():
+    return bool(
         supabase_admin is not None
         and str(SUPABASE_URL or '').strip()
         and str(SUPABASE_SERVICE_ROLE_KEY or '').strip()
     )
-    probe_ok = None
-    checked_at = 0.0
-    probe_failures = 0
-    probe_last_success = 0.0
-    probe_last_failure = 0.0
-    probe_failure_type = ''
-    migration_ok = None
-    lease_rpc_ok = None
-    pipeline_config_merge_rpc_ok = None
-    migration_contract_failure = False
-    if configured:
+
+
+def _run_supabase_readiness_probe(*, force=False, now_ts=None):
+    """Refresh dependency state outside request threads and the shared I/O lock."""
+    if not _supabase_is_configured():
+        return False
+    now_ts = time.time() if now_ts is None else float(now_ts)
+    if not _SUPABASE_READINESS_PROBE_LOCK.acquire(blocking=False):
+        return False
+    try:
+        probe_client = supabase_readiness_client or supabase_admin
         with _SUPABASE_READINESS_LOCK:
-            checked_at = float(_SUPABASE_READINESS_CACHE.get('checkedAt') or 0)
-            probe_ok = _SUPABASE_READINESS_CACHE.get('probeOk')
-            probe_failures = int(
-                _SUPABASE_READINESS_CACHE.get('consecutiveFailures') or 0
+            previous = dict(_SUPABASE_READINESS_CACHE)
+        checked_at = float(previous.get('checkedAt') or 0)
+        if not force and now_ts - checked_at < SUPABASE_READINESS_INTERVAL_SECONDS:
+            return False
+
+        probe_ok = previous.get('probeOk')
+        probe_failures = int(previous.get('consecutiveFailures') or 0)
+        probe_last_success = float(previous.get('lastSuccessAt') or 0)
+        probe_last_failure = float(previous.get('lastFailureAt') or 0)
+        probe_failure_type = str(previous.get('lastFailureType') or '')[:80]
+        migration_ok = previous.get('migrationOk')
+        lease_rpc_ok = previous.get('leaseRpcOk')
+        pipeline_config_merge_rpc_ok = previous.get('pipelineConfigMergeRpcOk')
+        migration_contract_failure = bool(previous.get('migrationContractFailure'))
+        probe_stage = 'runtime_contract'
+        try:
+            try:
+                contract_response = _execute_postgrest_probe(
+                    probe_client.rpc('probe_runtime_dependencies', {})
+                )
+            except Exception as runtime_contract_error:
+                runtime_contract_text = (
+                    '%s %s'
+                    % (type(runtime_contract_error).__name__, runtime_contract_error)
+                ).lower()
+                if not any(marker in runtime_contract_text for marker in (
+                    'pgrst202', 'could not find the function',
+                    'function public.probe_runtime_dependencies',
+                )):
+                    raise
+                # Rolling-deploy compatibility: the optimized one-query probe
+                # may reach a backend before its additive migration. The
+                # existing side-effect-free merge probe still proves the live
+                # database and critical runtime schema without any table write.
+                legacy_response = _execute_postgrest_probe(
+                    probe_client.rpc('probe_pipeline_config_atomic_merge', {})
+                )
+                legacy_data = (
+                    legacy_response.get('data')
+                    if isinstance(legacy_response, dict)
+                    else getattr(legacy_response, 'data', None)
+                )
+                if legacy_data != '20260726060000_v2':
+                    raise runtime_contract_error
+                contract_response = {'data': {
+                    'contract': '20260802010716_v1',
+                    'baseTables': True,
+                    'workerLeaseRpc': True,
+                    'pipelineConfigMergeRpc': True,
+                }}
+            contract_data = (
+                contract_response.get('data')
+                if isinstance(contract_response, dict)
+                else getattr(contract_response, 'data', None)
             )
-            probe_last_success = float(
-                _SUPABASE_READINESS_CACHE.get('lastSuccessAt') or 0
+            if not isinstance(contract_data, dict):
+                raise RuntimeError('runtime dependency RPC returned invalid data')
+            if contract_data.get('contract') != '20260802010716_v1':
+                raise RuntimeError('runtime dependency RPC contract mismatch')
+            migration_ok = bool(contract_data.get('baseTables'))
+            lease_rpc_ok = bool(contract_data.get('workerLeaseRpc'))
+            pipeline_config_merge_rpc_ok = bool(
+                contract_data.get('pipelineConfigMergeRpc')
             )
-            probe_last_failure = float(
-                _SUPABASE_READINESS_CACHE.get('lastFailureAt') or 0
+            migration_contract_failure = False
+            probe_ok = bool(
+                migration_ok and lease_rpc_ok and pipeline_config_merge_rpc_ok
             )
-            probe_failure_type = str(
-                _SUPABASE_READINESS_CACHE.get('lastFailureType') or ''
-            )[:80]
-            migration_ok = _SUPABASE_READINESS_CACHE.get('migrationOk')
-            lease_rpc_ok = _SUPABASE_READINESS_CACHE.get('leaseRpcOk')
-            pipeline_config_merge_rpc_ok = _SUPABASE_READINESS_CACHE.get(
-                'pipelineConfigMergeRpcOk'
+            if not probe_ok:
+                migration_contract_failure = True
+                raise RuntimeError('runtime dependency RPC contract mismatch')
+            probe_failures = 0
+            probe_last_success = time.time()
+            probe_failure_type = ''
+        except Exception as probe_error:
+            probe_ok = False
+            if not isinstance(locals().get('contract_data'), dict):
+                migration_ok = False
+                lease_rpc_ok = False
+                pipeline_config_merge_rpc_ok = False
+            probe_error_text = (
+                '%s %s' % (type(probe_error).__name__, probe_error)
+            ).lower()
+            migration_contract_failure = any(
+                marker in probe_error_text
+                for marker in (
+                    'pgrst202', 'pgrst204', 'pgrst205',
+                    'could not find the function', 'does not exist',
+                    'runtime dependency rpc contract mismatch',
+                    'runtime dependency rpc returned invalid data',
+                )
             )
-            migration_contract_failure = bool(
-                _SUPABASE_READINESS_CACHE.get('migrationContractFailure')
-            )
-            if force_probe or now_ts - checked_at >= 15:
-                probe_stage = 'base'
-                try:
-                    _supabase_execute(
-                        lambda: [
-                            supabase_admin.table(table_name).select(
-                                'user_id'
-                            ).limit(1).execute()
-                            for table_name in (
-                                'user_pipeline_auto_configs',
-                                'user_api_configs',
-                            )
-                        ],
-                        'readiness probe',
-                        attempts=1,
-                        lock_timeout=1.0,
-                    )
-                    # Selecting the new column catches a partially applied
-                    # worker-lease migration. Calling renew against a guaranteed
-                    # nonexistent generation is non-mutating and verifies that
-                    # PostgREST has loaded the new fenced RPC contract.
-                    _supabase_execute(
-                        lambda: supabase_admin.table(
-                            'app_worker_leases'
-                        ).select(
-                            'lease_name,owner_id,fencing_token,lease_expires_at'
-                        ).limit(1).execute(),
-                        'worker lease migration probe',
-                        attempts=1,
-                        lock_timeout=1.0,
-                    )
-                    # False is the expected value because this generation can
-                    # never exist; a clean response proves the RPC is callable.
-                    _supabase_execute(
-                        lambda: supabase_admin.rpc(
-                            'renew_app_worker_lease',
-                            {
-                                'p_lease_name': 'runtime-readiness-contract',
-                                'p_owner_id': 'runtime-readiness-contract',
-                                'p_fencing_token': 1,
-                                'p_ttl_seconds': 5,
-                                'p_metadata': {
-                                    'component': 'runtime_readiness',
-                                },
-                            },
-                        ).execute(),
-                        'worker lease RPC probe',
-                        attempts=1,
-                        lock_timeout=1.0,
-                    )
-                    migration_ok = True
-                    lease_rpc_ok = True
-                    probe_stage = 'pipeline_config_merge'
-                    pipeline_config_merge_rpc_ok = False
-                    merge_contract_response = _supabase_execute(
-                        lambda: supabase_admin.rpc(
-                            'probe_pipeline_config_atomic_merge',
-                            {},
-                        ).execute(),
-                        'pipeline config merge RPC probe',
-                        attempts=1,
-                        lock_timeout=1.0,
-                    )
-                    merge_contract_data = (
-                        merge_contract_response.get('data')
-                        if isinstance(merge_contract_response, dict)
-                        else getattr(merge_contract_response, 'data', None)
-                    )
-                    if merge_contract_data != '20260726060000_v2':
-                        raise RuntimeError(
-                            'pipeline config merge RPC contract mismatch'
-                        )
-                    pipeline_config_merge_rpc_ok = True
-                    migration_contract_failure = False
-                    probe_ok = True
-                    probe_failures = 0
-                    probe_last_success = time.time()
-                    probe_failure_type = ''
-                except Exception as probe_error:
-                    probe_ok = False
-                    if probe_stage == 'pipeline_config_merge':
-                        pipeline_config_merge_rpc_ok = False
-                    else:
-                        migration_ok = False
-                        lease_rpc_ok = False
-                    probe_error_text = (
-                        '%s %s' % (type(probe_error).__name__, probe_error)
-                    ).lower()
-                    migration_contract_failure = any(
-                        marker in probe_error_text
-                        for marker in (
-                            'pgrst202',
-                            'pgrst204',
-                            'pgrst205',
-                            'could not find the function',
-                            'does not exist',
-                            'schema cache',
-                            'pipeline config merge rpc contract mismatch',
-                        )
-                    )
-                    probe_failures += 1
-                    probe_last_failure = time.time()
-                    probe_failure_type = type(probe_error).__name__[:80]
-                checked_at = time.time()
-                _SUPABASE_READINESS_CACHE.update({
-                    'checkedAt': checked_at,
-                    'probeOk': probe_ok,
-                    'migrationOk': migration_ok,
-                    'leaseRpcOk': lease_rpc_ok,
-                    'pipelineConfigMergeRpcOk': pipeline_config_merge_rpc_ok,
-                    'migrationContractFailure': migration_contract_failure,
-                    'consecutiveFailures': probe_failures,
-                    'lastSuccessAt': probe_last_success,
-                    'lastFailureAt': probe_last_failure,
-                    'lastFailureType': probe_failure_type,
-                })
+            probe_failures += 1
+            probe_last_failure = time.time()
+            probe_failure_type = type(probe_error).__name__[:80]
+
+        with _SUPABASE_READINESS_LOCK:
+            _SUPABASE_READINESS_CACHE.update({
+                'checkedAt': time.time(),
+                'probeOk': probe_ok,
+                'migrationOk': migration_ok,
+                'leaseRpcOk': lease_rpc_ok,
+                'pipelineConfigMergeRpcOk': pipeline_config_merge_rpc_ok,
+                'migrationContractFailure': migration_contract_failure,
+                'consecutiveFailures': probe_failures,
+                'lastSuccessAt': probe_last_success,
+                'lastFailureAt': probe_last_failure,
+                'lastFailureType': probe_failure_type,
+            })
+        return True
+    finally:
+        _SUPABASE_READINESS_PROBE_LOCK.release()
+
+
+def _supabase_dependency_snapshot(force_probe=False, now_ts=None):
+    """Read cached persistence state; only explicit callers may run a probe."""
+    if force_probe:
+        _run_supabase_readiness_probe(force=True, now_ts=now_ts)
+    required = _strict_production_runtime()
+    configured = _supabase_is_configured()
+    with _SUPABASE_READINESS_LOCK:
+        cached = dict(_SUPABASE_READINESS_CACHE)
+    checked_at = float(cached.get('checkedAt') or 0)
+    probe_ok = cached.get('probeOk')
+    probe_failures = int(cached.get('consecutiveFailures') or 0)
+    probe_last_success = float(cached.get('lastSuccessAt') or 0)
+    probe_last_failure = float(cached.get('lastFailureAt') or 0)
+    probe_failure_type = str(cached.get('lastFailureType') or '')[:80]
+    migration_ok = cached.get('migrationOk')
+    lease_rpc_ok = cached.get('leaseRpcOk')
+    pipeline_config_merge_rpc_ok = cached.get('pipelineConfigMergeRpcOk')
+    migration_contract_failure = bool(cached.get('migrationContractFailure'))
 
     with _SUPABASE_HEALTH_LOCK:
         io_consecutive_failures = int(_SUPABASE_CONSECUTIVE_FAILURES or 0)
         io_failure_label = _SUPABASE_LAST_FAILURE_LABEL
         io_failure_type = _SUPABASE_LAST_FAILURE_TYPE
 
-    healthy = bool(
-        configured
-        and (probe_ok is True or probe_failures < 2)
-    )
+    healthy = bool(configured and (probe_ok is True or probe_failures < 2))
     migration_healthy = bool(
         configured
         and (
-            (
-                migration_ok is True
-                and pipeline_config_merge_rpc_ok is True
-            )
-            or (
-                not migration_contract_failure
-                and probe_failures < 2
-            )
+            (migration_ok is True and pipeline_config_merge_rpc_ok is True)
+            or (not migration_contract_failure and probe_failures < 2)
         )
     )
     lease_healthy = bool(
         configured
         and (
             lease_rpc_ok is True
-            or (
-                not migration_contract_failure
-                and probe_failures < 2
-            )
+            or (not migration_contract_failure and probe_failures < 2)
         )
     )
     return {
@@ -535,17 +610,14 @@ def _supabase_dependency_snapshot(force_probe=False, now_ts=None):
             round(max(0.0, time.time() - checked_at), 1)
             if checked_at else None
         ),
+        'probeInFlight': _SUPABASE_READINESS_PROBE_LOCK.locked(),
         'consecutiveFailures': probe_failures,
         'lastSuccessAt': (
-            datetime.fromtimestamp(
-                probe_last_success, timezone.utc
-            ).isoformat()
+            datetime.fromtimestamp(probe_last_success, timezone.utc).isoformat()
             if probe_last_success else ''
         ),
         'lastFailureAt': (
-            datetime.fromtimestamp(
-                probe_last_failure, timezone.utc
-            ).isoformat()
+            datetime.fromtimestamp(probe_last_failure, timezone.utc).isoformat()
             if probe_last_failure else ''
         ),
         'lastFailureLabel': 'readiness probe' if probe_last_failure else '',
@@ -587,6 +659,76 @@ def _supabase_dependency_snapshot(force_probe=False, now_ts=None):
     }
 
 
+def _supabase_background_io_blocked():
+    """Fail background work closed while the dedicated probe sees an outage.
+
+    Request handlers remain free to surface fresh user-driven results.  Only
+    autonomous schedulers are held back, leaving the low-rate readiness probe
+    as the recovery signal instead of letting every scheduler hammer the same
+    unavailable PostgREST pool.
+    """
+    with _SUPABASE_READINESS_LOCK:
+        cached = dict(_SUPABASE_READINESS_CACHE)
+    return bool(
+        cached.get('probeOk') is False
+        and int(cached.get('consecutiveFailures') or 0) >= 2
+    )
+
+
+def _supabase_readiness_retry_delay(failure_count):
+    """Return an outage-aware probe delay capped at four base intervals."""
+    failures = max(0, int(failure_count or 0))
+    multiplier = 1 if failures <= 1 else 2 ** min(failures - 1, 2)
+    return SUPABASE_READINESS_INTERVAL_SECONDS * multiplier
+
+
+def _supabase_readiness_monitor_loop(stop_event):
+    while not stop_event.is_set():
+        try:
+            _run_supabase_readiness_probe(force=True)
+        except Exception as exc:
+            safe_print(
+                '[Supabase] readiness monitor error=%s'
+                % type(exc).__name__
+            )
+        with _SUPABASE_READINESS_LOCK:
+            failures = int(
+                _SUPABASE_READINESS_CACHE.get('consecutiveFailures') or 0
+            )
+        stop_event.wait(_supabase_readiness_retry_delay(failures))
+
+
+def _ensure_supabase_readiness_monitor():
+    """Start one daemon probe thread in the serving worker after Gunicorn fork."""
+    global _SUPABASE_READINESS_MONITOR_THREAD
+    global _SUPABASE_READINESS_MONITOR_STOP
+    global _SUPABASE_READINESS_MONITOR_PID
+    if not _supabase_is_configured():
+        return
+    current_pid = os.getpid()
+    with _SUPABASE_READINESS_MONITOR_LOCK:
+        if (
+            _SUPABASE_READINESS_MONITOR_PID == current_pid
+            and _SUPABASE_READINESS_MONITOR_THREAD is not None
+            and _SUPABASE_READINESS_MONITOR_THREAD.is_alive()
+        ):
+            return
+        if _SUPABASE_READINESS_MONITOR_STOP is not None:
+            _SUPABASE_READINESS_MONITOR_STOP.set()
+        stop_event = threading.Event()
+        monitor = threading.Thread(
+            target=_supabase_readiness_monitor_loop,
+            args=(stop_event,),
+            name='supabase-readiness-monitor',
+            daemon=True,
+        )
+        _SUPABASE_READINESS_MONITOR_STOP = stop_event
+        _SUPABASE_READINESS_MONITOR_THREAD = monitor
+        _SUPABASE_READINESS_MONITOR_PID = current_pid
+        monitor.start()
+
+
+# 导入技术指标模块
 try:
     from technical_indicators import calculate_simple_technical_indicators, generate_technical_summary
     print("[导入] 技术指标模块导入成功")
@@ -655,8 +797,8 @@ _operations_allow_local = (
     and (_operations_environment in {'development', 'test', 'testing'} or _operations_local_requested)
 )
 operations_store = OperationsStore(
-    supabase_admin,
-    _supabase_execute,
+    supabase_operations_client or supabase_admin,
+    _operations_supabase_execute,
     allow_local_fallback=_operations_allow_local,
     fallback_path=os.path.join(os.path.dirname(__file__), 'operations_store.local.json'),
 )
@@ -1580,6 +1722,52 @@ def _discord_forget_dedupe(user_id, event_type, payload):
             _discord_error_counts.pop(key, None)
 
 
+def _discord_parse_event_time(value):
+    try:
+        parsed = datetime.fromisoformat(str(value or '').replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _discord_payload_occurred_at(payload, *, fallback=None):
+    payload = payload or {}
+    for key in (
+        'occurredAt', 'occurred_at', 'eventAt', 'event_at', 'generatedAt',
+        'createdAt', 'created_at', 'detectedAt', 'settledAt',
+    ):
+        parsed = _discord_parse_event_time(payload.get(key))
+        if parsed is not None:
+            return parsed
+    return fallback
+
+
+def _discord_retry_ttl_seconds(event_type, payload):
+    """Expire stale Kalshi status alerts without dropping trade confirmations."""
+    if _discord_notification_scope(event_type, payload) != 'kalshi':
+        return None
+    if _discord_base_event_type(str(event_type or '').lower()) in {
+        'lifecycle', 'risk_alert', 'error',
+    }:
+        return 15 * 60
+    return None
+
+
+def _discord_retry_entry_expired(item, now):
+    expires_at = _discord_parse_event_time(item.get('expiresAt'))
+    if expires_at is not None:
+        return expires_at <= now
+    ttl_seconds = _discord_retry_ttl_seconds(
+        item.get('eventType'), item.get('payload') or {},
+    )
+    if ttl_seconds is None:
+        return False
+    queued_at = _discord_parse_event_time(item.get('createdAt'))
+    return bool(queued_at and queued_at + timedelta(seconds=ttl_seconds) <= now)
+
+
 def _discord_embed(event_type, payload):
     base_event_type = _discord_base_event_type(event_type)
     language = str(payload.get('_language') or payload.get('language') or 'en-US')
@@ -2003,12 +2191,23 @@ def _discord_embed(event_type, payload):
             embed_color = 0xF59E0B
         elif state in {'STARTED', 'ARMED', 'ACTIVE', 'RECOVERED', 'RESUMED', 'ENABLED'}:
             embed_color = 0x22C55E
+    occurred_at = _discord_payload_occurred_at(
+        payload, fallback=datetime.now(timezone.utc),
+    )
+    occurred_epoch = int(occurred_at.timestamp())
+    if len(fields) >= 25:
+        fields = fields[:24]
+    fields.append({
+        'name': cp('Event time', '事件发生时间'),
+        'value': '<t:%s:F> · <t:%s:R>' % (occurred_epoch, occurred_epoch),
+        'inline': False,
+    })
     return {
         'title': _embed_title,
         'description': description[:350] if description else '',
         'color': embed_color,
         'fields': fields[:25],
-        'timestamp': datetime.utcnow().isoformat() + 'Z',
+        'timestamp': occurred_at.isoformat().replace('+00:00', 'Z'),
     }
 
 
@@ -2202,15 +2401,24 @@ def _discord_retry_put(user_id, entries, *, expected_version):
 
 def _enqueue_discord_retry(user_id, event_type, payload, retry_after_seconds):
     """Durably defer a provider-limited notification without blocking trading."""
-    queue_id = _discord_retry_queue_event_id(user_id, event_type, payload)
+    now = datetime.now(timezone.utc)
+    retry_payload = dict(payload or {})
+    occurred_at = _discord_payload_occurred_at(retry_payload, fallback=now)
+    retry_payload.setdefault(
+        'occurredAt', occurred_at.isoformat().replace('+00:00', 'Z'),
+    )
+    queue_id = _discord_retry_queue_event_id(user_id, event_type, retry_payload)
+    ttl_seconds = _discord_retry_ttl_seconds(event_type, retry_payload)
     entry = {
         'queueId': queue_id,
         'eventType': str(event_type or 'unknown')[:100],
-        'payload': dict(payload or {}),
+        'payload': retry_payload,
         'attempts': 0,
-        'createdAt': datetime.now(timezone.utc).isoformat(),
+        'createdAt': now.isoformat(),
         'nextAttemptAt': _discord_retry_iso_after(retry_after_seconds),
     }
+    if ttl_seconds is not None:
+        entry['expiresAt'] = (now + timedelta(seconds=ttl_seconds)).isoformat()
     with _DISCORD_RETRY_LOCK:
         for _attempt in range(3):
             row = operations_store.get_artifact(
@@ -2253,11 +2461,22 @@ def _process_discord_retry_queue(user_id):
     now = datetime.now(timezone.utc)
     # Keep one lease-owned pass well below the lease TTL even when every HTTP
     # attempt consumes the full timeout budget.
-    due = [item for item in entries if _discord_retry_due(item.get('nextAttemptAt'), now)][:5]
-    if not due:
+    expired = [item for item in entries if _discord_retry_entry_expired(item, now)]
+    expired_ids = {str(item.get('queueId') or '') for item in expired}
+    due = [
+        item for item in entries
+        if str(item.get('queueId') or '') not in expired_ids
+        and _discord_retry_due(item.get('nextAttemptAt'), now)
+    ][:5]
+    if not due and not expired:
         return 0
 
-    outcomes = {}
+    outcomes = {queue_id: None for queue_id in expired_ids}
+    if expired:
+        safe_print(
+            '[DiscordRetry] dropped stale events user=%s count=%s'
+            % (_discord_user_label(user_id), len(expired))
+        )
     terminal_reasons = {
         'disabled_or_missing', 'event_disabled', 'deduped',
         'workspace_discord_disabled', 'workspace_event_disabled',
@@ -2306,22 +2525,30 @@ def _process_discord_retry_queue(user_id):
                     merged,
                     expected_version=int((latest or {}).get('version') or 0),
                 )
-                return len(due)
+                return len(due) + len(expired)
             except OperationsVersionConflict:
                 continue
     return 0
 
 
 def _discord_retry_scheduler_loop():
+    lease_refresh_at = 0.0
+    owns_cached_lease = False
     while True:
         try:
             owner_id = '%s:%s' % (_DISCORD_RETRY_OWNER, os.getpid())
-            owns_lease = operations_store.claim_worker_lease(
-                'discord-notification-retry',
-                owner_id,
-                ttl_seconds=300,
-                metadata={'component': 'discord_notification_retry'},
-            )
+            now_monotonic = time.monotonic()
+            if owns_cached_lease and now_monotonic < lease_refresh_at:
+                owns_lease = True
+            else:
+                owns_lease = operations_store.claim_worker_lease(
+                    'discord-notification-retry',
+                    owner_id,
+                    ttl_seconds=300,
+                    metadata={'component': 'discord_notification_retry'},
+                )
+                owns_cached_lease = bool(owns_lease)
+                lease_refresh_at = now_monotonic + 90 if owns_lease else 0.0
             if owns_lease:
                 users = operations_store.list_scheduler_artifact_user_ids(
                     _DISCORD_RETRY_ARTIFACT_TYPE,
@@ -2351,7 +2578,14 @@ def _ensure_discord_retry_scheduler():
 
 def send_discord_notification(user_id, event_type, payload, *, defer_on_rate_limit=True):
     """Best-effort Discord webhook notification. Never raises into trading/pipeline flows."""
-    original_payload = dict(payload or {})
+    initial_payload = dict(payload or {})
+    occurred_at = _discord_payload_occurred_at(
+        initial_payload, fallback=datetime.now(timezone.utc),
+    )
+    initial_payload.setdefault(
+        'occurredAt', occurred_at.isoformat().replace('+00:00', 'Z'),
+    )
+    original_payload = dict(initial_payload)
 
     def finish(result):
         try:
@@ -2364,7 +2598,7 @@ def send_discord_notification(user_id, event_type, payload, *, defer_on_rate_lim
 
     try:
         cfg = get_discord_config(user_id)
-        payload = dict(payload or {})
+        payload = dict(initial_payload)
         payload['_language'] = _discord_notification_language(user_id, payload)
         allowed, preference_reason = _workspace_notification_allows(user_id, event_type, payload)
         if not allowed:
@@ -2656,6 +2890,24 @@ def ai_chat_request(url, headers=None, json_data=None, timeout=30, provider=None
 
 # AI Provider 配置状态
 
+DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash'
+DEEPSEEK_RETIRED_MODELS = {
+    'deepseek-chat',
+    'deepseek-coder',
+    'deepseek-reasoner',
+}
+
+
+def _normalize_ai_model(provider, model):
+    """Map retired DeepSeek model IDs to the current low-cost V4 model."""
+    normalized_provider = str(provider or '').strip().lower()
+    normalized_model = str(model or '').strip()
+    if normalized_provider == 'deepseek' and (
+        not normalized_model or normalized_model.lower() in DEEPSEEK_RETIRED_MODELS
+    ):
+        return DEEPSEEK_DEFAULT_MODEL
+    return normalized_model
+
 ai_provider_config_state = {
 
     'provider': 'DeepSeek',
@@ -2664,7 +2916,7 @@ ai_provider_config_state = {
 
     'baseURL': 'https://api.deepseek.com',
 
-    'model': 'deepseek-chat',
+    'model': DEEPSEEK_DEFAULT_MODEL,
 
     # AI test status tracking
     'aiTestStatus': 'not_tested',  # not_tested | saved | connected | error
@@ -2718,6 +2970,11 @@ def load_ai_config_from_file():
                          'aiTestStatus', 'lastTestedAt', 'lastTestError']:
                 if key in saved_config:
                     ai_provider_config_state[key] = saved_config[key]
+
+            ai_provider_config_state['model'] = _normalize_ai_model(
+                ai_provider_config_state.get('provider'),
+                ai_provider_config_state.get('model'),
+            )
 
             # Auto-downgrade inconsistent state: connected with empty key
             if ai_provider_config_state.get('aiTestStatus') == 'connected' and \
@@ -7301,6 +7558,11 @@ def _background_thread_readiness_snapshot():
             kalshi = dict(kalshi_reader() or {})
         except Exception as exc:
             kalshi = {'required': True, 'healthy': False, 'lastError': type(exc).__name__}
+    persistence_traffic_reader = globals().get(
+        '_kalshi_persistence_traffic_snapshot'
+    )
+    if callable(persistence_traffic_reader):
+        kalshi['persistenceTraffic'] = persistence_traffic_reader()
     kalshi_required = bool(not api_only_disabled and kalshi.get('required'))
     kalshi_thread_healthy = bool(
         not kalshi_required or kalshi.get('healthy')
@@ -7359,6 +7621,9 @@ def health_check():
         capacity = limiter.snapshot()
         payload['scannerCapacity'] = capacity
         payload['heavyWorkCapacity'] = capacity
+    scanner_traffic_reader = globals().get('_inst_scanner_traffic_snapshot')
+    if callable(scanner_traffic_reader):
+        payload['scannerTraffic'] = scanner_traffic_reader()
     scheduler_reader = globals().get('_pa_scheduler_health_snapshot')
     if callable(scheduler_reader):
         scheduler = scheduler_reader()
@@ -7483,7 +7748,7 @@ def ai_provider_config():
                 'provider': resolved.get('provider', 'DeepSeek'),
                 'apiKey': display_key,
                 'baseUrl': resolved.get('baseURL', 'https://api.deepseek.com'),
-                'model': resolved.get('model', 'deepseek-chat'),
+                'model': resolved.get('model', DEEPSEEK_DEFAULT_MODEL),
             }
 
             # Read testStatus from Supabase user config
@@ -7537,6 +7802,10 @@ def ai_provider_config():
                         if key == 'apiKey' and data[key] != existing.get('apiKey'):
                             key_changed = True
                         existing[key] = data[key]
+                existing['model'] = _normalize_ai_model(
+                    existing.get('provider', 'DeepSeek'),
+                    existing.get('model'),
+                )
                 # Only reset test status if the API key actually changed
                 if key_changed:
                     existing['aiTestStatus'] = 'saved'
@@ -7555,6 +7824,10 @@ def ai_provider_config():
                     ai_provider_config_state['baseURL'] = data['baseURL']
                 if 'model' in data:
                     ai_provider_config_state['model'] = data['model']
+                ai_provider_config_state['model'] = _normalize_ai_model(
+                    ai_provider_config_state.get('provider'),
+                    ai_provider_config_state.get('model'),
+                )
                 ai_provider_config_state['aiTestStatus'] = 'saved'
                 ai_provider_config_state['lastTestError'] = None
                 save_ai_config_to_file()
@@ -7568,7 +7841,7 @@ def ai_provider_config():
                 'provider': resolved.get('provider', 'DeepSeek'),
                 'apiKey': display_key,
                 'baseUrl': resolved.get('baseURL', 'https://api.deepseek.com'),
-                'model': resolved.get('model', 'deepseek-chat'),
+                'model': resolved.get('model', DEEPSEEK_DEFAULT_MODEL),
             }
 
             response = {
@@ -7650,10 +7923,9 @@ def ai_provider_test():
         # Default base_url/model/provider if still empty
         if not base_url:
             base_url = 'https://api.deepseek.com'
-        if not model:
-            model = 'deepseek-chat'
         if not provider:
             provider = 'DeepSeek'
+        model = _normalize_ai_model(provider, model)
 
         # 测试 API 密钥
         headers = {
@@ -7697,19 +7969,24 @@ def ai_provider_test():
                 test_response = requests.post(test_url, headers=gemini_headers, json=test_payload, timeout=15)
             else:
                 # OpenAI-compatible (DeepSeek, OpenAI, NVIDIA, Mimo, Custom)
+                test_payload = {
+                    'model': model,
+                    'messages': [
+                        {'role': 'system', 'content': 'You are a connection test.'},
+                        {'role': 'user', 'content': 'Reply with OK only.'}
+                    ],
+                    'temperature': 0,
+                    'max_tokens': 16,
+                    'stream': False,
+                }
+                # A connection check should be fast and verify usable text output,
+                # not spend its tiny token budget on V4 reasoning tokens.
+                if provider_upper == 'DEEPSEEK':
+                    test_payload['thinking'] = {'type': 'disabled'}
                 test_response = ai_chat_request(
                     f'{base_url}/chat/completions',
                     headers=headers,
-                    json_data={
-                        'model': model,
-                        'messages': [
-                            {'role': 'system', 'content': 'You are a connection test.'},
-                            {'role': 'user', 'content': 'Reply with OK only.'}
-                        ],
-                        'temperature': 0,
-                        'max_tokens': 16,
-                        'stream': False
-                    },
+                    json_data=test_payload,
                     timeout=15,
                     provider=provider
                 )
@@ -9847,7 +10124,9 @@ def resolve_ai_config(require_user_config=False):
                 result = {
                     'apiKey': api_key,
                     'baseURL': user_cfg.get('baseURL', user_cfg.get('baseUrl', '')),
-                    'model': user_cfg.get('model', 'deepseek-chat'),
+                    'model': _normalize_ai_model(
+                        user_cfg.get('provider', 'DeepSeek'), user_cfg.get('model')
+                    ),
                     'provider': user_cfg.get('provider', 'DeepSeek'),
                     'testStatus': user_cfg.get('aiTestStatus', 'not_tested'),
                     'lastTestedAt': user_cfg.get('lastTestedAt'),
@@ -9860,7 +10139,9 @@ def resolve_ai_config(require_user_config=False):
                 return ({
                     'apiKey': '',
                     'baseURL': user_cfg.get('baseURL', user_cfg.get('baseUrl', '')),
-                    'model': user_cfg.get('model', 'deepseek-chat'),
+                    'model': _normalize_ai_model(
+                        user_cfg.get('provider', 'DeepSeek'), user_cfg.get('model')
+                    ),
                     'provider': user_cfg.get('provider', 'DeepSeek'),
                     'testStatus': user_cfg.get('aiTestStatus', 'not_tested'),
                     'lastTestedAt': user_cfg.get('lastTestedAt'),
@@ -10026,7 +10307,9 @@ def resolve_ai_config_for_user(uid):
             return ({
                 'apiKey': api_key,
                 'baseURL': user_cfg.get('baseURL', user_cfg.get('baseUrl', '')),
-                'model': user_cfg.get('model', 'deepseek-chat'),
+                'model': _normalize_ai_model(
+                    user_cfg.get('provider', 'DeepSeek'), user_cfg.get('model')
+                ),
                 'provider': user_cfg.get('provider', 'DeepSeek'),
                 'testStatus': user_cfg.get('aiTestStatus', 'not_tested'),
                 'lastTestedAt': user_cfg.get('lastTestedAt'),
@@ -10035,10 +10318,18 @@ def resolve_ai_config_for_user(uid):
             }, 'user_config/supabase')
         elif key_is_masked:
             safe_print('[resolve_ai_config_for_user] user=%s key appears masked' % uid[:8])
-            return ({'apiKey': '', 'baseURL': user_cfg.get('baseURL', ''), 'model': user_cfg.get('model', ''),
-                     'provider': user_cfg.get('provider', ''), 'testStatus': user_cfg.get('aiTestStatus', 'not_tested'),
-                     'lastTestedAt': user_cfg.get('lastTestedAt'), 'lastTestError': user_cfg.get('lastTestError'),
-                     'keyIsMasked': True}, 'user_config/supabase')
+            return ({
+                'apiKey': '',
+                'baseURL': user_cfg.get('baseURL', ''),
+                'model': _normalize_ai_model(
+                    user_cfg.get('provider', 'DeepSeek'), user_cfg.get('model')
+                ),
+                'provider': user_cfg.get('provider', ''),
+                'testStatus': user_cfg.get('aiTestStatus', 'not_tested'),
+                'lastTestedAt': user_cfg.get('lastTestedAt'),
+                'lastTestError': user_cfg.get('lastTestError'),
+                'keyIsMasked': True,
+            }, 'user_config/supabase')
         else:
             safe_print('[resolve_ai_config_for_user] user=%s hasKey=False' % uid[:8])
     else:
@@ -10864,7 +11155,9 @@ def config_status():
             ai_test_status = 'invalid_key_saved'
             ai_last_test_error = 'Stored AI key is masked. Re-enter the real API key in Settings.'
         ai_provider = user_cfg.get('provider', '')
-        ai_model = user_cfg.get('model', '')
+        ai_model = _normalize_ai_model(
+            user_cfg.get('provider', 'DeepSeek'), user_cfg.get('model')
+        )
         if not key_is_masked:
             ai_test_status = user_cfg.get('aiTestStatus', 'not_tested')
         ai_last_tested_at = user_cfg.get('lastTestedAt')
@@ -10985,6 +11278,9 @@ def settings_ai_config():
             # Return masked key for display — never expose real key
             masked_key = mask_key(raw_key) if has_valid_key else ''
             result = {k: v for k, v in config.items() if k != 'apiKey'}
+            result['model'] = _normalize_ai_model(
+                config.get('provider', 'DeepSeek'), config.get('model')
+            )
             # Normalize baseURL → baseUrl for frontend form field consistency
             if 'baseURL' in result and 'baseUrl' not in result:
                 result['baseUrl'] = result.pop('baseURL')
@@ -11029,6 +11325,9 @@ def settings_ai_config():
     # Only reset test status if the API key actually changed
     key_changed = 'apiKey' in config_data and config_data.get('apiKey') != existing.get('apiKey')
     existing.update(config_data)
+    existing['model'] = _normalize_ai_model(
+        existing.get('provider', 'DeepSeek'), existing.get('model')
+    )
     if key_changed:
         existing['aiTestStatus'] = 'saved'
         existing['lastTestError'] = None
@@ -13732,10 +14031,50 @@ def ai_market_scanner():
 _INST_SCANNER_UNIVERSE_CACHE = {
     'alpaca_assets': {'fetched_at': 0, 'symbols': [], 'metadata': {}, 'source': ''},
 }
+_INST_SCANNER_INTRADAY_CACHE = {}
+_INST_SCANNER_INTRADAY_CACHE_LOCK = threading.Lock()
+_INST_SCANNER_INTRADAY_CACHE_LIMIT = max(
+    1,
+    min(int(os.getenv('MARKET_SCAN_INTRADAY_CACHE_USERS', '20') or 20), 100),
+)
+_INST_SCANNER_INTRADAY_POOL_SIZE = max(
+    100,
+    min(int(os.getenv('MARKET_SCAN_INTRADAY_POOL_SIZE', '300') or 300), 500),
+)
+_INST_SCANNER_INTRADAY_TTL_SECONDS = max(
+    60 * 60,
+    min(int(os.getenv('MARKET_SCAN_INTRADAY_TTL_SECONDS', str(20 * 60 * 60)) or (20 * 60 * 60)), 36 * 60 * 60),
+)
+_INST_SCANNER_AUTO_MAX_SYMBOLS = max(
+    300,
+    min(int(os.getenv('MARKET_SCAN_AUTO_MAX_SYMBOLS', '800') or 800), 1500),
+)
+_INST_SCANNER_AUTO_AI_REVIEW_TOP_N = max(
+    0,
+    min(int(os.getenv('MARKET_SCAN_AUTO_AI_REVIEW_TOP_N', '12') or 12), 25),
+)
+_INST_SCANNER_TRAFFIC_LOCK = threading.Lock()
+_INST_SCANNER_TRAFFIC = {
+    'startedAt': datetime.now(timezone.utc).isoformat(),
+    'snapshotRequests': 0,
+    'snapshotSymbols': 0,
+    'barRequests': 0,
+    'barSymbols': 0,
+    'responseBytes': 0,
+    'dailySeedScans': 0,
+    'intradayCacheHits': 0,
+    'manualFullScans': 0,
+}
 _MARKET_RISK_CACHE = {}
 _MARKET_RISK_CACHE_LOCK = threading.Lock()
 _MARKET_RISK_CACHE_TTL_SECONDS = 5 * 60
 _MARKET_RISK_STALE_TTL_SECONDS = 30 * 60
+_MARKET_INDEX_UNIVERSE_CACHE = {'storedAt': 0.0, 'symbols': [], 'sources': [], 'errors': []}
+_MARKET_INDEX_UNIVERSE_CACHE_LOCK = threading.Lock()
+_MARKET_INDEX_UNIVERSE_TTL_SECONDS = 24 * 60 * 60
+_MARKET_INDEX_UNIVERSE_STALE_TTL_SECONDS = 7 * 24 * 60 * 60
+_MARKET_NASDAQ_100_URL = 'https://api.nasdaq.com/api/quote/list-type/nasdaq100'
+_MARKET_SPY_HOLDINGS_URL = 'https://www.ssga.com/library-content/products/fund-data/etfs/us/holdings-daily-us-en-spy.xlsx'
 _INST_SCANNER_CACHE_TTL_SECONDS = 60 * 60 * 12
 _INST_SCANNER_DEFAULT_MAX_SYMBOLS = 1500
 _INST_SCANNER_DEFAULT_MAX_RESULTS = 100
@@ -13746,6 +14085,17 @@ _INST_SCANNER_AI_REVIEW_MAX_N = 100
 _INST_SCANNER_AI_REVIEW_BATCH_SIZE = 5
 _INST_SCANNER_AI_MAX_ATTEMPTS = 2
 _INST_SCANNER_AI_TIMEOUT_SECONDS = 60
+_PA_FINE_SCAN_AUTO_AI_REVIEW_TOP_N = max(
+    0,
+    min(int(os.getenv('FINE_SCAN_AUTO_AI_REVIEW_TOP_N', '12') or 12), 20),
+)
+_PA_FINE_SCAN_AUTO_AI_MAX_ATTEMPTS = 1
+_PA_UNATTENDED_PIPELINE_TRIGGERS = frozenset({
+    'market_auto_run',
+    'headless_market_auto_run',
+    'toggle_on',
+    'auto_run_now',
+})
 _INST_SCANNER_OPTION_REVIEW_TOP_N = 25
 _INST_SCANNER_EARNINGS_LOOKAHEAD_DAYS = 30
 _INST_SCANNER_MAX_CONCURRENT = max(1, min(int(os.getenv('MARKET_SCAN_MAX_CONCURRENT', '2') or 2), 4))
@@ -13802,6 +14152,96 @@ _INST_NEWS_EVENT_TERMS = (
     'investigation', 'fda', 'merger', 'acquisition', 'buyback', 'recall',
     'bankruptcy', 'contract', 'approval'
 )
+
+
+def _inst_scanner_traffic_snapshot():
+    with _INST_SCANNER_TRAFFIC_LOCK:
+        return dict(_INST_SCANNER_TRAFFIC)
+
+
+def _inst_record_market_data_response(kind, symbol_count, response=None):
+    """Track process-local provider traffic without retaining response bodies."""
+    response_bytes = 0
+    try:
+        header_value = (getattr(response, 'headers', None) or {}).get('Content-Length')
+        if header_value is not None:
+            response_bytes = max(0, int(header_value))
+        else:
+            response_bytes = len(getattr(response, 'content', b'') or b'')
+    except Exception:
+        response_bytes = 0
+    with _INST_SCANNER_TRAFFIC_LOCK:
+        if kind == 'snapshots':
+            _INST_SCANNER_TRAFFIC['snapshotRequests'] += 1
+            _INST_SCANNER_TRAFFIC['snapshotSymbols'] += max(0, int(symbol_count or 0))
+        elif kind == 'bars':
+            _INST_SCANNER_TRAFFIC['barRequests'] += 1
+            _INST_SCANNER_TRAFFIC['barSymbols'] += max(0, int(symbol_count or 0))
+        _INST_SCANNER_TRAFFIC['responseBytes'] += response_bytes
+
+
+def _inst_intraday_trading_date():
+    return datetime.now(ZoneInfo('America/New_York')).date().isoformat()
+
+
+def _inst_intraday_cache_key(user_id, alpaca_mode, feed, risk_profile,
+                             time_horizon, pipeline_mode, history_period,
+                             max_symbols, filters):
+    identity = {
+        'user': str(user_id or 'anonymous'),
+        'alpacaMode': str(alpaca_mode or 'paper').lower(),
+        'feed': str(feed or 'iex').lower(),
+        'riskProfile': str(risk_profile or 'medium').lower(),
+        'timeHorizon': str(time_horizon or 'mid').lower(),
+        'pipelineMode': str(pipeline_mode or 'hybrid').lower(),
+        'historyPeriod': str(history_period or '18mo').lower(),
+        'maxSymbols': int(max_symbols or 0),
+        'filters': filters or {},
+    }
+    serialized = json.dumps(identity, sort_keys=True, separators=(',', ':'), default=str)
+    return hashlib.sha256(serialized.encode('utf-8')).hexdigest()
+
+
+def _inst_get_intraday_seed(cache_key):
+    now = time.time()
+    trading_date = _inst_intraday_trading_date()
+    with _INST_SCANNER_INTRADAY_CACHE_LOCK:
+        cached = _INST_SCANNER_INTRADAY_CACHE.get(cache_key)
+        if not isinstance(cached, dict):
+            return None
+        if (
+            cached.get('tradingDate') != trading_date
+            or now - float(cached.get('storedAt') or 0) > _INST_SCANNER_INTRADAY_TTL_SECONDS
+        ):
+            _INST_SCANNER_INTRADAY_CACHE.pop(cache_key, None)
+            return None
+        cached['lastAccessedAt'] = now
+        return deepcopy(cached)
+
+
+def _inst_store_intraday_seed(cache_key, rows, benchmark_context, metadata):
+    now = time.time()
+    compact_metadata = {
+        str(row.get('symbol') or ''): deepcopy(metadata.get(str(row.get('symbol') or ''), {}))
+        for row in (rows or [])
+        if str(row.get('symbol') or '')
+    }
+    cached = {
+        'tradingDate': _inst_intraday_trading_date(),
+        'storedAt': now,
+        'lastAccessedAt': now,
+        'rows': deepcopy(list(rows or [])),
+        'benchmarkContext': deepcopy(benchmark_context or {}),
+        'metadata': compact_metadata,
+    }
+    with _INST_SCANNER_INTRADAY_CACHE_LOCK:
+        _INST_SCANNER_INTRADAY_CACHE[cache_key] = cached
+        while len(_INST_SCANNER_INTRADAY_CACHE) > _INST_SCANNER_INTRADAY_CACHE_LIMIT:
+            oldest_key = min(
+                _INST_SCANNER_INTRADAY_CACHE,
+                key=lambda key: float(_INST_SCANNER_INTRADAY_CACHE[key].get('lastAccessedAt') or 0),
+            )
+            _INST_SCANNER_INTRADAY_CACHE.pop(oldest_key, None)
 
 
 class _BackendMemoryPressure(RuntimeError):
@@ -14292,6 +14732,7 @@ def _inst_fetch_alpaca_snapshots(symbols, market_cfg, feed=None, batch_size=200)
     headers = _inst_alpaca_headers(market_cfg)
     feed = str(feed or _MARKET_DATA_FEED or 'iex').lower()
     for start in range(0, len(symbols), batch_size):
+        _backend_enforce_runtime_budget()
         batch = symbols[start:start + batch_size]
         try:
             resp = requests.get(
@@ -14300,6 +14741,8 @@ def _inst_fetch_alpaca_snapshots(symbols, market_cfg, feed=None, batch_size=200)
                 params={'symbols': ','.join(batch), 'feed': feed},
                 timeout=20,
             )
+            _inst_record_market_data_response('snapshots', len(batch), resp)
+            _backend_enforce_runtime_budget()
             if resp.status_code != 200:
                 err = f'snapshots status={resp.status_code}: {resp.text[:160]}'
                 print(f'[InstitutionalScanner] snapshots failed batch={start}-{start+len(batch)} {err}')
@@ -14428,12 +14871,14 @@ def _inst_iter_alpaca_bar_batches(symbols, market_cfg, period='18mo', feed=None,
     feed = str(feed or _MARKET_DATA_FEED or 'iex').lower()
 
     for start in range(0, len(symbols), batch_size):
+        _backend_enforce_runtime_budget()
         batch = symbols[start:start + batch_size]
         batch_history = {}
         batch_errors = {}
         page_token = None
         pages = 0
         while True:
+            _backend_enforce_runtime_budget()
             params = {
                 'symbols': ','.join(batch),
                 'timeframe': '1Day',
@@ -14454,6 +14899,8 @@ def _inst_iter_alpaca_bar_batches(symbols, market_cfg, period='18mo', feed=None,
                     params=params,
                     timeout=25,
                 )
+                _inst_record_market_data_response('bars', len(batch), resp)
+                _backend_enforce_runtime_budget()
                 if resp.status_code != 200:
                     err = f'bars status={resp.status_code}: {resp.text[:180]}'
                     print(f'[InstitutionalScanner] bars failed batch={start}-{start+len(batch)} {err}')
@@ -14729,6 +15176,112 @@ def _inst_apply_trading_cost_metrics(row):
     row['participation10pctDollar'] = round(adv * 0.10, 2) if adv else None
     row.setdefault('dataSources', {})['tradingCost'] = 'Alpaca quote + ADV20 cost model'
     row.setdefault('provenance', {})['tradingCost'] = 'Estimated spread, impact, and 10% ADV capacity from Alpaca quote/bars'
+    return row
+
+
+def _inst_refresh_cached_metric_row(base_row, snapshot_meta):
+    """Refresh intraday fields while preserving the daily historical factors."""
+    row = deepcopy(base_row or {})
+    snapshot_meta = snapshot_meta or {}
+    old_price = _inst_to_float(row.get('price'), None)
+    new_price = _inst_to_float(snapshot_meta.get('snapshotPrice'), old_price)
+    if new_price is None or new_price <= 0:
+        new_price = old_price
+    if new_price is None or new_price <= 0:
+        return row
+
+    previous_close = _inst_to_float(
+        snapshot_meta.get('snapshotPrevClose'),
+        _inst_to_float(row.get('previousClose'), None),
+    )
+    row['price'] = round(new_price, 4)
+    row['priceSource'] = (
+        'Alpaca snapshot'
+        if _inst_to_float(snapshot_meta.get('snapshotPrice'), None)
+        else row.get('priceSource') or 'Cached Alpaca daily bars'
+    )
+    row['previousClose'] = round(previous_close, 4) if previous_close else None
+    row['change'] = round(new_price - previous_close, 4) if previous_close else None
+    change_pct = (
+        (new_price - previous_close) / previous_close * 100.0
+        if previous_close and previous_close > 0 else None
+    )
+    row['changePct'] = round(change_pct, 3) if change_pct is not None else None
+    row['changePercent'] = row['changePct']
+
+    direct_fields = (
+        'latestTradeSize', 'latestTradeTime', 'bidSize', 'askSize',
+        'latestQuoteTime', 'dayBarTime', 'snapshotCurrentVolume',
+        'snapshotPreviousVolume', 'snapshotCurrentDollarVolume',
+        'snapshotPreviousDollarVolume', 'snapshotLiquidityProxyDollarVolume',
+    )
+    rounded_fields = (
+        'latestTradePrice', 'bidPrice', 'askPrice', 'bidAskSpread',
+        'bidAskSpreadPct', 'dayOpen', 'dayHigh', 'dayLow', 'dayClose', 'dayVWAP',
+    )
+    for field in direct_fields:
+        if field in snapshot_meta:
+            row[field] = snapshot_meta.get(field)
+    for field in rounded_fields:
+        value = _inst_to_float(snapshot_meta.get(field), None)
+        row[field] = round(value, 4) if value is not None else None
+
+    snapshot_volume = _inst_to_float(snapshot_meta.get('snapshotVolume'), None)
+    if snapshot_volume is not None and snapshot_volume >= 0:
+        row['volume'] = snapshot_volume
+    avg_volume = _inst_to_float(row.get('avgVolume20'), 0) or 0
+    row['avgDollarVolume20'] = round(avg_volume * new_price, 2) if avg_volume else 0
+    current_volume = _inst_to_float(snapshot_meta.get('snapshotCurrentVolume'), None)
+    previous_volume = _inst_to_float(snapshot_meta.get('snapshotPreviousVolume'), None)
+    daily_complete = _inst_daily_snapshot_is_complete(snapshot_meta.get('dayBarTime'))
+    row['dailySnapshotComplete'] = daily_complete
+    if avg_volume:
+        comparable_volume = current_volume if daily_complete and current_volume else previous_volume
+        if comparable_volume is not None:
+            row['volumeRatio'] = round(comparable_volume / avg_volume, 3)
+            row['volumeRatioSource'] = (
+                'completed current session' if daily_complete and current_volume
+                else 'previous completed session'
+            )
+        if current_volume is not None:
+            row['intradayVolumeRatioRaw'] = round(current_volume / avg_volume, 3)
+
+    if old_price and old_price > 0 and new_price != old_price:
+        for key in ('momentum1m', 'momentum3m', 'momentum6m', 'momentum12m'):
+            old_momentum = _inst_to_float(row.get(key), None)
+            if old_momentum is None or old_momentum <= -99.9:
+                continue
+            historical_base = old_price / (1.0 + old_momentum / 100.0)
+            if historical_base > 0:
+                row[key] = round((new_price / historical_base - 1.0) * 100.0, 3)
+                delta = row[key] - old_momentum
+                relative_keys = {
+                    'momentum1m': ('relativeStrength1m',),
+                    'momentum3m': ('relativeStrength3m', 'qqqRelativeStrength3m'),
+                    'momentum6m': ('relativeStrength6m', 'qqqRelativeStrength6m'),
+                    'momentum12m': ('relativeStrength12m',),
+                }.get(key, ())
+                for relative_key in relative_keys:
+                    old_relative = _inst_to_float(row.get(relative_key), None)
+                    if old_relative is not None:
+                        row[relative_key] = round(old_relative + delta, 3)
+
+        ma50 = _inst_to_float(row.get('ma50'), None)
+        ma200 = _inst_to_float(row.get('ma200'), None)
+        recent_high = _inst_to_float(row.get('recentHigh20'), None)
+        recent_low = _inst_to_float(row.get('recentLow20'), None)
+        row['closeVs50dma'] = round((new_price - ma50) / ma50 * 100.0, 3) if ma50 else None
+        row['closeVs200dma'] = round((new_price - ma200) / ma200 * 100.0, 3) if ma200 else None
+        row['distanceTo20dHighPct'] = round((recent_high - new_price) / new_price * 100.0, 3) if recent_high else None
+        row['distanceFrom20dLowPct'] = round((new_price - recent_low) / new_price * 100.0, 3) if recent_low else None
+        old_atr_pct = _inst_to_float(row.get('atrPercent'), None)
+        if old_atr_pct is not None:
+            row['atrPercent'] = round(old_atr_pct * old_price / new_price, 3)
+
+    row['dataSource'] = 'Alpaca intraday snapshot + cached daily factors'
+    row.setdefault('dataSources', {})['marketData'] = 'Alpaca snapshot + daily seed cache'
+    row.setdefault('provenance', {})['marketData'] = 'Fresh Alpaca snapshot; historical factors seeded once per trading day'
+    _inst_apply_trading_cost_metrics(row)
     return row
 
 
@@ -15029,6 +15582,7 @@ def _inst_stream_alpaca_symbol_metrics(
         feed=feed,
         batch_size=batch_size,
     ):
+        _backend_enforce_runtime_budget()
         if headless_uid and callable(stop_checker) and stop_checker(headless_uid):
             batch_history.clear()
             raise _BackendScanCancelled('Market scanner stopped by user')
@@ -15037,6 +15591,7 @@ def _inst_stream_alpaca_symbol_metrics(
         batch_failed = False
         try:
             for symbol in batch_symbols:
+                _backend_enforce_runtime_budget()
                 symbol_bars = batch_history.get(symbol)
                 row = _inst_compute_symbol_metrics(
                     symbol,
@@ -16610,7 +17165,7 @@ def _inst_extract_ai_response_text(resp_data, provider):
 def _inst_call_ai_trader(ai_cfg, system_prompt, user_prompt):
     api_key = ai_cfg.get('apiKey', '')
     base_url = _safe_str(ai_cfg.get('baseURL') or ai_cfg.get('baseUrl')).rstrip('/')
-    model = _safe_str(ai_cfg.get('model') or 'deepseek-chat')
+    model = _safe_str(ai_cfg.get('model') or DEEPSEEK_DEFAULT_MODEL)
     provider = _safe_str(ai_cfg.get('provider') or 'DeepSeek')
     if not base_url:
         base_url = 'https://api.deepseek.com'
@@ -17050,6 +17605,7 @@ def _institutional_market_scanner_impl():
         }
         scanner_user = get_supabase_user()
         scanner_user_id = scanner_user.get('id') if isinstance(scanner_user, dict) else None
+        scanner_user_id = scanner_user_id or getattr(_headless_auth_context, 'user_id', None)
         strategy_policy = _apply_account_hard_risk_limits(
             _strategy_policy(risk_profile, time_horizon, pipeline_mode, leverage_enabled),
             scanner_user_id,
@@ -17073,6 +17629,7 @@ def _institutional_market_scanner_impl():
             return jsonify({'success': False, 'message': message, 'error': message}), 400
 
         requested_symbols = data.get('symbols') or []
+        efficient_intraday = bool(data.get('efficientIntraday')) and not requested_symbols
         if requested_symbols:
             symbols = [s for s in list(dict.fromkeys(_inst_clean_symbol(s) for s in requested_symbols if _inst_clean_symbol(s))) if s in metadata][:max_symbols]
         else:
@@ -17090,48 +17647,108 @@ def _institutional_market_scanner_impl():
                 'error': 'No symbols available from Alpaca assets',
                 'message': 'No symbols available from Alpaca assets',
             }), 400
-
-        snapshots, snapshot_errors = _inst_fetch_alpaca_snapshots(symbols, market_cfg, feed=feed, batch_size=200)
-        snapshot_ranked = []
-        min_price = _inst_to_float(filters.get('minPrice'), 5) or 5
-        for symbol in symbols:
-            snap_meta = _inst_snapshot_metrics(symbol, snapshots.get(symbol, {}))
-            price = _inst_to_float(snap_meta.get('snapshotPrice'), None)
-            if price is not None and price < min_price:
-                continue
-            snapshot_ranked.append((symbol, snap_meta))
-
-        snapshot_ranked.sort(
-            key=lambda item: _inst_to_float(item[1].get('snapshotLiquidityProxyDollarVolume'), 0) or 0,
-            reverse=True,
-        )
-        if snapshot_ranked:
-            selected_pairs = snapshot_ranked[:max_symbols]
-        else:
-            selected_pairs = [(symbol, {}) for symbol in symbols[:max_symbols]]
-        selected_symbols = [symbol for symbol, _snap in selected_pairs]
-        snapshot_meta_by_symbol = {symbol: snap for symbol, snap in selected_pairs}
-
         benchmark_symbols = list(dict.fromkeys(list(_INST_BENCHMARK_SYMBOLS) + list(_INST_SECTOR_ETF_SYMBOLS)))
-        benchmark_history, benchmark_errors = _inst_fetch_alpaca_bars(
-            benchmark_symbols,
-            market_cfg,
-            period=history_period,
-            feed=feed,
-            batch_size=25,
+        intraday_cache_key = _inst_intraday_cache_key(
+            scanner_user_id,
+            alpaca_mode,
+            feed,
+            risk_profile,
+            time_horizon,
+            pipeline_mode,
+            history_period,
+            max_symbols,
+            filters,
         )
-        benchmark_context = _inst_build_benchmark_context(benchmark_history)
+        intraday_seed = _inst_get_intraday_seed(intraday_cache_key) if efficient_intraday else None
+        scan_mode = 'intraday_incremental' if intraday_seed else ('daily_seed' if efficient_intraday else 'full')
 
-        raw_rows, failed_count, history_errors = _inst_stream_alpaca_symbol_metrics(
-            selected_symbols,
-            market_cfg,
-            metadata,
-            snapshot_meta_by_symbol,
-            benchmark_context,
-            period=history_period,
-            feed=feed,
-            batch_size=25,
-        )
+        if intraday_seed:
+            cached_rows = intraday_seed.get('rows') or []
+            cached_metadata = intraday_seed.get('metadata') or {}
+            selected_symbols = [
+                _inst_clean_symbol(row.get('symbol'))
+                for row in cached_rows
+                if _inst_clean_symbol(row.get('symbol')) not in excluded_symbols
+            ][:max(_INST_SCANNER_INTRADAY_POOL_SIZE, max_results)]
+            snapshots, snapshot_errors = _inst_fetch_alpaca_snapshots(
+                selected_symbols,
+                market_cfg,
+                feed=feed,
+                batch_size=200,
+            )
+            snapshot_meta_by_symbol = {
+                symbol: _inst_snapshot_metrics(symbol, snapshots.get(symbol, {}))
+                for symbol in selected_symbols
+            }
+            row_by_symbol = {
+                _inst_clean_symbol(row.get('symbol')): row
+                for row in cached_rows
+                if _inst_clean_symbol(row.get('symbol'))
+            }
+            raw_rows = [
+                _inst_refresh_cached_metric_row(
+                    row_by_symbol[symbol],
+                    snapshot_meta_by_symbol.get(symbol, {}),
+                )
+                for symbol in selected_symbols
+                if symbol in row_by_symbol
+            ]
+            metadata.update(cached_metadata)
+            benchmark_context = intraday_seed.get('benchmarkContext') or {}
+            benchmark_errors = {}
+            history_errors = {}
+            failed_count = max(0, len(selected_symbols) - len(raw_rows))
+            with _INST_SCANNER_TRAFFIC_LOCK:
+                _INST_SCANNER_TRAFFIC['intradayCacheHits'] += 1
+        else:
+            snapshots, snapshot_errors = _inst_fetch_alpaca_snapshots(
+                symbols,
+                market_cfg,
+                feed=feed,
+                batch_size=200,
+            )
+            snapshot_ranked = []
+            min_price = _inst_to_float(filters.get('minPrice'), 5) or 5
+            for symbol in symbols:
+                snap_meta = _inst_snapshot_metrics(symbol, snapshots.get(symbol, {}))
+                price = _inst_to_float(snap_meta.get('snapshotPrice'), None)
+                if price is not None and price < min_price:
+                    continue
+                snapshot_ranked.append((symbol, snap_meta))
+
+            snapshot_ranked.sort(
+                key=lambda item: _inst_to_float(item[1].get('snapshotLiquidityProxyDollarVolume'), 0) or 0,
+                reverse=True,
+            )
+            if snapshot_ranked:
+                selected_pairs = snapshot_ranked[:max_symbols]
+            else:
+                selected_pairs = [(symbol, {}) for symbol in symbols[:max_symbols]]
+            selected_symbols = [symbol for symbol, _snap in selected_pairs]
+            snapshot_meta_by_symbol = {symbol: snap for symbol, snap in selected_pairs}
+
+            benchmark_history, benchmark_errors = _inst_fetch_alpaca_bars(
+                benchmark_symbols,
+                market_cfg,
+                period=history_period,
+                feed=feed,
+                batch_size=25,
+            )
+            benchmark_context = _inst_build_benchmark_context(benchmark_history)
+
+            raw_rows, failed_count, history_errors = _inst_stream_alpaca_symbol_metrics(
+                selected_symbols,
+                market_cfg,
+                metadata,
+                snapshot_meta_by_symbol,
+                benchmark_context,
+                period=history_period,
+                feed=feed,
+                batch_size=25,
+            )
+            with _INST_SCANNER_TRAFFIC_LOCK:
+                traffic_key = 'dailySeedScans' if efficient_intraday else 'manualFullScans'
+                _INST_SCANNER_TRAFFIC[traffic_key] += 1
 
         passed_rows = []
         filtered_reasons = {}
@@ -17149,6 +17766,14 @@ def _institutional_market_scanner_impl():
             _inst_to_float(r.get('factorScores', {}).get('liquidity'), 0) or 0,
             _inst_to_float(r.get('avgDollarVolume20'), 0) or 0,
         ), reverse=True)
+        if efficient_intraday and not intraday_seed:
+            pool_size = max(max_results, _INST_SCANNER_INTRADAY_POOL_SIZE)
+            _inst_store_intraday_seed(
+                intraday_cache_key,
+                scored[:pool_size],
+                benchmark_context,
+                metadata,
+            )
         results = scored[:max_results]
 
         finnhub_cfg, finnhub_status = resolve_finnhub_config_strict_user()
@@ -17232,6 +17857,12 @@ def _institutional_market_scanner_impl():
         summary = {
             'universe': 'ALPACA_MARKET',
             'universeSource': universe_source,
+            'scanMode': scan_mode,
+            'intradayCacheHit': bool(intraday_seed),
+            'intradaySeedTradingDate': (
+                intraday_seed.get('tradingDate') if intraday_seed
+                else (_inst_intraday_trading_date() if efficient_intraday else None)
+            ),
             'rawUniverseCount': raw_universe_count,
             'snapshotAvailable': len(snapshots),
             'universeScanned': len(selected_symbols),
@@ -17283,6 +17914,7 @@ def _institutional_market_scanner_impl():
             'aiWatchCount': sum(1 for r in results if r.get('aiTraderDecision') == 'Watch'),
             'aiAvoidCount': sum(1 for r in results if r.get('aiTraderDecision') == 'Avoid'),
             'scoreVersion': 'institutional_cross_section_v6_strategy_mandate',
+            'providerTraffic': _inst_scanner_traffic_snapshot(),
             'dataCoverage': {
                 'assets': 'Alpaca /v2/assets',
                 'snapshots': 'Alpaca /v2/stocks/snapshots',
@@ -17315,7 +17947,7 @@ def _institutional_market_scanner_impl():
             'success': True,
             'results': results,
             'summary': summary,
-            'message': 'Alpaca whole-market scan completed: %d candidates from %d selected symbols (%d Alpaca assets)' % (len(results), len(selected_symbols), raw_universe_count),
+            'message': 'Alpaca %s scan completed: %d candidates from %d selected symbols (%d Alpaca assets)' % (scan_mode, len(results), len(selected_symbols), raw_universe_count),
             'completed': True,
             'scan_stats': {
                 'total_symbols': len(selected_symbols),
@@ -17341,7 +17973,9 @@ def _institutional_market_scanner_impl():
                 'ai_reviewed_symbols': ai_review_stats.get('reviewedSymbols', 0),
                 'ai_review_status': ai_review_stats.get('status'),
                 'total_time_seconds': round(total_time, 2),
-                'method': 'alpaca_whole_market_scan_v6_strategy_mandate',
+                'method': 'alpaca_%s_scan_v7_daily_seed_cache' % scan_mode,
+                'scan_mode': scan_mode,
+                'intraday_cache_hit': bool(intraday_seed),
             }
         })
     except (_BackendMemoryPressure, _BackendScanCancelled, _BackendStageDeadlineExceeded):
@@ -17498,6 +18132,793 @@ def _market_risk_snapshot_row(symbol, snapshot, metadata=None):
     }
 
 
+def _market_index_parse_spy_xlsx(content):
+    """Read the symbol column from State Street's public SPY workbook.
+
+    The workbook is deliberately parsed with the standard library so this
+    lightweight endpoint does not add an Excel dependency to the backend.
+    """
+    symbols = set()
+    with zipfile.ZipFile(BytesIO(content)) as workbook:
+        shared = []
+        if 'xl/sharedStrings.xml' in workbook.namelist():
+            root = ET.fromstring(workbook.read('xl/sharedStrings.xml'))
+            for item in root.findall('.//{*}si'):
+                shared.append(''.join(node.text or '' for node in item.findall('.//{*}t')))
+        sheet = ET.fromstring(workbook.read('xl/worksheets/sheet1.xml'))
+        for cell in sheet.findall('.//{*}c'):
+            reference = _safe_str(cell.get('r')).upper()
+            if not reference.startswith('B'):
+                continue
+            value_node = cell.find('{*}v')
+            inline_node = cell.find('.//{*}t')
+            value = inline_node.text if inline_node is not None else value_node.text if value_node is not None else ''
+            if cell.get('t') == 's' and value:
+                try:
+                    value = shared[int(value)]
+                except (ValueError, IndexError):
+                    value = ''
+            symbol = _inst_clean_symbol(value)
+            if symbol and re.fullmatch(r'[A-Z][A-Z0-9.\-]{0,9}', symbol) and symbol not in {'TICKER', 'SYMBOL'}:
+                symbols.add(symbol.replace('.', '-'))
+    return symbols
+
+
+def _market_index_constituents(force_refresh=False):
+    """Return the current union of official Nasdaq-100 and SPY holdings."""
+    now = time.time()
+    with _MARKET_INDEX_UNIVERSE_CACHE_LOCK:
+        cached = deepcopy(_MARKET_INDEX_UNIVERSE_CACHE)
+    age = max(0.0, now - float(cached.get('storedAt') or 0)) if cached.get('symbols') else None
+    if cached.get('symbols') and not force_refresh and age < _MARKET_INDEX_UNIVERSE_TTL_SECONDS:
+        return set(cached['symbols']), cached.get('sources') or [], cached.get('errors') or [], {'status': 'hit', 'ageSeconds': round(age, 1)}
+
+    symbols = set()
+    sources = []
+    errors = []
+    request_headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, */*',
+        'Referer': 'https://www.nasdaq.com/market-activity/quotes/nasdaq-ndx-index',
+    }
+    try:
+        response = requests.get(_MARKET_NASDAQ_100_URL, headers=request_headers, timeout=(3.05, 20))
+        response.raise_for_status()
+        rows = (((response.json() or {}).get('data') or {}).get('data') or {}).get('rows') or []
+        nasdaq_symbols = {_inst_clean_symbol(row.get('symbol')) for row in rows if isinstance(row, dict)}
+        nasdaq_symbols.discard('')
+        if not nasdaq_symbols:
+            raise RuntimeError('empty_nasdaq100')
+        symbols.update(nasdaq_symbols)
+        sources.append('Nasdaq-100 official constituent API')
+    except Exception as exc:
+        errors.append('nasdaq100_%s' % str(exc)[:100])
+    try:
+        response = requests.get(_MARKET_SPY_HOLDINGS_URL, headers=request_headers, timeout=(3.05, 15))
+        response.raise_for_status()
+        spy_symbols = _market_index_parse_spy_xlsx(response.content)
+        if len(spy_symbols) < 400:
+            raise RuntimeError('incomplete_spy_holdings_%d' % len(spy_symbols))
+        symbols.update(spy_symbols)
+        sources.append('State Street SPY official holdings')
+    except Exception as exc:
+        errors.append('spy_%s' % str(exc)[:100])
+
+    if symbols:
+        payload = {'storedAt': now, 'symbols': sorted(symbols), 'sources': sources, 'errors': errors}
+        with _MARKET_INDEX_UNIVERSE_CACHE_LOCK:
+            _MARKET_INDEX_UNIVERSE_CACHE.clear()
+            _MARKET_INDEX_UNIVERSE_CACHE.update(deepcopy(payload))
+        return symbols, sources, errors, {'status': 'miss', 'ageSeconds': 0}
+    if cached.get('symbols') and age is not None and age < _MARKET_INDEX_UNIVERSE_STALE_TTL_SECONDS:
+        return set(cached['symbols']), cached.get('sources') or [], list(dict.fromkeys((cached.get('errors') or []) + errors)), {'status': 'stale-if-error', 'ageSeconds': round(age, 1)}
+    return set(), sources, errors, {'status': 'unavailable', 'ageSeconds': None}
+
+
+_MARKET_INTELLIGENCE_THEMES = (
+    ('storage_memory', 'Storage & Memory', {'STX', 'WDC', 'PSTG', 'NTAP', 'MU', 'SNDK'}, ('data storage', 'memory', 'disk drive')),
+    ('space', 'Space Economy', {'RKLB', 'LUNR', 'RDW', 'PL', 'SPCE', 'ASTS', 'BKSY', 'MNTS'}, ('satellite', 'orbital', 'rocket')),
+    ('technology', 'Technology', {'AAPL', 'MSFT', 'NVDA', 'AVGO', 'ORCL', 'CRM', 'ADBE', 'CSCO', 'IBM', 'NOW', 'AMD', 'QCOM'}, ('information technology', 'technology services')),
+    ('ai_semiconductors', 'AI & Semiconductors', {'NVDA', 'AMD', 'AVGO', 'INTC', 'QCOM', 'ARM', 'MRVL', 'SMCI', 'TSM', 'ASML'}, ('semiconductor', 'chip', 'artificial intelligence')),
+    ('cloud_software', 'Cloud & Software', {'MSFT', 'ORCL', 'CRM', 'NOW', 'SNOW', 'DDOG', 'NET', 'MDB', 'PLTR'}, ('software', 'cloud', 'database')),
+    ('cybersecurity', 'Cybersecurity', {'CRWD', 'PANW', 'FTNT', 'ZS', 'OKTA', 'CYBR', 'S'}, ('cyber', 'security')),
+    ('fintech', 'Fintech', {'V', 'MA', 'PYPL', 'SQ', 'COIN', 'HOOD', 'SOFI', 'AFRM'}, ('financial technology', 'payment')),
+    ('clean_energy', 'Clean Energy', {'FSLR', 'ENPH', 'SEDG', 'RUN', 'PLUG', 'BE', 'NOVA'}, ('solar', 'renewable', 'clean energy', 'fuel cell')),
+    ('biotech', 'Biotech', {'MRNA', 'BNTX', 'REGN', 'VRTX', 'CRSP', 'NTLA', 'BEAM'}, ('biotech', 'therapeutic', 'pharmaceutical')),
+)
+
+
+def _market_intelligence_theme_breadth(rows):
+    result = []
+    for key, label, symbols, keywords in _MARKET_INTELLIGENCE_THEMES:
+        members = []
+        for row in rows or []:
+            symbol = _inst_clean_symbol(row.get('symbol'))
+            haystack = '%s %s' % (_safe_str(row.get('name')), symbol)
+            if symbol in symbols or any(keyword in haystack.lower() for keyword in keywords):
+                members.append(row)
+        if not members:
+            continue
+        changes = [float(row.get('changePct') or 0) for row in members]
+        advancing = sum(1 for change in changes if change > 0.05)
+        declining = sum(1 for change in changes if change < -0.05)
+        unchanged = len(changes) - advancing - declining
+        result.append({
+            'key': key,
+            'label': label,
+            'total': len(changes),
+            'advancing': advancing,
+            'declining': declining,
+            'unchanged': unchanged,
+            'averageChangePct': round(sum(changes) / len(changes), 3),
+            'advanceDeclineRatio': round(advancing / max(1, declining), 3),
+            'leaders': [
+                {'symbol': row.get('symbol'), 'changePct': row.get('changePct')}
+                for row in sorted(members, key=lambda item: float(item.get('changePct') or 0), reverse=True)[:5]
+            ],
+        })
+    return sorted(result, key=lambda item: abs(float(item.get('averageChangePct') or 0)), reverse=True)
+
+
+_MARKET_NEWS_HIGH_IMPACT_TERMS = (
+    'federal reserve', 'fed decision', 'interest rate', 'rate cut', 'rate hike', 'inflation',
+    'consumer price index', 'cpi', 'nonfarm payroll', 'jobs report', 'unemployment',
+    'recession', 'tariff', 'sanction', 'war ', 'ceasefire', 'bankruptcy', 'default',
+    'merger', 'acquisition', 'takeover', 'sec investigation', 'doj', 'fda approval',
+)
+_MARKET_NEWS_MEDIUM_IMPACT_TERMS = (
+    'earnings', 'revenue', 'guidance', 'forecast', 'upgrade', 'downgrade', 'price target',
+    'layoff', 'contract', 'partnership', 'offering', 'recall', 'lawsuit', 'data breach',
+)
+
+
+def _market_intelligence_news_topic(text):
+    lowered = _safe_str(text).lower()
+    rules = (
+        ('Monetary policy', ('federal reserve', 'fed ', 'interest rate', 'rate cut', 'rate hike', 'powell')),
+        ('Economy & labor', ('inflation', 'cpi', 'pce', 'gdp', 'payroll', 'jobs report', 'unemployment', 'retail sales')),
+        ('Geopolitics & trade', ('war ', 'tariff', 'sanction', 'ceasefire', 'trade deal', 'geopolit')),
+        ('Earnings & guidance', ('earnings', 'revenue', 'eps', 'guidance', 'forecast', 'quarter')),
+        ('M&A', ('merger', 'acquisition', 'takeover', 'buyout')),
+        ('Regulation & legal', ('regulat', 'lawsuit', 'sec ', 'doj', 'antitrust', 'probe', 'investigation')),
+        ('Technology', ('artificial intelligence', ' ai ', 'semiconductor', 'chip', 'software', 'cloud', 'cyber')),
+        ('Energy & commodities', ('oil', 'gas', 'gold', 'copper', 'opec', 'energy')),
+        ('Analyst action', ('upgrade', 'downgrade', 'price target', 'rating')),
+    )
+    for topic, terms in rules:
+        if any(
+            re.search(r'(?<![a-z0-9])%s(?![a-z0-9])' % re.escape(term.strip()), lowered)
+            if len(term.strip()) <= 4 and term.strip().isalnum()
+            else term in lowered
+            for term in terms
+        ):
+            return topic
+    return 'Company & market'
+
+
+def _market_intelligence_enrich_news(item):
+    cleaned = dict(item or {})
+    text = '%s %s' % (cleaned.get('headline') or '', cleaned.get('summary') or '')
+    lowered = text.lower()
+    high_hits = sum(1 for term in _MARKET_NEWS_HIGH_IMPACT_TERMS if term in lowered)
+    medium_hits = sum(1 for term in _MARKET_NEWS_MEDIUM_IMPACT_TERMS if term in lowered)
+    topic = _market_intelligence_news_topic(text)
+    reported_symbols = list(dict.fromkeys(cleaned.get('symbols') or []))
+    inferred_by_topic = {
+        'Monetary policy': ['SPY', 'QQQ', 'IWM', 'TLT', 'XLF', 'KRE'],
+        'Economy & labor': ['SPY', 'IWM', 'XLY', 'XLF', 'TLT'],
+        'Geopolitics & trade': ['SPY', 'XLE', 'XLI', 'LMT', 'NOC', 'GLD'],
+        'Technology': ['QQQ', 'XLK', 'NVDA', 'AMD', 'MSFT'],
+        'Energy & commodities': ['XLE', 'XOM', 'CVX', 'OXY'],
+        'Regulation & legal': ['SPY'],
+    }
+    inferred_symbols = [] if reported_symbols else inferred_by_topic.get(topic, [])
+    affected_symbols = reported_symbols or inferred_symbols
+    symbol_count = len(affected_symbols)
+    impact_score = min(100, 28 + min(18, symbol_count * 3) + min(42, high_hits * 21) + min(24, medium_hits * 8))
+    signal = _inst_news_signal([cleaned])
+    sentiment = signal.get('sentiment') or 'Neutral'
+    positive_direction_terms = (' rally', 'rallies', 'surge', 'jumps', 'beats estimates', 'raises guidance', 'approval')
+    negative_direction_terms = ('selloff', 'sells off', 'plunge', 'drops', 'misses estimates', 'cuts guidance', 'bankruptcy', 'default')
+    if sentiment == 'Neutral':
+        positive_hits = sum(1 for term in positive_direction_terms if term in lowered)
+        negative_hits = sum(1 for term in negative_direction_terms if term in lowered)
+        if positive_hits > negative_hits:
+            sentiment = 'Positive'
+        elif negative_hits > positive_hits:
+            sentiment = 'Negative'
+    direction = 'positive' if sentiment == 'Positive' else 'negative' if sentiment == 'Negative' else 'mixed'
+    cleaned.update({
+        'symbols': affected_symbols,
+        'symbolImpactSource': 'provider' if reported_symbols else 'topic_inference' if inferred_symbols else 'unresolved',
+        'impactScore': impact_score,
+        'impactLevel': 'Critical' if impact_score >= 80 else 'High' if impact_score >= 60 else 'Medium' if impact_score >= 42 else 'Low',
+        'topic': topic,
+        'sentiment': sentiment,
+        'marketDirection': direction,
+        'marketImpact': (
+            'Potential broad-market impact; watch index, rates, and volatility response.'
+            if topic in ('Monetary policy', 'Economy & labor', 'Geopolitics & trade') else
+            'Likely concentrated in the named stocks and their industry peers.'
+            if symbol_count else
+            'Contextual market news; direct ticker impact is not yet identified.'
+        ),
+    })
+    return cleaned
+
+
+def _market_intelligence_fetch_news(market_cfg, finnhub_cfg, days=1, limit=100, user_id=None, force_refresh=False):
+    start_iso = (datetime.now(timezone.utc) - timedelta(days=max(1, days))).strftime('%Y-%m-%dT%H:%M:%SZ')
+    cache_key = 'market_intelligence_news_%s_%s_%s' % (user_id or 'anonymous', days, limit)
+    cached = None if force_refresh else stock_cache.get(cache_key)
+    if isinstance(cached, dict):
+        return cached.get('articles') or [], cached.get('sources') or [], cached.get('errors') or []
+    articles = []
+    errors = []
+    sources = []
+    if market_cfg and market_cfg.get('api_key'):
+        try:
+            page_token = None
+            while len(articles) < limit:
+                params = {'start': start_iso, 'sort': 'desc', 'limit': min(50, limit - len(articles)), 'include_content': 'false'}
+                if page_token:
+                    params['page_token'] = page_token
+                response = requests.get(
+                    '%s/v1beta1/news' % _INST_SCANNER_MARKET_DATA_BASE_URL,
+                    headers=_inst_alpaca_headers(market_cfg),
+                    params=params,
+                    timeout=15,
+                )
+                if response.status_code != 200:
+                    errors.append('alpaca_news_http_%s' % response.status_code)
+                    break
+                if 'Alpaca News' not in sources:
+                    sources.append('Alpaca News')
+                page = response.json() if response.content else {}
+                raw_articles = page.get('news') or []
+                for raw in raw_articles:
+                    cleaned = _inst_clean_alpaca_news_item(raw)
+                    if cleaned:
+                        articles.append(cleaned)
+                page_token = page.get('next_page_token')
+                if not page_token or not raw_articles:
+                    break
+        except Exception as exc:
+            errors.append('alpaca_news_%s' % str(exc)[:100])
+    if finnhub_cfg and finnhub_cfg.get('api_key'):
+        try:
+            response = requests.get(
+                '%s/news' % finnhub_cfg.get('base_url', 'https://finnhub.io/api/v1').rstrip('/'),
+                params={'category': 'general', 'token': finnhub_cfg.get('api_key')},
+                timeout=12,
+            )
+            if response.status_code == 200 and isinstance(response.json(), list):
+                sources.append('Finnhub Market News')
+                for raw in response.json()[:limit]:
+                    cleaned = _inst_clean_alpaca_news_item({
+                        'id': 'finnhub-%s' % raw.get('id'),
+                        'headline': raw.get('headline'),
+                        'summary': raw.get('summary'),
+                        'source': raw.get('source') or 'Finnhub',
+                        'url': raw.get('url'),
+                        'created_at': datetime.fromtimestamp(int(raw.get('datetime') or 0), tz=timezone.utc).isoformat() if raw.get('datetime') else None,
+                        'symbols': [symbol.strip() for symbol in _safe_str(raw.get('related')).split(',') if symbol.strip()],
+                    })
+                    if cleaned:
+                        articles.append(cleaned)
+            elif response.status_code != 200:
+                errors.append('finnhub_news_http_%s' % response.status_code)
+        except Exception as exc:
+            errors.append('finnhub_news_%s' % str(exc)[:100])
+    deduped = {}
+    for article in articles:
+        created_at = _safe_str(article.get('createdAt'))
+        if created_at:
+            try:
+                created_dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                if created_dt.tzinfo is None:
+                    created_dt = created_dt.replace(tzinfo=timezone.utc)
+                if created_dt < datetime.now(timezone.utc) - timedelta(days=max(1, days)):
+                    continue
+            except Exception:
+                pass
+        key = re.sub(r'\W+', '', _safe_str(article.get('headline')).lower())[:160]
+        if key and key not in deduped:
+            deduped[key] = _market_intelligence_enrich_news(article)
+    ranked = sorted(
+        deduped.values(),
+        key=lambda item: (int(item.get('impactScore') or 0), _safe_str(item.get('createdAt'))),
+        reverse=True,
+    )[:limit]
+    stock_cache.set(cache_key, {'articles': ranked, 'sources': sources, 'errors': errors})
+    return ranked, sources, errors
+
+
+_MARKET_NEWS_AI_ARTIFACT_TYPE = 'market_news_intelligence'
+_MARKET_NEWS_AI_ARTIFACT_KEY = 'current'
+_MARKET_NEWS_AI_MAX_STORED = 300
+_MARKET_NEWS_NOTIFICATION_CLAIM_TTL_SECONDS = 600
+_MARKET_NEWS_NOTIFICATION_FINAL_STATUSES = frozenset({
+    'sent', 'deferred', 'history', 'skipped',
+})
+_MARKET_NEWS_AI_INFLIGHT = set()
+_MARKET_NEWS_AI_INFLIGHT_LOCK = threading.Lock()
+
+
+def _market_news_fingerprint(article):
+    seed = '%s|%s|%s' % (
+        _safe_str(article.get('headline')).strip().lower(),
+        _safe_str(article.get('source')).strip().lower(),
+        _safe_str(article.get('createdAt'))[:13],
+    )
+    return hashlib.sha256(seed.encode('utf-8')).hexdigest()[:24]
+
+
+def _market_news_ai_state(uid):
+    try:
+        row = operations_store.get_artifact(uid, _MARKET_NEWS_AI_ARTIFACT_TYPE, _MARKET_NEWS_AI_ARTIFACT_KEY)
+        payload = deepcopy((row or {}).get('payload') or {})
+        return payload if isinstance(payload, dict) else {}
+    except Exception as exc:
+        safe_print('[MarketNewsAI] state read failed: %s' % exc)
+        return {}
+
+
+def _market_news_save_ai_state(uid, state):
+    """Merge AI results into the durable cache without losing another worker's batch."""
+    requested_analyses = state.get('analyses') if isinstance(state.get('analyses'), dict) else {}
+    requested_errors = state.get('errors') if isinstance(state.get('errors'), dict) else {}
+    requested_receipts = (
+        state.get('notificationReceipts')
+        if isinstance(state.get('notificationReceipts'), dict)
+        else {}
+    )
+    for attempt in range(3):
+        try:
+            current = operations_store.get_artifact(
+                uid, _MARKET_NEWS_AI_ARTIFACT_TYPE, _MARKET_NEWS_AI_ARTIFACT_KEY,
+            )
+            current_payload = deepcopy((current or {}).get('payload') or {})
+            merged_analyses = dict(current_payload.get('analyses') or {})
+            merged_analyses.update(requested_analyses)
+            ordered = sorted(
+                merged_analyses.items(),
+                key=lambda item: _safe_str((item[1] or {}).get('analyzedAt')),
+                reverse=True,
+            )[:_MARKET_NEWS_AI_MAX_STORED]
+            merged_errors = dict(current_payload.get('errors') or {})
+            merged_errors.update(requested_errors)
+            for fingerprint in requested_analyses:
+                merged_errors.pop(fingerprint, None)
+            merged_receipts = dict(current_payload.get('notificationReceipts') or {})
+            merged_receipts.update(requested_receipts)
+            ordered_receipts = sorted(
+                merged_receipts.items(),
+                key=lambda item: _safe_str(
+                    (item[1] or {}).get('notifiedAt')
+                    or (item[1] or {}).get('attemptedAt')
+                    or (item[1] or {}).get('claimedAt')
+                ),
+                reverse=True,
+            )[:_MARKET_NEWS_AI_MAX_STORED]
+            payload = {
+                'schemaVersion': 3,
+                'analyses': dict(ordered),
+                'errors': dict(list(merged_errors.items())[-100:]),
+                'notificationReceipts': dict(ordered_receipts),
+                'lastAttemptAt': state.get('lastAttemptAt') or current_payload.get('lastAttemptAt'),
+                'lastSuccessAt': state.get('lastSuccessAt') or current_payload.get('lastSuccessAt'),
+                'updatedAt': datetime.now(timezone.utc).isoformat(),
+            }
+            serialized = json.dumps(payload, sort_keys=True, separators=(',', ':'), default=str)
+            operations_store.put_artifact(
+                uid,
+                _MARKET_NEWS_AI_ARTIFACT_TYPE,
+                _MARKET_NEWS_AI_ARTIFACT_KEY,
+                payload=payload,
+                idempotency_key=hashlib.sha256(('market-news-ai:%s:%s' % (uid, serialized)).encode('utf-8')).hexdigest(),
+                expected_version=int((current or {}).get('version') or 0),
+            )
+            return True
+        except OperationsVersionConflict:
+            if attempt < 2:
+                continue
+            safe_print('[MarketNewsAI] state write failed: version_conflict')
+        except Exception as exc:
+            safe_print('[MarketNewsAI] state write failed: %s' % exc)
+            break
+    return False
+
+
+def _market_news_notification_is_final(receipt):
+    return (
+        isinstance(receipt, dict)
+        and _safe_str(receipt.get('status')).lower()
+        in _MARKET_NEWS_NOTIFICATION_FINAL_STATUSES
+    )
+
+
+def _market_news_notification_receipts(payload):
+    receipts = payload.get('notificationReceipts') if isinstance(payload, dict) else None
+    return dict(receipts) if isinstance(receipts, dict) else {}
+
+
+def _market_news_prune_notification_receipts(receipts):
+    ordered = sorted(
+        receipts.items(),
+        key=lambda item: _safe_str(
+            (item[1] or {}).get('notifiedAt')
+            or (item[1] or {}).get('attemptedAt')
+            or (item[1] or {}).get('claimedAt')
+        ),
+        reverse=True,
+    )[:_MARKET_NEWS_AI_MAX_STORED]
+    return dict(ordered)
+
+
+def _market_news_notification_claim(uid, fingerprint):
+    """Atomically reserve one Discord delivery across workers and restarts."""
+    now = datetime.now(timezone.utc)
+    for attempt in range(3):
+        try:
+            current = operations_store.get_artifact(
+                uid, _MARKET_NEWS_AI_ARTIFACT_TYPE, _MARKET_NEWS_AI_ARTIFACT_KEY,
+            )
+            payload = deepcopy((current or {}).get('payload') or {})
+            receipts = _market_news_notification_receipts(payload)
+            receipt = receipts.get(fingerprint)
+            if _market_news_notification_is_final(receipt):
+                return False
+            claimed_at = _discord_parse_event_time((receipt or {}).get('claimedAt'))
+            if (
+                _safe_str((receipt or {}).get('status')).lower() == 'claimed'
+                and claimed_at is not None
+                and (now - claimed_at).total_seconds()
+                < _MARKET_NEWS_NOTIFICATION_CLAIM_TTL_SECONDS
+            ):
+                return False
+            receipts[fingerprint] = {
+                'status': 'claimed',
+                'claimedAt': now.isoformat(),
+            }
+            payload['schemaVersion'] = max(3, int(payload.get('schemaVersion') or 0))
+            payload['notificationReceipts'] = _market_news_prune_notification_receipts(receipts)
+            payload['updatedAt'] = now.isoformat()
+            serialized = json.dumps(payload, sort_keys=True, separators=(',', ':'), default=str)
+            operations_store.put_artifact(
+                uid,
+                _MARKET_NEWS_AI_ARTIFACT_TYPE,
+                _MARKET_NEWS_AI_ARTIFACT_KEY,
+                payload=payload,
+                idempotency_key=hashlib.sha256(
+                    ('market-news-notification-claim:%s:%s' % (uid, serialized)).encode('utf-8')
+                ).hexdigest(),
+                expected_version=int((current or {}).get('version') or 0),
+            )
+            return True
+        except OperationsVersionConflict:
+            if attempt < 2:
+                continue
+        except Exception as exc:
+            safe_print('[MarketNewsAI] notification claim failed: %s' % type(exc).__name__)
+            break
+    return False
+
+
+def _market_news_notification_complete(uid, fingerprint, result, *, source='send'):
+    """Persist the terminal outcome, or release a transiently failed claim."""
+    result = result if isinstance(result, dict) else {}
+    if result.get('sent'):
+        status = 'history' if source == 'history' else 'sent'
+    elif result.get('deferred'):
+        status = 'deferred'
+    elif result.get('reason') == 'deduped':
+        status = 'sent'
+    elif result.get('reason') in {
+        'disabled_or_missing', 'event_disabled',
+        'workspace_discord_disabled', 'workspace_event_disabled',
+        'workspace_digest_mode', 'workspace_quiet_hours',
+    }:
+        status = 'skipped'
+    else:
+        status = 'failed'
+    now = datetime.now(timezone.utc)
+    for attempt in range(3):
+        try:
+            current = operations_store.get_artifact(
+                uid, _MARKET_NEWS_AI_ARTIFACT_TYPE, _MARKET_NEWS_AI_ARTIFACT_KEY,
+            )
+            payload = deepcopy((current or {}).get('payload') or {})
+            receipts = _market_news_notification_receipts(payload)
+            receipt = dict(receipts.get(fingerprint) or {})
+            receipt.update({
+                'status': status,
+                'attemptedAt': now.isoformat(),
+                'reason': _safe_str(result.get('reason')),
+                'source': source,
+            })
+            if status in _MARKET_NEWS_NOTIFICATION_FINAL_STATUSES:
+                receipt['notifiedAt'] = now.isoformat()
+            else:
+                # A transient failure may retry on a later scheduler pass.
+                receipt.pop('claimedAt', None)
+            receipts[fingerprint] = receipt
+            payload['schemaVersion'] = max(3, int(payload.get('schemaVersion') or 0))
+            payload['notificationReceipts'] = _market_news_prune_notification_receipts(receipts)
+            payload['updatedAt'] = now.isoformat()
+            serialized = json.dumps(payload, sort_keys=True, separators=(',', ':'), default=str)
+            operations_store.put_artifact(
+                uid,
+                _MARKET_NEWS_AI_ARTIFACT_TYPE,
+                _MARKET_NEWS_AI_ARTIFACT_KEY,
+                payload=payload,
+                idempotency_key=hashlib.sha256(
+                    ('market-news-notification-complete:%s:%s' % (uid, serialized)).encode('utf-8')
+                ).hexdigest(),
+                expected_version=int((current or {}).get('version') or 0),
+            )
+            return True
+        except OperationsVersionConflict:
+            if attempt < 2:
+                continue
+        except Exception as exc:
+            safe_print('[MarketNewsAI] notification completion failed: %s' % type(exc).__name__)
+            break
+    return False
+
+
+def _market_news_historical_notification_event_ids(uid):
+    """Backfill receipts from delivery history created before schema v3."""
+    event_ids = set()
+    try:
+        rows = []
+        for status in ('sent', 'deferred'):
+            rows.extend(operations_store.list_notifications(uid, limit=300, status=status))
+        for row in rows:
+            payload = row.get('payload') if isinstance(row, dict) else None
+            if not isinstance(payload, dict) or payload.get('source') != 'Market News AI':
+                continue
+            event_id = _safe_str(payload.get('event_id') or payload.get('eventId'))
+            if event_id:
+                event_ids.add(event_id)
+    except Exception as exc:
+        safe_print('[MarketNewsAI] notification history read failed: %s' % type(exc).__name__)
+    return event_ids
+
+
+def _market_news_normalize_analysis(raw, article, ai_cfg):
+    raw = raw if isinstance(raw, dict) else {}
+    allowed_symbols = list(dict.fromkeys(
+        _inst_clean_symbol(value)
+        for value in (article.get('symbols') or [])
+        if _inst_clean_symbol(value)
+    ))
+    affected = []
+    for item in (raw.get('affectedStocks') or [])[:12]:
+        if not isinstance(item, dict):
+            continue
+        symbol = _inst_clean_symbol(item.get('symbol'))
+        if not symbol or (allowed_symbols and symbol not in allowed_symbols):
+            continue
+        direction = _safe_str(item.get('direction')).lower()
+        impact_type = _safe_str(item.get('impactType')).lower()
+        horizon = _safe_str(item.get('horizon')).lower()
+        affected.append({
+            'symbol': symbol,
+            'direction': direction if direction in ('positive', 'negative', 'mixed') else article.get('marketDirection', 'mixed'),
+            'impactType': impact_type if impact_type in ('direct', 'sector', 'macro', 'sympathy') else 'direct',
+            'horizon': horizon if horizon in ('intraday', 'short_term', 'medium_term') else 'short_term',
+            'confidence': max(0, min(100, int(_inst_to_float(item.get('confidence'), 60) or 60))),
+            'whyEn': _inst_trim_text(item.get('whyEn'), 300),
+            'whyZh': _inst_trim_text(item.get('whyZh'), 300),
+        })
+    existing = {item['symbol'] for item in affected}
+    for symbol in allowed_symbols:
+        if symbol not in existing:
+            affected.append({
+                'symbol': symbol,
+                'direction': article.get('marketDirection', 'mixed'),
+                'impactType': 'macro' if article.get('topic') in ('Monetary policy', 'Economy & labor', 'Geopolitics & trade') else 'direct',
+                'horizon': 'short_term',
+                'confidence': 55,
+                'whyEn': 'Included by the verified news provider or deterministic topic mapping.',
+                'whyZh': '由新闻数据源或确定性主题映射识别为可能受影响标的。',
+            })
+    return {
+        'status': 'ready',
+        'headlineZh': _inst_trim_text(raw.get('headlineZh'), 240),
+        'analysisEn': _inst_trim_text(raw.get('analysisEn'), 900),
+        'analysisZh': _inst_trim_text(raw.get('analysisZh'), 900),
+        'marketImpactEn': _inst_trim_text(raw.get('marketImpactEn'), 500),
+        'marketImpactZh': _inst_trim_text(raw.get('marketImpactZh'), 500),
+        'affectedStocks': affected[:12],
+        'confidence': max(0, min(100, int(_inst_to_float(raw.get('confidence'), 60) or 60))),
+        'provider': _safe_str(ai_cfg.get('provider') or 'AI'),
+        'model': _safe_str(ai_cfg.get('model') or ''),
+        'analyzedAt': datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _market_news_ai_enrich(uid, articles, *, notify=True, run_ai=True):
+    """Attach durable bilingual AI analysis to High/Critical news only."""
+    state = _market_news_ai_state(uid)
+    analyses = state.get('analyses') if isinstance(state.get('analyses'), dict) else {}
+    ai_cfg, ai_source = resolve_ai_config_for_user(uid)
+    candidates = []
+    for article in articles:
+        fingerprint = _market_news_fingerprint(article)
+        article['newsFingerprint'] = fingerprint
+        if article.get('impactLevel') in ('High', 'Critical') and fingerprint not in analyses:
+            candidates.append(article)
+
+    errors = []
+    durable_errors = state.get('errors') if isinstance(state.get('errors'), dict) else {}
+    if run_ai and candidates and ai_cfg.get('apiKey'):
+        try:
+            owns_ai_lease = operations_store.claim_worker_lease(
+                'market-news-ai-%s' % uid,
+                _MARKET_NEWS_WORKER_OWNER,
+                ttl_seconds=240,
+                metadata={'component': 'market_news_ai', 'user': uid[:8]},
+            )
+        except Exception as exc:
+            owns_ai_lease = False
+            errors.append('ai_lease_%s' % str(exc)[:100])
+        if not owns_ai_lease:
+            candidates = []
+        # Analyze one article per request. The former eight-article response could
+        # exhaust the model's output budget and leave a truncated JSON document;
+        # one malformed batch then discarded every article in that batch.
+        for article in candidates[:24]:
+            request_row = {
+                'id': article['newsFingerprint'],
+                'headline': article.get('headline'),
+                'summary': _inst_trim_text(article.get('summary'), 700),
+                'source': article.get('source'),
+                'topic': article.get('topic'),
+                'impactLevel': article.get('impactLevel'),
+                'sentiment': article.get('sentiment'),
+                'affectedSymbols': article.get('symbols') or [],
+            }
+            system_prompt = (
+                'You are AlphaLab Market News Intelligence. Analyze only the supplied facts; do not invent prices, '
+                'earnings numbers, quotations, or affected tickers. Return one JSON object with an analyses array. '
+                'Each item must preserve id and contain headlineZh, analysisEn, analysisZh, marketImpactEn, '
+                'marketImpactZh, confidence (0-100), and affectedStocks. Each affectedStocks item must use only an '
+                'affectedSymbols ticker and contain symbol, direction (positive/negative/mixed), impactType '
+                '(direct/sector/macro/sympathy), horizon (intraday/short_term/medium_term), confidence, whyEn, whyZh. '
+                'The analyses array must contain exactly one item. Keep each narrative below 90 words. '
+                'Be concise, professional, bilingual, and explicitly state uncertainty.'
+            )
+            parsed, error = _inst_call_ai_trader(
+                ai_cfg,
+                system_prompt,
+                json.dumps({'articles': [request_row]}, separators=(',', ':'), default=str),
+            )
+            if error or not isinstance(parsed, dict):
+                message = str(error or 'invalid_ai_response')[:160]
+                errors.append(message)
+                durable_errors[article['newsFingerprint']] = {
+                    'error': message,
+                    'attemptedAt': datetime.now(timezone.utc).isoformat(),
+                }
+                continue
+            returned = {
+                _safe_str(item.get('id')): item
+                for item in (parsed.get('analyses') or [])
+                if isinstance(item, dict) and item.get('id')
+            }
+            raw = returned.get(article['newsFingerprint'])
+            if not raw or not _safe_str(raw.get('analysisEn')) or not _safe_str(raw.get('analysisZh')):
+                message = 'ai_response_missing_required_analysis'
+                errors.append(message)
+                durable_errors[article['newsFingerprint']] = {
+                    'error': message,
+                    'attemptedAt': datetime.now(timezone.utc).isoformat(),
+                }
+                continue
+            analyses[article['newsFingerprint']] = _market_news_normalize_analysis(raw, article, ai_cfg)
+            durable_errors.pop(article['newsFingerprint'], None)
+        state['analyses'] = analyses
+        state['errors'] = durable_errors
+        state['lastAttemptAt'] = datetime.now(timezone.utc).isoformat()
+        if any(article.get('newsFingerprint') in analyses for article in candidates):
+            state['lastSuccessAt'] = state['lastAttemptAt']
+        _market_news_save_ai_state(uid, state)
+
+    notification_receipts = _market_news_notification_receipts(state)
+    historical_notification_ids = None
+    handled_notification_fingerprints = set()
+    for article in articles:
+        fingerprint = article.get('newsFingerprint') or _market_news_fingerprint(article)
+        analysis = analyses.get(fingerprint)
+        if analysis:
+            article['aiAnalysis'] = analysis
+        elif article.get('impactLevel') in ('High', 'Critical'):
+            article['aiAnalysis'] = {
+                'status': 'not_configured' if not ai_cfg.get('apiKey') else 'pending',
+                'provider': _safe_str(ai_cfg.get('provider')),
+                'model': _safe_str(ai_cfg.get('model')),
+            }
+        else:
+            article['aiAnalysis'] = {'status': 'not_required'}
+
+        if (
+            notify
+            and analysis
+            and article.get('marketDirection') in ('positive', 'negative')
+            and fingerprint not in handled_notification_fingerprints
+        ):
+            handled_notification_fingerprints.add(fingerprint)
+            if _market_news_notification_is_final(notification_receipts.get(fingerprint)):
+                continue
+            event_id = 'market-news:%s' % fingerprint
+            if historical_notification_ids is None:
+                historical_notification_ids = _market_news_historical_notification_event_ids(uid)
+            if event_id in historical_notification_ids:
+                _market_news_notification_complete(
+                    uid,
+                    fingerprint,
+                    {'sent': True, 'reason': 'historical_delivery'},
+                    source='history',
+                )
+                continue
+            if not _market_news_notification_claim(uid, fingerprint):
+                continue
+            symbols = [item.get('symbol') for item in analysis.get('affectedStocks') or [] if item.get('symbol')]
+            result = send_discord_notification(uid, 'risk_alert', {
+                'event_id': event_id,
+                'fingerprint': fingerprint,
+                'notificationScope': 'equity',
+                'source': 'Market News AI',
+                'step': 'News Intelligence',
+                'component': 'Market Analysis',
+                'symbol': ', '.join(symbols[:8]) or 'MARKET',
+                'severity': 'high' if article.get('impactLevel') == 'High' else 'critical',
+                'status': article.get('marketDirection'),
+                'reason': '%s\n\n%s' % (_inst_trim_text(article.get('headline'), 240), analysis.get('analysisEn') or article.get('marketImpact')),
+                'reasonZh': '%s\n\n%s' % (analysis.get('headlineZh') or _inst_trim_text(article.get('headline'), 240), analysis.get('analysisZh') or analysis.get('marketImpactZh')),
+                'action': 'Review the affected stocks, impact direction, time horizon, and source before acting.',
+                'actionZh': '请结合受影响股票、方向、影响周期及原始新闻来源后再做决策。',
+            })
+            _market_news_notification_complete(uid, fingerprint, result)
+    return articles, {
+        'configured': bool(ai_cfg.get('apiKey')),
+        'source': ai_source,
+        'provider': _safe_str(ai_cfg.get('provider')),
+        'model': _safe_str(ai_cfg.get('model')),
+        'eligibleCount': sum(1 for item in articles if item.get('impactLevel') in ('High', 'Critical')),
+        'analyzedCount': sum(1 for item in articles if (item.get('aiAnalysis') or {}).get('status') == 'ready'),
+        'pendingCount': sum(1 for item in articles if (item.get('aiAnalysis') or {}).get('status') == 'pending'),
+        'lastAttemptAt': state.get('lastAttemptAt'),
+        'lastSuccessAt': state.get('lastSuccessAt'),
+        'errors': errors,
+    }
+
+
+def _market_news_schedule_ai(uid, articles):
+    eligible = [deepcopy(item) for item in articles if item.get('impactLevel') in ('High', 'Critical')]
+    if not eligible:
+        return False
+    with _MARKET_NEWS_AI_INFLIGHT_LOCK:
+        if uid in _MARKET_NEWS_AI_INFLIGHT:
+            return False
+        _MARKET_NEWS_AI_INFLIGHT.add(uid)
+
+    def worker():
+        try:
+            with headless_user_context(uid):
+                _market_news_ai_enrich(uid, eligible, notify=True, run_ai=True)
+        except Exception as exc:
+            safe_print('[MarketNewsAI] background analysis failed: %s' % exc)
+        finally:
+            with _MARKET_NEWS_AI_INFLIGHT_LOCK:
+                _MARKET_NEWS_AI_INFLIGHT.discard(uid)
+
+    threading.Thread(target=worker, daemon=True, name='market-news-ai-%s' % uid[:8]).start()
+    return True
+
+
 def _market_risk_aggregate(rows, benchmarks=None, universe_count=None, source='Alpaca'):
     rows = [row for row in (rows or []) if isinstance(row, dict)]
     changes = [float(row['changePct']) for row in rows]
@@ -17607,6 +19028,106 @@ def _market_risk_aggregate(rows, benchmarks=None, universe_count=None, source='A
     }
 
 
+_MARKET_AI_BRIEF_INFLIGHT = set()
+_MARKET_AI_BRIEF_INFLIGHT_LOCK = threading.Lock()
+
+
+def _market_ai_brief(uid, payload, *, allow_generate=False):
+    """Create a short bilingual interpretation without replacing raw metrics."""
+    artifact_type = 'market_ai_brief'
+    artifact_key = 'current'
+    input_payload = {
+        'snapshot': payload.get('snapshot'),
+        'benchmarks': payload.get('benchmarks'),
+        'sectorEtfs': payload.get('sectorEtfs'),
+        'themes': (payload.get('themeBreadth') or [])[:9],
+    }
+    fingerprint = hashlib.sha256(json.dumps(input_payload, sort_keys=True, separators=(',', ':'), default=str).encode('utf-8')).hexdigest()[:24]
+    try:
+        row = operations_store.get_artifact(uid, artifact_type, artifact_key)
+        cached = deepcopy((row or {}).get('payload') or {})
+        cached_at = datetime.fromisoformat(_safe_str(cached.get('generatedAt')).replace('Z', '+00:00')) if cached.get('generatedAt') else None
+        if cached_at and cached_at.tzinfo is None:
+            cached_at = cached_at.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - cached_at).total_seconds() if cached_at else None
+        if cached and (cached.get('fingerprint') == fingerprint or (age is not None and age < 15 * 60)):
+            cached['cache'] = {'status': 'hit', 'ageSeconds': round(max(0.0, age or 0.0), 1)}
+            return cached
+    except Exception:
+        cached = {}
+
+    ai_cfg, source = resolve_ai_config_for_user(uid)
+    if not ai_cfg.get('apiKey'):
+        return {'status': 'not_configured', 'source': source}
+    if not allow_generate:
+        with _MARKET_AI_BRIEF_INFLIGHT_LOCK:
+            should_start = uid not in _MARKET_AI_BRIEF_INFLIGHT
+            if should_start:
+                _MARKET_AI_BRIEF_INFLIGHT.add(uid)
+        if should_start:
+            def worker():
+                try:
+                    with headless_user_context(uid):
+                        owns_ai_lease = operations_store.claim_worker_lease(
+                            'market-ai-brief-%s' % uid,
+                            _MARKET_NEWS_WORKER_OWNER,
+                            ttl_seconds=120,
+                            metadata={'component': 'market_ai_brief', 'user': uid[:8]},
+                        )
+                        if owns_ai_lease:
+                            _market_ai_brief(uid, deepcopy(payload), allow_generate=True)
+                except Exception as exc:
+                    safe_print('[MarketAI] background brief failed: %s' % exc)
+                finally:
+                    with _MARKET_AI_BRIEF_INFLIGHT_LOCK:
+                        _MARKET_AI_BRIEF_INFLIGHT.discard(uid)
+            threading.Thread(target=worker, daemon=True, name='market-ai-brief-%s' % uid[:8]).start()
+        return {'status': 'pending', 'source': source}
+    system_prompt = (
+        'You are AlphaLab Market Strategist. Interpret only the supplied market breadth, benchmark, sector, and theme '
+        'metrics. Do not invent prices or news and do not issue personalized buy/sell instructions. Return one JSON '
+        'object with summaryEn, summaryZh, regimeEn, regimeZh, driversEn, driversZh, watchpointsEn, watchpointsZh, '
+        'dataQualityEn, dataQualityZh, and confidence (0-100). drivers/watchpoints must be arrays of at most 4 concise strings.'
+    )
+    parsed, error = _inst_call_ai_trader(ai_cfg, system_prompt, json.dumps(input_payload, separators=(',', ':'), default=str))
+    if error or not isinstance(parsed, dict):
+        if cached:
+            cached['cache'] = {'status': 'stale-if-error'}
+            cached['warning'] = str(error or 'invalid_ai_response')[:160]
+            return cached
+        return {'status': 'unavailable', 'error': str(error or 'invalid_ai_response')[:160]}
+    result = {
+        'status': 'ready',
+        'fingerprint': fingerprint,
+        'summaryEn': _inst_trim_text(parsed.get('summaryEn'), 900),
+        'summaryZh': _inst_trim_text(parsed.get('summaryZh'), 900),
+        'regimeEn': _inst_trim_text(parsed.get('regimeEn'), 180),
+        'regimeZh': _inst_trim_text(parsed.get('regimeZh'), 180),
+        'driversEn': [_inst_trim_text(value, 240) for value in (parsed.get('driversEn') or [])[:4]],
+        'driversZh': [_inst_trim_text(value, 240) for value in (parsed.get('driversZh') or [])[:4]],
+        'watchpointsEn': [_inst_trim_text(value, 240) for value in (parsed.get('watchpointsEn') or [])[:4]],
+        'watchpointsZh': [_inst_trim_text(value, 240) for value in (parsed.get('watchpointsZh') or [])[:4]],
+        'dataQualityEn': _inst_trim_text(parsed.get('dataQualityEn'), 360),
+        'dataQualityZh': _inst_trim_text(parsed.get('dataQualityZh'), 360),
+        'confidence': max(0, min(100, int(_inst_to_float(parsed.get('confidence'), 60) or 60))),
+        'provider': _safe_str(ai_cfg.get('provider')),
+        'model': _safe_str(ai_cfg.get('model')),
+        'generatedAt': datetime.now(timezone.utc).isoformat(),
+        'cache': {'status': 'miss', 'ageSeconds': 0},
+    }
+    try:
+        operations_store.put_artifact(
+            uid,
+            artifact_type,
+            artifact_key,
+            payload=result,
+            idempotency_key='market-ai-brief:%s:%s' % (uid, fingerprint),
+        )
+    except Exception as exc:
+        safe_print('[MarketAI] brief persistence failed: %s' % exc)
+    return result
+
+
 @app.route('/api/market/risk-snapshot', methods=['GET'])
 def market_risk_snapshot():
     """Broad-market risk state from liquid active US equities, not a default ticker list."""
@@ -17678,7 +19199,17 @@ def market_risk_snapshot():
             else:
                 bucket['unchanged'] += 1
         exchange_breadth = sorted(exchange_groups.values(), key=lambda row: row['total'], reverse=True)[:5]
-        movers = sorted(selected_rows, key=lambda row: abs(row['changePct']), reverse=True)[:12]
+        index_symbols, index_sources, index_errors, index_cache = _market_index_constituents(force_refresh=force_refresh)
+        index_rows = [row for row in selected_rows if row.get('symbol') in index_symbols]
+        # Movers remain useful only when they refer to recognizable, liquid
+        # large-cap names. If both official sources are temporarily unavailable,
+        # fail visibly to the benchmark/sector confirmation set instead of
+        # silently reverting to obscure whole-market symbols.
+        if not index_rows:
+            index_rows = [row for row in selected_rows if row.get('symbol') in set(_INST_BENCHMARK_SYMBOLS + _INST_SECTOR_ETF_SYMBOLS)]
+        movers = sorted(index_rows, key=lambda row: abs(row['changePct']), reverse=True)[:12]
+        gainers = sorted(index_rows, key=lambda row: float(row.get('changePct') or 0), reverse=True)[:12]
+        losers = sorted(index_rows, key=lambda row: float(row.get('changePct') or 0))[:12]
         timestamps = [str(row.get('dayBarTime')) for row in selected_rows if row.get('dayBarTime')]
         payload = {
             'success': True,
@@ -17687,6 +19218,17 @@ def market_risk_snapshot():
             'sectorEtfs': sector_etfs,
             'exchangeBreadth': exchange_breadth,
             'movers': movers,
+            'gainers': gainers,
+            'losers': losers,
+            'themeBreadth': _market_intelligence_theme_breadth(selected_rows),
+            'moverUniverse': {
+                'name': 'SPY + Nasdaq-100 constituents',
+                'constituentCount': len(index_symbols),
+                'matchedSnapshotCount': len(index_rows),
+                'sources': index_sources,
+                'errors': index_errors,
+                'cache': index_cache,
+            },
             'asOf': max(timestamps) if timestamps else datetime.now(timezone.utc).isoformat(),
             'generatedAt': datetime.now(timezone.utc).isoformat(),
             'universeSource': universe_source,
@@ -17696,6 +19238,7 @@ def market_risk_snapshot():
             'confirmationErrorCount': len(confirmation_errors),
             'cache': {'status': 'miss', 'ageSeconds': 0},
         }
+        payload['aiBrief'] = _market_ai_brief(user['id'], payload)
         with _MARKET_RISK_CACHE_LOCK:
             _MARKET_RISK_CACHE[cache_key] = {'storedAt': now, 'payload': deepcopy(payload)}
         return jsonify(payload)
@@ -17707,6 +19250,912 @@ def market_risk_snapshot():
             return jsonify(payload)
         safe_print('[MarketRisk] snapshot failed: %s' % exc)
         return jsonify({'success': False, 'error': str(exc)}), 503
+
+
+@app.route('/api/market/intelligence/news', methods=['GET'])
+@app.route('/api/trade/intelligence/news', methods=['GET'])
+def trade_intelligence_news():
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'error': 'Authentication required'}), 401
+    try:
+        days = max(1, min(int(_inst_to_float(request.args.get('days'), 1) or 1), 7))
+        limit = max(20, min(int(_inst_to_float(request.args.get('limit'), 100) or 100), 200))
+        force_refresh = str(request.args.get('refresh') or '').lower() in ('1', 'true', 'yes')
+        market_cfg, market_status = resolve_alpaca_config_strict_user('market_data')
+        finnhub_cfg, finnhub_status = resolve_finnhub_config_strict_user()
+        articles, sources, errors = _market_intelligence_fetch_news(
+            market_cfg if market_status == 'ok' else {},
+            finnhub_cfg if finnhub_status == 'ok' else {},
+            days=days,
+            limit=limit,
+            user_id=user['id'],
+            force_refresh=force_refresh,
+        )
+        articles, ai_status = _market_news_ai_enrich(user['id'], articles, notify=False, run_ai=False)
+        ai_job_started = False
+        if ai_status.get('configured') and ai_status.get('analyzedCount', 0) < ai_status.get('eligibleCount', 0):
+            ai_job_started = _market_news_schedule_ai(user['id'], articles)
+        ai_status['jobStarted'] = bool(ai_job_started)
+        ai_status['pollAfterSeconds'] = 6 if ai_status.get('pendingCount') else None
+        return jsonify({
+            'success': True,
+            'articles': articles,
+            'count': len(articles),
+            'sources': sources,
+            'errors': errors,
+            'ai': ai_status,
+            'refreshIntervalSeconds': 300,
+            'windowDays': days,
+            'generatedAt': datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as exc:
+        safe_print('[MarketIntelligence] news failed: %s' % exc)
+        return jsonify({'success': False, 'error': str(exc), 'articles': []}), 503
+
+
+def _market_intelligence_watchlist_symbols(payload):
+    raw_symbols = payload.get('symbols') if isinstance(payload, dict) else []
+    if not isinstance(raw_symbols, list):
+        return []
+    symbols = []
+    seen = set()
+    for raw_symbol in raw_symbols:
+        symbol = _inst_clean_symbol(raw_symbol)
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            symbols.append(symbol)
+    return symbols
+
+
+def _market_intelligence_filter_watchlist_earnings(events, watchlist_symbols):
+    allowed = set(_market_intelligence_watchlist_symbols({'symbols': watchlist_symbols}))
+    if not allowed or not isinstance(events, list):
+        return []
+    deduped = {}
+    for raw_event in events:
+        if not isinstance(raw_event, dict):
+            continue
+        date = _safe_str(raw_event.get('date'))
+        symbol = _inst_clean_symbol(raw_event.get('symbol'))
+        hour = _safe_str(raw_event.get('hour'))
+        event_key = (date, symbol, hour)
+        if not date or symbol not in allowed or event_key in deduped:
+            continue
+        event = dict(raw_event)
+        event['symbol'] = symbol
+        deduped[event_key] = event
+    return sorted(
+        deduped.values(),
+        key=lambda event: (_safe_str(event.get('date')), _safe_str(event.get('symbol'))),
+    )
+
+
+_MARKET_EARNINGS_CALENDAR_CACHE = {}
+_MARKET_EARNINGS_CALENDAR_CACHE_LOCK = threading.Lock()
+_MARKET_EARNINGS_CALENDAR_CACHE_TTL_SECONDS = 12 * 60 * 60
+_MARKET_EARNINGS_CALENDAR_FORCE_REFRESH_MIN_AGE_SECONDS = 30 * 60
+_MARKET_EARNINGS_CALENDAR_STALE_TTL_SECONDS = 7 * 24 * 60 * 60
+
+
+def _market_intelligence_alpha_vantage_config(environ=None):
+    """Resolve the shared server-side calendar provider without exposing its key."""
+    environ = os.environ if environ is None else environ
+    return {
+        'api_key': _safe_str(environ.get('ALPHA_VANTAGE_API_KEY')).strip(),
+        'base_url': _safe_str(
+            environ.get('ALPHA_VANTAGE_BASE_URL') or 'https://www.alphavantage.co/query'
+        ).strip(),
+    }
+
+
+def _market_intelligence_alpha_vantage_hour(value):
+    normalized = re.sub(r'[^a-z]+', '-', _safe_str(value).strip().lower()).strip('-')
+    if normalized in {'pre-market', 'before-market', 'bmo'}:
+        return 'bmo'
+    if normalized in {'post-market', 'after-market', 'amc'}:
+        return 'amc'
+    if normalized in {'during-market', 'market-hours', 'dmh'}:
+        return 'dmh'
+    return None
+
+
+def _market_intelligence_parse_alpha_vantage_earnings(csv_text):
+    text = _safe_str(csv_text).lstrip('\ufeff').strip()
+    if not text:
+        raise ValueError('empty_response')
+    if text.startswith('{'):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError('invalid_response') from exc
+        if isinstance(payload, dict) and any(
+            payload.get(key) for key in ('Error Message', 'Information', 'Note')
+        ):
+            raise ValueError('provider_limit_or_error')
+        raise ValueError('unexpected_json_response')
+
+    reader = csv.DictReader(StringIO(text))
+    required_fields = {'symbol', 'reportDate'}
+    if not reader.fieldnames or not required_fields.issubset(set(reader.fieldnames)):
+        raise ValueError('invalid_csv_header')
+
+    events = []
+    for row in reader:
+        if not isinstance(row, dict):
+            continue
+        symbol = _inst_clean_symbol(row.get('symbol'))
+        report_date = _safe_str(row.get('reportDate')).strip()
+        if not symbol or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', report_date):
+            continue
+        fiscal_date = _safe_str(row.get('fiscalDateEnding')).strip()
+        estimate = _inst_to_float(row.get('estimate'), None)
+        event = {
+            'date': report_date,
+            'symbol': symbol,
+            'hour': _market_intelligence_alpha_vantage_hour(row.get('timeOfTheDay')),
+            'epsEstimate': estimate,
+            'epsActual': None,
+            'revenueEstimate': None,
+            'revenueActual': None,
+            'dateStatus': 'provider_expected',
+            'source': 'Alpha Vantage earnings calendar',
+            'companyName': _safe_str(row.get('name')).strip() or None,
+            'fiscalDateEnding': fiscal_date or None,
+            'currency': _safe_str(row.get('currency')).strip() or None,
+        }
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', fiscal_date):
+            event['year'] = int(fiscal_date[:4])
+            event['quarter'] = ((int(fiscal_date[5:7]) - 1) // 3) + 1
+        events.append(event)
+    return events
+
+
+def _market_intelligence_fetch_shared_earnings(*, force_refresh=False):
+    """Fetch the global calendar once and share the cached result across all users."""
+    config = _market_intelligence_alpha_vantage_config()
+    if not config.get('api_key'):
+        return [], {
+            'status': 'not_configured', 'error': 'alpha_vantage_not_configured',
+            'cache': {'status': 'unavailable'},
+        }
+
+    now = time.time()
+    with _MARKET_EARNINGS_CALENDAR_CACHE_LOCK:
+        cached_events = _MARKET_EARNINGS_CALENDAR_CACHE.get('events')
+        fetched_at = float(_MARKET_EARNINGS_CALENDAR_CACHE.get('fetchedAt') or 0)
+        age_seconds = max(0, int(now - fetched_at)) if fetched_at else None
+        fresh = isinstance(cached_events, list) and age_seconds is not None and (
+            age_seconds < _MARKET_EARNINGS_CALENDAR_CACHE_TTL_SECONDS
+        )
+        refresh_too_soon = bool(force_refresh and fresh and (
+            age_seconds < _MARKET_EARNINGS_CALENDAR_FORCE_REFRESH_MIN_AGE_SECONDS
+        ))
+        if fresh and (not force_refresh or refresh_too_soon):
+            return deepcopy(cached_events), {
+                'status': 'ready', 'error': None,
+                'cache': {'status': 'hit', 'ageSeconds': age_seconds},
+            }
+
+        try:
+            response = requests.get(
+                config.get('base_url'),
+                params={
+                    'function': 'EARNINGS_CALENDAR',
+                    'horizon': '3month',
+                    'apikey': config.get('api_key'),
+                },
+                headers={'Accept': 'text/csv,application/x-download;q=0.9,*/*;q=0.5'},
+                timeout=(3.05, 20),
+            )
+            if response.status_code != 200:
+                raise ValueError('http_%s' % response.status_code)
+            events = _market_intelligence_parse_alpha_vantage_earnings(response.text)
+            if not events:
+                raise ValueError('empty_calendar')
+            _MARKET_EARNINGS_CALENDAR_CACHE.clear()
+            _MARKET_EARNINGS_CALENDAR_CACHE.update({
+                'events': events,
+                'fetchedAt': time.time(),
+            })
+            return deepcopy(events), {
+                'status': 'ready', 'error': None,
+                'cache': {'status': 'refresh' if force_refresh else 'miss', 'ageSeconds': 0},
+            }
+        except Exception as exc:
+            error = 'alpha_vantage_%s' % (
+                _safe_str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+            )
+            stale_age = max(0, int(time.time() - fetched_at)) if fetched_at else None
+            if isinstance(cached_events, list) and stale_age is not None and (
+                stale_age < _MARKET_EARNINGS_CALENDAR_STALE_TTL_SECONDS
+            ):
+                return deepcopy(cached_events), {
+                    'status': 'stale', 'error': error,
+                    'cache': {'status': 'stale', 'ageSeconds': stale_age},
+                }
+            return [], {
+                'status': 'unavailable', 'error': error,
+                'cache': {'status': 'unavailable'},
+            }
+
+
+def _market_intelligence_fetch_watchlist_earnings(
+    watchlist_symbols,
+    *,
+    days_forward=30,
+    force_refresh=False,
+):
+    """Filter the shared Alpha Vantage batch calendar to the current Watchlist."""
+    symbols = _market_intelligence_watchlist_symbols({'symbols': watchlist_symbols})[:60]
+    if not symbols:
+        return [], {
+            'status': 'empty_watchlist',
+            'requestedSymbols': len(symbols),
+            'symbolsWithEvents': [],
+            'symbolsWithoutEvents': symbols,
+            'errors': [],
+        }
+    start_date = datetime.now(ZoneInfo('America/New_York')).date()
+    end_date = start_date + timedelta(days=max(7, min(int(days_forward or 30), 90)))
+    shared_events, provider_status = _market_intelligence_fetch_shared_earnings(
+        force_refresh=force_refresh,
+    )
+    window_events = [
+        event for event in shared_events
+        if start_date.isoformat() <= _safe_str(event.get('date')) <= end_date.isoformat()
+    ]
+    events = _market_intelligence_filter_watchlist_earnings(window_events, symbols)
+    with_events = sorted({_inst_clean_symbol(event.get('symbol')) for event in events})
+    provider_error = provider_status.get('error')
+    coverage = {
+        'status': provider_status.get('status') or 'unavailable',
+        'requestedSymbols': len(symbols),
+        'symbolsWithEvents': with_events,
+        'symbolsWithoutEvents': [symbol for symbol in symbols if symbol not in set(with_events)],
+        'errors': [provider_error] if provider_error else [],
+        'windowStart': start_date.isoformat(),
+        'windowEnd': end_date.isoformat(),
+        'method': 'shared_batch',
+        'provider': 'Alpha Vantage',
+        'cache': provider_status.get('cache') or {},
+    }
+    return events, coverage
+
+
+_MARKET_ECONOMIC_CALENDAR_CACHE = {}
+_MARKET_ECONOMIC_CALENDAR_CACHE_LOCK = threading.Lock()
+_MARKET_ECONOMIC_CALENDAR_CACHE_TTL_SECONDS = 6 * 60 * 60
+_MARKET_ECONOMIC_CALENDAR_STALE_TTL_SECONDS = 7 * 24 * 60 * 60
+_MARKET_ECONOMIC_CALENDAR_URLS = {
+    'bls': 'https://www.bls.gov/schedule/news_release/bls.ics',
+    'bea': 'https://www.bea.gov/news/schedule/ics/online-calendar-subscription.ics',
+    'census': 'https://www.census.gov/economic-indicators/calendar-listview.html',
+    'fed': 'https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm',
+    'omb_census_template': 'https://www.census.gov/economic-indicators/econcards/assets/pdf/censusreleaseglance_%s.pdf',
+}
+_MARKET_ECONOMIC_REQUEST_HEADERS = {
+    'User-Agent': 'AlphaLab/3.0 economic-calendar (+https://alphalabquant.com)',
+    'Accept': 'text/calendar,text/html,application/pdf;q=0.9,*/*;q=0.5',
+}
+
+
+def _market_calendar_text(value):
+    return re.sub(r'\s+', ' ', _html.unescape(_inst_strip_html(value))).replace('\xa0', ' ').strip()
+
+
+def _market_calendar_importance(title):
+    lowered = _safe_str(title).lower()
+    high_terms = (
+        'employment situation', 'nonfarm payroll', 'consumer price index', 'producer price index',
+        'fomc', 'gross domestic product', 'gdp ', 'personal income and outlays', 'pce inflation',
+    )
+    medium_terms = (
+        'retail', 'job openings', 'employment cost', 'import and export price', 'international trade',
+        'durable goods', 'housing starts', 'new residential', 'construction spending',
+        'industrial production', 'consumer credit', 'manufacturers', 'wholesale trade',
+        'business inventories', 'productivity and costs', 'corporate profits',
+    )
+    if any(term in lowered for term in high_terms):
+        return 'high'
+    if any(term in lowered for term in medium_terms):
+        return 'medium'
+    return 'low'
+
+
+def _market_calendar_event(title, event_dt, source, *, period=None, source_url=None, importance=None):
+    eastern = ZoneInfo('America/New_York')
+    if event_dt.tzinfo is None:
+        event_dt = event_dt.replace(tzinfo=eastern)
+    else:
+        event_dt = event_dt.astimezone(eastern)
+    clean_title = _market_calendar_text(title)
+    return {
+        'date': event_dt.date().isoformat(),
+        'time': event_dt.strftime('%H:%M ET'),
+        'timezone': 'America/New_York',
+        'name': clean_title,
+        'country': 'US',
+        'importance': importance or _market_calendar_importance(clean_title),
+        'period': _market_calendar_text(period) or None,
+        'actual': None,
+        'forecast': None,
+        'previous': None,
+        'source': source,
+        'sourceUrl': source_url,
+    }
+
+
+def _market_calendar_request(url, *, timeout=10):
+    response = requests.get(
+        url,
+        headers=_MARKET_ECONOMIC_REQUEST_HEADERS,
+        timeout=(3.05, timeout),
+    )
+    if response.status_code != 200:
+        raise RuntimeError('http_%s' % response.status_code)
+    return response
+
+
+def _market_calendar_unfold_ics(text):
+    unfolded = []
+    for line in _safe_str(text).replace('\r\n', '\n').replace('\r', '\n').split('\n'):
+        if line.startswith((' ', '\t')) and unfolded:
+            unfolded[-1] += line[1:]
+        else:
+            unfolded.append(line)
+    return unfolded
+
+
+def _market_calendar_ics_datetime(raw_value):
+    value = _safe_str(raw_value).strip()
+    eastern = ZoneInfo('America/New_York')
+    formats = (
+        ('%Y%m%dT%H%M%SZ', timezone.utc),
+        ('%Y%m%dT%H%M%S', eastern),
+        ('%Y%m%dT%H%MZ', timezone.utc),
+        ('%Y%m%dT%H%M', eastern),
+        ('%Y%m%d', eastern),
+    )
+    for date_format, tzinfo in formats:
+        try:
+            return datetime.strptime(value, date_format).replace(tzinfo=tzinfo)
+        except ValueError:
+            continue
+    return None
+
+
+def _market_calendar_parse_ics(text, source, source_url):
+    events = []
+    current = None
+    for line in _market_calendar_unfold_ics(text):
+        if line == 'BEGIN:VEVENT':
+            current = {}
+            continue
+        if line == 'END:VEVENT':
+            if current:
+                summary = _safe_str(current.get('SUMMARY')).replace('\\,', ',').replace('\\;', ';').replace('\\n', ' ')
+                event_dt = _market_calendar_ics_datetime(current.get('DTSTART'))
+                if summary and event_dt:
+                    summary_aliases = {
+                        'Employment Situation': 'Employment Situation (Nonfarm Payrolls)',
+                        'Consumer Price Index': 'Consumer Price Index (CPI)',
+                        'Producer Price Index': 'Producer Price Index (PPI)',
+                    }
+                    summary = summary_aliases.get(summary.strip(), summary)
+                    if summary.lower().startswith('personal income and outlays'):
+                        summary = '%s (PCE inflation)' % summary
+                    events.append(_market_calendar_event(
+                        summary,
+                        event_dt,
+                        source,
+                        source_url=source_url,
+                    ))
+            current = None
+            continue
+        if current is None or ':' not in line:
+            continue
+        raw_key, value = line.split(':', 1)
+        key = raw_key.split(';', 1)[0].upper()
+        if key in ('SUMMARY', 'DTSTART'):
+            current[key] = value.strip()
+    return events
+
+
+def _market_calendar_parse_omb_bls_text(text, year, source_url):
+    if not text:
+        raise RuntimeError('bls_schedule_page_not_found')
+    rows = (
+        ('Employment Situation (Nonfarm Payrolls)', 'The Employment Situation', 'Producer Price Indexes'),
+        ('Producer Price Index', 'Producer Price Indexes', 'Consumer Price Index'),
+        ('Consumer Price Index (CPI)', 'Consumer Price Index', 'Real Earnings'),
+        ('Employment Cost Index', 'Employment Cost Index', 'U.S. Import and Export Price Indexes'),
+        ('U.S. Import and Export Price Indexes', 'U.S. Import and Export Price Indexes', 'DEPT AGENCY/INDICATORS'),
+    )
+    events = []
+    eastern = ZoneInfo('America/New_York')
+    for title, start_marker, end_marker in rows:
+        start_index = text.find(start_marker)
+        end_index = text.find(end_marker, start_index + len(start_marker)) if start_index >= 0 else -1
+        if start_index < 0 or end_index < 0:
+            continue
+        segment = text[start_index + len(start_marker):end_index]
+        days = [int(value) for value in re.findall(r'\b(?:[1-9]|[12]\d|3[01])\b', segment)]
+        if len(days) < 12:
+            continue
+        for month, day in enumerate(days[-12:], start=1):
+            try:
+                event_dt = datetime(int(year), month, day, 8, 30, tzinfo=eastern)
+            except ValueError:
+                continue
+            events.append(_market_calendar_event(
+                title,
+                event_dt,
+                'BLS schedule (OMB PFEI via Census Bureau)',
+                source_url=source_url,
+                importance='high' if title in ('Employment Situation (Nonfarm Payrolls)', 'Producer Price Index', 'Consumer Price Index (CPI)') else 'medium',
+            ))
+    if not events:
+        raise RuntimeError('bls_schedule_rows_not_found')
+    return events
+
+
+def _market_calendar_parse_omb_bls_pdf(content, year, source_url):
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise RuntimeError('pypdf_not_installed') from exc
+    text = ''
+    for page in PdfReader(BytesIO(content)).pages:
+        page_text = page.extract_text() or ''
+        if 'BUREAU OF LABOR STATISTICS' in page_text.upper():
+            text = page_text
+            break
+    return _market_calendar_parse_omb_bls_text(text, year, source_url)
+
+
+def _market_calendar_fetch_bls(start_date, end_date):
+    warnings = []
+    try:
+        response = _market_calendar_request(_MARKET_ECONOMIC_CALENDAR_URLS['bls'], timeout=8)
+        if 'BEGIN:VCALENDAR' not in response.text:
+            raise RuntimeError('invalid_ics')
+        events = _market_calendar_parse_ics(response.text, 'U.S. Bureau of Labor Statistics', _MARKET_ECONOMIC_CALENDAR_URLS['bls'])
+        if not events:
+            raise RuntimeError('empty_ics')
+        return events, 'U.S. Bureau of Labor Statistics', warnings
+    except Exception as exc:
+        warnings.append('bls_ics_%s; using official OMB schedule mirror' % str(exc)[:80])
+
+    events = []
+    for year in range(start_date.year, end_date.year + 1):
+        source_url = _MARKET_ECONOMIC_CALENDAR_URLS['omb_census_template'] % year
+        try:
+            response = _market_calendar_request(source_url, timeout=12)
+            events.extend(_market_calendar_parse_omb_bls_pdf(response.content, year, source_url))
+        except Exception as exc:
+            warnings.append('bls_omb_%s_%s' % (year, str(exc)[:80]))
+    if not events:
+        raise RuntimeError('; '.join(warnings) or 'bls_calendar_unavailable')
+    return events, 'BLS / OMB PFEI schedule (Census Bureau mirror)', warnings
+
+
+def _market_calendar_fetch_bea(_start_date, _end_date):
+    source_url = _MARKET_ECONOMIC_CALENDAR_URLS['bea']
+    response = _market_calendar_request(source_url, timeout=10)
+    events = _market_calendar_parse_ics(response.text, 'U.S. Bureau of Economic Analysis', source_url)
+    if not events:
+        raise RuntimeError('bea_calendar_empty')
+    return events, 'U.S. Bureau of Economic Analysis', []
+
+
+def _market_calendar_parse_census_html(html, source_url):
+    events = []
+    eastern = ZoneInfo('America/New_York')
+    for row_html in re.findall(r'<tr\b[^>]*>(.*?)</tr>', _safe_str(html), flags=re.IGNORECASE | re.DOTALL):
+        cells = re.findall(r'<td\b[^>]*>(.*?)</td>', row_html, flags=re.IGNORECASE | re.DOTALL)
+        if len(cells) < 4:
+            continue
+        title, date_text, time_text, period = [_market_calendar_text(cell) for cell in cells[:4]]
+        if not title or not date_text or not time_text:
+            continue
+        try:
+            event_dt = datetime.strptime('%s %s' % (date_text, time_text), '%B %d, %Y %I:%M %p').replace(tzinfo=eastern)
+        except ValueError:
+            continue
+        events.append(_market_calendar_event(
+            title,
+            event_dt,
+            'U.S. Census Bureau',
+            period=period,
+            source_url=source_url,
+        ))
+    return events
+
+
+def _market_calendar_fetch_census(_start_date, _end_date):
+    source_url = _MARKET_ECONOMIC_CALENDAR_URLS['census']
+    response = _market_calendar_request(source_url, timeout=10)
+    events = _market_calendar_parse_census_html(response.text, source_url)
+    if not events:
+        raise RuntimeError('census_calendar_empty')
+    return events, 'U.S. Census Bureau', []
+
+
+def _market_calendar_parse_fed_html(html, source_url):
+    year_matches = list(re.finditer(r'>(20\d{2}) FOMC Meetings<', html, flags=re.IGNORECASE))
+    eastern = ZoneInfo('America/New_York')
+    events = []
+    for index, year_match in enumerate(year_matches):
+        year = int(year_match.group(1))
+        block_end = year_matches[index + 1].start() if index + 1 < len(year_matches) else len(html)
+        block = html[year_match.end():block_end]
+        meeting_matches = re.findall(
+            r'fomc-meeting__month[^>]*>\s*<strong>([^<]+)</strong>.*?fomc-meeting__date[^>]*>([^<]+)</div>',
+            block,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        for month_text, date_text in meeting_matches:
+            day_values = [int(value) for value in re.findall(r'\d{1,2}', date_text)]
+            if not day_values:
+                continue
+            try:
+                month = datetime.strptime(_market_calendar_text(month_text), '%B').month
+                event_dt = datetime(year, month, day_values[-1], 14, 0, tzinfo=eastern)
+            except ValueError:
+                continue
+            title = 'FOMC interest-rate decision'
+            if '*' in date_text:
+                title += ' and economic projections'
+            events.append(_market_calendar_event(
+                title,
+                event_dt,
+                'Federal Reserve Board',
+                source_url=source_url,
+                importance='high',
+            ))
+    return events
+
+
+def _market_calendar_fetch_fed(_start_date, _end_date):
+    source_url = _MARKET_ECONOMIC_CALENDAR_URLS['fed']
+    response = _market_calendar_request(source_url, timeout=10)
+    events = _market_calendar_parse_fed_html(response.text, source_url)
+    if not events:
+        raise RuntimeError('fomc_calendar_empty')
+    return events, 'Federal Reserve Board', []
+
+
+def _market_calendar_canonical_title(title):
+    text = re.sub(r'[^a-z0-9]+', ' ', _safe_str(title).lower()).strip()
+    text = re.sub(r'\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+20\d{2}\b', '', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _market_calendar_filter_and_dedupe(events, start_date, end_date):
+    importance_rank = {'low': 1, 'medium': 2, 'high': 3}
+    deduped = {}
+    for event in events or []:
+        if not isinstance(event, dict):
+            continue
+        try:
+            event_date = datetime.strptime(_safe_str(event.get('date'))[:10], '%Y-%m-%d').date()
+        except ValueError:
+            continue
+        if event_date < start_date or event_date > end_date:
+            continue
+        key = (
+            event_date.isoformat(),
+            _safe_str(event.get('time')),
+            _market_calendar_canonical_title(event.get('name')),
+        )
+        current = deduped.get(key)
+        if current is None or importance_rank.get(event.get('importance'), 0) > importance_rank.get(current.get('importance'), 0):
+            deduped[key] = dict(event)
+    return sorted(
+        deduped.values(),
+        key=lambda event: (_safe_str(event.get('date')), _safe_str(event.get('time')), _safe_str(event.get('name'))),
+    )
+
+
+def _market_intelligence_official_economic_events(days_forward=30, force_refresh=False):
+    eastern = ZoneInfo('America/New_York')
+    start_date = datetime.now(eastern).date()
+    end_date = start_date + timedelta(days=max(7, min(int(days_forward or 30), 90)))
+    now = time.time()
+    with _MARKET_ECONOMIC_CALENDAR_CACHE_LOCK:
+        cached = deepcopy(_MARKET_ECONOMIC_CALENDAR_CACHE)
+    age = max(0.0, now - float(cached.get('storedAt') or 0)) if cached else None
+    if cached and not force_refresh and age < _MARKET_ECONOMIC_CALENDAR_CACHE_TTL_SECONDS:
+        return {
+            **cached,
+            'events': _market_calendar_filter_and_dedupe(cached.get('allEvents'), start_date, end_date),
+            'cache': {'status': 'hit', 'ageSeconds': round(age, 1)},
+        }
+
+    fetchers = {
+        'bls': _market_calendar_fetch_bls,
+        'bea': _market_calendar_fetch_bea,
+        'census': _market_calendar_fetch_census,
+        'fed': _market_calendar_fetch_fed,
+    }
+    all_events = []
+    source_events = {}
+    source_stored_at = {}
+    sources = []
+    warnings = []
+    errors = []
+    source_status = {}
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {
+            executor.submit(fetcher, start_date, end_date): name
+            for name, fetcher in fetchers.items()
+        }
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                events, source, source_warnings = future.result()
+                all_events.extend(events)
+                source_events[name] = events
+                source_stored_at[name] = now
+                if source not in sources:
+                    sources.append(source)
+                warnings.extend(source_warnings or [])
+                source_status[name] = {'status': 'ready', 'eventCount': len(events), 'source': source}
+            except Exception as exc:
+                error = '%s_%s' % (name, str(exc)[:120])
+                errors.append(error)
+                cached_source_events = (cached.get('sourceEvents') or {}).get(name) or []
+                cached_source_time = float((cached.get('sourceStoredAt') or {}).get(name) or 0)
+                cached_source_age = max(0.0, now - cached_source_time) if cached_source_time else None
+                if cached_source_events and cached_source_age is not None and cached_source_age < _MARKET_ECONOMIC_CALENDAR_STALE_TTL_SECONDS:
+                    old_status = (cached.get('sourceStatus') or {}).get(name) or {}
+                    old_source = old_status.get('source') or name.upper()
+                    all_events.extend(cached_source_events)
+                    source_events[name] = cached_source_events
+                    source_stored_at[name] = cached_source_time
+                    if old_source not in sources:
+                        sources.append(old_source)
+                    warnings.append('%s_using_stale_cache' % name)
+                    source_status[name] = {
+                        'status': 'stale',
+                        'eventCount': len(cached_source_events),
+                        'source': old_source,
+                        'ageSeconds': round(cached_source_age, 1),
+                        'error': str(exc)[:120],
+                    }
+                else:
+                    source_status[name] = {'status': 'unavailable', 'eventCount': 0, 'error': str(exc)[:120]}
+
+    if not all_events and cached and age is not None and age < _MARKET_ECONOMIC_CALENDAR_STALE_TTL_SECONDS:
+        return {
+            **cached,
+            'events': _market_calendar_filter_and_dedupe(cached.get('allEvents'), start_date, end_date),
+            'errors': list(dict.fromkeys((cached.get('errors') or []) + errors)),
+            'warnings': list(dict.fromkeys((cached.get('warnings') or []) + warnings)),
+            'cache': {'status': 'stale-if-error', 'ageSeconds': round(age, 1)},
+        }
+
+    payload = {
+        'allEvents': _market_calendar_filter_and_dedupe(all_events, datetime(2020, 1, 1).date(), datetime(2100, 1, 1).date()),
+        'sourceEvents': source_events,
+        'sourceStoredAt': source_stored_at,
+        'sources': sorted(sources),
+        'warnings': list(dict.fromkeys(warnings)),
+        'errors': list(dict.fromkeys(errors)),
+        'sourceStatus': source_status,
+        'storedAt': now,
+    }
+    if all_events:
+        with _MARKET_ECONOMIC_CALENDAR_CACHE_LOCK:
+            _MARKET_ECONOMIC_CALENDAR_CACHE.clear()
+            _MARKET_ECONOMIC_CALENDAR_CACHE.update(deepcopy(payload))
+    return {
+        **payload,
+        'events': _market_calendar_filter_and_dedupe(all_events, start_date, end_date),
+        'cache': {'status': 'miss', 'ageSeconds': 0},
+    }
+
+
+def _market_intelligence_enrich_economic_values(
+    events, finnhub_cfg, *, days_forward=30, force_refresh=False,
+):
+    """Add consensus/actual/previous values when the configured Finnhub plan exposes them.
+
+    Official agency calendars remain authoritative for event dates. Finnhub is
+    only a secondary values layer and a plan denial is returned explicitly so
+    the UI can explain why consensus fields are unavailable.
+    """
+    rows = [dict(event) for event in (events or []) if isinstance(event, dict)]
+    if not rows or not finnhub_cfg or not finnhub_cfg.get('api_key'):
+        return rows, {'status': 'not_configured', 'matchedEvents': 0, 'error': None}
+    eastern = ZoneInfo('America/New_York')
+    start_date = datetime.now(eastern).date()
+    end_date = start_date + timedelta(days=max(7, min(int(days_forward or 30), 90)))
+    credential_scope = hashlib.sha256(_safe_str(finnhub_cfg.get('api_key')).encode('utf-8')).hexdigest()[:10]
+    cache_key = 'market_economic_values_%s_%s_%s' % (
+        credential_scope, start_date.isoformat(), end_date.isoformat(),
+    )
+    cached = None if force_refresh else stock_cache.get(cache_key)
+    if isinstance(cached, dict):
+        value_rows = cached.get('rows') or []
+        cached_status = cached.get('status') or {}
+        if not value_rows:
+            return rows, deepcopy(cached_status)
+    else:
+        value_rows = None
+    try:
+        if value_rows is None:
+            response = requests.get(
+                '%s/calendar/economic' % finnhub_cfg.get('base_url', 'https://finnhub.io/api/v1').rstrip('/'),
+                params={
+                    'from': start_date.isoformat(),
+                    'to': end_date.isoformat(),
+                    'token': finnhub_cfg.get('api_key'),
+                },
+                timeout=(3.05, 12),
+            )
+            if response.status_code == 403:
+                status = {'status': 'plan_required', 'matchedEvents': 0, 'error': 'finnhub_economic_calendar_plan_required'}
+                stock_cache.set(cache_key, {'rows': [], 'status': status})
+                return rows, status
+            if response.status_code != 200:
+                return rows, {'status': 'unavailable', 'matchedEvents': 0, 'error': 'finnhub_economic_http_%s' % response.status_code}
+            payload = response.json() if response.content else {}
+            value_rows = payload.get('economicCalendar') if isinstance(payload, dict) else []
+            if not isinstance(value_rows, list):
+                value_rows = []
+    except Exception as exc:
+        return rows, {'status': 'unavailable', 'matchedEvents': 0, 'error': 'finnhub_economic_%s' % type(exc).__name__}
+
+    def tokens(value):
+        ignored = {'the', 'and', 'of', 'us', 'u', 's', 'index', 'report', 'release'}
+        return {
+            token for token in re.findall(r'[a-z0-9]+', _safe_str(value).lower())
+            if len(token) > 2 and token not in ignored
+        }
+
+    candidates_by_date = {}
+    for item in value_rows:
+        if not isinstance(item, dict):
+            continue
+        country = _safe_str(item.get('country')).upper()
+        if country and country not in {'US', 'USA', 'UNITED STATES'}:
+            continue
+        raw_time = _safe_str(item.get('time') or item.get('date'))
+        date_key = raw_time[:10]
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', date_key):
+            candidates_by_date.setdefault(date_key, []).append(item)
+
+    matched = 0
+    for event in rows:
+        event_tokens = tokens(event.get('name'))
+        best = None
+        best_score = 0.0
+        for candidate in candidates_by_date.get(_safe_str(event.get('date'))[:10], []):
+            candidate_tokens = tokens(candidate.get('event') or candidate.get('name'))
+            if not event_tokens or not candidate_tokens:
+                continue
+            overlap = len(event_tokens & candidate_tokens)
+            score = overlap / max(1, min(len(event_tokens), len(candidate_tokens)))
+            if overlap >= 1 and score > best_score:
+                best, best_score = candidate, score
+        if best is None or best_score < 0.34:
+            event['valueStatus'] = 'not_available'
+            continue
+        event.update({
+            'actual': best.get('actual'),
+            'forecast': best.get('estimate') if best.get('estimate') is not None else best.get('forecast'),
+            'previous': best.get('prev') if best.get('prev') is not None else best.get('previous'),
+            'unit': best.get('unit'),
+            'valueStatus': 'available',
+            'valueSource': 'Finnhub economic calendar',
+        })
+        matched += 1
+    for event in rows:
+        event.setdefault('valueStatus', 'not_available')
+    status = {
+        'status': 'ready' if value_rows else 'empty',
+        'matchedEvents': matched,
+        'availableEvents': len(value_rows),
+        'error': None,
+    }
+    stock_cache.set(cache_key, {'rows': value_rows, 'status': status})
+    return rows, status
+
+
+@app.route('/api/market/intelligence/calendar', methods=['GET'])
+@app.route('/api/trade/intelligence/calendar', methods=['GET'])
+def trade_intelligence_calendar():
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'error': 'Authentication required'}), 401
+    days_forward = max(7, min(int(_inst_to_float(request.args.get('days'), 30) or 30), 90))
+    force_refresh = str(request.args.get('refresh') or '').lower() in ('1', 'true', 'yes')
+    watchlist_symbols = []
+    watchlist_status = 'empty'
+    watchlist_error = None
+    try:
+        watchlist_artifact = operations_store.get_artifact(user['id'], 'watchlist', 'primary')
+        watchlist_symbols = _market_intelligence_watchlist_symbols(
+            (watchlist_artifact or {}).get('payload') or {},
+        )
+        watchlist_status = 'ready' if watchlist_symbols else 'empty'
+    except Exception as exc:
+        watchlist_status = 'unavailable'
+        watchlist_error = 'watchlist_unavailable: %s' % str(exc)
+        safe_print('[MarketIntelligence] watchlist read failed: %s' % exc)
+
+    earnings = []
+    earnings_error = None
+    earnings_coverage = {
+        'status': 'empty_watchlist', 'requestedSymbols': 0,
+        'symbolsWithEvents': [], 'symbolsWithoutEvents': [], 'errors': [],
+    }
+    sources = []
+    finnhub_cfg, finnhub_status = resolve_finnhub_config_strict_user()
+    if watchlist_symbols:
+        earnings, earnings_coverage = _market_intelligence_fetch_watchlist_earnings(
+            watchlist_symbols,
+            days_forward=days_forward,
+            force_refresh=force_refresh,
+        )
+        earnings_error = '; '.join(earnings_coverage.get('errors') or []) or None
+        sources.append('Alpha Vantage earnings calendar')
+
+    economic_calendar = _market_intelligence_official_economic_events(days_forward, force_refresh=force_refresh)
+    economic_events = economic_calendar.get('events') or []
+    economic_events, economic_values = _market_intelligence_enrich_economic_values(
+        economic_events,
+        finnhub_cfg if finnhub_status == 'ok' else {},
+        days_forward=days_forward,
+        force_refresh=force_refresh,
+    )
+    economic_errors = economic_calendar.get('errors') or []
+    economic_warnings = list(economic_calendar.get('warnings') or [])
+    if economic_values.get('error'):
+        economic_warnings.append(economic_values['error'])
+    if economic_values.get('status') == 'ready' and economic_values.get('matchedEvents'):
+        sources.append('Finnhub economic consensus values')
+    economic_status = 'ready'
+    if economic_errors and economic_events:
+        economic_status = 'partial'
+    elif not economic_events:
+        economic_status = 'unavailable'
+    for source in economic_calendar.get('sources') or []:
+        if source not in sources:
+            sources.append(source)
+    errors = [error for error in (watchlist_error, earnings_error) if error] + economic_errors
+    return jsonify({
+        'success': True,
+        'earnings': earnings,
+        'earningsCount': len(earnings),
+        'earningsScope': 'watchlist',
+        'earningsCoverage': earnings_coverage,
+        'watchlistSymbols': watchlist_symbols,
+        'watchlistCount': len(watchlist_symbols),
+        'watchlistStatus': watchlist_status,
+        'economicEvents': economic_events,
+        'economicEventsCount': len(economic_events),
+        'economicCalendar': {
+            'status': economic_status,
+            'message': (
+                'Official public macro releases are independent of the watchlist.'
+                if economic_status == 'ready' else
+                'Official public macro releases are partially available; unavailable sources will retry after cache expiry.'
+                if economic_status == 'partial' else
+                'Official public macro calendars are temporarily unavailable.'
+            ),
+            'cache': economic_calendar.get('cache') or {},
+            'sourceStatus': economic_calendar.get('sourceStatus') or {},
+            'values': economic_values,
+        },
+        'sources': sources,
+        'errors': errors,
+        'warnings': economic_warnings,
+        'windowDays': days_forward,
+        'generatedAt': datetime.now(timezone.utc).isoformat(),
+    })
 
 
 # Keep the existing AI pipeline route stable while replacing its implementation.
@@ -18752,7 +21201,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data,
 
         payload = {
 
-            'model': _resolved_ai.get('model', 'deepseek-chat'),
+            'model': _resolved_ai.get('model', DEEPSEEK_DEFAULT_MODEL),
 
             'messages': [{'role': 'user', 'content': prompt}],
 
@@ -18979,7 +21428,7 @@ def analyze_trend_with_deepseek(symbol, stock_data, news_data, profile_data,
                 analysis_result['aiUsed'] = True
                 analysis_result['symbol'] = symbol
                 analysis_result['provider'] = _resolved_ai.get('provider', 'DeepSeek')
-                analysis_result['model'] = _resolved_ai.get('model', 'deepseek-chat')
+                analysis_result['model'] = _resolved_ai.get('model', DEEPSEEK_DEFAULT_MODEL)
                 analysis_result['configSource'] = _ai_source
 
                 return analysis_result
@@ -28486,7 +30935,7 @@ def infer_sector_with_deepseek(symbol, stock_data, news_data, profile_data):
 
         payload = {
 
-            'model': _resolved_ai.get('model', 'deepseek-chat'),
+            'model': _resolved_ai.get('model', DEEPSEEK_DEFAULT_MODEL),
 
             'messages': [{'role': 'user', 'content': prompt}],
 
@@ -29602,7 +32051,7 @@ def ai_analyze_single():
                 analysis_source = ai_analysis.get('analysisSource', 'rule_based')
                 ai_called = analysis_source == 'deepseek'
                 ai_source_label = ai_config.get('provider', 'DeepSeek') if ai_called else 'Local Rules'
-                ai_model_name = ai_config.get('model', 'deepseek-chat') if ai_called else None
+                ai_model_name = ai_config.get('model', DEEPSEEK_DEFAULT_MODEL) if ai_called else None
 
                 # Market data fields — sourced from Alpaca snapshot (fetched above)
                 _md_price = market_data.get('price') if market_data else None
@@ -29934,7 +32383,7 @@ Return ONLY the JSON. No preamble."""
 
         provider = _resolved_ai.get('provider', 'deepseek')
         base_url = _resolved_ai.get('baseURL', 'https://api.deepseek.com')
-        model = _resolved_ai.get('model', 'deepseek-chat')
+        model = _resolved_ai.get('model', DEEPSEEK_DEFAULT_MODEL)
 
         ai_headers = {
             'Authorization': f'Bearer {api_key}',
@@ -30368,7 +32817,9 @@ def _evaluate_entry_setup_trigger(
                 else (f'volume {volume_ratio:.2f}x' if volume_ratio is not None else None)
             ),
         )
-        impulse_available = price_continuation is not None or momentum_confirmed is not None
+        impulse_available = (
+            price_continuation is not None or momentum_confirmed is not None
+        )
         continuation_impulse = (
             bool(price_continuation is True or momentum_confirmed is True)
             if impulse_available else None
@@ -30414,8 +32865,14 @@ def _evaluate_entry_setup_trigger(
     }
 
 
-def _assess_entry_reward_geometry(entry, stop, target1, target2=None, min_rr=1.45,
-                                  target1_reduce_pct=100):
+def _assess_entry_reward_geometry(
+    entry,
+    stop,
+    target1,
+    target2=None,
+    min_rr=1.45,
+    target1_reduce_pct=100,
+):
     """Score the staged exit that will actually be traded without moving targets."""
     def number(value):
         try:
@@ -30443,14 +32900,20 @@ def _assess_entry_reward_geometry(entry, stop, target1, target2=None, min_rr=1.4
         if risk and target2_value is not None and target2_value > entry_value else 0.0
     )
     primary_valid = bool(risk and target1_value is not None and target1_value > entry_value)
-    reduce_fraction = max(0.0, min(1.0, (number(target1_reduce_pct) or 100.0) / 100.0))
-    has_second_target = bool(target2_value is not None and target2_value > target1_value > entry_value)
+    reduce_fraction = max(
+        0.0,
+        min(1.0, (number(target1_reduce_pct) or 100.0) / 100.0),
+    )
+    has_second_target = bool(
+        target2_value is not None
+        and target1_value is not None
+        and target2_value > target1_value > entry_value
+    )
     plan_rr = (
         rr1 * reduce_fraction + rr2 * (1.0 - reduce_fraction)
-        if primary_valid and has_second_target and reduce_fraction < 1.0 else rr1
+        if primary_valid and has_second_target and reduce_fraction < 1.0
+        else rr1
     )
-    # Target one must still pay enough for a meaningful partial exit. The
-    # blended score cannot rescue an implausibly close first target.
     first_target_floor = min(0.75, min_rr_value)
     return {
         'valid': bool(risk and primary_valid),
@@ -30461,7 +32924,9 @@ def _assess_entry_reward_geometry(entry, stop, target1, target2=None, min_rr=1.4
         'target1ReducePct': round(reduce_fraction * 100.0, 2),
         'primaryTargetValid': primary_valid,
         'passesMinimum': (
-            primary_valid and rr1 >= first_target_floor and plan_rr >= min_rr_value
+            primary_valid
+            and rr1 >= first_target_floor
+            and plan_rr >= min_rr_value
         ),
         'minRiskReward': min_rr_value,
         'firstTargetFloor': first_target_floor,
@@ -31428,7 +33893,7 @@ def entry_plan_execute():
             quote_packet,
             spendable_buying_power,
             fractionable=fractionable,
-            require_attached_protection=False,
+            require_attached_protection=is_auto_execute,
             require_marketable=is_auto_execute,
             limit_offset_bps=(workspace_preferences.get('trading') or {}).get('limitOffsetBps'),
         )
@@ -33447,7 +35912,7 @@ Example: MEDIUM | mixed news, moderate liquidity"""
 
                     provider = _resolved_ai.get('provider', 'deepseek')
                     base_url = _resolved_ai.get('baseURL', 'https://api.deepseek.com')
-                    model = _resolved_ai.get('model', 'deepseek-chat')
+                    model = _resolved_ai.get('model', DEEPSEEK_DEFAULT_MODEL)
 
                     ai_headers = {
                         'Authorization': f'Bearer {api_key}',
@@ -34757,7 +37222,7 @@ Rules:
         }
         
         payload = {
-            'model': _resolved_ai.get('model', 'deepseek-chat'),
+            'model': _resolved_ai.get('model', DEEPSEEK_DEFAULT_MODEL),
             'messages': [{'role': 'user', 'content': prompt}],
             'max_tokens': 800,
             'temperature': 0.3,
@@ -34954,7 +37419,7 @@ Return ONLY valid JSON (no markdown):
 
         provider = _resolved_ai.get('provider', 'deepseek')
         base_url = _resolved_ai.get('baseURL', 'https://api.deepseek.com')
-        model = _resolved_ai.get('model', 'deepseek-chat')
+        model = _resolved_ai.get('model', DEEPSEEK_DEFAULT_MODEL)
         
         ai_headers = {
             'Authorization': f'Bearer {api_key}',
@@ -36726,7 +39191,7 @@ Return ONLY valid JSON, no markdown."""
         if not base_url.startswith('http'):
             base_url = 'https://' + base_url
         payload = {
-            'model': _ai_cfg.get('model', 'deepseek-chat'),
+            'model': _ai_cfg.get('model', DEEPSEEK_DEFAULT_MODEL),
             'messages': [{'role': 'user', 'content': prompt}],
             'max_tokens': 520, 'temperature': 0.15,
             'response_format': {'type': 'json_object'},
@@ -37373,7 +39838,7 @@ def _call_ai_entry_final_decision(plans, execution_mode, account_mode, risk_prof
 
     provider = _resolved_ai.get('provider', 'deepseek')
     base_url = _resolved_ai.get('baseURL', 'https://api.deepseek.com')
-    model = _resolved_ai.get('model', 'deepseek-chat')
+    model = _resolved_ai.get('model', DEEPSEEK_DEFAULT_MODEL)
 
     if not base_url.startswith('http'):
         base_url = 'https://' + base_url
@@ -38200,12 +40665,7 @@ def ai_entry_plan():
                     'APCA-API-KEY-ID': _acfg['api_key'],
                     'APCA-API-SECRET-KEY': _acfg['api_secret']
                 }
-                snap_resp = req_lib.get(
-                    snap_url,
-                    headers=snap_headers,
-                    params={'feed': _MARKET_DATA_FEED},
-                    timeout=10,
-                )
+                snap_resp = req_lib.get(snap_url, headers=snap_headers, timeout=10)
                 if snap_resp.status_code == 200:
                     snap = snap_resp.json()
                     latest_trade = snap.get('latestTrade', {}) or {}
@@ -38231,7 +40691,7 @@ def ai_entry_plan():
                     'timeframe': '1Day', 'limit': 150, 'adjustment': 'raw',
                     'start': bars_start.strftime('%Y-%m-%dT00:00:00Z'),
                     'end': bars_end.strftime('%Y-%m-%dT00:00:00Z'),
-                    'sort': 'asc', 'feed': _MARKET_DATA_FEED,
+                    'sort': 'asc'
                 }
                 bars_resp = req_lib.get(
                     f'{_get_market_data_base_url()}/v2/stocks/{symbol}/bars',
@@ -38256,7 +40716,6 @@ def ai_entry_plan():
                         'start': intraday_start.strftime('%Y-%m-%dT%H:%M:%SZ'),
                         'end': intraday_end.strftime('%Y-%m-%dT%H:%M:%SZ'),
                         'sort': 'asc',
-                        'feed': _MARKET_DATA_FEED,
                     },
                     timeout=10,
                 )
@@ -38271,16 +40730,6 @@ def ai_entry_plan():
                                 intraday_bars.append(intraday_bar)
                         except Exception:
                             continue
-                else:
-                    _pa_log_error(
-                        '[EntryPlan] %s 5m bars unavailable status=%s feed=%s detail=%s'
-                        % (
-                            symbol,
-                            intraday_resp.status_code,
-                            _MARKET_DATA_FEED,
-                            str(intraday_resp.text or '')[:160],
-                        )
-                    )
                 if intraday_bars:
                     latest_intraday = intraday_bars[-1]
                     intraday_bar_age_seconds = _entry_quote_age_seconds(
@@ -38634,12 +41083,10 @@ def ai_entry_plan():
                 tp1,
                 tp2,
                 _hp['min_rr'],
-                strategy_policy.get('target1ReducePct', 100),
             )
             risk_per_share = reward_geometry['riskPerShare']
             rr1 = reward_geometry['riskReward1']
             rr2 = reward_geometry['riskReward2']
-            rr_plan = reward_geometry['riskRewardPlan']
             risk_reward_review = not reward_geometry['passesMinimum']
 
             # ── 6. Entry Readiness Gate ──
@@ -39098,8 +41545,7 @@ def ai_entry_plan():
             # 9k. R/R check integrated into gate
             if risk_reward_review:
                 risk_gate_warnings.append(
-                    f'Staged exit provides {rr_plan:.2f}R (Target 1 {rr1:.2f}R), below the '
-                    f'{_hp["min_rr"]:.2f}R minimum; targets were not inflated.'
+                    f'Structural Target 1 provides {rr1:.2f}R, below the {_hp["min_rr"]:.2f}R minimum; target was not inflated.'
                 )
             if not reward_geometry.get('valid'):
                 risk_gate_blockers.append(
@@ -39107,11 +41553,13 @@ def ai_entry_plan():
                 )
                 risk_gate_passed = False
 
-            # Fractional positions advance behind the same dollar-risk and
-            # concentration limits. Alpaca supports simple fractional DAY stop
-            # orders; the position guard attaches one immediately after a fill.
+            # Auto execution only advances when Alpaca can attach an OTO stop.
+            # Fractional recommendation sizing remains visible in manual review.
             if not is_manual and 0 < pos_shares < 1:
-                reason_parts.append('Fractional protection is renewed by Position Guard after fill.')
+                risk_gate_blockers.append(
+                    'Automatic Entry Plan requires at least one whole share for attached OTO stop protection.'
+                )
+                risk_gate_passed = False
             if not is_manual and entry_trigger_met and not auto_limit_marketable:
                 risk_gate_warnings.append(
                     'Automatic limit is not marketable inside the slippage cap; wait for the spread or ask to improve.'
@@ -39206,8 +41654,8 @@ def ai_entry_plan():
             elif is_in_entry_zone and entry_trigger_met and levels_ok and not rr_ok:
                 final_action = 'READY_REVIEW'
                 ready_review_reason = (
-                    f'Staged exit offers {rr_plan:.2f}R (Target 1 {rr1:.2f}R), below the '
-                    f'{_hp["min_rr"]:.2f}R minimum. Targets were preserved for review.'
+                    f'Structural Target 1 offers {rr1:.2f}R, below the {_hp["min_rr"]:.2f}R minimum. '
+                    'Target was preserved for review.'
                 )
             elif not is_in_entry_zone or not entry_trigger_met:
                 final_action = 'WAIT_FOR_ENTRY'
@@ -39394,10 +41842,7 @@ def ai_entry_plan():
                 _preview_protection_mode = (
                     'alpaca_oto_stop'
                     if pos_shares >= 1
-                    else (
-                        'manual_exit_required'
-                        if is_manual else 'position_guard_fractional_day_stop'
-                    )
+                    else ('manual_exit_required' if is_manual else 'unavailable_for_auto_fractional')
                 )
                 execution_details['orderPreview'] = {
                     'symbol': symbol,
@@ -39465,8 +41910,6 @@ def ai_entry_plan():
                 'trailingStop': trailing_stop,
                 'riskReward1': _adj_rr1,
                 'riskReward2': _adj_rr2,
-                'riskRewardPlan': rr_plan,
-                'target1ReducePct': reward_geometry.get('target1ReducePct'),
                 'riskRewardReview': risk_reward_review,
                 'positionSizeShares': pos_shares,
                 'positionSizeDollars': round(pos_dollars, 2),
@@ -40928,6 +43371,7 @@ _PA_MANAGED_CONFIG_WRITE_LOCK = threading.Lock()
 _PA_POSITION_GUARD_STATE = {}
 _PA_POSITION_GUARD_LOCK = threading.Lock()
 _PA_POSITION_GUARD_INTERVAL_SECONDS = 60
+_PA_POSITION_GUARD_DURABLE_HEARTBEAT_SECONDS = 5 * 60
 _PA_PROCESS_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -42900,7 +45344,7 @@ def _pa_admission_ai_challenge(uid, rows, enabled=True):
     api_key = ai_cfg.get('apiKey') or ''
     base_url = (ai_cfg.get('baseURL') or 'https://api.deepseek.com').rstrip('/')
     provider = ai_cfg.get('provider') or 'AI'
-    model = ai_cfg.get('model') or 'deepseek-chat'
+    model = ai_cfg.get('model') or DEEPSEEK_DEFAULT_MODEL
     stats.update({
         'configured': bool(api_key),
         'provider': provider,
@@ -44242,12 +46686,6 @@ _PA_MARKET_SCANNER_SETTINGS = {
     },
 }
 
-# An unattended cycle runs every 15 minutes for some users. Reviewing all 100
-# ranked rows with an LLM made those cycles overrun their interval without
-# improving the 30-symbol Fine Scan input. Keep the full deterministic ranking,
-# but spend AI latency on the rows that can actually advance.
-_PA_AUTO_MARKET_AI_REVIEW_CAP = 30
-
 
 def _pa_market_scanner_settings_for_user(uid):
     """Merge durable research preferences into every headless scanner run."""
@@ -44276,24 +46714,33 @@ def _pa_market_scanner_settings_for_user(uid):
 
 def _pa_market_scanner_headless(uid, trade_mode='paper', risk_profile='medium',
                                 time_horizon='mid', pipeline_mode='hybrid',
-                                leverage_enabled=False):
-    """Run the exact institutional scanner used by the AI Agent page.
+                                leverage_enabled=False, efficient_intraday=True):
+    """Run the institutional scanner used by the AI Agent page.
 
-    Keeping the settings here mirrors scannerRunnerService defaults while the
-    endpoint remains the single implementation of universe selection, factor
-    scoring, enrichment, and AI review. The browser is never involved.
+    Manual runs preserve the configured full scan. Unattended runs bound the
+    daily seed and reuse its candidate pool for fresh intraday snapshots. The
+    endpoint remains the single implementation; the browser is never involved.
     """
     scanner_settings = _pa_market_scanner_settings_for_user(uid)
-    requested_ai_reviews = max(0, int(scanner_settings.get('aiReviewTopN') or 0))
+    effective_settings = dict(scanner_settings)
+    if efficient_intraday:
+        effective_settings['maxSymbols'] = min(
+            int(scanner_settings.get('maxSymbols') or _INST_SCANNER_DEFAULT_MAX_SYMBOLS),
+            _INST_SCANNER_AUTO_MAX_SYMBOLS,
+        )
+        effective_settings['aiReviewTopN'] = min(
+            int(scanner_settings.get('aiReviewTopN') or 0),
+            _INST_SCANNER_AUTO_AI_REVIEW_TOP_N,
+        )
     payload = {
-        **scanner_settings,
-        'aiReviewTopN': min(requested_ai_reviews, _PA_AUTO_MARKET_AI_REVIEW_CAP),
+        **effective_settings,
         'filters': dict(scanner_settings['filters']),
         'alpacaMode': 'live' if str(trade_mode).lower() in ('real', 'live') else 'paper',
         'riskProfile': risk_profile,
         'timeHorizon': time_horizon,
         'pipelineMode': pipeline_mode,
         'leverageEnabled': bool(leverage_enabled),
+        'efficientIntraday': bool(efficient_intraday),
         'suppressDiscord': True,
     }
     response, status = _pa_call_endpoint(
@@ -44310,45 +46757,6 @@ def _pa_market_scanner_headless(uid, trade_mode='paper', risk_profile='medium',
     scanner_summary = response.get('summary') if isinstance(response.get('summary'), dict) else {}
     scanner_stats = response.get('scan_stats') if isinstance(response.get('scan_stats'), dict) else {}
     return rows, scanner_summary, scanner_stats
-
-
-def _pa_select_diverse_fine_candidates(rows, limit=30, max_per_sector=6):
-    """Select ranked Fine Scan inputs without letting one sector own the batch."""
-    ranked = sorted(
-        [row for row in (rows or []) if isinstance(row, dict) and row.get('symbol')],
-        key=lambda row: (
-            _pa_safe_float(row.get('selectionScore'), 0) or 0,
-            _pa_safe_float(row.get('trendConfidence') or row.get('confidence'), 0) or 0,
-        ),
-        reverse=True,
-    )
-    selected = []
-    selected_symbols = set()
-    sector_counts = {}
-    cap = max(1, int(max_per_sector or 1))
-    wanted = max(1, int(limit or 1))
-
-    for row in ranked:
-        symbol = str(row.get('symbol') or '').upper().strip()
-        sector = str(row.get('sector') or row.get('companySector') or 'Unknown').strip() or 'Unknown'
-        if symbol in selected_symbols or sector_counts.get(sector, 0) >= cap:
-            continue
-        selected.append(row)
-        selected_symbols.add(symbol)
-        sector_counts[sector] = sector_counts.get(sector, 0) + 1
-        if len(selected) >= wanted:
-            return selected
-
-    # Sparse/unknown sector metadata must not leave useful ranked capacity idle.
-    for row in ranked:
-        symbol = str(row.get('symbol') or '').upper().strip()
-        if symbol in selected_symbols:
-            continue
-        selected.append(row)
-        selected_symbols.add(symbol)
-        if len(selected) >= wanted:
-            break
-    return selected
 
 
 def _pa_market_scanner_symbols_headless(uid, symbols, trade_mode='paper',
@@ -44962,24 +47370,76 @@ def _pa_fine_scan_decision_policy(score, gate, required_evidence_missing=None,
     return 'Reject'
 
 
-def _pa_apply_fine_scan_ai_reviews(uid, rows, enabled=True):
-    """Batch-review every Fine Scan row with the configured AI challenge layer."""
+def _pa_apply_fine_scan_ai_reviews(uid, rows, enabled=True, max_symbols=None,
+                                   max_attempts=None, actionable_only=False):
+    """Apply a bounded AI challenge without making pipeline progress depend on AI.
+
+    Unattended runs only review candidates that deterministic rules can still
+    advance. Hard-blocked, rejected, and incomplete rows cannot be promoted by
+    AI, so sending them to the provider adds latency and cost without changing
+    the routing decision.
+    """
+    input_rows = list(rows or [])
+    if max_symbols is None:
+        max_symbols = len(input_rows)
+    max_symbols = max(0, min(int(max_symbols or 0), len(input_rows)))
+    if max_attempts is None:
+        max_attempts = _INST_SCANNER_AI_MAX_ATTEMPTS
+    max_attempts = max(1, min(int(max_attempts or 1), _INST_SCANNER_AI_MAX_ATTEMPTS))
     stats = {
         'configured': False,
         'used': False,
         'status': 'disabled' if not enabled else 'not_configured',
-        'requestedSymbols': len(rows or []) if enabled else 0,
+        'inputSymbols': len(input_rows),
+        'eligibleSymbols': 0,
+        'requestedSymbols': 0,
+        'skippedSymbols': 0,
         'reviewedSymbols': 0,
         'challengedSymbols': 0,
         'batchSize': _INST_SCANNER_AI_REVIEW_BATCH_SIZE,
         'batchCount': 0,
         'retryAttempts': 0,
+        'maxSymbols': max_symbols,
+        'maxAttempts': max_attempts,
+        'actionableOnly': bool(actionable_only),
         'errors': {},
         'provider': None,
         'model': None,
         'source': 'Settings AI provider',
     }
-    if not enabled or not rows:
+    if not enabled or not input_rows:
+        return stats
+
+    def is_actionable(row):
+        deterministic = row.get('deterministicDecision') or row.get('decision')
+        gate = row.get('riskGateStatus') or row.get('riskGate')
+        return (
+            deterministic in ('Continue', 'Watch')
+            and gate != 'BLOCK'
+            and not (row.get('decisionBlockers') or [])
+        )
+
+    eligible_rows = [row for row in input_rows if not actionable_only or is_actionable(row)]
+    eligible_rows.sort(key=lambda row: (
+        0 if (row.get('deterministicDecision') or row.get('decision')) == 'Continue' else 1,
+        -(_inst_to_float(row.get('fineScanScore') or row.get('score'), 0) or 0),
+    ))
+    target_rows = eligible_rows[:max_symbols]
+    target_ids = {id(row) for row in target_rows}
+    stats['eligibleSymbols'] = len(eligible_rows)
+    stats['requestedSymbols'] = len(target_rows)
+    stats['skippedSymbols'] = len(input_rows) - len(target_rows)
+    for row in input_rows:
+        if id(row) not in target_ids:
+            row['fineScanAiStatus'] = (
+                'not_needed'
+                if actionable_only and not is_actionable(row)
+                else 'capacity_skipped'
+            )
+            row['aiCalled'] = False
+            row['aiSuccess'] = False
+    if not target_rows:
+        stats['status'] = 'not_needed'
         return stats
 
     try:
@@ -44998,10 +47458,15 @@ def _pa_apply_fine_scan_ai_reviews(uid, rows, enabled=True):
     })
     if not api_key:
         stats['error'] = 'AI key is not configured in Settings'
+        for row in target_rows:
+            row['fineScanAiStatus'] = 'not_configured'
+            row['aiCalled'] = False
+            row['aiSuccess'] = False
         return stats
 
-    row_by_symbol = {_inst_clean_symbol(row.get('symbol')): row for row in rows}
-    target_rows = [row for row in rows if _inst_clean_symbol(row.get('symbol'))]
+    row_by_symbol = {_inst_clean_symbol(row.get('symbol')): row for row in target_rows}
+    target_rows = [row for row in target_rows if _inst_clean_symbol(row.get('symbol'))]
+    stats['requestedSymbols'] = len(target_rows)
     for row in target_rows:
         row['aiCalled'] = True
         row['aiSuccess'] = False
@@ -45179,7 +47644,7 @@ def _pa_apply_fine_scan_ai_reviews(uid, rows, enabled=True):
                 apply_reviews(reviews)
 
     missing_rows = [row for row in target_rows if _inst_clean_symbol(row.get('symbol')) not in reviewed]
-    if missing_rows and _INST_SCANNER_AI_MAX_ATTEMPTS > 1:
+    if missing_rows and max_attempts > 1:
         retry_batches = [missing_rows[i:i + batch_size] for i in range(0, len(missing_rows), batch_size)]
         stats['retryAttempts'] = len(retry_batches)
         with ThreadPoolExecutor(max_workers=min(2, max(1, len(retry_batches)))) as executor:
@@ -45200,8 +47665,14 @@ def _pa_apply_fine_scan_ai_reviews(uid, rows, enabled=True):
     stats['status'] = 'ok' if len(reviewed) == len(target_rows) else 'partial' if reviewed else 'error'
     if stats['status'] != 'ok':
         stats['error'] = 'AI reviewed %d/%d Fine Scan candidates' % (len(reviewed), len(target_rows))
-    for row in rows:
-        row['fineScanAiStatus'] = stats['status']
+    for row in input_rows:
+        if id(row) not in target_ids:
+            continue
+        row['fineScanAiStatus'] = (
+            'ok'
+            if _inst_clean_symbol(row.get('symbol')) in reviewed
+            else stats['status']
+        )
         row['fineScanAiStats'] = stats
         row.setdefault('dataSources', {})['ai'] = (
             '%s %s batched Fine Scan challenge' % (provider, model)
@@ -45256,7 +47727,9 @@ def _pa_fine_scan_execution_cost(adv20, realized_vol20, fresh_spread_bps,
 
 def _pa_fine_scan_headless(uid, candidates,
                             risk_profile='medium', time_horizon='mid',
-                            pipeline_mode='ai', trade_mode='paper'):
+                            pipeline_mode='ai', trade_mode='paper',
+                            ai_review_top_n=None, ai_max_attempts=None,
+                            ai_actionable_only=False):
     """Institutional-style Fine Scan.
 
     Market Scanner is the coarse universe pull. Fine Scan is the trade-desk
@@ -46278,7 +48751,14 @@ def _pa_fine_scan_headless(uid, candidates,
             })
             results.append(failed)
 
-    ai_stats = _pa_apply_fine_scan_ai_reviews(uid, results, enabled=ai_review_requested)
+    ai_stats = _pa_apply_fine_scan_ai_reviews(
+        uid,
+        results,
+        enabled=ai_review_requested,
+        max_symbols=ai_review_top_n,
+        max_attempts=ai_max_attempts,
+        actionable_only=ai_actionable_only,
+    )
     for rec in results:
         rec['fineScanAiStats'] = ai_stats
         rec.setdefault('institutionalFineScan', {})['aiReview'] = {
@@ -46974,7 +49454,7 @@ def _pa_exit_ai_challenge(uid, signals, enabled=True):
     if not api_key:
         return stats
     provider = ai_cfg.get('provider') or 'AI'
-    model = ai_cfg.get('model') or 'deepseek-chat'
+    model = ai_cfg.get('model') or DEEPSEEK_DEFAULT_MODEL
     base_url = (ai_cfg.get('baseURL') or 'https://api.deepseek.com').rstrip('/')
     stats.update({'configured': True, 'provider': provider, 'model': model, 'configSource': source})
     packets = [{
@@ -47214,48 +49694,10 @@ def _pa_exit_scan_headless_legacy(uid, entry_plans, mode, dry_run=False, risk_pr
             signal['reason'] = 'Open sell order exists without both stop and target protection'
         else:
             whole_qty = int(math.floor(qty))
-            if whole_qty < 1 and (stop >= current_price or stop <= 0):
-                signal['action'] = 'review_geometry'
+            if whole_qty < 1:
+                signal['action'] = 'fractional_unprotected'
                 signal['status'] = 'unprotected'
-                signal['reason'] = 'Fractional stop geometry is no longer valid at the current price'
-            elif whole_qty < 1 and can_submit:
-                # Alpaca supports fractional stop orders as simple DAY orders,
-                # while OCO/OTO remains whole-share only in this integration.
-                # Re-running the position guard renews expired DAY protection.
-                order_response, _ = _pa_call_endpoint(uid, '/api/ai/execution/order', ai_execution_order, {
-                    'symbol': symbol,
-                    'side': 'sell',
-                    'qty': round(qty, 4),
-                    'type': 'stop',
-                    'stop_price': _entry_round_price(stop, 'down'),
-                    'time_in_force': 'day',
-                    'tradingMode': trade_mode,
-                    'automationMode': 'full-ai',
-                    'executionSource': 'exit_scan_fractional_stop',
-                    'suppressDiscord': suppress_discord,
-                    'confirmed': True,
-                    'client_order_id': ('alphalab-%s-%s-fstop' % (run_id[:18], symbol))[:48],
-                })
-                submitted_ok = bool(order_response.get('success'))
-                signal['action'] = 'attach_fractional_stop'
-                signal['status'] = 'protected' if submitted_ok else 'blocked'
-                signal['orderId'] = (order_response.get('order') or {}).get('id')
-                signal['reason'] = (
-                    'Submitted standalone fractional DAY protective stop'
-                    if submitted_ok else
-                    'Fractional protective stop submission failed: %s'
-                    % str(order_response.get('message') or order_response.get('status') or 'unknown')[:160]
-                )
-                submitted.append(dict(signal))
-                if submitted_ok:
-                    _pa_update_managed_position(
-                        uid, trade_mode, symbol,
-                        status='protected', protectionOrderId=signal.get('orderId'),
-                    )
-            elif whole_qty < 1:
-                signal['action'] = 'protection_required'
-                signal['status'] = 'review' if mode != 'ai' or dry_run else 'blocked'
-                signal['reason'] = 'Fractional position needs a standalone DAY stop; automatic submission is not authorized'
+                signal['reason'] = 'Fractional position cannot receive whole-share OCO protection; hard-stop monitoring remains active'
             elif stop >= current_price or target <= current_price or stop <= 0:
                 signal['action'] = 'review_geometry'
                 signal['status'] = 'unprotected'
@@ -47303,10 +49745,7 @@ def _pa_exit_scan_headless_legacy(uid, entry_plans, mode, dry_run=False, risk_pr
         'holdCount': sum(1 for signal in results if signal.get('action') in ('hold', 'protected_hold')),
         'blockedCount': sum(1 for signal in results if signal.get('status') in ('blocked', 'unprotected')),
         'protectedCount': sum(1 for signal in results if signal.get('status') == 'protected'),
-        'protectionAttachedCount': sum(
-            1 for signal in results
-            if signal.get('action') in ('attach_protection', 'attach_fractional_stop')
-        ),
+        'protectionAttachedCount': sum(1 for signal in results if signal.get('action') == 'attach_protection'),
         'withEntryPlanCount': sum(1 for signal in results if signal.get('exitPlanSource') in ('current_entry_plan', 'managed_plan')),
         'fallbackPlanCount': sum(1 for signal in results if signal.get('exitPlanSource') == 'generated_fallback'),
         'openSellOrderCount': sum(len(rows) for rows in orders_by_symbol.values()),
@@ -48203,7 +50642,8 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
                             'time_in_force': 'day' if fractional_position else 'gtc',
                             'executionSource': (
                                 'exit_scan_fractional_stop'
-                                if fractional_position else 'exit_scan_stop_protection'
+                                if fractional_position
+                                else 'exit_scan_stop_protection'
                             ),
                             'client_order_id': ('alphalab-%s-%s-stop' % (scan_id[:18], symbol))[:48],
                         })
@@ -48348,13 +50788,24 @@ def _pa_maybe_start_position_guard(uid, config, now_et, mode, risk_profile,
             summary['orderLifecycle'] = lifecycle
             summary_error = str(summary.get('error') or '').strip()
             durable_cfg = _pa_get_config(uid) or dict(config or {})
-            _pa_patch_config(uid, {
-                'position_guard_has_open_positions': bool(
-                    int(summary.get('holdingsScanned') or 0) > 0
-                ),
-                'position_guard_last_heartbeat_at': _pa_utc_iso(),
-                'position_guard_last_error': summary_error,
-            })
+            has_open_positions = bool(int(summary.get('holdingsScanned') or 0) > 0)
+            guard_patch = {}
+            if durable_cfg.get('position_guard_has_open_positions') is not has_open_positions:
+                guard_patch['position_guard_has_open_positions'] = has_open_positions
+            if str(durable_cfg.get('position_guard_last_error') or '') != summary_error:
+                guard_patch['position_guard_last_error'] = summary_error
+            last_durable_heartbeat = durable_cfg.get('position_guard_last_heartbeat_at')
+            try:
+                heartbeat_age = (
+                    datetime.now(timezone.utc)
+                    - dateutil.parser.isoparse(str(last_durable_heartbeat)).astimezone(timezone.utc)
+                ).total_seconds()
+            except Exception:
+                heartbeat_age = float('inf')
+            if guard_patch or heartbeat_age >= _PA_POSITION_GUARD_DURABLE_HEARTBEAT_SECONDS:
+                guard_patch['position_guard_last_heartbeat_at'] = _pa_utc_iso()
+            if guard_patch:
+                _pa_patch_config(uid, guard_patch)
             material_signals = [
                 signal for signal in (summary.get('signals') or [])
                 if signal.get('triggerAction') == 'emergency_exit'
@@ -48434,10 +50885,12 @@ def _pa_maybe_start_position_guard(uid, config, now_et, mode, risk_profile,
                 'reason': error,
                 'action': 'Protection monitoring will retry automatically.',
             })
-            _pa_patch_config(uid, {
-                'position_guard_last_heartbeat_at': _pa_utc_iso(),
-                'position_guard_last_error': error,
-            })
+            durable_cfg = _pa_get_config(uid) or dict(config or {})
+            if str(durable_cfg.get('position_guard_last_error') or '') != error:
+                _pa_patch_config(uid, {
+                    'position_guard_last_heartbeat_at': _pa_utc_iso(),
+                    'position_guard_last_error': error,
+                })
         finally:
             with _PA_POSITION_GUARD_LOCK:
                 previous = _PA_POSITION_GUARD_STATE.get(uid, {})
@@ -48517,9 +50970,6 @@ def _pa_entry_plan_outcomes(entry_plans, limit=8):
             'setupAutoEligible': bool(plan.get('setupAutoEligible')),
             'riskGateStatus': str(hard_gate.get('status') or ''),
             'dataQuality': str(plan.get('dataQuality') or ''),
-            'riskReward1': plan.get('riskReward1'),
-            'riskReward2': plan.get('riskReward2'),
-            'riskRewardPlan': plan.get('riskRewardPlan'),
             'aiDecision': str(plan.get('aiDecision') or ''),
             'reason': reason[:500],
             'blockers': blockers,
@@ -48890,7 +51340,9 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
     PIPELINE_TIMEOUT = 1800  # 30-minute hard timeout for the entire pipeline (50 symbols + AI)
     STAGE_TIMEOUTS = {
         'market_scanner': 900,  # 15 min for scanner with 50 symbols + AI analysis
-        'fine_scan': 120,
+        # Auto Fine Scan is bounded to actionable candidates and one AI attempt.
+        # Leave enough margin for a provider timeout plus deterministic work.
+        'fine_scan': 180,
         # Leveraged alternatives that may replace a capital-blocked underlying
         # receive their own targeted scanner, Fine Scan, and DV pass here.
         'deeper_validation': 240,
@@ -48974,6 +51426,17 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                 raise _PipelineTimeout(stage, stage_elapsed, stage_limit)
 
     _pa_log('[PipelineAuto] headless pipeline started user=%s trigger=%s dryRun=%s' % (uid[:8], trigger, dry_run))
+    _unattended_run = trigger in _PA_UNATTENDED_PIPELINE_TRIGGERS
+    _fine_scan_ai_options = {
+        'ai_review_top_n': _PA_FINE_SCAN_AUTO_AI_REVIEW_TOP_N if _unattended_run else None,
+        'ai_max_attempts': _PA_FINE_SCAN_AUTO_AI_MAX_ATTEMPTS if _unattended_run else None,
+        'ai_actionable_only': _unattended_run,
+    }
+    if _unattended_run:
+        _pa_log('[AutoPipeline] Fine Scan AI policy actionableOnly=true maxSymbols=%d maxAttempts=%d' % (
+            _PA_FINE_SCAN_AUTO_AI_REVIEW_TOP_N,
+            _PA_FINE_SCAN_AUTO_AI_MAX_ATTEMPTS,
+        ))
 
     if trigger in ('market_auto_run', 'toggle_on'):
         fresh_config = _pa_get_config(uid) or {}
@@ -49090,19 +51553,23 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
 
     try:
         # ── Step 1: Market Scanner ──
-        # Manual and unattended runs share the exact institutional endpoint used
-        # by the AI Agent page: Alpaca whole-market universe -> 1500 daily-bar
-        # candidates -> top 100 cross-sectional results -> AI review.
+        # Manual and unattended runs share the institutional endpoint. Manual
+        # runs preserve full configured coverage; unattended runs seed daily
+        # history once and refresh the compact candidate pool intraday.
         scanner_settings = _pa_market_scanner_settings_for_user(uid)
-        requested_symbols = int(scanner_settings['maxSymbols'])
-        effective_ai_reviews = min(
-            max(0, int(scanner_settings.get('aiReviewTopN') or 0)),
-            _PA_AUTO_MARKET_AI_REVIEW_CAP,
-        )
+        efficient_intraday = not is_manual
+        requested_symbols = min(
+            int(scanner_settings['maxSymbols']),
+            _INST_SCANNER_AUTO_MAX_SYMBOLS,
+        ) if efficient_intraday else int(scanner_settings['maxSymbols'])
+        requested_ai_reviews = min(
+            int(scanner_settings['aiReviewTopN']),
+            _INST_SCANNER_AUTO_AI_REVIEW_TOP_N,
+        ) if efficient_intraday else int(scanner_settings['aiReviewTopN'])
         _pa_log('[AutoPipeline] stage=market_scanner start universe=alpaca_market maxSymbols=%d maxResults=%d aiReview=%d' % (
             requested_symbols,
             scanner_settings['maxResults'],
-            effective_ai_reviews,
+            requested_ai_reviews,
         ))
         _pa_active_run_step(
             uid,
@@ -49131,6 +51598,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
             time_horizon=time_horizon,
             pipeline_mode=mode,
             leverage_enabled=leverage_enabled,
+            efficient_intraday=efficient_intraday,
         )
         _check_stopped()
         _check_timeout('market_scanner')
@@ -49231,11 +51699,15 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         # Continue Scan was removed from the manual and headless pipeline. Fine Scan
         # now receives the highest-ranked Market Scanner candidates directly.
         _check_stopped()
-        continue_results = _pa_select_diverse_fine_candidates(
-            scanner_results,
-            limit=30,
-            max_per_sector=6,
+        _sorted_for_fine = sorted(
+            [r for r in (scanner_results or []) if r.get('symbol')],
+            key=lambda r: (
+                _pa_safe_float(r.get('selectionScore'), 0) or 0,
+                float(r.get('trendConfidence') or r.get('confidence') or 0),
+            ),
+            reverse=True
         )
+        continue_results = _sorted_for_fine[:30]
         _cs_stats = {
             'stage_removed': True,
             'input_count': len(scanner_results or []),
@@ -49258,7 +51730,8 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
             with headless_user_context(uid):
                 fine_results = _pa_fine_scan_headless(uid, continue_results,
                                                           risk_profile=risk_profile, time_horizon=time_horizon,
-                                                          pipeline_mode=mode, trade_mode=trade_mode)
+                                                          pipeline_mode=mode, trade_mode=trade_mode,
+                                                          **_fine_scan_ai_options)
             _check_timeout('fine_scan')
         else:
             _pa_log('[AutoPipeline] stage=fine_scan skipped reason=no_candidates')
@@ -49417,6 +51890,7 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
                             time_horizon=time_horizon,
                             pipeline_mode=mode,
                             trade_mode=trade_mode,
+                            **_fine_scan_ai_options,
                         ) or []
                 for row in leveraged_fine_results:
                     target = _target_by_alt_symbol.get(
@@ -50599,6 +53073,27 @@ def _pa_scheduler_loop():
                         % type(watchdog_error).__name__
                     )
 
+                # The readiness monitor is the low-rate recovery signal during
+                # a confirmed PostgREST outage. Position protection and trading
+                # remain fail-closed; pausing discovery prevents repeated config
+                # reads from extending the dependency incident.
+                if _supabase_background_io_blocked():
+                    consecutive_errors += 1
+                    _PA_SCHEDULER_CONSECUTIVE_ERRORS = consecutive_errors
+                    _pa_touch_scheduler_heartbeat(
+                        error='supabase_dependency_backoff'
+                    )
+                    dependency_sleep = min(
+                        300.0,
+                        30.0 * (2 ** min(consecutive_errors - 1, 3)),
+                    )
+                    _pa_log(
+                        'scheduler paused reason=supabase_dependency_backoff '
+                        'retrySeconds=%d' % dependency_sleep
+                    )
+                    _PA_SCHEDULER_STOP.wait(dependency_sleep)
+                    continue
+
                 # Global tick uses the calendar fallback only. Each enabled user is
                 # checked again below with that user's selected Alpaca account.
                 is_open, mkt_status, mkt_source, next_open, next_close, market_stage_sched = _pa_check_market_open(None)
@@ -50886,13 +53381,12 @@ def _pa_scheduler_loop():
                         # No full pipeline is due. Run the lightweight protection
                         # guard under the same per-user routing lease, then save
                         # the scheduling decision for frontend visibility.
-                        config['last_decision'] = decision
-                        if computed_next_run:
-                            config['next_run_at'] = computed_next_run
                         scheduler_patch = {'last_decision': decision}
                         if computed_next_run:
                             scheduler_patch['next_run_at'] = computed_next_run
-                        _pa_patch_config(uid, scheduler_patch)
+                        if any(config.get(key) != value for key, value in scheduler_patch.items()):
+                            _pa_patch_config(uid, scheduler_patch)
+                        config.update(scheduler_patch)
                         _pa_maybe_start_position_guard(
                             uid, config, now_et, mode, _sched_risk, _sched_horizon,
                             _sched_trade, is_open,
@@ -53709,6 +56203,9 @@ _CRYPTO_API_CONTROLS = register_crypto_api(
     ai_reviewer=None,
     ai_status_resolver=None,
     notifier=_crypto_discord_notify,
+    background_dependency_available=(
+        lambda: not _supabase_background_io_blocked()
+    ),
     start_background=False,
 )
 
@@ -53733,6 +56230,38 @@ _KALSHI_ROBOT_ARTIFACT_TYPE = 'kalshi_robot_state'
 _KALSHI_PAPER_ARTIFACT_TYPE = 'kalshi_paper_account'
 _KALSHI_PORTFOLIO_DISPLAY_ARTIFACT_TYPE = 'kalshi_portfolio_display'
 _KALSHI_ARTIFACT_KEY = 'current'
+_KALSHI_PERSISTENCE_TRAFFIC_LOCK = threading.Lock()
+_KALSHI_OBSERVATION_WRITE_CACHE = {}
+_KALSHI_OBSERVATION_STATE_CACHE = {}
+_KALSHI_OBSERVATION_WRITE_CACHE_LIMIT = 4096
+_KALSHI_ROUTINE_OBSERVATION_SAMPLE_SECONDS = max(
+    30.0,
+    min(float(os.getenv('KALSHI_ROUTINE_OBSERVATION_SAMPLE_SECONDS', '120') or 120), 600.0),
+)
+_KALSHI_PERSISTENCE_TRAFFIC = {
+    'startedAt': datetime.now(timezone.utc).isoformat(),
+    'artifactWrites': 0,
+    'artifactPayloadBytes': 0,
+    'observationAttempts': 0,
+    'observationWrites': 0,
+    'observationPayloadBytes': 0,
+    'observationDeduplicated': 0,
+}
+
+
+def _kalshi_persistence_traffic_snapshot():
+    with _KALSHI_PERSISTENCE_TRAFFIC_LOCK:
+        snapshot = dict(_KALSHI_PERSISTENCE_TRAFFIC)
+    attempts = int(snapshot.get('observationAttempts') or 0)
+    deduplicated = int(snapshot.get('observationDeduplicated') or 0)
+    snapshot['estimatedOutboundPayloadBytes'] = int(
+        snapshot.get('artifactPayloadBytes') or 0
+    ) + int(snapshot.get('observationPayloadBytes') or 0)
+    snapshot['observationDeduplicationPct'] = round(
+        100.0 * deduplicated / attempts,
+        1,
+    ) if attempts else 0.0
+    return snapshot
 
 
 def _kalshi_load_artifact(user_id, artifact_type):
@@ -53753,7 +56282,7 @@ def _kalshi_save_artifact(user_id, artifact_type, payload):
     durable_payload = dict(payload)
     expected_version = durable_payload.pop('_operationsVersion', None)
     serialized = json.dumps(durable_payload, sort_keys=True, separators=(',', ':'), default=str)
-    return operations_store.put_artifact(
+    saved = operations_store.put_artifact(
         user_id,
         artifact_type,
         _KALSHI_ARTIFACT_KEY,
@@ -53763,6 +56292,12 @@ def _kalshi_save_artifact(user_id, artifact_type, payload):
         ),
         expected_version=expected_version,
     )
+    with _KALSHI_PERSISTENCE_TRAFFIC_LOCK:
+        _KALSHI_PERSISTENCE_TRAFFIC['artifactWrites'] += 1
+        _KALSHI_PERSISTENCE_TRAFFIC['artifactPayloadBytes'] += len(
+            serialized.encode('utf-8')
+        )
+    return saved
 
 
 def _kalshi_enabled_users():
@@ -53775,25 +56310,122 @@ def _kalshi_enabled_users():
 
 
 def _kalshi_save_observation(user_id, observation):
-    return operations_store.put_kalshi_observation(user_id, dict(observation))
+    row = dict(observation)
+    cache_key = '{}:{}:{}'.format(
+        str(user_id),
+        str(row.get('environment') or ''),
+        str(row.get('observation_key') or ''),
+    )
+    material_signature = json.dumps({
+        'action': row.get('action'),
+        'side': row.get('side'),
+        'executionIntent': row.get('execution_intent'),
+        'blockedReasons': list(row.get('blocked_reasons') or []),
+        'orderResult': row.get('order_result'),
+    }, sort_keys=True, separators=(',', ':'), default=str)
+    state_key = '{}:{}:{}'.format(
+        str(user_id),
+        str(row.get('environment') or ''),
+        str(row.get('ticker') or ''),
+    )
+    now_monotonic = time.monotonic()
+    force_material_write = bool(
+        row.get('order_result')
+        or str(row.get('action') or 'WAIT').upper() not in ('WAIT', 'NO_ACTION', 'HOLD')
+    )
+    with _KALSHI_PERSISTENCE_TRAFFIC_LOCK:
+        _KALSHI_PERSISTENCE_TRAFFIC['observationAttempts'] += 1
+        if _KALSHI_OBSERVATION_WRITE_CACHE.get(cache_key) == material_signature:
+            _KALSHI_PERSISTENCE_TRAFFIC['observationDeduplicated'] += 1
+            return {
+                **row,
+                'persistenceDeduplicated': True,
+            }
+        prior_state = _KALSHI_OBSERVATION_STATE_CACHE.get(state_key) or {}
+        if (
+            not force_material_write
+            and prior_state.get('signature') == material_signature
+            and now_monotonic - float(prior_state.get('writtenAt') or 0)
+            < _KALSHI_ROUTINE_OBSERVATION_SAMPLE_SECONDS
+        ):
+            _KALSHI_OBSERVATION_WRITE_CACHE[cache_key] = material_signature
+            _KALSHI_PERSISTENCE_TRAFFIC['observationDeduplicated'] += 1
+            return {
+                **row,
+                'persistenceDeduplicated': True,
+                'persistenceSampleWindowSeconds': _KALSHI_ROUTINE_OBSERVATION_SAMPLE_SECONDS,
+            }
+
+    saved = operations_store.put_kalshi_observation(user_id, row)
+    serialized = json.dumps(row, sort_keys=True, separators=(',', ':'), default=str)
+    with _KALSHI_PERSISTENCE_TRAFFIC_LOCK:
+        _KALSHI_OBSERVATION_WRITE_CACHE[cache_key] = material_signature
+        _KALSHI_OBSERVATION_STATE_CACHE[state_key] = {
+            'signature': material_signature,
+            'writtenAt': now_monotonic,
+        }
+        while len(_KALSHI_OBSERVATION_WRITE_CACHE) > _KALSHI_OBSERVATION_WRITE_CACHE_LIMIT:
+            _KALSHI_OBSERVATION_WRITE_CACHE.pop(
+                next(iter(_KALSHI_OBSERVATION_WRITE_CACHE)),
+                None,
+            )
+        while len(_KALSHI_OBSERVATION_STATE_CACHE) > _KALSHI_OBSERVATION_WRITE_CACHE_LIMIT:
+            _KALSHI_OBSERVATION_STATE_CACHE.pop(
+                next(iter(_KALSHI_OBSERVATION_STATE_CACHE)),
+                None,
+            )
+        _KALSHI_PERSISTENCE_TRAFFIC['observationWrites'] += 1
+        _KALSHI_PERSISTENCE_TRAFFIC['observationPayloadBytes'] += len(
+            serialized.encode('utf-8')
+        )
+    return saved
 
 
 _KALSHI_WORKER_OWNER = '{}:{}'.format(
     os.environ.get('RENDER_INSTANCE_ID') or os.environ.get('HOSTNAME') or 'local',
     _uuid.uuid4().hex,
 )
+_KALSHI_LEASE_CACHE_LOCK = threading.Lock()
+_KALSHI_LEASE_NEXT_CHECK_AT = 0.0
+_KALSHI_LEASE_CACHED_RESULT = False
+_KALSHI_LEASE_REFRESH_SECONDS = 40.0
+_KALSHI_LEASE_FAILURE_BACKOFF_SECONDS = 15.0
 
 
 def _kalshi_claim_scheduler_lease():
-    return operations_store.claim_worker_lease(
-        'kalshi-btc15-robot',
-        _KALSHI_WORKER_OWNER,
-        # A complete Real cycle performs several bounded network reads before
-        # persisting state.  Fifteen seconds allowed a second backend host to
-        # take ownership mid-cycle and caused repeated CAS conflicts.
-        ttl_seconds=120,
-        metadata={'component': 'kalshi_robot', 'series': 'KXBTC15M'},
-    )
+    global _KALSHI_LEASE_NEXT_CHECK_AT, _KALSHI_LEASE_CACHED_RESULT
+    now_monotonic = time.monotonic()
+    with _KALSHI_LEASE_CACHE_LOCK:
+        if now_monotonic < _KALSHI_LEASE_NEXT_CHECK_AT:
+            return _KALSHI_LEASE_CACHED_RESULT
+        if _supabase_background_io_blocked():
+            _KALSHI_LEASE_CACHED_RESULT = False
+            _KALSHI_LEASE_NEXT_CHECK_AT = (
+                now_monotonic + _KALSHI_LEASE_FAILURE_BACKOFF_SECONDS
+            )
+            return False
+        try:
+            claimed = bool(operations_store.claim_worker_lease(
+                'kalshi-btc15-robot',
+                _KALSHI_WORKER_OWNER,
+                # A complete Real cycle performs several bounded network reads before
+                # persisting state. Fifteen seconds allowed a second backend host to
+                # take ownership mid-cycle and caused repeated CAS conflicts.
+                ttl_seconds=120,
+                metadata={'component': 'kalshi_robot', 'series': 'KXBTC15M'},
+            ))
+        except Exception:
+            _KALSHI_LEASE_CACHED_RESULT = False
+            _KALSHI_LEASE_NEXT_CHECK_AT = (
+                now_monotonic + _KALSHI_LEASE_FAILURE_BACKOFF_SECONDS
+            )
+            raise
+        _KALSHI_LEASE_CACHED_RESULT = claimed
+        _KALSHI_LEASE_NEXT_CHECK_AT = now_monotonic + (
+            _KALSHI_LEASE_REFRESH_SECONDS
+            if claimed else _KALSHI_LEASE_FAILURE_BACKOFF_SECONDS
+        )
+        return claimed
 
 
 _KALSHI_API_CONTROLS = register_kalshi_api(
@@ -53823,6 +56455,7 @@ _KALSHI_API_CONTROLS = register_kalshi_api(
     observation_loader=lambda user_id, **kwargs: operations_store.list_kalshi_observations(user_id, **kwargs),
     scheduler_lease_acquirer=_kalshi_claim_scheduler_lease,
     worker_lease_store=operations_store,
+    audit_recorder=_record_operations_audit,
 )
 
 _pa_load_managed_positions()
@@ -53833,6 +56466,97 @@ _BACKGROUND_SERVICES_LOCK = threading.RLock()
 _BACKGROUND_SERVICES_PID = None
 _BACKGROUND_SERVICES_LAST_CHECK = 0.0
 _BACKGROUND_SERVICES_CHECK_INTERVAL_SECONDS = 5.0
+_MARKET_NEWS_SCHEDULER_LOCK = threading.RLock()
+_MARKET_NEWS_SCHEDULER_THREAD = None
+_MARKET_NEWS_SCHEDULER_PID = None
+_MARKET_NEWS_SCHEDULER_STOP = threading.Event()
+_MARKET_NEWS_REFRESH_SECONDS = max(120, min(int(os.getenv('MARKET_NEWS_REFRESH_SECONDS', '300') or 300), 1800))
+_MARKET_NEWS_WORKER_OWNER = '%s:%s' % (
+    os.environ.get('RENDER_INSTANCE_ID') or os.environ.get('HOSTNAME') or 'local',
+    hashlib.sha256(str(time.time_ns()).encode('utf-8')).hexdigest()[:16],
+)
+
+
+def _market_news_scheduler_users():
+    client = _pa_supabase_client()
+    if not client:
+        return []
+    response = _supabase_execute(
+        lambda: client.table('user_api_configs').select('user_id,config_type').execute(),
+        'market news scheduler users read',
+    )
+    by_user = {}
+    for row in response.data or []:
+        if not isinstance(row, dict) or not row.get('user_id'):
+            continue
+        config_type = _safe_str(row.get('config_type'))
+        if config_type in ('alpaca', 'ai_provider', 'finnhub'):
+            by_user.setdefault(row['user_id'], set()).add(config_type)
+    return sorted(uid for uid, config_types in by_user.items() if 'ai_provider' in config_types and ('alpaca' in config_types or 'finnhub' in config_types))
+
+
+def _market_news_scheduler_refresh_user(uid):
+    market_cfg = resolve_alpaca_config_for_user(uid, 'market_data')
+    finnhub_cfg, _finnhub_source = resolve_finnhub_config_for_user(uid)
+    articles, _sources, _errors = _market_intelligence_fetch_news(
+        market_cfg,
+        finnhub_cfg,
+        days=1,
+        limit=120,
+        user_id=uid,
+        force_refresh=True,
+    )
+    _market_news_ai_enrich(uid, articles, notify=True)
+
+
+def _market_news_scheduler_loop():
+    while not _MARKET_NEWS_SCHEDULER_STOP.is_set():
+        started = time.monotonic()
+        try:
+            if _supabase_background_io_blocked():
+                _MARKET_NEWS_SCHEDULER_STOP.wait(60)
+                continue
+            owns_lease = operations_store.claim_worker_lease(
+                'market-news-intelligence',
+                _MARKET_NEWS_WORKER_OWNER,
+                ttl_seconds=max(180, _MARKET_NEWS_REFRESH_SECONDS + 90),
+                metadata={'component': 'market_news_ai', 'cadenceSeconds': _MARKET_NEWS_REFRESH_SECONDS},
+            )
+            if not owns_lease:
+                _MARKET_NEWS_SCHEDULER_STOP.wait(60)
+                continue
+            for uid in _market_news_scheduler_users():
+                if _MARKET_NEWS_SCHEDULER_STOP.is_set():
+                    break
+                try:
+                    with headless_user_context(uid):
+                        _market_news_scheduler_refresh_user(uid)
+                except Exception as exc:
+                    safe_print('[MarketNewsScheduler] user refresh failed: %s' % exc)
+        except Exception as exc:
+            safe_print('[MarketNewsScheduler] cycle failed: %s' % exc)
+        elapsed = time.monotonic() - started
+        _MARKET_NEWS_SCHEDULER_STOP.wait(max(15.0, _MARKET_NEWS_REFRESH_SECONDS - elapsed))
+
+
+def _ensure_market_news_scheduler():
+    global _MARKET_NEWS_SCHEDULER_THREAD, _MARKET_NEWS_SCHEDULER_PID
+    current_pid = os.getpid()
+    with _MARKET_NEWS_SCHEDULER_LOCK:
+        if (
+            _MARKET_NEWS_SCHEDULER_PID == current_pid
+            and _MARKET_NEWS_SCHEDULER_THREAD
+            and _MARKET_NEWS_SCHEDULER_THREAD.is_alive()
+        ):
+            return
+        _MARKET_NEWS_SCHEDULER_STOP.clear()
+        _MARKET_NEWS_SCHEDULER_PID = current_pid
+        _MARKET_NEWS_SCHEDULER_THREAD = threading.Thread(
+            target=_market_news_scheduler_loop,
+            daemon=True,
+            name='market-news-intelligence',
+        )
+        _MARKET_NEWS_SCHEDULER_THREAD.start()
 
 
 def start_background_services():
@@ -53889,10 +56613,12 @@ def start_background_services():
         if not callable(crypto_start) or not callable(kalshi_start):
             raise RuntimeError('Background scheduler lifecycle controls are unavailable')
 
+        _ensure_supabase_readiness_monitor()
         crypto_start()
         kalshi_start()
         _pa_ensure_scheduler()
         _ensure_discord_retry_scheduler()
+        _ensure_market_news_scheduler()
 
         process_changed = _BACKGROUND_SERVICES_PID != current_pid
         _BACKGROUND_SERVICES_PID = current_pid

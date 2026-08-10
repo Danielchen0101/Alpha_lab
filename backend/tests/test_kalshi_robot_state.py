@@ -249,6 +249,7 @@ def test_every_configure_enforces_safety_floors_and_preserves_stricter_values(tm
         "fractionalKelly": 0.50,
         "maxPortfolioExposurePct": 50.0,
         "maxSingleMarketExposurePct": 20.0,
+        "entryConfirmationMaxGapSeconds": 5,
         "minimumAddIntervalSeconds": 10,
         "minimumHoldSeconds": 1,
         "reversalCooldownSeconds": 1,
@@ -264,6 +265,7 @@ def test_every_configure_enforces_safety_floors_and_preserves_stricter_values(tm
     assert floored["config"]["fractionalKelly"] == 0.15
     assert floored["config"]["maxPortfolioExposurePct"] == 10.0
     assert floored["config"]["maxSingleMarketExposurePct"] == 2.0
+    assert floored["config"]["entryConfirmationMaxGapSeconds"] == 25.0
     assert floored["config"]["microPositionMaxLossDollars"] == 1.0
     assert floored["config"]["microPositionMaxLossPct"] == 5.0
     assert floored["config"]["microPositionMinNetEdge"] == 0.02
@@ -282,11 +284,13 @@ def test_every_configure_enforces_safety_floors_and_preserves_stricter_values(tm
         "minNetEdge": 0.03,
         "minConservativeEdge": 0.02,
         "maxPrice": 0.84,
+        "entryConfirmationMaxGapSeconds": 30,
     })
     assert stricter["config"]["minModelProbability"] == 0.72
     assert stricter["config"]["minNetEdge"] == 0.03
     assert stricter["config"]["minConservativeEdge"] == 0.02
     assert stricter["config"]["maxPrice"] == 0.84
+    assert stricter["config"]["entryConfirmationMaxGapSeconds"] == 30
     assert (
         stricter["config"]["fullRiskModelProbability"]
         >= stricter["config"]["minModelProbability"] + 0.01
@@ -373,6 +377,47 @@ def test_v11_micro_sizing_migration_preserves_live_arming(tmp_path):
     assert real["arming"]["awaitingExplicitEnable"] is False
     assert real["config"]["microPositionMaxLossDollars"] == 1.0
     assert real["config"]["microPositionMaxLossPct"] == 5.0
+    assert real["config"]["smallAccountRiskTargetPct"] == 2.0
+    assert real["strategy"]["version"] == 9
+
+
+def test_v12_quality_scaled_sizing_preserves_live_arming_and_custom_lower_target(
+    tmp_path,
+):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"user-1": {
+        "storageVersion": 11,
+        "enabled": True,
+        "activeEnvironment": "real",
+        "config": {
+            "executionMode": "real",
+            "smallAccountRiskTargetPct": 1.0,
+        },
+        "modeState": {
+            "real": {
+                "config": {
+                    "executionMode": "real",
+                    "smallAccountRiskTargetPct": 1.0,
+                },
+                "arming": {
+                    "armed": True,
+                    "awaitingExplicitEnable": False,
+                },
+                "decisions": [],
+                "filledTrades": [],
+                "strategy": {"version": 7, "changes": []},
+            },
+        },
+    }}), encoding="utf-8")
+
+    restored = KalshiRobotState(str(path)).get("user-1")
+    real = restored["modeState"]["real"]
+
+    assert restored["storageVersion"] == 13
+    assert restored["enabled"] is True
+    assert real["arming"]["armed"] is True
+    assert real["arming"]["awaitingExplicitEnable"] is False
+    assert real["config"]["smallAccountRiskTargetPct"] == 1.0
     assert real["strategy"]["version"] == 9
 
 
@@ -575,6 +620,67 @@ def test_settlement_calibration_is_idempotent(tmp_path):
     assert second["strategy"]["settledSamples"] == 1
 
 
+def test_same_timestamp_settlement_analytics_do_not_flip_or_repersist(tmp_path):
+    saves = []
+
+    def save(_user_id, payload):
+        saves.append(copy.deepcopy(payload))
+        return {"version": len(saves)}
+
+    store = KalshiRobotState(
+        str(tmp_path / "state.json"),
+        state_saver=save,
+    )
+    store.configure("user-1", True, {"executionMode": "real"})
+    bucket = store._users["user-1"]["modeState"]["real"]
+    bucket["strategy"]["settlementRecords"] = [
+        {
+            "key": "real:A:shared:YES",
+            "environment": "real",
+            "ticker": "A",
+            "settledAt": "2026-08-01T00:00:00Z",
+            "pnl": 1.0,
+            "side": "YES",
+            "result": "YES",
+        },
+        {
+            "key": "real:B:shared:YES",
+            "environment": "real",
+            "ticker": "B",
+            "settledAt": "2026-08-01T00:00:00Z",
+            "pnl": 2.0,
+            "side": "YES",
+            "result": "YES",
+        },
+    ]
+    bucket["processedSettlements"] = [
+        "real:B:shared:YES",
+        "real:A:shared:YES",
+    ]
+
+    first = store.reconcile_settlements(
+        "user-1", [], fills=[], environment="real"
+    )
+    writes_after_first = len(saves)
+    second = store.reconcile_settlements(
+        "user-1", [], fills=[], environment="real"
+    )
+    third = store.reconcile_settlements(
+        "user-1", [], fills=[], environment="real"
+    )
+
+    first_order = [
+        row["ticker"] for row in first["strategy"]["realizedTradeRecords"]
+    ]
+    assert first_order == [
+        row["ticker"] for row in second["strategy"]["realizedTradeRecords"]
+    ]
+    assert first_order == [
+        row["ticker"] for row in third["strategy"]["realizedTradeRecords"]
+    ]
+    assert len(saves) == writes_after_first
+
+
 def test_explicit_zero_fp_settlement_count_never_revives_legacy_position(tmp_path):
     store = KalshiRobotState(str(tmp_path / "state.json"))
     ticker = "KXBTC15M-ZERO-FP"
@@ -697,7 +803,7 @@ def test_decision_log_retains_compact_audit_history_and_filled_trade_evidence(tm
 
     state = store.get("user-1")
 
-    assert state["decisionLimit"] == 250
+    assert state["decisionLimit"] == 50
     assert len(state["decisions"]) == 3
     assert [row["ticker"] for row in state["decisions"]] == [
         "KXBTC15M-2", "KXBTC15M-1", "KXBTC15M-0",
@@ -1167,6 +1273,10 @@ def test_robot_state_mutations_persist_only_the_target_user(tmp_path):
         "config": {"executionMode": "paper"},
         "market": {"ticker": "KXBTC15M-TARGET"},
         "edge": {"fairProbability": 0.70, "price": 0.50, "netEdge": 0.10},
+    }, {
+        "order_id": "order-target-1",
+        "status": "resting",
+        "count": 1,
     })
     assert calls == ["user-a"]
     assert store._users["user-a"]["_operationsVersion"] == 3
@@ -1197,6 +1307,293 @@ def test_robot_state_mutations_persist_only_the_target_user(tmp_path):
     assert calls == ["user-a"]
     assert "user-a" not in store._users
     assert store._users["user-b"]["_operationsVersion"] == 1
+
+
+def test_routine_wait_decisions_never_upload_full_durable_heartbeats(tmp_path):
+    calls = []
+
+    def save(_user_id, payload):
+        calls.append(payload)
+        return {"version": len(calls)}
+
+    store = KalshiRobotState(
+        str(tmp_path / "state.json"),
+        state_saver=save,
+    )
+    decision = {
+        "generatedAt": "2026-07-26T12:00:00Z",
+        "action": "WAIT",
+        "side": "YES",
+        "blockingReasons": ["net_edge"],
+        "config": {"executionMode": "paper"},
+        "market": {"ticker": "KXBTC15M-WAIT"},
+        "edge": {"fairProbability": 0.55, "price": 0.56, "netEdge": -0.01},
+    }
+
+    store.record("user-a", decision)
+    store.record("user-a", {**decision, "generatedAt": "2026-07-26T12:00:05Z"})
+    assert calls == []
+
+    store.record("user-a", {
+        **decision,
+        "generatedAt": "2026-07-26T12:00:10Z",
+        "blockingReasons": ["liquidity"],
+    })
+    assert calls == []
+
+    store.record("user-a", {
+        **decision,
+        "generatedAt": "2026-07-26T12:01:10Z",
+        "blockingReasons": ["liquidity"],
+    })
+    assert calls == []
+
+    store.record("user-a", {
+        **decision,
+        "generatedAt": "2026-07-26T12:01:15Z",
+        "action": "BUY_YES",
+        "blockingReasons": [],
+    })
+    assert calls == []
+
+    store.record("user-a", {
+        **decision,
+        "generatedAt": "2026-07-26T12:01:20Z",
+        "action": "BUY_YES",
+        "blockingReasons": [],
+    }, {
+        "order_id": "order-1",
+        "status": "resting",
+        "count": 1,
+    })
+    assert len(calls) == 1
+
+
+def test_entry_confirmation_persists_only_compact_authoritative_cursor(tmp_path):
+    durable = {}
+    saves = []
+
+    def save(user_id, payload):
+        durable[user_id] = copy.deepcopy(payload)
+        saves.append(copy.deepcopy(payload))
+        return {"version": len(saves)}
+
+    store = KalshiRobotState(
+        str(tmp_path / "state.json"),
+        state_loader=durable.get,
+        state_saver=save,
+    )
+    candidate = {
+        "generatedAt": "2026-08-03T12:00:00Z",
+        "action": "WAIT",
+        "intendedAction": "BUY_YES",
+        "side": "YES",
+        "blockingReasons": ["entry_confirmation"],
+        "config": {"executionMode": "real"},
+        "market": {"ticker": "KXBTC15M-DURABLE"},
+        "edge": {
+            "fairProbability": 0.72,
+            "price": 0.55,
+            "netEdge": 0.12,
+            "conservativeEdge": 0.08,
+        },
+        "entryConfirmation": {
+            "required": True,
+            "requiredSnapshots": 2,
+            "streak": 1,
+            "confirmed": False,
+            "maxGapSeconds": 25.0,
+        },
+    }
+
+    store.record("user-a", candidate)
+
+    assert len(saves) == 1
+    persisted_bucket = saves[-1]["modeState"]["real"]
+    assert "decisions" not in persisted_bucket
+    assert persisted_bucket["strategy"]["entryConfirmations"]["btc15m"] == {
+        "ticker": "KXBTC15M-DURABLE",
+        "side": "YES",
+        "generatedAt": "2026-08-03T12:00:00Z",
+        "streak": 1,
+        "requiredSnapshots": 2,
+        "confirmed": False,
+        "dataQualityEligible": True,
+        "maxGapSeconds": 25.0,
+    }
+
+    store.record("user-a", {
+        **candidate,
+        "generatedAt": "2026-08-03T12:00:05Z",
+        "blockingReasons": ["net_edge"],
+        "entryConfirmation": {},
+    })
+    assert len(saves) == 1
+
+    restored = KalshiRobotState(
+        str(tmp_path / "restored.json"),
+        state_loader=durable.get,
+        state_saver=save,
+    ).get("user-a", environment="real")
+    progress = restored["strategy"]["entryConfirmations"]["btc15m"]
+    assert progress["ticker"] == "KXBTC15M-DURABLE"
+    assert progress["streak"] == 1
+
+
+def test_transient_errors_never_rewrite_full_durable_state(tmp_path):
+    calls = []
+
+    def save(_user_id, payload):
+        calls.append(payload)
+        return {"version": len(calls)}
+
+    store = KalshiRobotState(
+        str(tmp_path / "state.json"),
+        state_saver=save,
+    )
+
+    store.error("user-a", "ReadTimeout")
+    store.error("user-a", "ReadTimeout")
+    store.error("user-a", "ReadTimeout")
+    assert calls == []
+
+    store.error("user-a", "OperationsStoreUnavailable")
+    assert calls == []
+
+    decision = {
+        "action": "WAIT",
+        "config": {"executionMode": "real"},
+        "market": {"ticker": "KXBTC15M-RECOVERED"},
+    }
+    store.record("user-a", decision)
+    assert calls == []
+
+
+def test_durable_writer_skips_runtime_only_changes_at_the_final_boundary(tmp_path):
+    saves = []
+
+    def save(_user_id, payload):
+        saves.append(copy.deepcopy(payload))
+        return {"version": len(saves)}
+
+    store = KalshiRobotState(
+        str(tmp_path / "state.json"),
+        state_saver=save,
+    )
+    store.configure("user-a", True, {"executionMode": "real"})
+    assert len(saves) == 1
+
+    state = store._users["user-a"]
+    bucket = state["modeState"]["real"]
+    state["runs"] = 99
+    state["lastRunAt"] = "2026-08-02T12:00:00Z"
+    state["lastError"] = "temporary"
+    bucket["runs"] = 99
+    bucket["lastRunAt"] = "2026-08-02T12:00:00Z"
+    bucket["lastError"] = "temporary"
+    store._save_user("user-a")
+    assert len(saves) == 1
+
+    bucket["arming"]["reason"] = "durable_change"
+    store._save_user("user-a")
+    assert len(saves) == 2
+    assert "runs" not in saves[-1]
+    assert "lastRunAt" not in saves[-1]
+    assert "lastError" not in saves[-1]
+    assert "runs" not in saves[-1]["modeState"]["real"]
+
+
+def test_durable_payload_omits_rebuildable_mirrors_and_legacy_learning(tmp_path):
+    durable = {}
+    saves = []
+
+    def save(user_id, payload):
+        durable[user_id] = copy.deepcopy(payload)
+        saves.append(copy.deepcopy(payload))
+        return {"version": len(saves)}
+
+    store = KalshiRobotState(
+        str(tmp_path / "state.json"),
+        state_loader=durable.get,
+        state_saver=save,
+    )
+    store.configure("user-a", True, {"executionMode": "paper"})
+    state = store._users["user-a"]
+    state["learningObservations"] = [{"unused": "x" * 2000}]
+    state["modeState"]["paper"]["learningExamples"] = [
+        {"unused": "y" * 2000}
+    ]
+    state["modeState"]["paper"]["decisions"] = [
+        {"action": "WAIT", "features": {"unused": "z" * 4000}}
+    ]
+    state["modeState"]["paper"]["filledTrades"] = [{
+        "environment": "paper",
+        "ticker": "KXBTC15M-FILLED",
+        "orderId": "order-filled-1",
+        "orderFilled": True,
+        "action": "BUY_YES",
+    }]
+    full_size = len(json.dumps(state, separators=(",", ":")))
+
+    store.configure("user-a", True, {
+        "executionMode": "paper",
+        "riskPerTradePct": 0.5,
+    })
+    persisted = saves[-1]
+    persisted_size = len(json.dumps(persisted, separators=(",", ":")))
+
+    for field in (
+        "config", "strategy", "tradedTickers", "filledTrades",
+        "processedSettlements", "decisions", "decisionLimit",
+        "learningObservations", "learningExamples", "strategyLibrary",
+    ):
+        assert field not in persisted
+    assert "learningExamples" not in persisted["modeState"]["paper"]
+    assert "decisions" not in persisted["modeState"]["paper"]
+    assert "decisionLimit" not in persisted["modeState"]["paper"]
+    assert persisted["modeState"]["paper"]["filledTrades"][0]["orderId"] == "order-filled-1"
+    assert persisted_size < full_size * 0.75
+
+    restored = KalshiRobotState(
+        str(tmp_path / "restored.json"),
+        state_loader=durable.get,
+        state_saver=save,
+    ).get("user-a", environment="paper")
+    assert restored["enabled"] is True
+    assert restored["config"]["executionMode"] == "paper"
+    assert restored["config"]["riskPerTradePct"] == 0.5
+    assert restored["decisionLimit"] == 50
+    assert restored["decisions"] == []
+    assert restored["filledTrades"][0]["orderId"] == "order-filled-1"
+
+
+def test_legacy_full_durable_state_is_compacted_once_on_restore(tmp_path):
+    seed = KalshiRobotState(str(tmp_path / "seed.json")).get(
+        "user-a", environment="paper"
+    )
+    seed["learningObservations"] = [{"unused": "x" * 1000}]
+    durable = {"user-a": copy.deepcopy(seed)}
+    saves = []
+
+    def save(user_id, payload):
+        durable[user_id] = copy.deepcopy(payload)
+        saves.append(copy.deepcopy(payload))
+        return {"version": len(saves)}
+
+    store = KalshiRobotState(
+        str(tmp_path / "restored.json"),
+        state_loader=durable.get,
+        state_saver=save,
+    )
+    restored = store.get("user-a", environment="paper")
+
+    assert restored["config"]["executionMode"] == "paper"
+    assert len(saves) == 1
+    assert "config" not in saves[0]
+    assert "learningObservations" not in saves[0]
+
+    store.get("user-a", environment="paper")
+    assert len(saves) == 1
 
 
 def test_paper_reconciliation_removes_stale_conflict_artifacts_for_same_market(tmp_path):

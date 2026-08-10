@@ -39,9 +39,45 @@ def test_health_reports_memory_budget_and_scan_capacity(monkeypatch):
     assert payload["memory"]["pressure"] is False
     assert payload["scannerCapacity"] == {"active": 0, "capacity": 2, "available": 2}
     assert payload["heavyWorkCapacity"] == payload["scannerCapacity"]
+    assert payload["scannerTraffic"]["barRequests"] >= 0
+    assert payload["scannerTraffic"]["intradayCacheHits"] >= 0
     assert payload["threads"]["healthy"] is True
     assert payload["migrations"]["healthy"] is True
     assert payload["leases"]["healthy"] is True
+
+
+def test_health_reads_cached_persistence_without_running_network_probe(monkeypatch):
+    monkeypatch.setattr(
+        backend,
+        "_run_supabase_readiness_probe",
+        lambda **_kwargs: pytest.fail("liveness must not run a Supabase probe"),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_SUPABASE_READINESS_CACHE",
+        {
+            "checkedAt": 1.0,
+            "probeOk": False,
+            "migrationOk": False,
+            "leaseRpcOk": False,
+            "pipelineConfigMergeRpcOk": False,
+            "migrationContractFailure": False,
+            "consecutiveFailures": 3,
+            "lastSuccessAt": 0.0,
+            "lastFailureAt": 1.0,
+            "lastFailureType": "ReadTimeout",
+        },
+    )
+    monkeypatch.setattr(
+        backend,
+        "_background_thread_readiness_snapshot",
+        lambda: {"required": True, "healthy": False},
+    )
+
+    response = backend.app.test_client().get("/api/health")
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "degraded"
 
 
 def test_pro_scan_capacity_allows_two_heavy_scans_and_rejects_third():

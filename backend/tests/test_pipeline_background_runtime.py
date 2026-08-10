@@ -1,5 +1,6 @@
 import json
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -97,8 +98,36 @@ def test_supabase_execute_retries_transient_transport_failure(monkeypatch):
 
     monkeypatch.setattr(backend.time, "sleep", lambda _seconds: None)
 
-    assert backend._supabase_execute(operation, "test read") == "ok"
+    assert backend._supabase_execute(
+        operation, "test read", attempts=3,
+    ) == "ok"
     assert len(attempts) == 3
+
+
+def test_operations_store_wrapper_does_not_amplify_transport_retries(monkeypatch):
+    attempts = []
+
+    def operation():
+        attempts.append(True)
+        raise RuntimeError("Resource temporarily unavailable")
+
+    monkeypatch.setattr(backend.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="temporarily unavailable"):
+        backend._operations_supabase_execute(operation, "artifact read")
+    assert len(attempts) == 1
+
+
+def test_operations_store_uses_a_separate_io_lock(monkeypatch):
+    class ForbiddenSharedLock:
+        def acquire(self, *_args, **_kwargs):
+            pytest.fail("Operations Store must not use the general Supabase lock")
+
+    monkeypatch.setattr(backend, "_SUPABASE_IO_LOCK", ForbiddenSharedLock())
+
+    assert backend._operations_supabase_execute(
+        lambda: "ok", "artifact read",
+    ) == "ok"
 
 
 def test_order_authority_explains_why_auto_orders_are_locked():
@@ -2481,6 +2510,50 @@ def test_readiness_is_200_when_required_dependencies_are_healthy(monkeypatch):
     assert response.headers["Pragma"] == "no-cache"
 
 
+def test_readiness_endpoint_never_performs_dependency_io(monkeypatch):
+    monkeypatch.setattr(
+        backend,
+        "_run_supabase_readiness_probe",
+        lambda **_kwargs: pytest.fail("readiness endpoint must use cached state"),
+    )
+    monkeypatch.setattr(backend, "supabase_admin", object())
+    monkeypatch.setattr(backend, "SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setattr(backend, "SUPABASE_SERVICE_ROLE_KEY", "service-key")
+    monkeypatch.setattr(
+        backend,
+        "_SUPABASE_READINESS_CACHE",
+        {
+            "checkedAt": time.time(),
+            "probeOk": True,
+            "migrationOk": True,
+            "leaseRpcOk": True,
+            "pipelineConfigMergeRpcOk": True,
+            "migrationContractFailure": False,
+            "consecutiveFailures": 0,
+            "lastSuccessAt": time.time(),
+            "lastFailureAt": 0.0,
+            "lastFailureType": "",
+        },
+    )
+    monkeypatch.setattr(
+        backend,
+        "_pa_scheduler_health_snapshot",
+        lambda: {"running": True, "heartbeatAgeSeconds": 1},
+    )
+    monkeypatch.setattr(
+        backend,
+        "_background_thread_readiness_snapshot",
+        lambda: {"required": True, "healthy": True},
+    )
+    monkeypatch.setattr(backend, "_backend_current_rss_mb", lambda: 256)
+    monkeypatch.setattr(backend, "_BACKEND_MEMORY_ABORT_LIMIT_MB", 3_700)
+
+    response = backend.app.test_client().get("/api/ready")
+
+    assert response.status_code == 200
+    assert response.get_json()["components"]["persistence"]["probeOk"] is True
+
+
 def test_supabase_readiness_requires_two_final_failures_and_recovers(monkeypatch):
     class Query:
         should_fail = True
@@ -2494,7 +2567,12 @@ def test_supabase_readiness_requires_two_final_failures_and_recovers(monkeypatch
         def execute(self):
             if self.should_fail:
                 raise TimeoutError("probe timed out")
-            return {"data": []}
+            return {"data": {
+                "contract": "20260802010716_v1",
+                "baseTables": True,
+                "workerLeaseRpc": True,
+                "pipelineConfigMergeRpc": True,
+            }}
 
     query = Query()
 
@@ -2503,16 +2581,7 @@ def test_supabase_readiness_requires_two_final_failures_and_recovers(monkeypatch
             return query
 
         def rpc(self, name, _arguments):
-            if name == "probe_pipeline_config_atomic_merge":
-                return type(
-                    "MergeContract",
-                    (),
-                    {
-                        "execute": lambda self: {
-                            "data": "20260726060000_v2"
-                        }
-                    },
-                )()
+            assert name == "probe_runtime_dependencies"
             return query
 
     monkeypatch.setattr(backend, "supabase_admin", Client())
@@ -2544,6 +2613,169 @@ def test_supabase_readiness_requires_two_final_failures_and_recovers(monkeypatch
     assert recovered["migrations"]["healthy"] is True
     assert recovered["migrations"]["pipelineConfigMergeRpc"] is True
     assert recovered["leases"]["healthy"] is True
+
+
+def test_supabase_execute_does_not_replay_timeout_by_default():
+    calls = []
+
+    def fail():
+        calls.append("called")
+        raise TimeoutError("PostgREST read timed out")
+
+    with pytest.raises(TimeoutError, match="PostgREST read timed out"):
+        backend._supabase_execute(fail, "test outage")
+
+    assert calls == ["called"]
+
+
+def test_supabase_readiness_does_not_treat_pgrst002_as_missing_contract(
+    monkeypatch,
+):
+    calls = []
+
+    class Rpc:
+        def execute(self):
+            raise RuntimeError(
+                "PGRST002 could not query the database for the schema cache"
+            )
+
+    class Client:
+        def rpc(self, name, _arguments):
+            calls.append(name)
+            return Rpc()
+
+    monkeypatch.setattr(backend, "supabase_admin", Client())
+    monkeypatch.setattr(backend, "SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setattr(backend, "SUPABASE_SERVICE_ROLE_KEY", "service-key")
+    monkeypatch.setattr(backend, "_strict_production_runtime", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        backend,
+        "_SUPABASE_READINESS_CACHE",
+        {"checkedAt": 0.0, "probeOk": None},
+    )
+
+    snapshot = backend._supabase_dependency_snapshot(force_probe=True)
+
+    assert calls == ["probe_runtime_dependencies"]
+    assert snapshot["consecutiveFailures"] == 1
+    assert snapshot["migrations"]["contractFailure"] is False
+
+
+def test_supabase_background_outage_gate_and_probe_backoff(monkeypatch):
+    monkeypatch.setattr(
+        backend,
+        "_SUPABASE_READINESS_CACHE",
+        {"probeOk": False, "consecutiveFailures": 1},
+    )
+    assert backend._supabase_background_io_blocked() is False
+
+    backend._SUPABASE_READINESS_CACHE["consecutiveFailures"] = 2
+    assert backend._supabase_background_io_blocked() is True
+
+    monkeypatch.setattr(backend, "SUPABASE_READINESS_INTERVAL_SECONDS", 30.0)
+    assert backend._supabase_readiness_retry_delay(0) == 30.0
+    assert backend._supabase_readiness_retry_delay(1) == 30.0
+    assert backend._supabase_readiness_retry_delay(2) == 60.0
+    assert backend._supabase_readiness_retry_delay(3) == 120.0
+    assert backend._supabase_readiness_retry_delay(10) == 120.0
+
+
+def test_supabase_readiness_supports_rolling_deploy_before_new_probe(monkeypatch):
+    class Rpc:
+        def __init__(self, result=None, error=None):
+            self.result = result
+            self.error = error
+
+        def execute(self):
+            if self.error:
+                raise self.error
+            return {"data": self.result}
+
+    class Client:
+        def rpc(self, name, _arguments):
+            if name == "probe_runtime_dependencies":
+                return Rpc(error=RuntimeError(
+                    "PGRST202 could not find public.probe_runtime_dependencies"
+                ))
+            assert name == "probe_pipeline_config_atomic_merge"
+            return Rpc(result="20260726060000_v2")
+
+    monkeypatch.setattr(backend, "supabase_admin", Client())
+    monkeypatch.setattr(backend, "SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setattr(backend, "SUPABASE_SERVICE_ROLE_KEY", "service-key")
+    monkeypatch.setattr(backend, "_strict_production_runtime", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        backend,
+        "_SUPABASE_READINESS_CACHE",
+        {"checkedAt": 0.0, "probeOk": None},
+    )
+
+    snapshot = backend._supabase_dependency_snapshot(force_probe=True)
+
+    assert snapshot["healthy"] is True
+    assert snapshot["migrations"]["pipelineConfigMergeRpc"] is True
+    assert snapshot["leases"]["healthy"] is True
+
+
+def test_kalshi_scheduler_lease_caches_successful_renewal(monkeypatch):
+    calls = []
+    now = [100.0]
+    monkeypatch.setattr(backend.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        backend.operations_store,
+        "claim_worker_lease",
+        lambda *_args, **_kwargs: calls.append(now[0]) or True,
+    )
+    monkeypatch.setattr(backend, "_KALSHI_LEASE_NEXT_CHECK_AT", 0.0)
+    monkeypatch.setattr(backend, "_KALSHI_LEASE_CACHED_RESULT", False)
+
+    assert backend._kalshi_claim_scheduler_lease() is True
+    now[0] = 110.0
+    assert backend._kalshi_claim_scheduler_lease() is True
+    assert calls == [100.0]
+
+    now[0] = 141.0
+    assert backend._kalshi_claim_scheduler_lease() is True
+    assert calls == [100.0, 141.0]
+
+
+def test_kalshi_scheduler_lease_backs_off_after_dependency_failure(monkeypatch):
+    calls = []
+    now = [200.0]
+    monkeypatch.setattr(backend.time, "monotonic", lambda: now[0])
+
+    def fail(*_args, **_kwargs):
+        calls.append(now[0])
+        raise RuntimeError("Supabase unavailable")
+
+    monkeypatch.setattr(backend.operations_store, "claim_worker_lease", fail)
+    monkeypatch.setattr(backend, "_KALSHI_LEASE_NEXT_CHECK_AT", 0.0)
+    monkeypatch.setattr(backend, "_KALSHI_LEASE_CACHED_RESULT", False)
+
+    with pytest.raises(RuntimeError, match="Supabase unavailable"):
+        backend._kalshi_claim_scheduler_lease()
+
+    now[0] = 205.0
+    assert backend._kalshi_claim_scheduler_lease() is False
+    assert calls == [200.0]
+
+
+def test_kalshi_scheduler_lease_skips_io_during_confirmed_supabase_outage(
+    monkeypatch,
+):
+    monkeypatch.setattr(backend.time, "monotonic", lambda: 300.0)
+    monkeypatch.setattr(backend, "_supabase_background_io_blocked", lambda: True)
+    monkeypatch.setattr(backend, "_KALSHI_LEASE_NEXT_CHECK_AT", 0.0)
+    monkeypatch.setattr(backend, "_KALSHI_LEASE_CACHED_RESULT", True)
+    monkeypatch.setattr(
+        backend.operations_store,
+        "claim_worker_lease",
+        lambda *_args, **_kwargs: pytest.fail("lease I/O must be suppressed"),
+    )
+
+    assert backend._kalshi_claim_scheduler_lease() is False
+    assert backend._KALSHI_LEASE_CACHED_RESULT is False
+    assert backend._KALSHI_LEASE_NEXT_CHECK_AT == 315.0
 
 
 def test_supabase_readiness_fails_immediately_for_missing_lease_migration(monkeypatch):
@@ -2606,10 +2838,12 @@ def test_supabase_readiness_fails_immediately_for_missing_atomic_merge_rpc(
 
     class MissingAtomicMergeRpc:
         def execute(self):
-            raise RuntimeError(
-                "PGRST202 could not find the function "
-                "public.probe_pipeline_config_atomic_merge"
-            )
+            return {"data": {
+                "contract": "20260802010716_v1",
+                "baseTables": True,
+                "workerLeaseRpc": True,
+                "pipelineConfigMergeRpc": False,
+            }}
 
     calls = []
 
@@ -2619,7 +2853,7 @@ def test_supabase_readiness_fails_immediately_for_missing_atomic_merge_rpc(
 
         def rpc(self, name, arguments):
             calls.append((name, arguments))
-            if name == "probe_pipeline_config_atomic_merge":
+            if name == "probe_runtime_dependencies":
                 return MissingAtomicMergeRpc()
             return Query()
 
@@ -2642,4 +2876,4 @@ def test_supabase_readiness_fails_immediately_for_missing_atomic_merge_rpc(
     assert snapshot["migrations"]["contractFailure"] is True
     assert snapshot["migrations"]["pipelineConfigMergeRpc"] is False
     assert snapshot["leases"]["healthy"] is True
-    assert calls[-1] == ("probe_pipeline_config_atomic_merge", {})
+    assert calls[-1] == ("probe_runtime_dependencies", {})

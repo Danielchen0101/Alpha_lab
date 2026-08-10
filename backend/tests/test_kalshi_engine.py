@@ -326,7 +326,15 @@ def test_small_real_account_uses_risk_equal_fractional_contracts():
     assert result["sizing"]["smallAccountSizingApplied"] is True
     assert result["sizing"]["microSizingApplied"] is False
     assert result["sizing"]["standardRiskBudget"] < result["sizing"]["maximumLoss"]
-    assert result["sizing"]["maximumLoss"] <= 19.87 * 0.015 + 1e-9
+    assert result["sizing"]["smallAccountUnscaledRiskTarget"] == pytest.approx(
+        19.87 * 0.02
+    )
+    assert result["sizing"]["smallAccountRiskBudget"] <= (
+        result["sizing"]["smallAccountUnscaledRiskTarget"]
+        * result["sizing"]["appliedRiskScale"]
+        + 1e-9
+    )
+    assert result["sizing"]["maximumLoss"] <= 19.87 * 0.02 + 1e-9
     assert result["sizing"]["maximumLoss"] <= result["sizing"]["riskBudget"] + 1e-9
     assert result["sizing"]["expectedValue"] > 0
     assert result["edge"]["netEdge"] >= result["config"]["microPositionMinNetEdge"]
@@ -336,7 +344,7 @@ def test_small_real_account_uses_risk_equal_fractional_contracts():
     )
 
 
-def test_small_account_override_still_respects_relative_loss_cap():
+def test_small_account_override_still_respects_two_percent_relative_loss_cap():
     now = datetime.now(timezone.utc)
     candles, spot = _candles()
 
@@ -356,10 +364,12 @@ def test_small_account_override_still_respects_relative_loss_cap():
         },
     )
 
-    assert result["action"] == "WAIT"
-    assert "position_size" in result["blockingReasons"]
-    assert result["sizing"]["contracts"] == 0
+    assert result["action"] == "BUY_YES"
+    assert "position_size" not in result["blockingReasons"]
+    assert 0.10 <= result["sizing"]["contracts"] < 1.0
     assert result["sizing"]["microSizingApplied"] is False
+    assert result["sizing"]["smallAccountSizingApplied"] is True
+    assert result["sizing"]["maximumLoss"] <= 5.0 * 0.02 + 1e-9
     assert result["sizing"]["microPositionLossCap"] == pytest.approx(0.25)
 
 
@@ -600,6 +610,54 @@ def test_high_price_favorite_receives_tail_loss_haircut():
         < lower_price["sizing"]["scaledHardRiskBudget"]
     )
     assert high_price["sizing"]["contracts"] < lower_price["sizing"]["contracts"]
+
+
+def test_small_account_override_inherits_quality_and_tail_risk_haircuts():
+    now = datetime.now(timezone.utc)
+    candles, spot = _candles()
+
+    def decision(yes_ask):
+        yes_bid = yes_ask - 0.02
+        no_bid = 1.0 - yes_ask
+        return evaluate_btc15_contract(
+            _early_market(
+                now,
+                floor_strike=64_400.0,
+                yes_bid_dollars=f"{yes_bid:.4f}",
+                yes_ask_dollars=f"{yes_ask:.4f}",
+                no_bid_dollars=f"{no_bid:.4f}",
+                no_ask_dollars=f"{1.0 - yes_bid:.4f}",
+            ),
+            spot_price=spot,
+            candles=candles,
+            now=now,
+            config={"executionMode": "real"},
+            account_context={
+                "bankroll": 22.50,
+                "cashAvailable": 22.50,
+                "portfolioExposure": 0.0,
+                "currentMarketExposure": 0.0,
+            },
+            orderbook={
+                "yes": [[yes_bid, 1_000]],
+                "no": [[no_bid, 1_000]],
+            },
+            reference_time=now,
+            book_time=now,
+        )
+
+    mid_price = decision(0.74)
+    high_price = decision(0.85)
+
+    assert mid_price["action"] == "BUY_YES"
+    assert high_price["action"] == "BUY_YES"
+    assert mid_price["sizing"]["smallAccountSizingApplied"] is True
+    assert high_price["sizing"]["smallAccountSizingApplied"] is True
+    assert high_price["sizing"]["priceRiskScale"] < 1.0
+    assert high_price["sizing"]["smallAccountRiskBudget"] < (
+        high_price["sizing"]["smallAccountUnscaledRiskTarget"]
+    )
+    assert high_price["sizing"]["maximumLoss"] < mid_price["sizing"]["maximumLoss"]
 
 
 def test_full_bid_book_derives_executable_asks_and_depth():
@@ -859,8 +917,10 @@ def test_user_config_is_bounded_to_research_limits():
         "emergencyStopLossPct": 1,
         "entryConfirmationSnapshots": 99,
         "entryConfirmationMaxGapSeconds": 1,
+        "btc15EntryConfirmationMaxGapSeconds": 999,
         "protectiveExitConfirmations": 0,
         "protectiveExitConfirmationMaxGapSeconds": 999,
+        "btc15ProtectiveExitConfirmationMaxGapSeconds": 1,
         "hourlyCandidatePenaltyWeight": 5,
     })
 
@@ -883,8 +943,10 @@ def test_user_config_is_bounded_to_research_limits():
     assert config["emergencyStopLossPct"] == 0.15
     assert config["entryConfirmationSnapshots"] == 5
     assert config["entryConfirmationMaxGapSeconds"] == 5
+    assert config["btc15EntryConfirmationMaxGapSeconds"] == 60
     assert config["protectiveExitConfirmations"] == 2
     assert config["protectiveExitConfirmationMaxGapSeconds"] == 60
+    assert config["btc15ProtectiveExitConfirmationMaxGapSeconds"] == 15
     assert config["hourlyCandidatePenaltyWeight"] == pytest.approx(0.50)
 
 
@@ -911,10 +973,13 @@ def test_default_quality_floors_and_risk_scale_invariants():
     assert defaults["fractionalContractSizingEnabled"] is True
     assert defaults["contractStep"] == pytest.approx(0.01)
     assert defaults["minimumEconomicContracts"] == pytest.approx(0.10)
-    assert defaults["smallAccountRiskTargetPct"] == pytest.approx(1.50)
+    assert defaults["smallAccountRiskTargetPct"] == pytest.approx(2.00)
     assert defaults["recoveryMultipleTarget"] == pytest.approx(2.0)
     assert defaults["entryConfirmationSnapshots"] == 2
+    assert defaults["entryConfirmationMaxGapSeconds"] == 25
+    assert defaults["btc15EntryConfirmationMaxGapSeconds"] == 25
     assert defaults["protectiveExitConfirmations"] == 3
+    assert defaults["btc15ProtectiveExitConfirmationMaxGapSeconds"] == 30
     assert defaults["hourlyCandidatePenaltyWeight"] == pytest.approx(0.10)
     assert malformed_fractional["fractionalContractSizingEnabled"] is True
     assert defaults["maxPortfolioExposurePct"] == pytest.approx(10.0)

@@ -3,8 +3,41 @@ import { supabase } from '../lib/supabaseClient';
 
 export const AUTH_AWAY_TIMEOUT_MS = 10 * 60 * 1000;
 export const AUTH_AWAY_STORAGE_KEY = 'alphalab:auth-away-since';
+export const AUTH_SESSION_READ_TIMEOUT_MS = 5_000;
+export const AUTH_SESSION_REFRESH_TIMEOUT_MS = 8_000;
 
 let refreshInFlight: Promise<Session | null> | null = null;
+
+export class AuthOperationTimeoutError extends Error {
+  constructor(operation: string) {
+    super(`${operation} timed out`);
+    this.name = 'AuthOperationTimeoutError';
+  }
+}
+
+export const withAuthTimeout = <T,>(
+  operation: PromiseLike<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> => new Promise<T>((resolve, reject) => {
+  const timer = window.setTimeout(
+    () => reject(new AuthOperationTimeoutError(label)),
+    Math.max(1, timeoutMs),
+  );
+  Promise.resolve(operation).then(resolve, reject).finally(() => window.clearTimeout(timer));
+});
+
+export const getSessionWithTimeout = async (
+  timeoutMs = AUTH_SESSION_READ_TIMEOUT_MS,
+): Promise<Session | null> => {
+  const { data, error } = await withAuthTimeout(
+    supabase.auth.getSession(),
+    timeoutMs,
+    'Session restore',
+  );
+  if (error) throw error;
+  return data.session;
+};
 
 export const getAuthAwayTimeoutMs = (): number => {
   try {
@@ -16,7 +49,9 @@ export const getAuthAwayTimeoutMs = (): number => {
   return AUTH_AWAY_TIMEOUT_MS;
 };
 
-export const refreshSessionOnce = async (): Promise<Session | null> => {
+export const refreshSessionOnce = async (
+  timeoutMs = AUTH_SESSION_REFRESH_TIMEOUT_MS,
+): Promise<Session | null> => {
   if (!refreshInFlight) {
     refreshInFlight = supabase.auth.refreshSession()
       .then(({ data, error }) => {
@@ -27,7 +62,11 @@ export const refreshSessionOnce = async (): Promise<Session | null> => {
         refreshInFlight = null;
       });
   }
-  return refreshInFlight;
+  // Keep the underlying single-flight promise alive after a caller times out.
+  // A late successful refresh can still update Supabase's persisted session,
+  // while the current page request receives a bounded failure instead of
+  // hanging behind an unhealthy Auth service.
+  return withAuthTimeout(refreshInFlight, timeoutMs, 'Session refresh');
 };
 
 export const readAwaySince = (): number | null => {

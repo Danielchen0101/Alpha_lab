@@ -28,7 +28,7 @@ import MarketScannerWorkbench from '../components/MarketScannerWorkbench';
 import FineScanWorkbench from '../components/FineScanWorkbench';
 import DeeperValidationWorkbench from '../components/DeeperValidationWorkbench';
 import marketDataService from '../services/marketDataService';
-import { scannerStateStore } from '../services/scannerStateStore';
+import { reconcileMarketScannerWithBackend, scannerStateStore } from '../services/scannerStateStore';
 import {
   startMarketScanner, stopMarketScannerByUser, isScanRunning,
   registerFineScanRun, unregisterFineScanRun, isFineScanRunning,
@@ -36,6 +36,7 @@ import {
   registerEntryPlanRun, unregisterEntryPlanRun, isEntryPlanRunning,
 } from '../services/scannerRunnerService';
 import { resolveResearchStrategyPolicy } from './researchStrategyPolicy';
+import { DEEPSEEK_DEFAULT_MODEL, normalizeAIModel } from '../config/aiProviders';
 import './AgentEditorial.css';
 
 const { Option } = Select;
@@ -1011,7 +1012,7 @@ const Agent: React.FC = (): React.ReactElement => {
   const [aiConfig, setAiConfig] = useState({
     apiKey: '',
     baseUrl: 'https://api.deepseek.com',
-    model: 'deepseek-chat',
+    model: DEEPSEEK_DEFAULT_MODEL,
     provider: 'DeepSeek'
   });
 
@@ -1454,6 +1455,9 @@ const Agent: React.FC = (): React.ReactElement => {
     try {
       const res = await pipelineAutoAPI.getStatus();
       if (res.data.success) {
+        const currentScanner = scannerStateStore.getState().marketScanner;
+        const reconciled = reconcileMarketScannerWithBackend(currentScanner, res.data.activeRun);
+        if (reconciled) scannerStateStore.updateMarketScanner(reconciled);
         setPipelineAutoStatus(res.data);
         return res.data;
       }
@@ -2120,13 +2124,13 @@ const Agent: React.FC = (): React.ReactElement => {
         type AIProvider = typeof allowedProviders[number];
 
         let provider = config.provider || 'DeepSeek';
-        let model = config.model || 'deepseek-chat';
+        let model = normalizeAIModel(config.provider, config.model) || DEEPSEEK_DEFAULT_MODEL;
 
         // 如果provider不在允许列表中，重置为默认值
         if (!allowedProviders.includes(provider as AIProvider)) {
           console.warn(`非法provider值: ${provider}，重置为DeepSeek`);
           provider = 'DeepSeek';
-          model = 'deepseek-chat';
+          model = DEEPSEEK_DEFAULT_MODEL;
         }
 
         // 更新本地状态
@@ -5967,30 +5971,46 @@ const Agent: React.FC = (): React.ReactElement => {
           const step = active.steps?.[key] || {};
           const stageLabel = stageLabels[key] || key;
           setPipelineStage(stageLabel);
+          const reconciledMarket = reconcileMarketScannerWithBackend(
+            scannerStateStore.getState().marketScanner,
+            active,
+          );
+          if (reconciledMarket) scannerStateStore.updateMarketScanner(reconciledMarket);
 
           if (key === 'market_scanner') {
             const processed = Number(step.processedSymbols ?? step.processed ?? 0);
             const total = Number(step.totalSymbols ?? step.total ?? 0);
             const percent = Number(step.progressPct ?? (total > 0 ? Math.round(processed / total * 100) : 0));
             const current = scannerStateStore.getState().marketScanner.detailedScanStatus;
+            const isRunning = active.status === 'running';
+            const isCompleted = active.status === 'completed';
+            const isStopped = ['stopped', 'interrupted'].includes(active.status);
+            const failureReason = String(active.lastError || active.message || '').trim();
+            const statusMessage = isRunning
+              ? (isZh ? `${stageLabel}进行中` : active.message || 'Market scan running')
+              : isCompleted
+                ? (isZh ? `${stageLabel}已完成` : active.message || 'Market scan completed')
+                : failureReason || (isStopped
+                  ? agentText('Market scan stopped.', '市场扫描已停止。')
+                  : agentText('Market scan failed.', '市场扫描失败。'));
             scannerStateStore.updateMarketScanner({
-              status: active.status === 'running' ? 'running' : active.status === 'completed' ? 'completed' : 'failed',
+              status: isRunning ? 'running' : isCompleted ? 'completed' : isStopped ? 'stopped' : 'failed',
               progress: percent,
               totalSymbols: total,
               scannedSymbols: processed,
               detailedScanStatus: {
                 ...current,
-                currentStatus: active.status === 'running' ? 'scanning' : active.status === 'completed' ? 'completed' : 'error',
+                currentStatus: isRunning ? 'scanning' : isCompleted ? 'completed' : isStopped ? 'stopped' : 'error',
                 currentStage: key,
                 stageLabel,
+                stageDetail: statusMessage,
                 stageIndex: active.stepIndex,
                 stageCount: active.totalSteps,
                 processedCount: processed,
                 totalCount: total,
                 percent,
-                statusMessage: isZh
-                  ? `${stageLabel}进行中`
-                  : active.message || 'Market scan running',
+                lastFailureReason: !isRunning && !isCompleted && !isStopped ? statusMessage : '',
+                statusMessage,
               },
             });
           } else if (key === 'fine_scan') {
@@ -6142,6 +6162,19 @@ const Agent: React.FC = (): React.ReactElement => {
         );
         setPipelineError(msg);
         setPipelineStage('failed');
+        const current = scannerStateStore.getState().marketScanner.detailedScanStatus;
+        if (current.currentStatus === 'scanning' || current.currentStatus === 'stopping') {
+          scannerStateStore.updateMarketScanner({
+            status: 'failed',
+            detailedScanStatus: {
+              ...current,
+              currentStatus: 'error',
+              stageDetail: msg,
+              lastFailureReason: msg,
+              statusMessage: msg,
+            },
+          });
+        }
         message.error(msg);
       }
     } finally {
@@ -6745,7 +6778,7 @@ const Agent: React.FC = (): React.ReactElement => {
             <span style={{ fontSize: 11, color: 'var(--app-text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>{t.agent.aiProvider}</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--app-text-strong)' }}>{aiConfig.provider || t.agent.notSet}</span>
-              <Tag color="blue" bordered={false} style={{ margin: 0, fontSize: 10, fontWeight: 700, borderRadius: 4 }}>V3</Tag>
+              <Tag color="blue" bordered={false} style={{ margin: 0, fontSize: 10, fontWeight: 700, borderRadius: 4 }}>V4 FLASH</Tag>
             </div>
           </div>
           <Divider type="vertical" style={{ height: 28, margin: 0, opacity: 0.5 }} />

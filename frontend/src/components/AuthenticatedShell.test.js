@@ -24,6 +24,8 @@ describe('authenticated workspace navigation', () => {
     ['/market', 'markets', 'market-scanner'],
     ['/market/symbol/AAPL', 'markets', 'symbol-analysis'],
     ['/analysis/TSLA/', 'markets', 'symbol-analysis'],
+    ['/market/intelligence', 'markets', 'market-intelligence'],
+    ['/market/intelligence/news', 'markets', 'market-intelligence'],
     ['/watchlist', 'markets', 'watchlist'],
     ['/crypto', 'crypto', 'crypto-overview'],
     ['/crypto/strategy', 'crypto', 'crypto-strategy'],

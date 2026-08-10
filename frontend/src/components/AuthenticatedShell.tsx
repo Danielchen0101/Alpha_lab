@@ -164,6 +164,7 @@ const sections: ShellSectionConfig[] = [
     matches: (pathname) => (
       isShellPath(pathname, MARKET_SCANNER_PATH) ||
       isShellPath(pathname, LEGACY_MARKET_SYMBOL_ROOT) ||
+      isShellPath(pathname, '/market/intelligence') ||
       isShellPath(pathname, '/watchlist')
     ),
     links: [
@@ -182,6 +183,14 @@ const sections: ShellSectionConfig[] = [
         path: marketSymbolPath(DEFAULT_MARKET_SYMBOL),
         icon: <LineChartOutlined />,
         match: (pathname) => isShellPath(pathname, MARKET_SYMBOL_ROOT) || isShellPath(pathname, LEGACY_MARKET_SYMBOL_ROOT),
+      },
+      {
+        key: 'market-intelligence',
+        label: 'Market intelligence',
+        labelZh: '市场分析',
+        path: '/market/intelligence',
+        icon: <GlobalOutlined />,
+        match: (pathname) => isShellPath(pathname, '/market/intelligence'),
       },
       {
         key: 'watchlist',
@@ -459,7 +468,12 @@ export const stopKalshiRobotAndSaveMode = async (
   nextMode: KalshiExecutionMode,
 ): Promise<KalshiBotConfig> => {
   const currentMode: KalshiExecutionMode = currentConfig.executionMode === 'real' ? 'real' : 'paper';
-  const stopped = await apiClient.setPaperRobot(false, currentConfig, currentMode);
+  const stopped = await apiClient.setPaperRobot(
+    false,
+    currentConfig,
+    currentMode,
+    'shell-mode-switch',
+  );
   if (stopped.data?.success === false) {
     throw new Error(stopped.data?.message || 'Kalshi robot could not be stopped before switching modes.');
   }
@@ -678,7 +692,11 @@ const AuthenticatedShell: React.FC<AuthenticatedShellProps> = ({ children }) => 
       return () => { active = false; };
     }
     setAlpacaStatus('checking');
-    void loadConfigStatus({ timeoutMs: 6000, force: true }).then((result) => {
+    void loadConfigStatus({
+      timeoutMs: 5000,
+      force: onConfigurationRoute,
+      retry: onConfigurationRoute,
+    }).then((result) => {
       if (!active) return;
       const alpaca = result.data?.alpaca;
       const configured = tradeMode === 'real' ? alpaca?.liveConfigured : alpaca?.paperConfigured;

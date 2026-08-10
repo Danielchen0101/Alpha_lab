@@ -1,6 +1,5 @@
--- Additive repair for deployments that already have
--- public.user_pipeline_auto_configs but predate the atomic JSONB merge RPC.
--- Keep this definition aligned with backend/supabase_schema.sql.
+-- Reduce scheduler write amplification on tiny, frequently updated state
+-- tables and collapse backend readiness into one side-effect-free query.
 CREATE OR REPLACE FUNCTION public.merge_user_pipeline_auto_config(
   p_user_id UUID,
   p_patch JSONB,
@@ -35,8 +34,6 @@ BEGIN
   v_merged := (COALESCE(v_current, '{}'::JSONB) - COALESCE(p_remove_keys, ARRAY[]::TEXT[]))
     || COALESCE(p_patch, '{}'::JSONB);
 
-  -- Managed positions are independently updated by fills and the position
-  -- guard; merge individual symbols instead of replacing the whole map.
   IF COALESCE(p_patch, '{}'::JSONB) ? 'managed_positions' THEN
     v_merged := jsonb_set(
       v_merged,
@@ -56,9 +53,6 @@ BEGIN
         || COALESCE(p_patch->'user_preferences', '{}'::JSONB),
       TRUE
     );
-    -- Deep-merge one level for every object-valued workspace section. This
-    -- covers general, trading, risk, research, charts, notifications,
-    -- security and legacy appearance while keeping future sections safe.
     FOR v_preference_key, v_preference_value IN
       SELECT key, value
       FROM jsonb_each(p_patch->'user_preferences')
@@ -80,8 +74,6 @@ BEGIN
     END LOOP;
   END IF;
 
-  -- Avoid a new tuple version, WAL, indexes and updated_at churn when a
-  -- scheduler repeats the exact same runtime state.
   IF v_merged IS NOT DISTINCT FROM v_current THEN
     RETURN v_current;
   END IF;
@@ -115,34 +107,50 @@ REVOKE ALL ON FUNCTION public.merge_user_pipeline_auto_config(UUID, JSONB, TEXT[
 GRANT EXECUTE ON FUNCTION public.merge_user_pipeline_auto_config(UUID, JSONB, TEXT[])
   TO service_role;
 
--- Side-effect-free PostgREST contract probe used by backend readiness. Keeping
--- it as a separate RPC avoids touching a user's updated_at timestamp merely to
--- prove that the mutating function is available in the schema cache.
-CREATE OR REPLACE FUNCTION public.probe_pipeline_config_atomic_merge()
-RETURNS TEXT
+CREATE OR REPLACE FUNCTION public.probe_runtime_dependencies()
+RETURNS JSONB
 LANGUAGE sql
 STABLE
 SECURITY INVOKER
 SET search_path = public
 AS $$
-  SELECT CASE
-    WHEN to_regprocedure(
-      'public.merge_user_pipeline_auto_config(uuid,jsonb,text[])'
-    ) IS NOT NULL
+  SELECT jsonb_build_object(
+    'contract', '20260802010716_v1',
+    'baseTables',
+      to_regclass('public.user_pipeline_auto_configs') IS NOT NULL
+      AND to_regclass('public.user_api_configs') IS NOT NULL
+      AND to_regclass('public.app_worker_leases') IS NOT NULL,
+    'pipelineConfigMergeRpc',
+      to_regprocedure(
+        'public.merge_user_pipeline_auto_config(uuid,jsonb,text[])'
+      ) IS NOT NULL
       AND has_function_privilege(
         'service_role',
         'public.merge_user_pipeline_auto_config(uuid,jsonb,text[])',
         'EXECUTE'
+      ),
+    'workerLeaseRpc',
+      to_regprocedure(
+        'public.renew_app_worker_lease(text,text,bigint,integer,jsonb)'
+      ) IS NOT NULL
+      AND has_function_privilege(
+        'service_role',
+        'public.renew_app_worker_lease(text,text,bigint,integer,jsonb)',
+        'EXECUTE'
       )
-    THEN '20260726060000_v2'
-    ELSE 'missing'
-  END;
+  );
 $$;
 
-REVOKE ALL ON FUNCTION public.probe_pipeline_config_atomic_merge()
+REVOKE ALL ON FUNCTION public.probe_runtime_dependencies()
   FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.probe_pipeline_config_atomic_merge()
+GRANT EXECUTE ON FUNCTION public.probe_runtime_dependencies()
   TO service_role;
 
--- Make both RPCs visible to PostgREST immediately after the migration.
+CREATE INDEX IF NOT EXISTS user_operation_artifacts_scheduler_lookup_idx
+  ON public.user_operation_artifacts (
+    artifact_type,
+    artifact_key,
+    updated_at DESC
+  );
+
 NOTIFY pgrst, 'reload schema';

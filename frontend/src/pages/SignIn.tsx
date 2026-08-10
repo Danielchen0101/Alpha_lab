@@ -24,6 +24,7 @@ import {
 import { getSafeInternalRedirect } from '../lib/safeRedirect';
 import AuthPageNav from '../components/AuthPageNav';
 import AuthTurnstile, { AuthTurnstileHandle } from '../components/AuthTurnstile';
+import { withAuthTimeout } from '../services/authSession';
 import type { Provider } from '@supabase/supabase-js';
 import '../styles/Auth.css';
 
@@ -259,12 +260,16 @@ const SignIn: React.FC = () => {
     setOauthLoading(provider);
     setError('');
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider,
-        options: {
-          redirectTo: getOAuthSignInRedirect(redirectPath),
-        },
-      });
+      const { error } = await withAuthTimeout(
+        supabase.auth.signInWithOAuth({
+          provider,
+          options: {
+            redirectTo: getOAuthSignInRedirect(redirectPath),
+          },
+        }),
+        10_000,
+        'OAuth sign in',
+      );
       if (error) {
         setError(t.auth.oauthFailed || t.auth.errorUnexpected);
         setOauthLoading(null);

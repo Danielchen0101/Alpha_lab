@@ -317,6 +317,89 @@ export const getPersistableScannerState = (state: ScannerStoreState): ScannerSto
   removedExecutionSymbols: [],
 });
 
+type BackendPipelineRun = {
+  status?: string;
+  currentStep?: string;
+  progressPct?: number;
+  message?: string;
+  lastError?: string;
+};
+
+/**
+ * Reconcile the browser-only scanner display with the durable backend run.
+ * Cached results are intentionally preserved; this only repairs contradictory
+ * status text left behind by a refresh or a terminal backend transition.
+ */
+export const reconcileMarketScannerWithBackend = (
+  marketScanner: MarketScannerState,
+  activeRun?: BackendPipelineRun | null,
+): Partial<MarketScannerState> | null => {
+  if (!activeRun?.status) return null;
+
+  const status = String(activeRun.status).toLowerCase();
+  const detail = marketScanner.detailedScanStatus;
+  const backendMessage = String(activeRun.lastError || activeRun.message || '').trim();
+
+  // Reaching a later pipeline stage is durable proof that market scanning
+  // finished, even when the full pipeline is still running or later failed.
+  if (activeRun.currentStep && activeRun.currentStep !== 'market_scanner'
+      && ['scanning', 'error', 'stopping'].includes(detail.currentStatus)) {
+    const message = backendMessage
+      ? `Market scan completed. Pipeline: ${backendMessage}`
+      : `Market scan completed; pipeline advanced to ${activeRun.currentStep}.`;
+    return {
+      status: 'completed',
+      progress: 100,
+      detailedScanStatus: {
+        ...detail,
+        currentStatus: 'completed',
+        percent: 100,
+        lastFailureReason: '',
+        stageDetail: message,
+        statusMessage: message,
+      },
+    };
+  }
+
+  if (activeRun.currentStep !== 'market_scanner') return null;
+
+  if (status === 'running') return null;
+
+  if (status === 'completed' && ['scanning', 'error', 'stopping'].includes(detail.currentStatus)) {
+    return {
+      status: 'completed',
+      progress: 100,
+      detailedScanStatus: {
+        ...detail,
+        currentStatus: 'completed',
+        percent: 100,
+        lastFailureReason: '',
+        stageDetail: backendMessage || 'Backend market scan completed.',
+        statusMessage: backendMessage || 'Backend market scan completed.',
+      },
+    };
+  }
+
+  if (['failed', 'stopped', 'interrupted'].includes(status)
+      && ['scanning', 'stopping', 'error'].includes(detail.currentStatus)) {
+    const stopped = status === 'stopped' || status === 'interrupted';
+    const fallback = stopped ? 'Backend market scan stopped.' : 'Backend market scan failed.';
+    const message = backendMessage || fallback;
+    return {
+      status: stopped ? 'stopped' : 'failed',
+      detailedScanStatus: {
+        ...detail,
+        currentStatus: stopped ? 'stopped' : 'error',
+        stageDetail: message,
+        lastFailureReason: stopped ? '' : message,
+        statusMessage: message,
+      },
+    };
+  }
+
+  return null;
+};
+
 export class ScannerStateStore {
   private state: ScannerStoreState;
   private listeners: Set<Listener> = new Set();

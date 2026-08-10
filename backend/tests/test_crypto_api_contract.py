@@ -443,7 +443,7 @@ def test_scheduler_enumeration_is_capped_and_only_selects_enabled_crypto_configs
         controls["stop"]()
 
 
-def test_three_broker_failures_lock_automation_but_policy_denials_do_not(monkeypatch):
+def test_three_transient_broker_failures_back_off_without_manual_lock(monkeypatch):
     _, client, _, _, controls = make_api(monkeypatch)
     service = controls["service"]
     try:
@@ -463,11 +463,10 @@ def test_three_broker_failures_lock_automation_but_policy_denials_do_not(monkeyp
             assert response.status_code == 503
             runtime = service.get_runtime("user-a")
             assert runtime["consecutiveErrors"] == expected_errors
-        assert service.get_runtime("user-a")["locked"] is True
-
-        locked = client.post("/api/crypto/run-cycle", json={})
-        assert locked.status_code == 423
-        assert service.get_runtime("user-a")["consecutiveErrors"] == 3
+        runtime = service.get_runtime("user-a")
+        assert runtime["locked"] is False
+        assert runtime["status"] == "recovering"
+        assert runtime["retryNotBefore"]
     finally:
         controls["stop"]()
 
@@ -1757,6 +1756,7 @@ def test_short_term_strategy_allows_fifteen_minute_scheduler(monkeypatch):
         assert config["strategy"]["entry_score"] == 52
         assert config["strategy"]["add_score"] == 68
         assert config["strategy"]["reduce_score"] == 44
+        assert config["strategy"]["time_stop_bars"] == 48
         assert config["strategy"]["data_stale_minutes"] == 25
 
         denied = client.put("/api/crypto/config", json={"tradeHorizon": "long", "intervalMinutes": 15})
@@ -2150,7 +2150,7 @@ def test_scheduler_rotates_candidates_after_completed_futures(monkeypatch):
         controls["stop"]()
 
 
-def test_manual_review_requires_explicit_start_acknowledgement_and_is_audited(monkeypatch):
+def test_legacy_manual_review_state_no_longer_blocks_restart(monkeypatch):
     _, client, _, store, controls = make_api(monkeypatch)
     service = controls["service"]
     try:
@@ -2163,10 +2163,7 @@ def test_manual_review_requires_explicit_start_acknowledgement_and_is_audited(mo
         monkeypatch.setattr(service, "runtime_snapshot", lambda: {
             "schedulerHealthy": True, "status": "healthy", "message": "Crypto scheduler is running.",
         })
-        denied = client.post("/api/crypto/automation/start", json={})
-        assert denied.status_code == 409
-        assert denied.get_json()["reason"] == "risk_acknowledgement_required"
-        started = client.post("/api/crypto/automation/start", json={"acknowledgeRisk": True})
+        started = client.post("/api/crypto/automation/start", json={})
         assert started.status_code == 200
         assert started.get_json()["runtime"]["manualReviewRequired"] is False
         assert any(row["event_type"] == "crypto_manual_risk_review_acknowledged" for row in store.audit)
@@ -2174,7 +2171,7 @@ def test_manual_review_requires_explicit_start_acknowledgement_and_is_audited(mo
         controls["stop"]()
 
 
-def test_seven_day_cooldown_is_persisted_as_a_fixed_non_sliding_latch(monkeypatch):
+def test_performance_cooldown_signal_is_ignored_for_24x7_operation(monkeypatch):
     _, _, _, _, controls = make_api(monkeypatch)
     service = controls["service"]
     first_now = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
@@ -2191,16 +2188,16 @@ def test_seven_day_cooldown_is_persisted_as_a_fixed_non_sliding_latch(monkeypatc
             },
         })
         first = service.run_cycle("user-a")
-        first_until = first["runtime"]["cooldownUntil"]
-        assert first["decisions"][0]["action"] == "HOLD"
-        assert first_until == (first_now + timedelta(hours=72)).isoformat()
+        assert first["runtime"]["cooldownUntil"] is None
+        assert first["decisions"][0]["persistentRiskGate"]["eligible"] is True
+        assert first["decisions"][0]["persistentRiskGate"]["reasons"] == []
 
         runtime = service.get_runtime("user-a")
         runtime["lastRunBucket"] = None
         service.save_runtime("user-a", runtime, "allow-second-cycle")
         clock["now"] = first_now + timedelta(hours=1)
         second = service.run_cycle("user-a")
-        assert second["runtime"]["cooldownUntil"] == first_until
+        assert second["runtime"]["cooldownUntil"] is None
     finally:
         controls["stop"]()
 
@@ -2769,6 +2766,56 @@ def test_registration_can_leave_crypto_scheduler_stopped(monkeypatch):
         assert controls["service"]._thread is None
         assert snapshot["schedulerAlive"] is False
         assert snapshot["status"] == "stopped"
+    finally:
+        controls["stop"]()
+
+
+def test_crypto_scheduler_pauses_database_io_during_dependency_outage(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setenv(
+        "CRYPTO_SCHEDULER_LOCK_PATH",
+        str(tmp_path / "dependency-backoff.lock"),
+    )
+    monkeypatch.setattr(crypto_api, "SCHEDULER_SCAN_INTERVAL_SECONDS", 0.02)
+    monkeypatch.setattr(
+        crypto_api, "SCHEDULER_DEPENDENCY_BACKOFF_MAX_SECONDS", 0.04,
+    )
+    controls = make_api(
+        monkeypatch,
+        start_background=False,
+        disable_scheduler=False,
+    )[4]
+    service = controls["service"]
+    dependency = {"available": False}
+    claims = []
+    scans = []
+    service.background_dependency_available = lambda: dependency["available"]
+    monkeypatch.setattr(
+        service,
+        "_claim_durable_scheduler_lease",
+        lambda **_kwargs: claims.append(True) or True,
+    )
+    monkeypatch.setattr(
+        service,
+        "_scheduler_scan",
+        lambda **_kwargs: scans.append(True),
+    )
+    try:
+        controls["start"]()
+        time.sleep(0.08)
+        assert claims == []
+        assert scans == []
+        assert controls["runtime"]()["lastError"] == (
+            "SupabaseDependencyUnavailable"
+        )
+
+        dependency["available"] = True
+        deadline = time.time() + 1
+        while not scans and time.time() < deadline:
+            time.sleep(0.01)
+        assert claims
+        assert scans
     finally:
         controls["stop"]()
 

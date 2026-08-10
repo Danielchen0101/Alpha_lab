@@ -7,6 +7,7 @@ import json
 import math
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Mapping, Optional
 
@@ -20,11 +21,66 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-MAX_DECISION_RECORDS = 250
+def _entry_confirmation_family(ticker: Any) -> Optional[str]:
+    normalized = str(ticker or "").upper()
+    if normalized.startswith("KXBTC15M"):
+        return "btc15m"
+    if normalized.startswith("KXBTCD"):
+        return "btchourly"
+    return None
+
+
+# Decision rows are a short-lived operator view, not the durable trade ledger.
+# Filled trades and market observations are persisted separately, so retaining a
+# few minutes here is enough while keeping each heartbeat write small on Nano
+# Postgres compute.  The state mirrors the active bucket at the top level, which
+# means every extra decision would otherwise be serialized twice.
+MAX_DECISION_RECORDS = 50
 MAX_SETTLEMENT_RECORDS = 1000
 MAX_TRADED_TICKERS = 2000
 PAPER_STATE_VERSION = 13
 KALSHI_MODES = ("paper", "real")
+
+# These fields mirror the active mode bucket for older API consumers.  Keeping
+# both copies in memory is useful, but sending both copies to Supabase on every
+# durable mutation doubles the largest parts of the request body.  The mirror
+# is rebuilt by ``_sync_mode_mirror`` immediately after a durable load.
+_TOP_LEVEL_MODE_MIRRORS = (
+    "config",
+    "strategy",
+    "tradedTickers",
+    "filledTrades",
+    "processedSettlements",
+    "decisions",
+    "decisionLimit",
+)
+
+# Removed strategy experiments are not execution inputs.  Old durable rows can
+# still contain them, so strip them from the next outbound write instead of
+# paying Render egress to preserve unused history indefinitely.
+_LEGACY_NON_TRADING_FIELDS = (
+    "learningObservations",
+    "learningExamples",
+    "strategyLibrary",
+)
+
+# Evaluation decisions are a live operator view and already have a dedicated,
+# bounded observation table.  They are intentionally kept in memory for entry
+# and exit confirmation, while fills and settlement provenance remain durable
+# in their own fields.  Persisting these feature-heavy rows made one robot
+# artifact exceed a megabyte in production.
+_EPHEMERAL_MODE_FIELDS = (
+    "decisionLimit",
+    "lastRunAt",
+    "lastError",
+    "runs",
+)
+
+_EPHEMERAL_TOP_LEVEL_FIELDS = (
+    "lastRunAt",
+    "lastError",
+    "runs",
+)
 
 
 def _number(value: Any, default: float = 0.0) -> float:
@@ -165,6 +221,14 @@ def _safe_strategy_config(
     )
     configured["riskPerTradePct"] = min(
         0.50, _number(configured.get("riskPerTradePct"), 0.50)
+    )
+    # Hourly scans run on a 15-second cadence.  A 15-second confirmation gap
+    # is therefore impossible once normal request latency is included; keep
+    # the persisted/effective setting above that cadence without weakening
+    # the requirement for two consecutive qualifying decisions.
+    configured["entryConfirmationMaxGapSeconds"] = max(
+        25.0,
+        _number(configured.get("entryConfirmationMaxGapSeconds"), 25.0),
     )
     configured["fractionalKelly"] = min(
         0.15, _number(configured.get("fractionalKelly"), 0.15)
@@ -485,8 +549,66 @@ class KalshiRobotState:
         state["storageVersion"] = max(11, int(state.get("storageVersion") or 0))
 
     @staticmethod
+    def _apply_v12_quality_scaled_sizing(state: Dict[str, Any]) -> None:
+        """Raise only quality-scaled small-account risk without rearming Real."""
+        migrated_at = _now()
+
+        def update_bucket(bucket: Dict[str, Any], environment: Optional[str] = None) -> None:
+            raw_config = dict(bucket.get("config") or {})
+            prior_target = _number(
+                raw_config.get("smallAccountRiskTargetPct"),
+                1.50,
+            )
+            # The v11 default was 1.5%. Preserve an explicitly lower or already
+            # higher user setting; migrate only the old default used in Real.
+            if abs(prior_target - 1.50) <= 1e-9:
+                raw_config["smallAccountRiskTargetPct"] = (
+                    DEFAULT_STRATEGY_CONFIG["smallAccountRiskTargetPct"]
+                )
+            bucket["config"] = _safe_strategy_config(raw_config, environment)
+            strategy = bucket.setdefault("strategy", {})
+            strategy.update({
+                "name": "BTC15 Settlement-Aligned v8",
+                "version": 8,
+            })
+            components = list(strategy.get("components") or [])
+            quality_component = (
+                "quality-scaled fractional sizing with high-price tail-risk haircuts"
+            )
+            if quality_component not in components:
+                components.append(quality_component)
+            strategy["components"] = components
+            changes = list(strategy.get("changes") or [])
+            if not changes or "quality-scaled sizing v8" not in str(
+                changes[0].get("summary") or ""
+            ).lower():
+                changes.insert(0, {
+                    "at": migrated_at,
+                    "version": 8,
+                    "summary": (
+                        "Quality-scaled sizing v8: allow a bounded 2% small-account "
+                        "target only after stronger edge gates clear, then haircut it "
+                        "by signal quality and high-price tail risk before Kelly, cash, "
+                        "liquidity, and exposure caps."
+                    ),
+                })
+            strategy["changes"] = changes[:50]
+
+        active_environment = _execution_environment(
+            state.get("activeEnvironment")
+            or (state.get("config") or {}).get("executionMode")
+        )
+        update_bucket(state, active_environment)
+        mode_state = state.get("modeState")
+        if isinstance(mode_state, dict):
+            for environment, bucket in mode_state.items():
+                if isinstance(bucket, dict):
+                    update_bucket(bucket, environment)
+        state["storageVersion"] = max(12, int(state.get("storageVersion") or 0))
+
+    @staticmethod
     def _apply_v13_outcome_calibration(state: Dict[str, Any]) -> None:
-        """Record the dual-market v9 calibration without changing arming."""
+        """Record dual-market v9 calibration without changing Real arming."""
         migrated_at = _now()
 
         def update_bucket(
@@ -552,6 +674,8 @@ class KalshiRobotState:
         self._persist_migrations = bool(persist_migrations)
         self._lock = threading.RLock()
         self._users: Dict[str, Dict[str, Any]] = {}
+        self._last_persisted_monotonic: Dict[str, float] = {}
+        self._last_durable_payload: Dict[str, Dict[str, Any]] = {}
         if path and os.path.exists(path) and not callable(self._state_loader):
             try:
                 with open(path, "r", encoding="utf-8") as handle:
@@ -604,6 +728,8 @@ class KalshiRobotState:
                     self._apply_v10_mode_safety(self._users[user_id])
                 if int(self._users[user_id].get("storageVersion") or 0) < 11:
                     self._apply_v11_micro_account_sizing(self._users[user_id])
+                if int(self._users[user_id].get("storageVersion") or 0) < 12:
+                    self._apply_v12_quality_scaled_sizing(self._users[user_id])
                 if int(self._users[user_id].get("storageVersion") or 0) < 13:
                     self._apply_v13_outcome_calibration(self._users[user_id])
                 migrated = True
@@ -780,6 +906,14 @@ class KalshiRobotState:
         if key not in self._users:
             restored = self._state_loader(key) if callable(self._state_loader) else None
             restored_existing_state = isinstance(restored, Mapping)
+            durable_compaction_required = bool(
+                restored_existing_state
+                and self._requires_durable_compaction(restored)
+            )
+            if restored_existing_state and not durable_compaction_required:
+                self._last_durable_payload[key] = (
+                    self._durable_comparison_payload(restored)
+                )
             self._users[key] = dict(restored) if isinstance(restored, Mapping) else self._initial()
             if int(self._users[key].get("storageVersion") or 0) < 8:
                 self._apply_v8_strategy_defaults(self._users[key])
@@ -791,9 +925,12 @@ class KalshiRobotState:
                     self._apply_v10_mode_safety(self._users[key])
                 if int(self._users[key].get("storageVersion") or 0) < 11:
                     self._apply_v11_micro_account_sizing(self._users[key])
+                if int(self._users[key].get("storageVersion") or 0) < 12:
+                    self._apply_v12_quality_scaled_sizing(self._users[key])
                 if int(self._users[key].get("storageVersion") or 0) < 13:
                     self._apply_v13_outcome_calibration(self._users[key])
                 migrated = True
+            migrated = bool(migrated or durable_compaction_required)
         else:
             initial = self._initial()
             for field, value in initial.items():
@@ -865,16 +1002,118 @@ class KalshiRobotState:
         state = self._users.get(key)
         if not isinstance(state, dict) or not callable(self._state_saver):
             return
+        durable_payload = self._durable_payload(state)
+        comparison_payload = self._durable_comparison_payload(durable_payload)
+        if self._last_durable_payload.get(key) == comparison_payload:
+            return
         try:
-            saved = self._state_saver(key, copy.deepcopy(state))
+            saved = self._state_saver(
+                key,
+                durable_payload,
+            )
         except Exception:
             # A failed compare-and-swap means another runtime owns a newer
             # state. Invalidate only this user's cache so the next operation
             # reloads that canonical version without disturbing other users.
             self._users.pop(key, None)
+            self._last_durable_payload.pop(key, None)
             raise
         if isinstance(saved, Mapping) and saved.get("version") is not None:
             state["_operationsVersion"] = int(saved.get("version") or 0)
+        self._last_durable_payload[key] = comparison_payload
+        self._last_persisted_monotonic[key] = time.monotonic()
+
+    @staticmethod
+    def _durable_payload(state: Mapping[str, Any]) -> Dict[str, Any]:
+        """Return the canonical low-bandwidth representation for Supabase.
+
+        Active-mode mirrors and retired learning fields are reconstructed or
+        ignored on load, so serializing them is pure duplicate egress.  Keep
+        execution configuration, arming, fills, settlement provenance, risk
+        guards, and compare-and-swap metadata unchanged.
+        """
+        payload = copy.deepcopy(dict(state))
+        for field in _TOP_LEVEL_MODE_MIRRORS:
+            payload.pop(field, None)
+        for field in _EPHEMERAL_TOP_LEVEL_FIELDS:
+            payload.pop(field, None)
+        for field in _LEGACY_NON_TRADING_FIELDS:
+            payload.pop(field, None)
+        mode_state = payload.get("modeState")
+        if isinstance(mode_state, dict):
+            for bucket in mode_state.values():
+                if not isinstance(bucket, dict):
+                    continue
+                durable_order_decisions = [
+                    dict(row)
+                    for row in list(bucket.get("decisions") or [])
+                    if isinstance(row, Mapping)
+                    and (
+                        row.get("orderSubmitted")
+                        or row.get("orderId")
+                        or row.get("clientOrderId")
+                    )
+                ][:MAX_DECISION_RECORDS]
+                if durable_order_decisions:
+                    bucket["decisions"] = durable_order_decisions
+                else:
+                    bucket.pop("decisions", None)
+                for field in _LEGACY_NON_TRADING_FIELDS:
+                    bucket.pop(field, None)
+                for field in _EPHEMERAL_MODE_FIELDS:
+                    bucket.pop(field, None)
+                strategy = bucket.get("strategy")
+                if isinstance(strategy, dict):
+                    strategy.pop("learning", None)
+        return payload
+
+    @classmethod
+    def _durable_comparison_payload(
+        cls,
+        state: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        """Return durable content without local compare-and-swap metadata."""
+        payload = cls._durable_payload(state)
+        payload.pop("_operationsVersion", None)
+        return payload
+
+    @staticmethod
+    def _requires_durable_compaction(state: Mapping[str, Any]) -> bool:
+        """Detect one legacy full-row layout without mutating loaded state."""
+        if any(field in state for field in _TOP_LEVEL_MODE_MIRRORS):
+            return True
+        if any(field in state for field in _EPHEMERAL_TOP_LEVEL_FIELDS):
+            return True
+        if any(field in state for field in _LEGACY_NON_TRADING_FIELDS):
+            return True
+        mode_state = state.get("modeState")
+        if not isinstance(mode_state, Mapping):
+            return False
+        for bucket in mode_state.values():
+            if not isinstance(bucket, Mapping):
+                continue
+            if any(field in bucket for field in _LEGACY_NON_TRADING_FIELDS):
+                return True
+            if any(field in bucket for field in _EPHEMERAL_MODE_FIELDS):
+                return True
+            decisions = bucket.get("decisions")
+            if decisions is not None and (
+                not isinstance(decisions, list)
+                or any(
+                    not isinstance(row, Mapping)
+                    or not (
+                        row.get("orderSubmitted")
+                        or row.get("orderId")
+                        or row.get("clientOrderId")
+                    )
+                    for row in decisions
+                )
+            ):
+                return True
+            strategy = bucket.get("strategy")
+            if isinstance(strategy, Mapping) and "learning" in strategy:
+                return True
+        return False
 
     def _save_local_snapshot(self) -> None:
         if not self.path:
@@ -1206,6 +1445,9 @@ class KalshiRobotState:
                 "executionIntent": decision.get("executionIntent"),
                 "exitTrigger": (decision.get("exitAnalysis") or {}).get("trigger"),
                 "account": dict(decision.get("account") or {}),
+                "entryConfirmation": dict(
+                    decision.get("entryConfirmation") or {}
+                ),
                 "engine": decision.get("engine"),
                 "features": {
                     "selectedSide": decision.get("side"),
@@ -1238,6 +1480,115 @@ class KalshiRobotState:
                 },
                 "strategyVersion": bucket["strategy"]["version"],
             }
+            ticker = str(market.get("ticker") or "")
+            confirmation_family = _entry_confirmation_family(ticker)
+            entry_confirmation = dict(
+                decision.get("entryConfirmation") or {}
+            )
+            confirmation_progress_changed = False
+            confirmation_eligible = bool(
+                confirmation_family
+                and entry_confirmation.get("required")
+                and entry_confirmation.get("dataQualityEligible") is not False
+                and str(decision.get("side") or "").upper() in {"YES", "NO"}
+                and int(_number(entry_confirmation.get("streak"), 0.0)) >= 1
+                and (
+                    "entry_confirmation" in set(
+                        str(value)
+                        for value in (decision.get("blockingReasons") or [])
+                    )
+                    or bool(entry_confirmation.get("confirmed"))
+                )
+            )
+            if confirmation_eligible:
+                strategy = bucket["strategy"]
+                durable_progress = dict(
+                    strategy.get("entryConfirmations") or {}
+                )
+                previous = dict(
+                    durable_progress.get(confirmation_family) or {}
+                )
+                required_snapshots = max(
+                    1,
+                    min(
+                        5,
+                        int(
+                            _number(
+                                entry_confirmation.get(
+                                    "requiredSnapshots"
+                                ),
+                                2.0,
+                            )
+                        ),
+                    ),
+                )
+                max_gap_seconds = max(
+                    1.0,
+                    _number(
+                        entry_confirmation.get("maxGapSeconds"),
+                        25.0,
+                    ),
+                )
+                progress = {
+                    "ticker": ticker,
+                    "side": str(decision.get("side") or "").upper(),
+                    "generatedAt": row["generatedAt"],
+                    "streak": min(
+                        required_snapshots,
+                        max(
+                            1,
+                            int(
+                                _number(
+                                    entry_confirmation.get("streak"),
+                                    1.0,
+                                )
+                            ),
+                        ),
+                    ),
+                    "requiredSnapshots": required_snapshots,
+                    "confirmed": bool(
+                        entry_confirmation.get("confirmed")
+                    ),
+                    "dataQualityEligible": True,
+                    "maxGapSeconds": max_gap_seconds,
+                }
+                previous_time = _utc_time_sort_key(
+                    previous.get("generatedAt")
+                )[1]
+                progress_time = _utc_time_sort_key(
+                    progress.get("generatedAt")
+                )[1]
+                confirmation_progress_changed = bool(
+                    not previous
+                    or previous.get("ticker") != progress["ticker"]
+                    or previous.get("side") != progress["side"]
+                    or int(_number(previous.get("streak"), 0.0))
+                    != progress["streak"]
+                    or bool(previous.get("confirmed"))
+                    != progress["confirmed"]
+                    or int(
+                        _number(previous.get("requiredSnapshots"), 0.0)
+                    ) != progress["requiredSnapshots"]
+                    or previous_time <= 0.0
+                    or progress_time < previous_time
+                    or progress_time - previous_time > max_gap_seconds
+                )
+                durable_progress[confirmation_family] = progress
+                strategy["entryConfirmations"] = durable_progress
+
+            if (
+                order
+                and confirmation_family
+                and str(decision.get("action") or "").startswith("BUY_")
+            ):
+                strategy = bucket["strategy"]
+                durable_progress = dict(
+                    strategy.get("entryConfirmations") or {}
+                )
+                if confirmation_family in durable_progress:
+                    durable_progress.pop(confirmation_family, None)
+                    strategy["entryConfirmations"] = durable_progress
+                    confirmation_progress_changed = True
             bucket["decisions"].insert(0, row)
             bucket["decisions"] = bucket["decisions"][:MAX_DECISION_RECORDS]
             bucket["decisionLimit"] = MAX_DECISION_RECORDS
@@ -1255,7 +1606,6 @@ class KalshiRobotState:
                     # page changes, and process restarts.
                     bucket["strategy"]["lastExitTicker"] = row.get("ticker")
                     bucket["strategy"]["lastExitAt"] = row.get("generatedAt")
-            ticker = str(market.get("ticker") or "")
             if _order_fill_count(order) > 0 and ticker and ticker not in bucket["tradedTickers"]:
                 bucket["tradedTickers"].append(ticker)
                 # Decision history is intentionally ephemeral, but the traded-ticker
@@ -1271,7 +1621,24 @@ class KalshiRobotState:
             bucket["lastError"] = None
             bucket["runs"] = int(bucket.get("runs") or 0) + 1
             self._sync_mode_mirror(state, environment)
-            self._save_user(user_id)
+            material_change = bool(
+                order
+                or row["orderFilled"]
+                or confirmation_progress_changed
+            )
+            # Routine WAIT/HOLD decisions are an in-memory operator view. A
+            # full-state heartbeat previously uploaded hundreds of kilobytes
+            # to Supabase every minute, even though scheduler liveness and the
+            # lease are tracked separately. Persist immediately for an actual
+            # order mutation or the tiny confirmation cursor required by the
+            # authoritative Real preflight. Feature-heavy decision rows remain
+            # excluded from the durable payload, so this restores executable
+            # confirmation without restoring the former bandwidth problem.
+            if (
+                not callable(self._state_saver)
+                or material_change
+            ):
+                self._save_user(user_id)
             return copy.deepcopy(state)
 
     def reconcile_live_fills(
@@ -1459,7 +1826,11 @@ class KalshiRobotState:
             })
         realized = sorted(
             realized,
-            key=lambda row: _utc_time_sort_key(row.get("settledAt")),
+            key=lambda row: (
+                _utc_time_sort_key(row.get("settledAt")),
+                str(row.get("key") or row.get("orderId") or ""),
+                str(row.get("ticker") or ""),
+            ),
         )[-MAX_SETTLEMENT_RECORDS:]
         cumulative = 0.0
         equity_peak = 0.0
@@ -1546,12 +1917,19 @@ class KalshiRobotState:
     def error(self, user_id: str, message: str) -> None:
         with self._lock:
             state = self._state(user_id)
+            normalized_message = str(message)[:300]
             state["lastRunAt"] = _now()
-            state["lastError"] = str(message)[:300]
+            state["lastError"] = normalized_message
             bucket = self._mode_bucket(state, state.get("activeEnvironment") or (state.get("config") or {}).get("executionMode"))
             bucket["lastRunAt"] = state["lastRunAt"]
             bucket["lastError"] = state["lastError"]
-            self._save_user(user_id)
+            # Scheduler readiness already reports the current operational
+            # error. Persisting transient public-API failures rewrote the
+            # entire trading ledger on every error/recovery edge, which is
+            # especially expensive during Kalshi 503/rate-limit oscillation.
+            # Local-only mode may still snapshot this operator view.
+            if not callable(self._state_saver):
+                self._save_user(user_id)
 
     def reconcile_settlements(
         self,
@@ -1648,7 +2026,11 @@ class KalshiRobotState:
             if closed_by_order:
                 closed_records = sorted(
                     closed_by_order.values(),
-                    key=lambda row: _utc_time_sort_key(row.get("closedAt")),
+                    key=lambda row: (
+                        _utc_time_sort_key(row.get("closedAt")),
+                        str(row.get("orderId") or ""),
+                        str(row.get("ticker") or ""),
+                    ),
                 )[-MAX_SETTLEMENT_RECORDS:]
                 strategy["closedTradeRecords"] = closed_records
                 strategy["closedTradeSamples"] = len(closed_records)
@@ -1907,7 +2289,11 @@ class KalshiRobotState:
 
             records = sorted(
                 existing_records.values(),
-                key=lambda row: _utc_time_sort_key(row.get("settledAt")),
+                key=lambda row: (
+                    _utc_time_sort_key(row.get("settledAt")),
+                    str(row.get("key") or ""),
+                    str(row.get("ticker") or ""),
+                ),
             )[-MAX_SETTLEMENT_RECORDS:]
             strategy = bucket["strategy"]
             strategy["settlementRecords"] = list(reversed(records))
@@ -1926,7 +2312,9 @@ class KalshiRobotState:
                     str(value) for value in (bucket.get("processedSettlements") or [])
                     if not str(value).startswith(f"{environment}:")
                 ][-1000:]
-                bucket["processedSettlements"] = (preserved_processed + list(processed))[-1000:]
+                bucket["processedSettlements"] = (
+                    preserved_processed + sorted(processed)
+                )[-1000:]
                 self._sync_mode_mirror(state, environment)
                 if persist:
                     self._save_user(user_id)

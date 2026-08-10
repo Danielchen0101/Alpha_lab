@@ -494,6 +494,36 @@ def test_hourly_held_market_settlement_gap_is_standby_not_failure_or_alert():
     )
 
 
+def test_hourly_public_rate_limit_is_standby_not_failure_or_alert():
+    notifications = []
+    controller = object.__new__(_PaperRobotController)
+    controller._runtime_lock = threading.RLock()
+    controller._loop_last_error = ""
+    controller._loop_error_counts = {}
+    controller._loop_alerted = set()
+    controller._market_standby = {}
+    controller.safe_print = lambda *_args, **_kwargs: None
+    controller._notify = lambda *args, **kwargs: notifications.append((args, kwargs))
+
+    controller._record_loop_failure(
+        "user-1",
+        "btchourly",
+        "real",
+        KalshiApiError(
+            "Kalshi public market data is temporarily rate limited",
+            status=503,
+            code=kalshi_api.KALSHI_PUBLIC_RATE_LIMITED,
+        ),
+    )
+
+    assert controller._loop_error_counts == {}
+    assert controller._loop_alerted == set()
+    assert controller._market_standby["user-1:btchourly"]["reason"] == (
+        kalshi_api.KALSHI_PUBLIC_RATE_LIMITED
+    )
+    assert notifications == []
+
+
 def test_kalshi_nested_error_detail_preserves_exchange_reason():
     response = _StatusResponse(
         {
@@ -3410,6 +3440,55 @@ def test_real_control_mutation_routes_share_the_routing_fence(tmp_path):
     assert [event[0] for event in lease_store.events].count("release") == 6
 
 
+def test_robot_control_mutation_records_page_and_session_audit(tmp_path):
+    audits = []
+    app = Flask(__name__)
+    controls = register_kalshi_api(
+        app,
+        require_auth=lambda: {"id": "user-1"},
+        robot_state_path=str(tmp_path / "state.json"),
+        paper_account_path=str(tmp_path / "paper.json"),
+        audit_recorder=lambda *args, **kwargs: audits.append((args, kwargs)),
+    )
+    controls["robot_state"].configure(
+        "user-1",
+        True,
+        {"executionMode": "paper"},
+    )
+
+    response = app.test_client().post(
+        "/api/kalshi/paper/robot",
+        json={
+            "enabled": False,
+            "mode": "paper",
+            "config": {"executionMode": "paper"},
+            "controlContext": {
+                "source": "kalshi-workspace-toggle",
+                "sessionId": "browser-session-1",
+                "page": "/kalshi/markets/btc-15m",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(audits) == 1
+    args, kwargs = audits[0]
+    assert args[0:2] == ("user-1", "kalshi_robot_control")
+    assert kwargs["actor"] == "user"
+    assert kwargs["source"] == "kalshi-control:kalshi-workspace-toggle"
+    assert kwargs["payload"]["requestedEnabled"] is False
+    assert kwargs["payload"]["previousEnabled"] is True
+    assert kwargs["payload"]["actualEnabled"] is False
+    assert kwargs["payload"]["changed"] is True
+    assert kwargs["payload"]["mode"] == "paper"
+    assert kwargs["payload"]["controlSource"] == "kalshi-workspace-toggle"
+    assert kwargs["payload"]["clientSessionId"] == "browser-session-1"
+    assert kwargs["payload"]["page"] == "/kalshi/markets/btc-15m"
+    assert kwargs["payload"]["referrerPath"] == ""
+    assert len(kwargs["payload"]["userAgentHash"]) == 16
+    assert kwargs["payload"]["occurredAt"].endswith("Z")
+
+
 def test_real_control_mutation_fails_closed_without_durable_fence(tmp_path):
     connection = {
         "production_api_key_id": "key-id-12345678",
@@ -5373,6 +5452,44 @@ def test_protective_exit_streak_rejects_persisted_stale_marker():
     assert accepted["streak"] == 2
 
 
+def test_btc15_protective_exit_uses_latency_calibrated_gap():
+    now = datetime.now(timezone.utc)
+    economics = {
+        "protectiveLossExit": True,
+        "emergencyLossExit": False,
+    }
+
+    def state(ticker):
+        return {"decisions": [{
+            "generatedAt": (now - timedelta(seconds=25)).isoformat(),
+            "ticker": ticker,
+            "account": {"heldSide": "YES"},
+            "blockingReasons": ["protective_exit_confirmation"],
+        }]}
+
+    btc15 = _protective_exit_confirmation(
+        state("KXBTC15M-LATENCY"),
+        "KXBTC15M-LATENCY",
+        "YES",
+        economics,
+        {"protectiveExitConfirmations": 2},
+        generated_at=now,
+    )
+    hourly = _protective_exit_confirmation(
+        state("KXBTCD-LATENCY-T65000"),
+        "KXBTCD-LATENCY-T65000",
+        "YES",
+        economics,
+        {"protectiveExitConfirmations": 2},
+        generated_at=now,
+    )
+
+    assert btc15["maxGapSeconds"] == pytest.approx(30.0)
+    assert btc15["confirmed"] is True
+    assert hourly["maxGapSeconds"] == pytest.approx(20.0)
+    assert hourly["confirmed"] is False
+
+
 def test_entry_confirmation_resets_when_hourly_selected_strike_changes():
     now = datetime.now(timezone.utc)
     current = {
@@ -5408,6 +5525,120 @@ def test_entry_confirmation_resets_when_hourly_selected_strike_changes():
     assert same["streak"] == 2
     assert switched["confirmed"] is False
     assert switched["streak"] == 1
+
+
+def test_entry_confirmation_uses_family_latency_calibrated_gap():
+    now = datetime.now(timezone.utc)
+    current = {
+        "generatedAt": now.isoformat(),
+        "action": "BUY_YES",
+    }
+
+    def state(ticker):
+        return {"decisions": [{
+            "generatedAt": (now - timedelta(seconds=20)).isoformat(),
+            "ticker": ticker,
+            "side": "YES",
+            "blockingReasons": ["entry_confirmation"],
+        }]}
+
+    btc15 = _entry_confirmation(
+        state("KXBTC15M-LATENCY"),
+        "KXBTC15M-LATENCY",
+        "YES",
+        current,
+        {},
+    )
+    hourly = _entry_confirmation(
+        state("KXBTCD-LATENCY-T65000"),
+        "KXBTCD-LATENCY-T65000",
+        "YES",
+        current,
+        {"entryConfirmationMaxGapSeconds": 15},
+    )
+
+    assert btc15["maxGapSeconds"] == pytest.approx(25.0)
+    assert btc15["confirmed"] is True
+    assert hourly["maxGapSeconds"] == pytest.approx(25.0)
+    assert hourly["confirmed"] is True
+
+
+def test_entry_confirmation_uses_compact_durable_progress_after_refresh():
+    now = datetime.now(timezone.utc)
+    state = {
+        "strategy": {
+            "entryConfirmations": {
+                "btc15m": {
+                    "ticker": "KXBTC15M-DURABLE",
+                    "side": "YES",
+                    "generatedAt": (now - timedelta(seconds=5)).isoformat(),
+                    "streak": 1,
+                    "requiredSnapshots": 2,
+                    "confirmed": False,
+                    "dataQualityEligible": True,
+                    "maxGapSeconds": 25.0,
+                },
+            },
+        },
+        # Authoritative state intentionally excludes feature-heavy WAIT rows.
+        "decisions": [],
+    }
+
+    confirmation = _entry_confirmation(
+        state,
+        "KXBTC15M-DURABLE",
+        "YES",
+        {
+            "generatedAt": now.isoformat(),
+            "action": "BUY_YES",
+        },
+        {},
+    )
+
+    assert confirmation["confirmed"] is True
+    assert confirmation["streak"] == 2
+    assert confirmation["durableProgressUsed"] is True
+
+
+def test_entry_confirmation_rejects_stale_or_changed_durable_progress():
+    now = datetime.now(timezone.utc)
+
+    def confirmation(progress):
+        return _entry_confirmation(
+            {
+                "strategy": {
+                    "entryConfirmations": {"btchourly": progress},
+                },
+                "decisions": [],
+            },
+            "KXBTCD-E-T65000",
+            "YES",
+            {
+                "generatedAt": now.isoformat(),
+                "action": "BUY_YES",
+            },
+            {},
+        )
+
+    stale = confirmation({
+        "ticker": "KXBTCD-E-T65000",
+        "side": "YES",
+        "generatedAt": (now - timedelta(seconds=40)).isoformat(),
+        "streak": 1,
+        "dataQualityEligible": True,
+    })
+    changed = confirmation({
+        "ticker": "KXBTCD-E-T65100",
+        "side": "YES",
+        "generatedAt": (now - timedelta(seconds=5)).isoformat(),
+        "streak": 1,
+        "dataQualityEligible": True,
+    })
+
+    assert stale["confirmed"] is False
+    assert stale["streak"] == 1
+    assert changed["confirmed"] is False
+    assert changed["streak"] == 1
 
 
 def test_series_fee_policy_reads_current_and_scheduled_fee_metadata():
@@ -5661,6 +5892,67 @@ def test_real_preflight_uses_cent_rounded_fractional_cash_debit():
         )
 
     assert blocked.value.code == "kalshi_live_cash_changed"
+
+
+def test_real_preflight_accepts_authoritative_durable_entry_confirmation():
+    now = datetime.now(timezone.utc)
+    ticker = "KXBTC15M-DURABLE-PREFLIGHT"
+    controller = _PaperRobotController(None, None, None)
+    decision = {
+        "generatedAt": now.isoformat(),
+        "action": "BUY_YES",
+        "side": "YES",
+        "edge": {
+            "price": 0.50,
+            "netEdge": 0.08,
+            "conservativeEdge": 0.05,
+            "feePerContract": 0.02,
+        },
+        "sizing": {"plannedContractsFp": 1.0},
+        "entryConfirmation": {
+            "required": True,
+            "requiredSnapshots": 2,
+            "streak": 2,
+            "confirmed": True,
+        },
+        "config": {"executionMode": "real"},
+    }
+    payload = _paper_order_payload(decision, ticker)
+    state = {
+        "config": {"executionMode": "real"},
+        "strategy": {
+            "entryConfirmations": {
+                "btc15m": {
+                    "ticker": ticker,
+                    "side": "YES",
+                    "generatedAt": (
+                        now - timedelta(seconds=5)
+                    ).isoformat(),
+                    "streak": 1,
+                    "requiredSnapshots": 2,
+                    "confirmed": False,
+                    "dataQualityEligible": True,
+                    "maxGapSeconds": 25.0,
+                },
+            },
+        },
+        "filledTrades": [],
+        "decisions": [],
+    }
+
+    result = controller._validate_live_order_preflight(
+        state,
+        {
+            "balance": {"balance": 10_000, "portfolio_value": 0},
+            "positions": [],
+            "orders": [],
+        },
+        payload,
+        _live_order_payload(payload),
+        decision,
+    )
+
+    assert result is None
 
 
 def test_fee_reconciliation_includes_fractional_cent_rounding():

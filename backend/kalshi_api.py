@@ -60,9 +60,13 @@ KALSHI_PUBLIC_FALLBACK_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 KALSHI_PUBLIC_BASES = (KALSHI_PUBLIC_BASE, KALSHI_PUBLIC_FALLBACK_BASE)
 KALSHI_NO_ACTIVE_HOURLY_MARKET = "kalshi_no_active_hourly_market"
 KALSHI_HOURLY_HELD_MARKET_UNAVAILABLE = "kalshi_hourly_held_market_unavailable"
+KALSHI_PUBLIC_RATE_LIMITED = "kalshi_public_rate_limited"
+KALSHI_HOURLY_LOOP_INTERVAL_SECONDS = 15.0
+KALSHI_HOURLY_RATE_LIMIT_BACKOFF_SECONDS = 60.0
 KALSHI_HOURLY_STANDBY_CODES = frozenset({
     KALSHI_NO_ACTIVE_HOURLY_MARKET,
     KALSHI_HOURLY_HELD_MARKET_UNAVAILABLE,
+    KALSHI_PUBLIC_RATE_LIMITED,
 })
 KALSHI_EXECUTION_BLOCKING_WARNINGS = frozenset({
     "kalshi_market_stale",
@@ -1732,13 +1736,20 @@ def _protective_exit_confirmation(
             ),
         ),
     )
+    gap_setting = (
+        "btc15ProtectiveExitConfirmationMaxGapSeconds"
+        if _market_family(ticker) == "btc15m"
+        else "protectiveExitConfirmationMaxGapSeconds"
+    )
+    gap_default = 30.0 if gap_setting.startswith("btc15") else 20.0
+    gap_cap = 90.0 if gap_setting.startswith("btc15") else 60.0
     max_gap = max(
         10.0,
         min(
-            60.0,
+            gap_cap,
             _finite_number(
-                strategy_config.get("protectiveExitConfirmationMaxGapSeconds"),
-                20.0,
+                strategy_config.get(gap_setting),
+                gap_default,
             ),
         ),
     )
@@ -1842,13 +1853,24 @@ def _entry_confirmation(
             ),
         ),
     )
+    gap_setting = (
+        "btc15EntryConfirmationMaxGapSeconds"
+        if _market_family(ticker) == "btc15m"
+        else "entryConfirmationMaxGapSeconds"
+    )
+    is_btc15 = gap_setting.startswith("btc15")
+    gap_default = 25.0
+    # The hourly loop itself runs every 15 seconds.  Network and evaluation
+    # latency make an exact 15-second maximum self-defeating, so enforce a
+    # cadence-aware floor while preserving the two-snapshot confirmation gate.
+    gap_floor = 5.0 if is_btc15 else 25.0
     max_gap = max(
-        5.0,
+        gap_floor,
         min(
             60.0,
             _finite_number(
-                strategy_config.get("entryConfirmationMaxGapSeconds"),
-                15.0,
+                strategy_config.get(gap_setting),
+                gap_default,
             ),
         ),
     )
@@ -1880,6 +1902,57 @@ def _entry_confirmation(
     streak = 1
     family = _market_family(normalized_ticker)
     previous_time = generated
+    durable_progress = (
+        (robot_state.get("strategy") or {}).get("entryConfirmations")
+        if isinstance(robot_state.get("strategy"), Mapping)
+        else None
+    )
+    persisted = (
+        durable_progress.get(family)
+        if isinstance(durable_progress, Mapping) and family
+        else None
+    )
+    if isinstance(persisted, Mapping):
+        persisted_time = _parse_utc(persisted.get("generatedAt"))
+        elapsed = (
+            (generated - persisted_time).total_seconds()
+            if persisted_time is not None
+            else None
+        )
+        if (
+            str(persisted.get("ticker") or "") == normalized_ticker
+            and str(persisted.get("side") or "").upper()
+            == normalized_side
+            and persisted.get("dataQualityEligible") is True
+            and elapsed is not None
+            and elapsed >= -1e-6
+            and elapsed <= max_gap
+        ):
+            prior_streak = max(
+                1,
+                min(
+                    required,
+                    int(
+                        round(
+                            _finite_number(
+                                persisted.get("streak"),
+                                1.0,
+                            )
+                        )
+                    ),
+                ),
+            )
+            streak = min(required, prior_streak + 1)
+            return {
+                "required": True,
+                "requiredSnapshots": required,
+                "streak": streak,
+                "confirmed": streak >= required,
+                "maxGapSeconds": max_gap,
+                "ticker": normalized_ticker,
+                "side": normalized_side,
+                "durableProgressUsed": True,
+            }
     # The most recent decision in this same strategy family must describe the
     # same ticker and side.  This deliberately resets an hourly confirmation
     # whenever the selected strike changes, even if an older strike reappears.
@@ -1959,13 +2032,7 @@ def _hourly_candidate_diagnostic(
 def _btc15_live_strategy_config(
     strategy_config: Mapping[str, Any],
 ) -> Dict[str, Any]:
-    """Apply the outcome-calibrated BTC15 entry envelope.
-
-    These are execution-policy floors, deliberately separate from the pure
-    research engine defaults.  Recent live labels showed that 81c+ favorites
-    and sub-1.5pp conservative edges had negative payoff asymmetry even when
-    the headline hit rate looked acceptable.
-    """
+    """Apply the outcome-calibrated BTC15 live entry envelope."""
     return normalize_strategy_config({
         **dict(strategy_config or {}),
         "maxPrice": min(
@@ -1985,13 +2052,7 @@ def _btc15_live_strategy_config(
 def _hourly_live_strategy_config(
     strategy_config: Mapping[str, Any],
 ) -> Dict[str, Any]:
-    """Return a separately calibrated policy for the KXBTCD strike ladder.
-
-    Selecting the best of many correlated strikes creates a winner's-curse
-    that the BTC15 single-contract model does not have.  The hourly policy
-    therefore uses a stronger market prior, a compressed distance forecast,
-    a shorter horizon and a lower favorite-price ceiling.
-    """
+    """Return the separately calibrated policy for the KXBTCD ladder."""
     return normalize_strategy_config({
         **dict(strategy_config or {}),
         "riskPerTradePct": min(
@@ -3694,7 +3755,7 @@ class _PublicDataClient:
                 ),
                 status=503,
                 code=(
-                    "kalshi_public_rate_limited"
+                    KALSHI_PUBLIC_RATE_LIMITED
                     if rate_limited
                     else "kalshi_public_data_unavailable"
                 ),
@@ -7976,14 +8037,26 @@ class _PaperRobotController:
                     self.tick(user_id, submit_order=True, mode=mode, family="btc15m")
                     self._record_loop_success(user_id, "btc15m", mode)
                     now_monotonic = time.monotonic()
-                    if now_monotonic - self._last_hourly_tick.get(str(user_id), 0.0) >= 5.0:
+                    if (
+                        now_monotonic - self._last_hourly_tick.get(str(user_id), 0.0)
+                        >= KALSHI_HOURLY_LOOP_INTERVAL_SECONDS
+                    ):
+                        next_hourly_tick_base = now_monotonic
                         try:
                             self.tick(user_id, submit_order=True, mode=mode, family="btchourly")
                             self._record_loop_success(user_id, "btchourly", mode)
                         except Exception as exc:
                             self._record_loop_failure(user_id, "btchourly", mode, exc)
+                            if (
+                                isinstance(exc, KalshiApiError)
+                                and exc.code == KALSHI_PUBLIC_RATE_LIMITED
+                            ):
+                                next_hourly_tick_base += (
+                                    KALSHI_HOURLY_RATE_LIMIT_BACKOFF_SECONDS
+                                    - KALSHI_HOURLY_LOOP_INTERVAL_SECONDS
+                                )
                         finally:
-                            self._last_hourly_tick[str(user_id)] = now_monotonic
+                            self._last_hourly_tick[str(user_id)] = next_hourly_tick_base
                 except Exception as exc:
                     self._record_loop_failure(user_id, "btc15m", mode, exc)
 
@@ -8092,6 +8165,7 @@ def register_kalshi_api(
     observation_loader=None,
     scheduler_lease_acquirer=None,
     worker_lease_store=None,
+    audit_recorder=None,
 ):
     """Register Kalshi research and per-user connection APIs once per app."""
     existing = app.extensions.get("alphalab_kalshi_api")
@@ -8122,6 +8196,60 @@ def register_kalshi_api(
 
     def configuration_available():
         return callable(get_user_config) and callable(save_user_config)
+
+    def record_robot_control_audit(user_id, body, previous, state, mode):
+        if not callable(audit_recorder):
+            return
+        context = body.get("controlContext") or {}
+        if not isinstance(context, Mapping):
+            context = {}
+        source = str(context.get("source") or "api").strip()
+        if source not in {"api", "kalshi-workspace-toggle", "shell-mode-switch"}:
+            source = "api"
+        session_id = str(context.get("sessionId") or "").strip()[:80]
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", session_id):
+            session_id = ""
+        page = str(context.get("page") or "").strip().split("?", 1)[0][:160]
+        if not page.startswith("/"):
+            page = ""
+        referrer_path = ""
+        try:
+            referrer_path = urlsplit(str(request.referrer or "")).path[:160]
+        except ValueError:
+            referrer_path = ""
+        user_agent_hash = hashlib.sha256(
+            str(request.user_agent.string or "").encode("utf-8")
+        ).hexdigest()[:16]
+        requested_enabled = bool(body.get("enabled"))
+        actual_enabled = bool(state.get("enabled"))
+        occurred_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        try:
+            audit_recorder(
+                user_id,
+                "kalshi_robot_control",
+                f"kalshi-control:{user_id}:{time.time_ns()}",
+                actor="user",
+                source=f"kalshi-control:{source}",
+                resource_type="kalshi_robot",
+                resource_id=mode,
+                payload={
+                    "occurredAt": occurred_at,
+                    "requestedEnabled": requested_enabled,
+                    "previousEnabled": bool(previous.get("enabled")),
+                    "actualEnabled": actual_enabled,
+                    "changed": bool(previous.get("enabled")) != actual_enabled,
+                    "mode": mode,
+                    "controlSource": source,
+                    "clientSessionId": session_id,
+                    "page": page,
+                    "referrerPath": referrer_path,
+                    "userAgentHash": user_agent_hash,
+                },
+            )
+        except Exception as exc:
+            safe_print(
+                f"[KalshiAPI] control audit skipped error={type(exc).__name__}"
+            )
 
     connection_cache: Dict[str, Dict[str, Any]] = {}
     connection_cache_lock = threading.RLock()
@@ -8927,6 +9055,7 @@ def register_kalshi_api(
                     body["enabled"],
                     config,
                 )
+            record_robot_control_audit(user["id"], body, previous, state, mode)
             actually_enabled = bool(state.get("enabled"))
             payload = {
                 "success": True,

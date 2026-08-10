@@ -2364,7 +2364,7 @@ const messages = {
     dataPrefix: 'DATA: ',
     limitedSampleTag: 'LIMITED SAMPLE',
     localRulesTag: 'LOCAL RULES',
-    deepseekTag: 'DEEPSEEK V3',
+    deepseekTag: 'DEEPSEEK V4 FLASH',
     // Fine Scan detail - provenance chips
     provenanceMkt: 'MARKET SCANNER',
     provenanceBt: 'BACKTEST ENGINE',
@@ -2714,7 +2714,7 @@ const messages = {
     primaryModel: 'Primary Model',
     customModel: 'Custom model...',
     modelIdentifier: 'Model Identifier',
-    modelPlaceholder: 'e.g. gpt-4o or deepseek-reasoner',
+    modelPlaceholder: 'e.g. gpt-4o or deepseek-v4-flash',
     apiKeyLabel: 'API Key',
     apiBaseUrl: 'API Base URL',
     testAiConnection: 'Test Connection',
