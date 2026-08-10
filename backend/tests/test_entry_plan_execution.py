@@ -292,6 +292,36 @@ def test_entry_preflight_blocks_fractional_auto_order_without_attached_protectio
     assert result['code'] == 'fractional_protection_unavailable'
 
 
+def test_staged_reward_geometry_uses_both_real_exit_targets():
+    result = backend._assess_entry_reward_geometry(
+        entry=64.03,
+        stop=62.78,
+        target1=65.52,
+        target2=66.28,
+        min_rr=1.25,
+        target1_reduce_pct=40,
+    )
+
+    assert result['riskReward1'] == 1.19
+    assert result['riskReward2'] == 1.8
+    assert result['riskRewardPlan'] == 1.56
+    assert result['passesMinimum'] is True
+
+
+def test_staged_reward_geometry_keeps_a_first_target_floor():
+    result = backend._assess_entry_reward_geometry(
+        entry=100,
+        stop=95,
+        target1=101,
+        target2=115,
+        min_rr=1.25,
+        target1_reduce_pct=10,
+    )
+
+    assert result['riskRewardPlan'] > 1.25
+    assert result['passesMinimum'] is False
+
+
 def test_entry_preflight_blocks_passive_limit_for_automatic_execution():
     result = backend._build_entry_limit_preflight(
         _plan(),
@@ -396,6 +426,44 @@ def test_pullback_confirmation_uses_reversal_trend_and_rsi_reset():
 
     assert result['met'] is True
     assert result['status'] == 'CONFIRMED'
+
+
+def test_trend_continuation_accepts_momentum_when_latest_bar_is_not_up():
+    result = backend._evaluate_entry_setup_trigger(
+        'Trend Continuation',
+        100.3,
+        99,
+        101,
+        latest_bar={'o': 100.4, 'c': 100.2, 'l': 100.0},
+        previous_bar={'c': 100.3},
+        bar_age_seconds=90,
+        ema20=99.5,
+        ema50=98,
+        macd_histogram=0.15,
+    )
+
+    assert result['met'] is True
+    assert result['status'] == 'CONFIRMED'
+
+
+def test_trend_continuation_waits_when_price_and_momentum_both_fail():
+    result = backend._evaluate_entry_setup_trigger(
+        'Trend Continuation',
+        100.3,
+        99,
+        101,
+        latest_bar={'o': 100.4, 'c': 100.2, 'l': 100.0},
+        previous_bar={'c': 100.3},
+        bar_age_seconds=90,
+        ema20=99.5,
+        ema50=98,
+        macd_histogram=-0.15,
+        intraday_volume_ratio=0.8,
+    )
+
+    assert result['met'] is False
+    assert result['status'] == 'WAIT_TRIGGER'
+    assert any('Continuation impulse' in reason for reason in result['reasons'])
 
 
 def test_structural_target_is_scored_without_being_inflated():

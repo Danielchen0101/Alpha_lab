@@ -32778,10 +32778,15 @@ def _evaluate_entry_setup_trigger(
             observed=(f'${latest_close:.4f}' if latest_close is not None else None),
         )
     else:  # continuation
+        price_continuation = (
+            latest_close > previous_close
+            if latest_close is not None and previous_close is not None else None
+        )
         add_check(
             'Price continuation',
-            latest_close > previous_close if latest_close is not None and previous_close is not None else None,
+            price_continuation,
             'completed 5m close above the prior completed close',
+            required=False,
             observed=(f'${latest_close:.4f}' if latest_close is not None else None),
         )
         trend_aligned = None
@@ -32806,9 +32811,29 @@ def _evaluate_entry_setup_trigger(
             'Momentum confirmation',
             momentum_confirmed,
             'non-negative MACD histogram or relative volume at least 1.0x',
+            required=False,
             observed=(
                 f'MACD {macd_value:.4f}' if macd_value is not None
                 else (f'volume {volume_ratio:.2f}x' if volume_ratio is not None else None)
+            ),
+        )
+        impulse_available = (
+            price_continuation is not None or momentum_confirmed is not None
+        )
+        continuation_impulse = (
+            bool(price_continuation is True or momentum_confirmed is True)
+            if impulse_available else None
+        )
+        add_check(
+            'Continuation impulse',
+            continuation_impulse,
+            'completed 5m price continuation or momentum participation must confirm',
+            observed=(
+                'price=%s / momentum=%s'
+                % (
+                    'up' if price_continuation is True else 'not_up' if price_continuation is False else 'n/a',
+                    'confirmed' if momentum_confirmed is True else 'not_confirmed' if momentum_confirmed is False else 'n/a',
+                )
             ),
         )
 
@@ -32840,8 +32865,15 @@ def _evaluate_entry_setup_trigger(
     }
 
 
-def _assess_entry_reward_geometry(entry, stop, target1, target2=None, min_rr=1.45):
-    """Score structural targets as supplied; never move a target to manufacture R/R."""
+def _assess_entry_reward_geometry(
+    entry,
+    stop,
+    target1,
+    target2=None,
+    min_rr=1.45,
+    target1_reduce_pct=100,
+):
+    """Score the staged exit that will actually be traded without moving targets."""
     def number(value):
         try:
             if value in (None, ''):
@@ -32868,14 +32900,36 @@ def _assess_entry_reward_geometry(entry, stop, target1, target2=None, min_rr=1.4
         if risk and target2_value is not None and target2_value > entry_value else 0.0
     )
     primary_valid = bool(risk and target1_value is not None and target1_value > entry_value)
+    reduce_fraction = max(
+        0.0,
+        min(1.0, (number(target1_reduce_pct) or 100.0) / 100.0),
+    )
+    has_second_target = bool(
+        target2_value is not None
+        and target1_value is not None
+        and target2_value > target1_value > entry_value
+    )
+    plan_rr = (
+        rr1 * reduce_fraction + rr2 * (1.0 - reduce_fraction)
+        if primary_valid and has_second_target and reduce_fraction < 1.0
+        else rr1
+    )
+    first_target_floor = min(0.75, min_rr_value)
     return {
         'valid': bool(risk and primary_valid),
         'riskPerShare': round(risk, 4) if risk else 0.0,
         'riskReward1': round(rr1, 2),
         'riskReward2': round(rr2, 2),
+        'riskRewardPlan': round(plan_rr, 2),
+        'target1ReducePct': round(reduce_fraction * 100.0, 2),
         'primaryTargetValid': primary_valid,
-        'passesMinimum': primary_valid and rr1 >= min_rr_value,
+        'passesMinimum': (
+            primary_valid
+            and rr1 >= first_target_floor
+            and plan_rr >= min_rr_value
+        ),
         'minRiskReward': min_rr_value,
+        'firstTargetFloor': first_target_floor,
     }
 
 
@@ -50581,11 +50635,16 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
                         # A full-quantity OCO at target one would liquidate the
                         # entire position. Keep full downside coverage broker-side
                         # and let Position Guard route the partial target itself.
+                        fractional_position = qty < 1.0
                         order_response = submit_exit_order(symbol, qty, {
                             'type': 'stop',
                             'stop_price': desired_stop,
-                            'time_in_force': 'gtc',
-                            'executionSource': 'exit_scan_stop_protection',
+                            'time_in_force': 'day' if fractional_position else 'gtc',
+                            'executionSource': (
+                                'exit_scan_fractional_stop'
+                                if fractional_position
+                                else 'exit_scan_stop_protection'
+                            ),
                             'client_order_id': ('alphalab-%s-%s-stop' % (scan_id[:18], symbol))[:48],
                         })
                         order_type = 'stop'
@@ -50595,6 +50654,8 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
                         if order_response.get('success'):
                             signal['action'] = 'attach_protection'
                             signal['reason'] = (
+                                'Submitted fractional DAY downside stop; Position Guard renews protection while staged targets remain monitored'
+                                if fractional_position else
                                 'Submitted persistent downside-first GTC stop; staged targets remain monitored by Position Guard'
                             )
                             submitted.append(dict(signal))
