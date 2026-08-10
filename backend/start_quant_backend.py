@@ -30329,10 +30329,15 @@ def _evaluate_entry_setup_trigger(
             observed=(f'${latest_close:.4f}' if latest_close is not None else None),
         )
     else:  # continuation
+        price_continuation = (
+            latest_close > previous_close
+            if latest_close is not None and previous_close is not None else None
+        )
         add_check(
             'Price continuation',
-            latest_close > previous_close if latest_close is not None and previous_close is not None else None,
+            price_continuation,
             'completed 5m close above the prior completed close',
+            required=False,
             observed=(f'${latest_close:.4f}' if latest_close is not None else None),
         )
         trend_aligned = None
@@ -30357,9 +30362,27 @@ def _evaluate_entry_setup_trigger(
             'Momentum confirmation',
             momentum_confirmed,
             'non-negative MACD histogram or relative volume at least 1.0x',
+            required=False,
             observed=(
                 f'MACD {macd_value:.4f}' if macd_value is not None
                 else (f'volume {volume_ratio:.2f}x' if volume_ratio is not None else None)
+            ),
+        )
+        impulse_available = price_continuation is not None or momentum_confirmed is not None
+        continuation_impulse = (
+            bool(price_continuation is True or momentum_confirmed is True)
+            if impulse_available else None
+        )
+        add_check(
+            'Continuation impulse',
+            continuation_impulse,
+            'completed 5m price continuation or momentum participation must confirm',
+            observed=(
+                'price=%s / momentum=%s'
+                % (
+                    'up' if price_continuation is True else 'not_up' if price_continuation is False else 'n/a',
+                    'confirmed' if momentum_confirmed is True else 'not_confirmed' if momentum_confirmed is False else 'n/a',
+                )
             ),
         )
 
@@ -30391,8 +30414,9 @@ def _evaluate_entry_setup_trigger(
     }
 
 
-def _assess_entry_reward_geometry(entry, stop, target1, target2=None, min_rr=1.45):
-    """Score structural targets as supplied; never move a target to manufacture R/R."""
+def _assess_entry_reward_geometry(entry, stop, target1, target2=None, min_rr=1.45,
+                                  target1_reduce_pct=100):
+    """Score the staged exit that will actually be traded without moving targets."""
     def number(value):
         try:
             if value in (None, ''):
@@ -30419,14 +30443,28 @@ def _assess_entry_reward_geometry(entry, stop, target1, target2=None, min_rr=1.4
         if risk and target2_value is not None and target2_value > entry_value else 0.0
     )
     primary_valid = bool(risk and target1_value is not None and target1_value > entry_value)
+    reduce_fraction = max(0.0, min(1.0, (number(target1_reduce_pct) or 100.0) / 100.0))
+    has_second_target = bool(target2_value is not None and target2_value > target1_value > entry_value)
+    plan_rr = (
+        rr1 * reduce_fraction + rr2 * (1.0 - reduce_fraction)
+        if primary_valid and has_second_target and reduce_fraction < 1.0 else rr1
+    )
+    # Target one must still pay enough for a meaningful partial exit. The
+    # blended score cannot rescue an implausibly close first target.
+    first_target_floor = min(0.75, min_rr_value)
     return {
         'valid': bool(risk and primary_valid),
         'riskPerShare': round(risk, 4) if risk else 0.0,
         'riskReward1': round(rr1, 2),
         'riskReward2': round(rr2, 2),
+        'riskRewardPlan': round(plan_rr, 2),
+        'target1ReducePct': round(reduce_fraction * 100.0, 2),
         'primaryTargetValid': primary_valid,
-        'passesMinimum': primary_valid and rr1 >= min_rr_value,
+        'passesMinimum': (
+            primary_valid and rr1 >= first_target_floor and plan_rr >= min_rr_value
+        ),
         'minRiskReward': min_rr_value,
+        'firstTargetFloor': first_target_floor,
     }
 
 
@@ -31390,7 +31428,7 @@ def entry_plan_execute():
             quote_packet,
             spendable_buying_power,
             fractionable=fractionable,
-            require_attached_protection=is_auto_execute,
+            require_attached_protection=False,
             require_marketable=is_auto_execute,
             limit_offset_bps=(workspace_preferences.get('trading') or {}).get('limitOffsetBps'),
         )
@@ -38162,7 +38200,12 @@ def ai_entry_plan():
                     'APCA-API-KEY-ID': _acfg['api_key'],
                     'APCA-API-SECRET-KEY': _acfg['api_secret']
                 }
-                snap_resp = req_lib.get(snap_url, headers=snap_headers, timeout=10)
+                snap_resp = req_lib.get(
+                    snap_url,
+                    headers=snap_headers,
+                    params={'feed': _MARKET_DATA_FEED},
+                    timeout=10,
+                )
                 if snap_resp.status_code == 200:
                     snap = snap_resp.json()
                     latest_trade = snap.get('latestTrade', {}) or {}
@@ -38188,7 +38231,7 @@ def ai_entry_plan():
                     'timeframe': '1Day', 'limit': 150, 'adjustment': 'raw',
                     'start': bars_start.strftime('%Y-%m-%dT00:00:00Z'),
                     'end': bars_end.strftime('%Y-%m-%dT00:00:00Z'),
-                    'sort': 'asc'
+                    'sort': 'asc', 'feed': _MARKET_DATA_FEED,
                 }
                 bars_resp = req_lib.get(
                     f'{_get_market_data_base_url()}/v2/stocks/{symbol}/bars',
@@ -38213,6 +38256,7 @@ def ai_entry_plan():
                         'start': intraday_start.strftime('%Y-%m-%dT%H:%M:%SZ'),
                         'end': intraday_end.strftime('%Y-%m-%dT%H:%M:%SZ'),
                         'sort': 'asc',
+                        'feed': _MARKET_DATA_FEED,
                     },
                     timeout=10,
                 )
@@ -38227,6 +38271,16 @@ def ai_entry_plan():
                                 intraday_bars.append(intraday_bar)
                         except Exception:
                             continue
+                else:
+                    _pa_log_error(
+                        '[EntryPlan] %s 5m bars unavailable status=%s feed=%s detail=%s'
+                        % (
+                            symbol,
+                            intraday_resp.status_code,
+                            _MARKET_DATA_FEED,
+                            str(intraday_resp.text or '')[:160],
+                        )
+                    )
                 if intraday_bars:
                     latest_intraday = intraday_bars[-1]
                     intraday_bar_age_seconds = _entry_quote_age_seconds(
@@ -38580,10 +38634,12 @@ def ai_entry_plan():
                 tp1,
                 tp2,
                 _hp['min_rr'],
+                strategy_policy.get('target1ReducePct', 100),
             )
             risk_per_share = reward_geometry['riskPerShare']
             rr1 = reward_geometry['riskReward1']
             rr2 = reward_geometry['riskReward2']
+            rr_plan = reward_geometry['riskRewardPlan']
             risk_reward_review = not reward_geometry['passesMinimum']
 
             # ── 6. Entry Readiness Gate ──
@@ -39042,7 +39098,8 @@ def ai_entry_plan():
             # 9k. R/R check integrated into gate
             if risk_reward_review:
                 risk_gate_warnings.append(
-                    f'Structural Target 1 provides {rr1:.2f}R, below the {_hp["min_rr"]:.2f}R minimum; target was not inflated.'
+                    f'Staged exit provides {rr_plan:.2f}R (Target 1 {rr1:.2f}R), below the '
+                    f'{_hp["min_rr"]:.2f}R minimum; targets were not inflated.'
                 )
             if not reward_geometry.get('valid'):
                 risk_gate_blockers.append(
@@ -39050,13 +39107,11 @@ def ai_entry_plan():
                 )
                 risk_gate_passed = False
 
-            # Auto execution only advances when Alpaca can attach an OTO stop.
-            # Fractional recommendation sizing remains visible in manual review.
+            # Fractional positions advance behind the same dollar-risk and
+            # concentration limits. Alpaca supports simple fractional DAY stop
+            # orders; the position guard attaches one immediately after a fill.
             if not is_manual and 0 < pos_shares < 1:
-                risk_gate_blockers.append(
-                    'Automatic Entry Plan requires at least one whole share for attached OTO stop protection.'
-                )
-                risk_gate_passed = False
+                reason_parts.append('Fractional protection is renewed by Position Guard after fill.')
             if not is_manual and entry_trigger_met and not auto_limit_marketable:
                 risk_gate_warnings.append(
                     'Automatic limit is not marketable inside the slippage cap; wait for the spread or ask to improve.'
@@ -39151,8 +39206,8 @@ def ai_entry_plan():
             elif is_in_entry_zone and entry_trigger_met and levels_ok and not rr_ok:
                 final_action = 'READY_REVIEW'
                 ready_review_reason = (
-                    f'Structural Target 1 offers {rr1:.2f}R, below the {_hp["min_rr"]:.2f}R minimum. '
-                    'Target was preserved for review.'
+                    f'Staged exit offers {rr_plan:.2f}R (Target 1 {rr1:.2f}R), below the '
+                    f'{_hp["min_rr"]:.2f}R minimum. Targets were preserved for review.'
                 )
             elif not is_in_entry_zone or not entry_trigger_met:
                 final_action = 'WAIT_FOR_ENTRY'
@@ -39339,7 +39394,10 @@ def ai_entry_plan():
                 _preview_protection_mode = (
                     'alpaca_oto_stop'
                     if pos_shares >= 1
-                    else ('manual_exit_required' if is_manual else 'unavailable_for_auto_fractional')
+                    else (
+                        'manual_exit_required'
+                        if is_manual else 'position_guard_fractional_day_stop'
+                    )
                 )
                 execution_details['orderPreview'] = {
                     'symbol': symbol,
@@ -39407,6 +39465,8 @@ def ai_entry_plan():
                 'trailingStop': trailing_stop,
                 'riskReward1': _adj_rr1,
                 'riskReward2': _adj_rr2,
+                'riskRewardPlan': rr_plan,
+                'target1ReducePct': reward_geometry.get('target1ReducePct'),
                 'riskRewardReview': risk_reward_review,
                 'positionSizeShares': pos_shares,
                 'positionSizeDollars': round(pos_dollars, 2),
@@ -44182,6 +44242,12 @@ _PA_MARKET_SCANNER_SETTINGS = {
     },
 }
 
+# An unattended cycle runs every 15 minutes for some users. Reviewing all 100
+# ranked rows with an LLM made those cycles overrun their interval without
+# improving the 30-symbol Fine Scan input. Keep the full deterministic ranking,
+# but spend AI latency on the rows that can actually advance.
+_PA_AUTO_MARKET_AI_REVIEW_CAP = 30
+
 
 def _pa_market_scanner_settings_for_user(uid):
     """Merge durable research preferences into every headless scanner run."""
@@ -44218,8 +44284,10 @@ def _pa_market_scanner_headless(uid, trade_mode='paper', risk_profile='medium',
     scoring, enrichment, and AI review. The browser is never involved.
     """
     scanner_settings = _pa_market_scanner_settings_for_user(uid)
+    requested_ai_reviews = max(0, int(scanner_settings.get('aiReviewTopN') or 0))
     payload = {
         **scanner_settings,
+        'aiReviewTopN': min(requested_ai_reviews, _PA_AUTO_MARKET_AI_REVIEW_CAP),
         'filters': dict(scanner_settings['filters']),
         'alpacaMode': 'live' if str(trade_mode).lower() in ('real', 'live') else 'paper',
         'riskProfile': risk_profile,
@@ -44242,6 +44310,45 @@ def _pa_market_scanner_headless(uid, trade_mode='paper', risk_profile='medium',
     scanner_summary = response.get('summary') if isinstance(response.get('summary'), dict) else {}
     scanner_stats = response.get('scan_stats') if isinstance(response.get('scan_stats'), dict) else {}
     return rows, scanner_summary, scanner_stats
+
+
+def _pa_select_diverse_fine_candidates(rows, limit=30, max_per_sector=6):
+    """Select ranked Fine Scan inputs without letting one sector own the batch."""
+    ranked = sorted(
+        [row for row in (rows or []) if isinstance(row, dict) and row.get('symbol')],
+        key=lambda row: (
+            _pa_safe_float(row.get('selectionScore'), 0) or 0,
+            _pa_safe_float(row.get('trendConfidence') or row.get('confidence'), 0) or 0,
+        ),
+        reverse=True,
+    )
+    selected = []
+    selected_symbols = set()
+    sector_counts = {}
+    cap = max(1, int(max_per_sector or 1))
+    wanted = max(1, int(limit or 1))
+
+    for row in ranked:
+        symbol = str(row.get('symbol') or '').upper().strip()
+        sector = str(row.get('sector') or row.get('companySector') or 'Unknown').strip() or 'Unknown'
+        if symbol in selected_symbols or sector_counts.get(sector, 0) >= cap:
+            continue
+        selected.append(row)
+        selected_symbols.add(symbol)
+        sector_counts[sector] = sector_counts.get(sector, 0) + 1
+        if len(selected) >= wanted:
+            return selected
+
+    # Sparse/unknown sector metadata must not leave useful ranked capacity idle.
+    for row in ranked:
+        symbol = str(row.get('symbol') or '').upper().strip()
+        if symbol in selected_symbols:
+            continue
+        selected.append(row)
+        selected_symbols.add(symbol)
+        if len(selected) >= wanted:
+            break
+    return selected
 
 
 def _pa_market_scanner_symbols_headless(uid, symbols, trade_mode='paper',
@@ -47107,10 +47214,48 @@ def _pa_exit_scan_headless_legacy(uid, entry_plans, mode, dry_run=False, risk_pr
             signal['reason'] = 'Open sell order exists without both stop and target protection'
         else:
             whole_qty = int(math.floor(qty))
-            if whole_qty < 1:
-                signal['action'] = 'fractional_unprotected'
+            if whole_qty < 1 and (stop >= current_price or stop <= 0):
+                signal['action'] = 'review_geometry'
                 signal['status'] = 'unprotected'
-                signal['reason'] = 'Fractional position cannot receive whole-share OCO protection; hard-stop monitoring remains active'
+                signal['reason'] = 'Fractional stop geometry is no longer valid at the current price'
+            elif whole_qty < 1 and can_submit:
+                # Alpaca supports fractional stop orders as simple DAY orders,
+                # while OCO/OTO remains whole-share only in this integration.
+                # Re-running the position guard renews expired DAY protection.
+                order_response, _ = _pa_call_endpoint(uid, '/api/ai/execution/order', ai_execution_order, {
+                    'symbol': symbol,
+                    'side': 'sell',
+                    'qty': round(qty, 4),
+                    'type': 'stop',
+                    'stop_price': _entry_round_price(stop, 'down'),
+                    'time_in_force': 'day',
+                    'tradingMode': trade_mode,
+                    'automationMode': 'full-ai',
+                    'executionSource': 'exit_scan_fractional_stop',
+                    'suppressDiscord': suppress_discord,
+                    'confirmed': True,
+                    'client_order_id': ('alphalab-%s-%s-fstop' % (run_id[:18], symbol))[:48],
+                })
+                submitted_ok = bool(order_response.get('success'))
+                signal['action'] = 'attach_fractional_stop'
+                signal['status'] = 'protected' if submitted_ok else 'blocked'
+                signal['orderId'] = (order_response.get('order') or {}).get('id')
+                signal['reason'] = (
+                    'Submitted standalone fractional DAY protective stop'
+                    if submitted_ok else
+                    'Fractional protective stop submission failed: %s'
+                    % str(order_response.get('message') or order_response.get('status') or 'unknown')[:160]
+                )
+                submitted.append(dict(signal))
+                if submitted_ok:
+                    _pa_update_managed_position(
+                        uid, trade_mode, symbol,
+                        status='protected', protectionOrderId=signal.get('orderId'),
+                    )
+            elif whole_qty < 1:
+                signal['action'] = 'protection_required'
+                signal['status'] = 'review' if mode != 'ai' or dry_run else 'blocked'
+                signal['reason'] = 'Fractional position needs a standalone DAY stop; automatic submission is not authorized'
             elif stop >= current_price or target <= current_price or stop <= 0:
                 signal['action'] = 'review_geometry'
                 signal['status'] = 'unprotected'
@@ -47158,7 +47303,10 @@ def _pa_exit_scan_headless_legacy(uid, entry_plans, mode, dry_run=False, risk_pr
         'holdCount': sum(1 for signal in results if signal.get('action') in ('hold', 'protected_hold')),
         'blockedCount': sum(1 for signal in results if signal.get('status') in ('blocked', 'unprotected')),
         'protectedCount': sum(1 for signal in results if signal.get('status') == 'protected'),
-        'protectionAttachedCount': sum(1 for signal in results if signal.get('action') == 'attach_protection'),
+        'protectionAttachedCount': sum(
+            1 for signal in results
+            if signal.get('action') in ('attach_protection', 'attach_fractional_stop')
+        ),
         'withEntryPlanCount': sum(1 for signal in results if signal.get('exitPlanSource') in ('current_entry_plan', 'managed_plan')),
         'fallbackPlanCount': sum(1 for signal in results if signal.get('exitPlanSource') == 'generated_fallback'),
         'openSellOrderCount': sum(len(rows) for rows in orders_by_symbol.values()),
@@ -48048,11 +48196,15 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
                         # A full-quantity OCO at target one would liquidate the
                         # entire position. Keep full downside coverage broker-side
                         # and let Position Guard route the partial target itself.
+                        fractional_position = qty < 1.0
                         order_response = submit_exit_order(symbol, qty, {
                             'type': 'stop',
                             'stop_price': desired_stop,
-                            'time_in_force': 'gtc',
-                            'executionSource': 'exit_scan_stop_protection',
+                            'time_in_force': 'day' if fractional_position else 'gtc',
+                            'executionSource': (
+                                'exit_scan_fractional_stop'
+                                if fractional_position else 'exit_scan_stop_protection'
+                            ),
                             'client_order_id': ('alphalab-%s-%s-stop' % (scan_id[:18], symbol))[:48],
                         })
                         order_type = 'stop'
@@ -48062,6 +48214,8 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
                         if order_response.get('success'):
                             signal['action'] = 'attach_protection'
                             signal['reason'] = (
+                                'Submitted fractional DAY downside stop; Position Guard renews protection while staged targets remain monitored'
+                                if fractional_position else
                                 'Submitted persistent downside-first GTC stop; staged targets remain monitored by Position Guard'
                             )
                             submitted.append(dict(signal))
@@ -48363,6 +48517,9 @@ def _pa_entry_plan_outcomes(entry_plans, limit=8):
             'setupAutoEligible': bool(plan.get('setupAutoEligible')),
             'riskGateStatus': str(hard_gate.get('status') or ''),
             'dataQuality': str(plan.get('dataQuality') or ''),
+            'riskReward1': plan.get('riskReward1'),
+            'riskReward2': plan.get('riskReward2'),
+            'riskRewardPlan': plan.get('riskRewardPlan'),
             'aiDecision': str(plan.get('aiDecision') or ''),
             'reason': reason[:500],
             'blockers': blockers,
@@ -48938,10 +49095,14 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         # candidates -> top 100 cross-sectional results -> AI review.
         scanner_settings = _pa_market_scanner_settings_for_user(uid)
         requested_symbols = int(scanner_settings['maxSymbols'])
+        effective_ai_reviews = min(
+            max(0, int(scanner_settings.get('aiReviewTopN') or 0)),
+            _PA_AUTO_MARKET_AI_REVIEW_CAP,
+        )
         _pa_log('[AutoPipeline] stage=market_scanner start universe=alpaca_market maxSymbols=%d maxResults=%d aiReview=%d' % (
             requested_symbols,
             scanner_settings['maxResults'],
-            scanner_settings['aiReviewTopN'],
+            effective_ai_reviews,
         ))
         _pa_active_run_step(
             uid,
@@ -49070,15 +49231,11 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
         # Continue Scan was removed from the manual and headless pipeline. Fine Scan
         # now receives the highest-ranked Market Scanner candidates directly.
         _check_stopped()
-        _sorted_for_fine = sorted(
-            [r for r in (scanner_results or []) if r.get('symbol')],
-            key=lambda r: (
-                _pa_safe_float(r.get('selectionScore'), 0) or 0,
-                float(r.get('trendConfidence') or r.get('confidence') or 0),
-            ),
-            reverse=True
+        continue_results = _pa_select_diverse_fine_candidates(
+            scanner_results,
+            limit=30,
+            max_per_sector=6,
         )
-        continue_results = _sorted_for_fine[:30]
         _cs_stats = {
             'stage_removed': True,
             'input_count': len(scanner_results or []),

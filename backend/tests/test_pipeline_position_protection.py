@@ -1135,6 +1135,32 @@ def test_deadline_blocks_discretionary_target_but_allows_hard_exit_and_protectio
     assert summary["discretionaryPauseReason"] == "pipeline_stage_deadline_exceeded"
 
 
+def test_fractional_position_receives_day_stop_from_position_guard(monkeypatch):
+    submitted, _managed = _install_exit_runtime_scenario(
+        monkeypatch,
+        [{"symbol": "BAC", "price": 63.63, "avgEntry": 63.63, "qty": 0.3084,
+          "stop": 62.78, "target1": 65.52, "target2": 66.28}],
+    )
+    monkeypatch.setattr(
+        backend, "_pa_check_stop_requested",
+        lambda uid, expected_run_id=None: False,
+    )
+    monkeypatch.setattr(backend, "_backend_enforce_runtime_budget", lambda: None)
+
+    summary = backend._pa_exit_scan_headless(
+        "user-1", [], "ai", trade_mode="paper",
+        run_id="position-guard-fractional", ai_review=False,
+    )
+    signal = summary["signals"][0]
+
+    assert signal["action"] == "attach_protection"
+    assert signal["status"] == "submitted"
+    assert submitted[0]["qty"] == 0.3084
+    assert submitted[0]["type"] == "stop"
+    assert submitted[0]["time_in_force"] == "day"
+    assert submitted[0]["executionSource"] == "exit_scan_fractional_stop"
+
+
 def test_stop_blocks_target2_and_ordinary_time_exit_but_not_leveraged_time_stop(
     monkeypatch,
 ):

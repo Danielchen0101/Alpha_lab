@@ -14,6 +14,51 @@ def test_pipeline_contract_has_one_seven_stage_chain():
     assert backend._PA_PIPELINE_TOTAL_STEPS == 7
 
 
+def test_fine_scan_selection_preserves_rank_with_sector_diversity():
+    rows = [
+        {'symbol': 'T%d' % index, 'sector': 'Technology', 'selectionScore': 100 - index}
+        for index in range(8)
+    ] + [
+        {'symbol': 'F1', 'sector': 'Financials', 'selectionScore': 91},
+        {'symbol': 'H1', 'sector': 'Healthcare', 'selectionScore': 90},
+    ]
+
+    selected = backend._pa_select_diverse_fine_candidates(
+        rows, limit=8, max_per_sector=3,
+    )
+    symbols = [row['symbol'] for row in selected]
+
+    assert symbols[:3] == ['T0', 'T1', 'T2']
+    assert 'F1' in symbols
+    assert 'H1' in symbols
+    assert len(symbols) == 8
+
+
+def test_headless_market_ai_review_is_capped_to_fine_scan_capacity(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        backend,
+        '_pa_market_scanner_settings_for_user',
+        lambda uid: {
+            'maxSymbols': 1500,
+            'maxResults': 100,
+            'aiReviewTopN': 100,
+            'filters': {},
+        },
+    )
+
+    def fake_call(uid, path, view_func, payload=None, **kwargs):
+        captured.update(payload or {})
+        return {'success': True, 'results': [], 'summary': {}, 'scan_stats': {}}, 200
+
+    monkeypatch.setattr(backend, '_pa_call_endpoint', fake_call)
+
+    backend._pa_market_scanner_headless('user-1', pipeline_mode='ai')
+
+    assert captured['maxResults'] == 100
+    assert captured['aiReviewTopN'] == 30
+
+
 def test_execution_authority_remains_deterministic():
     authority = backend._PA_AI_AUTHORITY["execution"]
 
@@ -93,7 +138,7 @@ def test_headless_pipeline_reuses_institutional_whole_market_scanner(monkeypatch
     assert captured["view_func"] is backend.institutional_market_scanner
     assert captured["payload"]["maxSymbols"] == 1500
     assert captured["payload"]["maxResults"] == 100
-    assert captured["payload"]["aiReviewTopN"] == 100
+    assert captured["payload"]["aiReviewTopN"] == 30
     assert captured["payload"]["alpacaMode"] == "live"
     assert captured["payload"]["suppressDiscord"] is True
     assert rows[0]["symbol"] == "AAPL"
