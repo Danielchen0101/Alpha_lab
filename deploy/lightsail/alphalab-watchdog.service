@@ -1,0 +1,9 @@
+[Unit]
+Description=Recover the AlphaLab container after a failed liveness check
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/alphalab/repo/deploy/lightsail/watchdog.sh
+TimeoutStartSec=5min
