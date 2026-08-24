@@ -1,0 +1,50 @@
+name: alphalab
+
+services:
+  app:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        REACT_APP_API_BASE_URL: /api
+        REACT_APP_ENV: production
+        REACT_APP_SITE_URL: ${REACT_APP_SITE_URL:-https://www.alphalabquant.com}
+        REACT_APP_SUPABASE_URL: ${REACT_APP_SUPABASE_URL:-https://nwpxjqgqegxttucsmvmp.supabase.co}
+        REACT_APP_SUPABASE_ANON_KEY: ${REACT_APP_SUPABASE_ANON_KEY:-lightsail-staging-placeholder}
+        REACT_APP_TURNSTILE_SITE_KEY: ${REACT_APP_TURNSTILE_SITE_KEY:-lightsail-staging-placeholder}
+    image: alphalab:${ALPHALAB_IMAGE_TAG:-local}
+    restart: unless-stopped
+    env_file:
+      - ${ALPHALAB_ENV_FILE:-/etc/alphalab/alphalab.env}
+    ports:
+      - 127.0.0.1:8080:8080
+    mem_limit: 3500m
+    cpus: 2.0
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - /etc/alphalab/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  caddy_data:
+  caddy_config:

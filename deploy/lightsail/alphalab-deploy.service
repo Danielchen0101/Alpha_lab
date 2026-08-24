@@ -1,0 +1,10 @@
+[Unit]
+Description=Deploy the latest CI-approved AlphaLab main commit
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/alphalab/repo/deploy/lightsail/deploy.sh
+TimeoutStartSec=45min
