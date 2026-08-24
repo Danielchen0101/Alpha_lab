@@ -32,6 +32,7 @@ def test_container_uses_single_scheduler_worker_and_real_health_route():
     assert "ARG REACT_APP_SUPABASE_URL" in dockerfile
     assert "COPY --from=backend-builder /usr/local/bin /usr/local/bin" in dockerfile
     assert "command -v gunicorn" in start_script
+    assert "rm -rf /tmp/nginx.pid /tmp/nginx-*" in dockerfile
 
 
 def test_container_context_excludes_local_dependencies_and_secrets():
