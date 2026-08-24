@@ -81,7 +81,10 @@ COPY --from=backend-builder /usr/local/bin /usr/local/bin
 
 # Copy nginx configuration
 COPY docker/nginx.conf /etc/nginx/nginx.conf
-RUN nginx -t
+# nginx -t creates its configured pid file and temporary directories as root.
+# They must not be baked into the image because the runtime process is the
+# non-root appuser and cannot reuse them after the container starts.
+RUN nginx -t && rm -rf /tmp/nginx.pid /tmp/nginx-*
 
 # Copy startup script
 COPY docker/start.sh ./start.sh
