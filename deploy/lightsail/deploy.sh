@@ -6,6 +6,7 @@ flock -n 9 || exit 0
 
 repo_dir="${ALPHALAB_REPO_DIR:-/opt/alphalab/repo}"
 compose_file="$repo_dir/deploy/lightsail/compose.yaml"
+env_file="${ALPHALAB_ENV_FILE:-/etc/alphalab/alphalab.env}"
 deployed_file="/var/lib/alphalab/deployed-sha"
 require_ci="${ALPHALAB_REQUIRE_CI:-1}"
 
@@ -36,8 +37,8 @@ previous_sha="$(git rev-parse HEAD)"
 git checkout --quiet --detach "$target_sha"
 
 export ALPHALAB_IMAGE_TAG="$target_sha"
-docker compose --file "$compose_file" build app
-docker compose --file "$compose_file" up --detach --remove-orphans
+docker compose --env-file "$env_file" --file "$compose_file" build app
+docker compose --env-file "$env_file" --file "$compose_file" up --detach --remove-orphans
 
 healthy=0
 for _ in $(seq 1 60); do
@@ -58,6 +59,6 @@ fi
 echo "Health check failed for $target_sha; rolling back to $previous_sha" >&2
 git checkout --quiet --detach "$previous_sha"
 export ALPHALAB_IMAGE_TAG="$previous_sha"
-docker compose --file "$compose_file" build app
-docker compose --file "$compose_file" up --detach --remove-orphans
+docker compose --env-file "$env_file" --file "$compose_file" build app
+docker compose --env-file "$env_file" --file "$compose_file" up --detach --remove-orphans
 exit 1
