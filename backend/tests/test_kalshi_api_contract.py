@@ -51,6 +51,8 @@ from kalshi_api import (
     _apply_real_preflight_health_gate,
     _venue_quote,
     _btc15_live_strategy_config,
+    _btc15_shadow_challenger_config,
+    _entry_shadow_diagnostic,
     _PublicDataClient,
     register_kalshi_api,
 )
@@ -67,10 +69,27 @@ def test_dual_market_live_policies_are_separately_calibrated():
     }
 
     btc15 = _btc15_live_strategy_config(base)
+    btc15_malformed_band = _btc15_live_strategy_config({
+        **base,
+        "minPrice": 0.90,
+        "maxPrice": 0.55,
+    })
+    btc15_shadow = _btc15_shadow_challenger_config(btc15)
     hourly = _hourly_live_strategy_config(base)
 
+    assert btc15["minPrice"] == pytest.approx(0.70)
     assert btc15["maxPrice"] == pytest.approx(0.80)
+    assert btc15_malformed_band["minPrice"] == pytest.approx(0.70)
+    assert btc15_malformed_band["maxPrice"] == pytest.approx(0.80)
+    assert btc15["minNetEdge"] == pytest.approx(0.010)
     assert btc15["minConservativeEdge"] == pytest.approx(0.015)
+    assert btc15["entryConfirmationSnapshots"] == 2
+    assert btc15["btc15EntryConfirmationMaxGapSeconds"] == 25
+    assert btc15_shadow["minPrice"] == pytest.approx(0.70)
+    assert btc15_shadow["maxPrice"] == pytest.approx(0.80)
+    assert btc15_shadow["minNetEdge"] == pytest.approx(0.005)
+    assert btc15_shadow["minConservativeEdge"] == pytest.approx(0.010)
+    assert btc15_shadow["btc15EntryConfirmationMaxGapSeconds"] == 45
     assert hourly["maxPrice"] == pytest.approx(0.78)
     assert hourly["maxSecondsToClose"] == 1200
     assert hourly["minNetEdge"] == pytest.approx(0.015)
@@ -78,6 +97,43 @@ def test_dual_market_live_policies_are_separately_calibrated():
     assert hourly["marketBlendWeight"] == pytest.approx(0.60)
     assert hourly["probabilityLogitScale"] == pytest.approx(1.50)
     assert hourly["hourlyCandidatePenaltyWeight"] == pytest.approx(0.15)
+
+
+def test_entry_shadow_is_explicitly_non_routing_and_compact():
+    config = _btc15_shadow_challenger_config(
+        _btc15_live_strategy_config({})
+    )
+    diagnostic = _entry_shadow_diagnostic(
+        {
+            "action": "BUY_YES",
+            "side": "YES",
+            "signalQuality": 81,
+            "market": {"secondsToClose": 600},
+            "edge": {
+                "price": 0.72,
+                "netEdge": 0.02,
+                "conservativeEdge": 0.013,
+            },
+            "sizing": {"plannedContractsFp": 0.30},
+            "blockingReasons": [],
+        },
+        policy="btc15_high_band_frequency_shadow_v10",
+        strategy_config=config,
+    )
+
+    assert diagnostic["opportunity"] is True
+    assert diagnostic["qualifyingFrame"] is True
+    assert diagnostic["routeAllowed"] is False
+    assert diagnostic["confirmationPolicy"] == {
+        "evaluatedOnline": False,
+        "requiredSnapshots": 2,
+        "maxGapSeconds": 45,
+    }
+    assert diagnostic["thresholds"]["minPrice"] == pytest.approx(0.70)
+    assert diagnostic["thresholds"]["minNetEdge"] == pytest.approx(0.005)
+    assert diagnostic["thresholds"][
+        "btc15EntryConfirmationMaxGapSeconds"
+    ] == 45
 
 
 def test_portfolio_display_baseline_filters_only_the_visible_projection():
@@ -1061,7 +1117,19 @@ def test_real_tick_with_zero_cash_fails_closed_without_routing(monkeypatch):
         "blockingReasons": [],
         "config": {"executionMode": "real"},
     }
-    monkeypatch.setattr(kalshi_api, "evaluate_btc15_contract", lambda *args, **kwargs: decision)
+    evaluation_calls = []
+
+    def evaluate_with_shadow_failure(*_args, **_kwargs):
+        evaluation_calls.append(1)
+        if len(evaluation_calls) == 2:
+            raise RuntimeError("shadow-only failure")
+        return copy.deepcopy(decision)
+
+    monkeypatch.setattr(
+        kalshi_api,
+        "evaluate_btc15_contract",
+        evaluate_with_shadow_failure,
+    )
     controller = _PaperRobotController(Client(), State(), paper_accounts=None)
     monkeypatch.setattr(
         controller,
@@ -1081,6 +1149,14 @@ def test_real_tick_with_zero_cash_fails_closed_without_routing(monkeypatch):
     assert result["decision"]["executionIntent"] == "WAIT_REAL_NO_CASH"
     assert "real_cash_unavailable" in result["decision"]["blockingReasons"]
     assert result["decision"]["sizing"]["contracts"] == 0
+    assert len(evaluation_calls) == 2
+    assert result["decision"]["entryShadow"]["champion"][
+        "routeAllowed"
+    ] is True
+    challenger = result["decision"]["entryShadow"]["frequencyChallenger"]
+    assert challenger["routeAllowed"] is False
+    assert challenger["evaluationError"] == "RuntimeError"
+    assert challenger["blockingReasons"] == ["shadow_evaluation_error"]
 
 
 def test_hourly_tick_manages_held_strike_and_suppresses_higher_edge_sibling(
@@ -1569,6 +1645,12 @@ def test_market_observation_uses_a_stable_15_second_bucket():
             "netEdge": 0.04,
             "conservativeEdge": 0.02,
         },
+        "entryShadow": {
+            "frequencyChallenger": {
+                "routeAllowed": False,
+                "qualifyingFrame": True,
+            },
+        },
     }
 
     first = _market_observation("paper", decision)
@@ -1580,6 +1662,10 @@ def test_market_observation_uses_a_stable_15_second_bucket():
     assert first["observation_key"] == second["observation_key"]
     assert first["execution_intent"] == "ADD_YES"
     assert first["environment"] == "paper"
+    assert first["features"]["entryShadow"]["frequencyChallenger"] == {
+        "routeAllowed": False,
+        "qualifyingFrame": True,
+    }
 
 
 def test_live_settlement_keeps_dollars_and_converts_cent_revenue():

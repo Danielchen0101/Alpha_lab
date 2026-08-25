@@ -193,7 +193,10 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
         # The 15-minute robot defaults to 840 seconds.  The wider upper
         # validation bound is used only by the separate hourly-strike robot.
         "maxSecondsToClose": (180.0, 2400.0),
-        "minPrice": (0.30, 0.60),
+        # Research policies may deliberately study a favorite-only band above
+        # 60c.  The default remains 47c and live controllers still impose
+        # their own narrower, outcome-validated envelopes.
+        "minPrice": (0.30, 0.90),
         "maxPrice": (0.55, 0.99),
         "minModelProbability": (0.50, 0.90),
         "marketBlendWeight": (0.0, 0.75),

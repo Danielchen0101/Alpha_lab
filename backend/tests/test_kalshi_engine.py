@@ -968,6 +968,9 @@ def test_default_quality_floors_and_risk_scale_invariants():
     assert defaults["minNetEdge"] == pytest.approx(0.010)
     assert defaults["minConservativeEdge"] == pytest.approx(0.0075)
     assert defaults["maxPrice"] == pytest.approx(0.92)
+    assert normalize_strategy_config({"minPrice": 0.70})[
+        "minPrice"
+    ] == pytest.approx(0.70)
     assert defaults["riskPerTradePct"] == pytest.approx(0.50)
     assert defaults["fractionalKelly"] == pytest.approx(0.15)
     assert defaults["fractionalContractSizingEnabled"] is True
