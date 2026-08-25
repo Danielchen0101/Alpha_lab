@@ -1241,6 +1241,7 @@ def _market_observation(
             },
             "candidateLadder": dict(decision.get("candidateDiagnostics") or {}),
             "entryConfirmation": dict(decision.get("entryConfirmation") or {}),
+            "entryShadow": dict(decision.get("entryShadow") or {}),
             "feeReconciliation": _fee_reconciliation(decision, order),
             "feePolicy": dict(decision.get("feePolicy") or {}),
             "makerShadow": dict(decision.get("makerShadow") or {}),
@@ -2032,12 +2033,17 @@ def _hourly_candidate_diagnostic(
 def _btc15_live_strategy_config(
     strategy_config: Mapping[str, Any],
 ) -> Dict[str, Any]:
-    """Apply the outcome-calibrated BTC15 live entry envelope."""
+    """Apply the walk-forward-selected BTC15 live champion envelope."""
     return normalize_strategy_config({
         **dict(strategy_config or {}),
-        "maxPrice": min(
-            0.80,
-            _finite_number(strategy_config.get("maxPrice"), 0.80),
+        # Keep the tested band atomic.  Combining a user-supplied minimum
+        # above the champion maximum would make generic normalization reset to
+        # its broad fallback band and accidentally weaken the live policy.
+        "minPrice": 0.70,
+        "maxPrice": 0.80,
+        "minNetEdge": max(
+            0.010,
+            _finite_number(strategy_config.get("minNetEdge"), 0.010),
         ),
         "minConservativeEdge": max(
             0.015,
@@ -2046,7 +2052,92 @@ def _btc15_live_strategy_config(
                 0.015,
             ),
         ),
+        "entryConfirmationSnapshots": 2,
+        "btc15EntryConfirmationMaxGapSeconds": 25,
     })
+
+
+def _btc15_shadow_challenger_config(
+    champion_config: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Return the non-routing BTC15 frequency challenger.
+
+    The lower edge floors and wider confirmation window did not pass every
+    historical walk-forward segment, so this policy is observation-only.  It
+    deliberately reuses the champion's price band and all data, liquidity,
+    volatility, fee, account, Kelly, and exposure controls.
+    """
+    return normalize_strategy_config({
+        **dict(champion_config or {}),
+        "minNetEdge": 0.005,
+        "minConservativeEdge": 0.010,
+        "btc15EntryConfirmationMaxGapSeconds": 45,
+    })
+
+
+def _entry_shadow_diagnostic(
+    decision: Mapping[str, Any],
+    *,
+    policy: str,
+    strategy_config: Mapping[str, Any],
+    route_allowed: bool = False,
+    confirmation_evaluated_online: bool = False,
+) -> Dict[str, Any]:
+    """Compact an entry-policy decision with explicit routing authority."""
+    action = str(decision.get("action") or "WAIT").upper()
+    qualifying_frame = action.startswith("BUY_")
+    market = dict(decision.get("market") or {})
+    edge = dict(decision.get("edge") or {})
+    sizing = dict(decision.get("sizing") or {})
+    return {
+        "policy": str(policy),
+        "enabled": True,
+        "routeAllowed": bool(route_allowed),
+        # Confirmation is reconstructed from consecutive persisted frames.
+        # Calling this a qualifying frame avoids implying that this isolated
+        # pure-engine evaluation has already passed its multi-frame gate.
+        "qualifyingFrame": qualifying_frame,
+        "opportunity": qualifying_frame,
+        "action": action,
+        "side": decision.get("side"),
+        "signalQuality": decision.get("signalQuality"),
+        "secondsToClose": market.get("secondsToClose"),
+        "price": edge.get("price"),
+        "netEdge": edge.get("netEdge"),
+        "conservativeEdge": edge.get("conservativeEdge"),
+        "plannedContractsFp": sizing.get("plannedContractsFp"),
+        "evaluationError": decision.get("shadowEvaluationError"),
+        "blockingReasons": [
+            str(reason)[:80]
+            for reason in (decision.get("blockingReasons") or [])[:12]
+        ],
+        "confirmationPolicy": {
+            "evaluatedOnline": bool(confirmation_evaluated_online),
+            "requiredSnapshots": strategy_config.get(
+                "entryConfirmationSnapshots"
+            ),
+            "maxGapSeconds": strategy_config.get(
+                "btc15EntryConfirmationMaxGapSeconds"
+            ),
+        },
+        "thresholds": {
+            "minPrice": strategy_config.get("minPrice"),
+            "maxPrice": strategy_config.get("maxPrice"),
+            "minNetEdge": strategy_config.get("minNetEdge"),
+            "minConservativeEdge": strategy_config.get(
+                "minConservativeEdge"
+            ),
+            "entryConfirmationSnapshots": strategy_config.get(
+                "entryConfirmationSnapshots"
+            ),
+            "btc15EntryConfirmationMaxGapSeconds": strategy_config.get(
+                "btc15EntryConfirmationMaxGapSeconds"
+            ),
+            "hourlyCandidatePenaltyWeight": strategy_config.get(
+                "hourlyCandidatePenaltyWeight"
+            ),
+        },
+    }
 
 
 def _hourly_live_strategy_config(
@@ -6747,6 +6838,9 @@ class _PaperRobotController:
             }
         else:
             strategy_config = _btc15_live_strategy_config(strategy_config)
+            shadow_strategy_config = _btc15_shadow_challenger_config(
+                strategy_config
+            )
             snapshot_args: Dict[str, Any] = {"base_url": KALSHI_PUBLIC_BASE}
             if reference_override is not None:
                 snapshot_args["reference_override"] = reference_override
@@ -6759,6 +6853,7 @@ class _PaperRobotController:
             )
             if snapshot_fee_rate is not None and snapshot_fee_rate >= 0.0:
                 strategy_config["takerFeeRate"] = snapshot_fee_rate
+                shadow_strategy_config["takerFeeRate"] = snapshot_fee_rate
             candidate_ticker = str((snapshot.get("market") or {}).get("ticker") or "")
             context = _paper_account_context(portfolio, robot_state, candidate_ticker, bankroll)
             if context.get("hasPosition"):
@@ -6775,10 +6870,82 @@ class _PaperRobotController:
                 book_time=snapshot.get("orderbookAsOf"),
                 account_context=context,
             )
+            # Evaluate the challenger over the exact same immutable snapshot.
+            # No additional network request is made and this result is never
+            # passed to the order router; it exists only for future finalized-
+            # outcome evaluation without look-ahead selection bias.
+            try:
+                shadow_decision = evaluate_btc15_contract(
+                    snapshot["market"],
+                    spot_price=snapshot["reference"].get("price"),
+                    candles=snapshot["reference"].get("candles") or [],
+                    config=shadow_strategy_config,
+                    orderbook=snapshot.get("orderbook") or {},
+                    reference_time=snapshot["reference"].get("timestamp"),
+                    reference_metadata=snapshot.get("reference") or {},
+                    book_time=snapshot.get("orderbookAsOf"),
+                    account_context=context,
+                )
+            except Exception as exc:
+                # Observability must never become an availability dependency
+                # for the validated live policy.  Record only the exception
+                # type so logs and persisted diagnostics cannot leak payloads.
+                self.safe_print(
+                    "[KalshiEntryShadow] evaluation skipped "
+                    f"error={type(exc).__name__}"
+                )
+                shadow_decision = {
+                    "action": "WAIT",
+                    "blockingReasons": ["shadow_evaluation_error"],
+                    "shadowEvaluationError": type(exc).__name__,
+                }
         decision = dict(decision)
         decision["marketFamily"] = family
-        decision["engine"] = "btchourly-strike-ladder-v3" if family == "btchourly" else "btc15_settlement_aligned_v9"
-        decision["outcomeCalibrationPolicy"] = "btc_dual_market_live_v9"
+        decision["engine"] = "btchourly-strike-ladder-v3" if family == "btchourly" else "btc15_settlement_aligned_v10"
+        decision["outcomeCalibrationPolicy"] = "btc_walk_forward_live_v10"
+        if family == "btc15m":
+            decision["entryShadow"] = {
+                "champion": _entry_shadow_diagnostic(
+                    decision,
+                    policy="btc15_high_band_champion_v10",
+                    strategy_config=strategy_config,
+                    route_allowed=True,
+                    confirmation_evaluated_online=True,
+                ),
+                "frequencyChallenger": _entry_shadow_diagnostic(
+                    shadow_decision,
+                    policy="btc15_high_band_frequency_shadow_v10",
+                    strategy_config=shadow_strategy_config,
+                ),
+                "promotionCriteria": {
+                    "minimumFinalizedMarkets": 50,
+                    "minimumRollingWindowProfitFactor": 1.10,
+                    "requiredPositiveRollingWindows": 3,
+                    "requirePositiveAggregateAfterFeePnl": True,
+                    "requireDrawdownNoWorseThanChampion": True,
+                    "routeAllowed": False,
+                },
+            }
+        else:
+            decision["entryShadow"] = {
+                "champion": _entry_shadow_diagnostic(
+                    decision,
+                    policy="btchourly_outcome_calibrated_v9",
+                    strategy_config=strategy_config,
+                    route_allowed=True,
+                    confirmation_evaluated_online=True,
+                ),
+                "frequencyChallenger": {
+                    "policy": "btchourly_frequency_observation_v10",
+                    "enabled": True,
+                    "routeAllowed": False,
+                    "opportunity": False,
+                    "reason": (
+                        "No relaxed hourly rule passed walk-forward validation; "
+                        "candidateDiagnostics remains the shadow evidence stream."
+                    ),
+                },
+            }
         account_warnings = (
             list(portfolio.get("warnings") or [])
             if execution_mode == "real"

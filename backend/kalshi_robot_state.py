@@ -38,7 +38,7 @@ def _entry_confirmation_family(ticker: Any) -> Optional[str]:
 MAX_DECISION_RECORDS = 50
 MAX_SETTLEMENT_RECORDS = 1000
 MAX_TRADED_TICKERS = 2000
-PAPER_STATE_VERSION = 13
+PAPER_STATE_VERSION = 14
 KALSHI_MODES = ("paper", "real")
 
 # These fields mirror the active mode bucket for older API consumers.  Keeping
@@ -656,6 +656,69 @@ class KalshiRobotState:
             for environment, bucket in mode_state.items():
                 if isinstance(bucket, dict):
                     update_bucket(bucket, environment)
+        state["storageVersion"] = max(
+            13,
+            int(state.get("storageVersion") or 0),
+        )
+
+    @staticmethod
+    def _apply_v14_walk_forward_champion(state: Dict[str, Any]) -> None:
+        """Record the v10 live champion without changing Real arming state."""
+        migrated_at = _now()
+
+        def update_bucket(
+            bucket: Dict[str, Any],
+            environment: Optional[str] = None,
+        ) -> None:
+            bucket["config"] = _safe_strategy_config(
+                bucket.get("config") or {},
+                environment,
+            )
+            strategy = bucket.setdefault("strategy", {})
+            strategy.update({
+                "name": "BTC Dual-Market Walk-Forward v10",
+                "version": 10,
+                "philosophy": (
+                    "Route only the walk-forward BTC15 champion while "
+                    "retaining the calibrated hourly policy; record relaxed "
+                    "frequency challengers as non-routing shadow evidence."
+                ),
+            })
+            components = list(strategy.get("components") or [])
+            component = (
+                "walk-forward BTC15 70-80c champion with non-routing "
+                "frequency challengers"
+            )
+            if component not in components:
+                components.append(component)
+            strategy["components"] = components
+            changes = list(strategy.get("changes") or [])
+            if not changes or "walk-forward champion v10" not in str(
+                changes[0].get("summary") or ""
+            ).lower():
+                changes.insert(0, {
+                    "at": migrated_at,
+                    "version": 10,
+                    "summary": (
+                        "Walk-forward champion v10: constrain live BTC15 "
+                        "entries to 70-80c while preserving edge, fee, "
+                        "liquidity, two-snapshot confirmation, and risk gates; "
+                        "keep lower-edge and wider-confirmation candidates "
+                        "shadow-only until fresh finalized samples qualify."
+                    ),
+                })
+            strategy["changes"] = changes[:50]
+
+        active_environment = _execution_environment(
+            state.get("activeEnvironment")
+            or (state.get("config") or {}).get("executionMode")
+        )
+        update_bucket(state, active_environment)
+        mode_state = state.get("modeState")
+        if isinstance(mode_state, dict):
+            for environment, bucket in mode_state.items():
+                if isinstance(bucket, dict):
+                    update_bucket(bucket, environment)
         state["storageVersion"] = PAPER_STATE_VERSION
 
     def __init__(
@@ -732,6 +795,8 @@ class KalshiRobotState:
                     self._apply_v12_quality_scaled_sizing(self._users[user_id])
                 if int(self._users[user_id].get("storageVersion") or 0) < 13:
                     self._apply_v13_outcome_calibration(self._users[user_id])
+                if int(self._users[user_id].get("storageVersion") or 0) < 14:
+                    self._apply_v14_walk_forward_champion(self._users[user_id])
                 migrated = True
         if migrated and self._persist_migrations:
             self._save_all()
@@ -754,13 +819,12 @@ class KalshiRobotState:
             "decisions": [],
             "decisionLimit": MAX_DECISION_RECORDS,
             "strategy": {
-                "name": "BTC15 Settlement-Aligned v6",
-                "version": 6,
+                "name": "BTC Dual-Market Walk-Forward v10",
+                "version": 10,
                 "philosophy": (
-                    "Trade only a fresh, executable favorite with positive fee-adjusted and "
-                    "uncertainty-adjusted edge. Use Kalshi's official BRTI and final-minute "
-                    "settlement average when available, while preserving hold-to-settlement, "
-                    "partial exits, and bounded scale-ins."
+                    "Route only the walk-forward BTC15 champion while retaining "
+                    "the calibrated hourly policy; record relaxed frequency "
+                    "challengers as non-routing shadow evidence."
                 ),
                 "components": [
                     "official CF Benchmarks BRTI one-second reference stream",
@@ -770,6 +834,7 @@ class KalshiRobotState:
                     "fee-adjusted and uncertainty-adjusted executable edge",
                     "bounded scale-ins, partial economic exits, and settlement carry",
                     "freshness, depth, spread, exposure, cooldown, and stop gates",
+                    "walk-forward BTC15 70-80c champion with non-routing frequency challengers",
                 ],
                 "settledSamples": 0,
                 "wins": 0,
@@ -804,7 +869,15 @@ class KalshiRobotState:
                 "lastEntryAt": None,
                 "lastExitTicker": None,
                 "lastExitAt": None,
-                "changes": [{"at": _now(), "version": 6, "summary": "Introduced official-BRTI v6 calibration and durable dual-market execution."}],
+                "changes": [{
+                    "at": _now(),
+                    "version": 10,
+                    "summary": (
+                        "Walk-forward champion v10: live BTC15 70-80c, "
+                        "unchanged hourly safety gates, and non-routing "
+                        "frequency challengers."
+                    ),
+                }],
             },
         }
 
@@ -929,6 +1002,8 @@ class KalshiRobotState:
                     self._apply_v12_quality_scaled_sizing(self._users[key])
                 if int(self._users[key].get("storageVersion") or 0) < 13:
                     self._apply_v13_outcome_calibration(self._users[key])
+                if int(self._users[key].get("storageVersion") or 0) < 14:
+                    self._apply_v14_walk_forward_champion(self._users[key])
                 migrated = True
             migrated = bool(migrated or durable_compaction_required)
         else:
