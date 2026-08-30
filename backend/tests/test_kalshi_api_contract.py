@@ -38,6 +38,7 @@ from kalshi_api import (
     _monotone_ladder_probabilities,
     _paper_account_context,
     _paper_order_payload,
+    _pending_entry_confirmation_signature,
     _position_execution_context,
     _position_market_mark,
     _position_side_and_count,
@@ -1653,19 +1654,168 @@ def test_market_observation_uses_a_stable_15_second_bucket():
         },
     }
 
-    first = _market_observation("paper", decision)
+    first = _market_observation(
+        "paper",
+        decision,
+        source="scheduler",
+        submit_order=True,
+    )
     second = _market_observation(
         "paper",
         {**decision, "generatedAt": "2026-07-25T12:00:01Z"},
+        source="scheduler",
+        submit_order=True,
     )
 
     assert first["observation_key"] == second["observation_key"]
     assert first["execution_intent"] == "ADD_YES"
     assert first["environment"] == "paper"
+    assert first["features"]["observation"] == {
+        "source": "scheduler",
+        "submitOrder": True,
+        "samplingPolicy": "routine_15s",
+        "bucketSeconds": 15,
+        "hasOrderResult": False,
+    }
     assert first["features"]["entryShadow"]["frequencyChallenger"] == {
         "routeAllowed": False,
         "qualifyingFrame": True,
     }
+
+
+def test_market_observation_separates_scheduler_and_browser_in_same_bucket():
+    decision = {
+        "generatedAt": "2026-08-30T12:00:14Z",
+        "action": "WAIT",
+        "market": {"ticker": "KXBTC15M-SOURCE", "secondsToClose": 600},
+    }
+
+    scheduler = _market_observation(
+        "real",
+        decision,
+        source="scheduler",
+        submit_order=True,
+    )
+    browser = _market_observation(
+        "real",
+        decision,
+        source="browser_read_only",
+        submit_order=False,
+    )
+
+    assert scheduler["observation_key"] != browser["observation_key"]
+    assert ":scheduler:routine:" in scheduler["observation_key"]
+    assert ":browser_read_only:routine:" in browser["observation_key"]
+    assert scheduler["features"]["observation"]["submitOrder"] is True
+    assert browser["features"]["observation"]["submitOrder"] is False
+
+
+def test_market_observation_order_event_cannot_be_erased_by_read_only_wait():
+    decision = {
+        "generatedAt": "2026-08-30T12:00:04Z",
+        "action": "BUY_NO",
+        "side": "NO",
+        "market": {"ticker": "KXBTC15M-ORDER", "secondsToClose": 500},
+    }
+    order = {
+        "order_id": "order-123",
+        "client_order_id": "client-123",
+        "status": "executed",
+        "action": "buy",
+        "outcome_side": "no",
+        "count_fp": 0.30,
+        "fill_count_fp": 0.30,
+    }
+
+    submitted = _market_observation(
+        "real",
+        decision,
+        order,
+        source="scheduler",
+        submit_order=True,
+    )
+    read_only = _market_observation(
+        "real",
+        {**decision, "action": "WAIT"},
+        source="browser_read_only",
+        submit_order=False,
+    )
+
+    assert submitted["order_result"]["order_id"] == "order-123"
+    assert submitted["observation_key"] != read_only["observation_key"]
+    assert ":order:" in submitted["observation_key"]
+    assert submitted["features"]["observation"] == {
+        "source": "scheduler",
+        "submitOrder": True,
+        "samplingPolicy": "order_event_unique",
+        "bucketSeconds": 0,
+        "hasOrderResult": True,
+    }
+    assert read_only["order_result"] is None
+
+
+def test_market_observation_retains_confirmation_transitions_at_five_seconds():
+    decision = {
+        "generatedAt": "2026-08-30T12:00:01Z",
+        "action": "WAIT",
+        "side": "YES",
+        "market": {"ticker": "KXBTC15M-CONFIRM", "secondsToClose": 400},
+        "entryConfirmation": {
+            "required": True,
+            "streak": 1,
+            "confirmed": False,
+        },
+        "entryShadow": {"champion": {"qualifyingFrame": True}},
+    }
+    first = _market_observation(
+        "real", decision, source="scheduler", submit_order=True,
+    )
+    confirmed = _market_observation(
+        "real",
+        {
+            **decision,
+            "generatedAt": "2026-08-30T12:00:04Z",
+            "entryConfirmation": {
+                "required": True,
+                "streak": 2,
+                "confirmed": True,
+            },
+        },
+        source="scheduler",
+        submit_order=True,
+    )
+
+    assert first["observation_key"] != confirmed["observation_key"]
+    assert ":confirmation:s1-c0:" in first["observation_key"]
+    assert ":confirmation:s2-c1:" in confirmed["observation_key"]
+    assert first["features"]["observation"]["bucketSeconds"] == 5
+    assert confirmed["features"]["observation"]["samplingPolicy"] == (
+        "entry_confirmation_5s"
+    )
+
+
+def test_market_observation_champion_frame_uses_five_second_bucket():
+    decision = {
+        "generatedAt": "2026-08-30T12:00:04Z",
+        "action": "WAIT",
+        "market": {"ticker": "KXBTC15M-CHAMP", "secondsToClose": 300},
+        "entryShadow": {"champion": {"qualifyingFrame": True}},
+    }
+    first = _market_observation(
+        "real", decision, source="scheduler", submit_order=True,
+    )
+    second = _market_observation(
+        "real",
+        {**decision, "generatedAt": "2026-08-30T12:00:06Z"},
+        source="scheduler",
+        submit_order=True,
+    )
+
+    assert first["observation_key"] != second["observation_key"]
+    assert ":champion:" in first["observation_key"]
+    assert first["features"]["observation"]["samplingPolicy"] == (
+        "champion_qualifying_5s"
+    )
 
 
 def test_live_settlement_keeps_dollars_and_converts_cent_revenue():
@@ -5686,6 +5836,204 @@ def test_entry_confirmation_uses_compact_durable_progress_after_refresh():
     assert confirmation["durableProgressUsed"] is True
 
 
+def test_pending_entry_confirmation_signature_only_marks_first_fresh_frame():
+    base = {
+        "decision": {
+            "generatedAt": "2026-08-30T12:00:00Z",
+            "action": "WAIT",
+            "side": "YES",
+            "market": {"ticker": "KXBTCD-E-T65000"},
+            "blockingReasons": ["entry_confirmation"],
+            "entryConfirmation": {
+                "required": True,
+                "requiredSnapshots": 2,
+                "streak": 1,
+                "confirmed": False,
+            },
+        },
+    }
+
+    signature = _pending_entry_confirmation_signature(
+        base,
+        "btchourly",
+    )
+    confirmed = copy.deepcopy(base)
+    confirmed["decision"]["entryConfirmation"].update({
+        "streak": 2,
+        "confirmed": True,
+    })
+
+    assert signature == "btchourly:KXBTCD-E-T65000:YES"
+    assert (
+        _pending_entry_confirmation_signature(confirmed, "btchourly")
+        is None
+    )
+    assert _pending_entry_confirmation_signature(base, "btc15m") is None
+
+
+def test_scheduler_prioritizes_one_fresh_hourly_confirmation_followup():
+    class State:
+        @staticmethod
+        def enabled_users():
+            return ["user-a"]
+
+        @staticmethod
+        def get(_user_id):
+            return {"config": {"executionMode": "real"}}
+
+    class TwoCycles:
+        calls = 0
+
+        def wait(self, _seconds):
+            self.calls += 1
+            return self.calls > 2
+
+    controller = _PaperRobotController(
+        object(),
+        State(),
+        object(),
+        safe_print=lambda *_args, **_kwargs: None,
+    )
+    calls = []
+    hourly_calls = 0
+
+    def tick(_user_id, *, family, **_kwargs):
+        nonlocal hourly_calls
+        calls.append(family)
+        if family != "btchourly":
+            return {"decision": {}}
+        hourly_calls += 1
+        pending = hourly_calls == 1
+        return {
+            "decision": {
+                "generatedAt": (
+                    f"2026-08-30T12:00:0{hourly_calls}Z"
+                ),
+                "action": "WAIT" if pending else "BUY_YES",
+                "side": "YES",
+                "market": {"ticker": "KXBTCD-E-T65000"},
+                "blockingReasons": (
+                    ["entry_confirmation"] if pending else []
+                ),
+                "entryConfirmation": {
+                    "required": True,
+                    "requiredSnapshots": 2,
+                    "streak": 1 if pending else 2,
+                    "confirmed": not pending,
+                },
+            },
+        }
+
+    controller.tick = tick
+    controller._record_loop_success = lambda *_args: None
+    controller._record_loop_failure = lambda *_args: None
+    controller._loop(stop_event=TwoCycles())
+
+    assert calls == ["btc15m", "btchourly", "btchourly", "btc15m"]
+
+
+def test_scheduler_defers_routine_hourly_scan_for_btc15_first_frame():
+    class State:
+        @staticmethod
+        def enabled_users():
+            return ["user-a"]
+
+        @staticmethod
+        def get(_user_id):
+            return {"config": {"executionMode": "real"}}
+
+    class OneCycle:
+        calls = 0
+
+        def wait(self, _seconds):
+            self.calls += 1
+            return self.calls > 1
+
+    controller = _PaperRobotController(
+        object(),
+        State(),
+        object(),
+        safe_print=lambda *_args, **_kwargs: None,
+    )
+    calls = []
+
+    def tick(_user_id, *, family, **_kwargs):
+        calls.append(family)
+        return {
+            "decision": {
+                "generatedAt": "2026-08-30T12:00:01Z",
+                "action": "WAIT",
+                "side": "NO",
+                "market": {"ticker": "KXBTC15M-PENDING"},
+                "blockingReasons": ["entry_confirmation"],
+                "entryConfirmation": {
+                    "required": True,
+                    "requiredSnapshots": 2,
+                    "streak": 1,
+                    "confirmed": False,
+                },
+            },
+        }
+
+    controller.tick = tick
+    controller._record_loop_success = lambda *_args: None
+    controller._record_loop_failure = lambda *_args: None
+    controller._loop(stop_event=OneCycle())
+
+    assert calls == ["btc15m"]
+
+
+def test_scheduler_never_starves_hourly_for_repeated_btc15_first_frame():
+    class State:
+        @staticmethod
+        def enabled_users():
+            return ["user-a"]
+
+        @staticmethod
+        def get(_user_id):
+            return {"config": {"executionMode": "real"}}
+
+    class TwoCycles:
+        calls = 0
+
+        def wait(self, _seconds):
+            self.calls += 1
+            return self.calls > 2
+
+    controller = _PaperRobotController(
+        object(),
+        State(),
+        object(),
+        safe_print=lambda *_args, **_kwargs: None,
+    )
+    calls = []
+
+    def tick(_user_id, *, family, **_kwargs):
+        calls.append(family)
+        return {
+            "decision": {
+                "generatedAt": "2026-08-30T12:00:01Z",
+                "action": "WAIT",
+                "side": "NO",
+                "market": {"ticker": "KXBTC15M-PENDING"},
+                "blockingReasons": ["entry_confirmation"],
+                "entryConfirmation": {
+                    "required": True,
+                    "requiredSnapshots": 2,
+                    "streak": 1,
+                    "confirmed": False,
+                },
+            },
+        }
+
+    controller.tick = tick
+    controller._record_loop_success = lambda *_args: None
+    controller._record_loop_failure = lambda *_args: None
+    controller._loop(stop_event=TwoCycles())
+
+    assert calls == ["btc15m", "btc15m", "btchourly"]
+
+
 def test_entry_confirmation_rejects_stale_or_changed_durable_progress():
     now = datetime.now(timezone.utc)
 
@@ -5978,6 +6326,137 @@ def test_real_preflight_uses_cent_rounded_fractional_cash_debit():
         )
 
     assert blocked.value.code == "kalshi_live_cash_changed"
+
+
+def test_fractional_ioc_uses_planned_worst_price_and_passes_live_preflight():
+    controller = _PaperRobotController(None, None, None)
+    ticker = "KXBTC15M-PLANNED-DEPTH"
+    decision = {
+        "action": "BUY_YES",
+        "side": "YES",
+        "edge": {
+            "price": 0.70,
+            # The engine's execution limit is the marginal price for the
+            # planned 0.51 contracts, not the farthest positive-edge level.
+            "executionLimitPrice": 0.70,
+            "feePerContract": 0.0147,
+            "netEdge": 0.10,
+            "conservativeEdge": 0.08,
+        },
+        "sizing": {"plannedContractsFp": 0.51},
+        "config": {
+            "executionMode": "real",
+            "takerFeeRate": 0.07,
+            "maxPortfolioExposurePct": 10.0,
+            "maxSingleMarketExposurePct": 2.0,
+        },
+    }
+    payload = _paper_order_payload(
+        decision,
+        ticker,
+        price_tolerance=0.01,
+    )
+    latest_state = {
+        "config": decision["config"],
+        "strategy": {},
+        "filledTrades": [],
+    }
+    account = {
+        # Synthetic $20 balance; it is not derived from an account.
+        "balance": {"balance": 2_000, "portfolio_value": 0},
+        "positions": [],
+        "orders": [],
+    }
+
+    assert payload["count"] == "0.51"
+    assert payload["user_side_reference_price"] == "0.7000"
+    assert payload["user_side_limit_price"] == "0.7000"
+    assert controller._validate_live_order_preflight(
+        latest_state,
+        account,
+        payload,
+        _live_order_payload(payload),
+        decision,
+    ) is None
+
+    # This is the old all-depth limit.  It proves the regression fixture is
+    # meaningful: the same quantity would be rejected by the 2% market cap.
+    old_wide_payload = {
+        **payload,
+        "price": "0.7900",
+        "user_side_limit_price": "0.7900",
+    }
+    with pytest.raises(KalshiApiError) as blocked:
+        controller._validate_live_order_preflight(
+            latest_state,
+            account,
+            old_wide_payload,
+            _live_order_payload(old_wide_payload),
+            decision,
+        )
+    assert blocked.value.code == "kalshi_live_exposure_changed"
+
+
+def test_fractional_ioc_exact_cap_uses_marginal_fee_not_top_quote_fee():
+    controller = _PaperRobotController(None, None, None)
+    ticker = "KXBTC15M-EXACT-CAP"
+    decision = {
+        "action": "BUY_YES",
+        "side": "YES",
+        "edge": {
+            "price": 0.72,
+            "executionLimitPrice": 0.75,
+            # At the favorite-side top quote this per-contract fee is
+            # slightly larger than the fee at the actual marginal limit.
+            # Preflight must not mix the two price bases.
+            "feePerContract": 0.0142,
+            "minimumConservativeEdge": 0.01,
+            "conservativeEdge": 0.08,
+            "netEdge": 0.10,
+        },
+        "sizing": {
+            "plannedContractsFp": 1.31,
+            "riskBudget": 1.00,
+            "maximumLoss": 1.00,
+        },
+        "config": {
+            "executionMode": "real",
+            "takerFeeRate": 0.07,
+            "maxPortfolioExposurePct": 10.0,
+            "maxSingleMarketExposurePct": 2.0,
+        },
+    }
+    payload = _paper_order_payload(
+        decision,
+        ticker,
+        price_tolerance=0.01,
+    )
+    latest_state = {
+        "config": decision["config"],
+        "strategy": {},
+        "filledTrades": [],
+    }
+    account = {
+        # Synthetic $50 balance: the 2% market cap is exactly $1.00.
+        "balance": {"balance": 5_000, "portfolio_value": 0},
+        "positions": [],
+        "orders": [],
+    }
+
+    assert payload["count"] == "1.31"
+    assert payload["user_side_reference_price"] == "0.7200"
+    assert payload["user_side_limit_price"] == "0.7500"
+    assert kalshi_api.kalshi_order_cost(0.75, 1.31, 0.07)[
+        "cashDebit"
+    ] == pytest.approx(1.00)
+    assert 1.31 * 0.75 + 1.31 * 0.0142 > 1.00
+    assert controller._validate_live_order_preflight(
+        latest_state,
+        account,
+        payload,
+        _live_order_payload(payload),
+        decision,
+    ) is None
 
 
 def test_real_preflight_accepts_authoritative_durable_entry_confirmation():
