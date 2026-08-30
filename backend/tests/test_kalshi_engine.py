@@ -373,6 +373,119 @@ def test_small_account_override_still_respects_two_percent_relative_loss_cap():
     assert result["sizing"]["microPositionLossCap"] == pytest.approx(0.25)
 
 
+def test_planned_fractional_order_uses_only_the_book_depth_it_needs():
+    now = datetime.now(timezone.utc)
+    candles, spot = _candles()
+    # Synthetic small-account fixture; it is not derived from an account.
+    bankroll = 20.00
+
+    result = evaluate_btc15_contract(
+        _early_market(
+            now,
+            floor_strike=64_500.0,
+            yes_bid_dollars="0.6800",
+            yes_ask_dollars="0.7000",
+            no_bid_dollars="0.3000",
+            no_ask_dollars="0.3200",
+        ),
+        spot_price=spot,
+        candles=candles,
+        now=now,
+        reference_time=now,
+        book_time=now,
+        config={
+            "executionMode": "real",
+            "maxBookParticipation": 0.10,
+        },
+        account_context={
+            "bankroll": bankroll,
+            "cashAvailable": bankroll,
+            "portfolioExposure": 0,
+            "currentMarketExposure": 0,
+        },
+        orderbook={
+            "yes": [[0.68, 10.0]],
+            # YES asks are 0.70 for 0.60 contracts, then 0.79.  The full
+            # positive-edge depth is 5.10, but a 10% participation order needs
+            # only the first 0.51 contracts.
+            "no": [[0.21, 4.50], [0.30, 0.60]],
+        },
+    )
+
+    market_cap = bankroll * 0.02
+    planned_cost = kalshi_order_cost(0.70, 0.51)
+    far_depth_cost = kalshi_order_cost(0.79, 0.51)
+
+    assert result["action"] == "BUY_YES"
+    assert result["blockingReasons"] == []
+    assert result["market"]["edgeEligibleDepth"] == pytest.approx(5.10)
+    assert result["sizing"]["plannedContractsFp"] == pytest.approx(0.51)
+    assert result["edge"]["price"] == pytest.approx(0.70)
+    assert result["edge"]["executionLimitPrice"] == pytest.approx(0.70)
+    assert far_depth_cost["cashDebit"] > market_cap
+    assert result["sizing"]["maximumLoss"] == pytest.approx(
+        planned_cost["cashDebit"]
+    )
+    assert result["sizing"]["maximumLoss"] <= result["sizing"]["riskBudget"]
+    assert result["sizing"]["maximumLoss"] <= bankroll
+    assert result["sizing"]["maximumLoss"] <= bankroll * 0.10
+    assert result["sizing"]["maximumLoss"] <= market_cap
+
+
+def test_fractional_sizing_steps_down_at_the_actual_worst_fill_price():
+    now = datetime.now(timezone.utc)
+    candles, spot = _candles()
+    # Synthetic small-account fixture; it is not derived from an account.
+    bankroll = 20.00
+
+    result = evaluate_btc15_contract(
+        _early_market(
+            now,
+            floor_strike=64_500.0,
+            yes_bid_dollars="0.6800",
+            yes_ask_dollars="0.7000",
+            no_bid_dollars="0.3000",
+            no_ask_dollars="0.3200",
+        ),
+        spot_price=spot,
+        candles=candles,
+        now=now,
+        reference_time=now,
+        book_time=now,
+        config={
+            "executionMode": "real",
+            "maxBookParticipation": 0.10,
+        },
+        account_context={
+            "bankroll": bankroll,
+            "cashAvailable": bankroll,
+            "portfolioExposure": 0,
+            "currentMarketExposure": 0,
+        },
+        orderbook={
+            "yes": [[0.68, 10.0]],
+            # Here 0.51 contracts must cross the second level, so its 0.79
+            # marginal price must drive the exact cent-rounded cap check.
+            "no": [[0.21, 4.80], [0.30, 0.30]],
+        },
+    )
+
+    assert result["action"] == "BUY_YES"
+    assert result["sizing"]["plannedContractsFp"] < 0.51
+    assert result["sizing"]["plannedContractsFp"] == pytest.approx(0.49)
+    assert result["edge"]["executionLimitPrice"] == pytest.approx(0.79)
+    exact_cost = kalshi_order_cost(
+        result["edge"]["executionLimitPrice"],
+        result["sizing"]["plannedContractsFp"],
+    )
+    assert result["sizing"]["maximumLoss"] == pytest.approx(
+        exact_cost["cashDebit"]
+    )
+    assert exact_cost["cashDebit"] <= bankroll * 0.02
+    # The next 0.01 contract step would breach the same synthetic cap.
+    assert kalshi_order_cost(0.79, 0.50)["cashDebit"] > bankroll * 0.02
+
+
 @pytest.mark.parametrize(
     ("account_context", "expected_blocker"),
     [

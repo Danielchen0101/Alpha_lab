@@ -1146,21 +1146,105 @@ def _market_observation(
     environment: str,
     decision: Mapping[str, Any],
     order: Optional[Mapping[str, Any]] = None,
+    *,
+    source: Optional[str] = None,
+    submit_order: bool = False,
 ) -> Optional[Dict[str, Any]]:
-    """Build a compact, idempotent 15-second research sample."""
+    """Build a compact research sample without erasing routing evidence.
+
+    Routine WAIT decisions remain bounded to one sample per 15-second bucket.
+    Routing and read-only callers use separate identities, while confirmation
+    transitions and champion frames retain five-second resolution.  An order
+    result receives an order-identity key so a later read-only refresh cannot
+    replace the only persisted execution record from that cycle.
+    """
     market = dict(decision.get("market") or {})
     ticker = str(market.get("ticker") or "").strip()
     if not ticker:
         return None
     observed = _parse_utc(decision.get("generatedAt")) or datetime.now(timezone.utc)
-    bucket_epoch = int(observed.timestamp()) // 15 * 15
+    normalized_source = re.sub(
+        r"[^a-z0-9_-]+",
+        "_",
+        str(
+            source
+            or ("scheduler" if submit_order else "browser_read_only")
+        ).strip().lower(),
+    ).strip("_")[:40]
+    if not normalized_source:
+        normalized_source = (
+            "scheduler" if submit_order else "browser_read_only"
+        )
+    confirmation = dict(decision.get("entryConfirmation") or {})
+    champion = dict(
+        (decision.get("entryShadow") or {}).get("champion") or {}
+    )
+    confirmation_transition = bool(
+        confirmation
+        and (
+            confirmation.get("required") is True
+            or confirmation.get("confirmed") is True
+            or int(_finite_number(confirmation.get("streak"), 0.0)) > 0
+        )
+    )
+    champion_qualifying = champion.get("qualifyingFrame") is True
+    observation_policy = "routine_15s"
+    bucket_seconds = 15
+    bucket_epoch = int(observed.timestamp()) // bucket_seconds * bucket_seconds
+    if order:
+        order_identity = str(
+            order.get("order_id")
+            or order.get("client_order_id")
+            or order.get("fill_id")
+            or ""
+        ).strip()
+        if not order_identity:
+            order_identity = "|".join((
+                observed.isoformat(),
+                str(decision.get("action") or ""),
+                str(order.get("action") or ""),
+                str(order.get("outcome_side") or ""),
+                str(order.get("count_fp") or ""),
+                str(order.get("fill_count_fp") or ""),
+            ))
+        event_token = hashlib.sha256(
+            order_identity.encode("utf-8")
+        ).hexdigest()[:20]
+        observation_key = (
+            f"{ticker}:{normalized_source}:order:{event_token}"
+        )
+        observation_policy = "order_event_unique"
+        bucket_seconds = 0
+    elif confirmation_transition:
+        bucket_seconds = 5
+        bucket_epoch = int(observed.timestamp()) // bucket_seconds * bucket_seconds
+        transition = (
+            f"s{int(_finite_number(confirmation.get('streak'), 0.0))}"
+            f"-c{int(confirmation.get('confirmed') is True)}"
+        )
+        observation_key = (
+            f"{ticker}:{normalized_source}:confirmation:"
+            f"{transition}:{bucket_epoch}"
+        )
+        observation_policy = "entry_confirmation_5s"
+    elif champion_qualifying:
+        bucket_seconds = 5
+        bucket_epoch = int(observed.timestamp()) // bucket_seconds * bucket_seconds
+        observation_key = (
+            f"{ticker}:{normalized_source}:champion:{bucket_epoch}"
+        )
+        observation_policy = "champion_qualifying_5s"
+    else:
+        observation_key = (
+            f"{ticker}:{normalized_source}:routine:{bucket_epoch}"
+        )
     model = dict(decision.get("model") or {})
     edge = dict(decision.get("edge") or {})
     account = dict(decision.get("account") or {})
     return {
         "environment": _execution_mode(environment),
         "ticker": ticker,
-        "observation_key": f"{ticker}:{bucket_epoch}",
+        "observation_key": observation_key,
         "observed_at": observed.isoformat().replace("+00:00", "Z"),
         "action": str(decision.get("action") or "WAIT"),
         "side": decision.get("side"),
@@ -1178,6 +1262,13 @@ def _market_observation(
             str(reason)[:80] for reason in (decision.get("blockingReasons") or [])[:20]
         ],
         "features": {
+            "observation": {
+                "source": normalized_source,
+                "submitOrder": bool(submit_order),
+                "samplingPolicy": observation_policy,
+                "bucketSeconds": bucket_seconds,
+                "hasOrderResult": bool(order),
+            },
             "market": {
                 key: market.get(key)
                 for key in (
@@ -1986,6 +2077,41 @@ def _entry_confirmation(
         "ticker": normalized_ticker,
         "side": normalized_side,
     }
+
+
+def _pending_entry_confirmation_signature(
+    result: Mapping[str, Any],
+    family: str,
+) -> Optional[str]:
+    """Return a stable signature for a fresh first confirmation frame.
+
+    The public-market and account work performed by one scheduler cycle can
+    take longer than the strategy's 25-second confirmation horizon.  The
+    scheduler uses this compact signal to prioritize one fresh follow-up for
+    the same family; it does not waive or extend the confirmation gate.
+    """
+    decision = dict((result or {}).get("decision") or {})
+    confirmation = dict(decision.get("entryConfirmation") or {})
+    market = dict(decision.get("market") or {})
+    ticker = str(market.get("ticker") or "").strip()
+    side = str(decision.get("side") or "").upper()
+    normalized_family = (
+        "btchourly" if str(family).lower() == "btchourly" else "btc15m"
+    )
+    if (
+        _market_family(ticker) != normalized_family
+        or side not in {"YES", "NO"}
+        or confirmation.get("required") is not True
+        or confirmation.get("confirmed") is True
+        or int(_finite_number(confirmation.get("streak"), 0.0)) != 1
+        or "entry_confirmation"
+        not in {
+            str(reason)
+            for reason in (decision.get("blockingReasons") or [])
+        }
+    ):
+        return None
+    return f"{normalized_family}:{ticker}:{side}"
 
 
 def _hourly_candidate_diagnostic(
@@ -4635,6 +4761,12 @@ class _PaperRobotController:
         self._historical_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self._historical_cache_lock = threading.RLock()
         self._last_hourly_tick: Dict[str, float] = {}
+        # A first qualifying hourly frame receives exactly one prioritized
+        # follow-up on the next five-second scheduler cycle.  This keeps the
+        # existing two-frame/25-second policy executable without turning a
+        # wider, historically weaker confirmation window into live policy.
+        self._hourly_confirmation_followups: Dict[str, str] = {}
+        self._btc15_confirmation_deferrals: Dict[str, str] = {}
         self._loop_error_counts: Dict[str, int] = {}
         self._loop_alerted: set[str] = set()
         self._market_standby: Dict[str, Dict[str, str]] = {}
@@ -6265,14 +6397,6 @@ class _PaperRobotController:
                 status=409,
                 code="kalshi_live_cash_changed",
             )
-        decision_fee_per_contract = max(
-            0.0,
-            _finite_number(
-                (decision.get("edge") or {}).get("feePerContract"),
-                0.0,
-            ),
-        )
-        requested_exposure = requested_count * user_price
         taker_fee_rate = _finite_number(
             (decision.get("config") or {}).get("takerFeeRate"),
             _finite_number(config.get("takerFeeRate"), 0.07),
@@ -6282,13 +6406,13 @@ class _PaperRobotController:
             requested_count,
             taker_fee_rate,
         )
-        conservative_fee = max(
-            requested_count * decision_fee_per_contract,
-            _finite_number(rounded_order_cost.get("allInFee"), 0.0),
-        )
-        required_cash = max(
-            _finite_number(rounded_order_cost.get("cashDebit"), 0.0),
-            requested_exposure + conservative_fee,
+        # The engine and final preflight must use exactly the same worst-fill
+        # price, quantity, fee coefficient, and cent rounding.  Mixing the
+        # top-quote per-contract fee into this marginal-limit calculation can
+        # add a fractional cent and reject an otherwise exact-cap order.
+        required_cash = _finite_number(
+            rounded_order_cost.get("cashDebit"),
+            0.0,
         )
         if required_cash > cash_dollars + 1e-9:
             raise KalshiApiError(
@@ -6901,7 +7025,11 @@ class _PaperRobotController:
                 }
         decision = dict(decision)
         decision["marketFamily"] = family
-        decision["engine"] = "btchourly-strike-ladder-v3" if family == "btchourly" else "btc15_settlement_aligned_v10"
+        decision["engine"] = (
+            "btchourly-strike-ladder-v4"
+            if family == "btchourly"
+            else "btc15_settlement_aligned_v11"
+        )
         decision["outcomeCalibrationPolicy"] = "btc_walk_forward_live_v10"
         if family == "btc15m":
             decision["entryShadow"] = {
@@ -7823,7 +7951,15 @@ class _PaperRobotController:
             if submit_order
             else robot_state
         )
-        observation = _market_observation(environment, decision, order)
+        observation = _market_observation(
+            environment,
+            decision,
+            order,
+            source=(
+                "scheduler" if submit_order else "browser_read_only"
+            ),
+            submit_order=submit_order,
+        )
         if observation and callable(self.observation_saver):
             try:
                 self.observation_saver(user_id, observation)
@@ -8201,19 +8337,30 @@ class _PaperRobotController:
                 try:
                     state = self.state.get(user_id)
                     mode = _execution_mode((state.get("config") or {}).get("executionMode"))
-                    self.tick(user_id, submit_order=True, mode=mode, family="btc15m")
-                    self._record_loop_success(user_id, "btc15m", mode)
-                    now_monotonic = time.monotonic()
-                    if (
-                        now_monotonic - self._last_hourly_tick.get(str(user_id), 0.0)
-                        >= KALSHI_HOURLY_LOOP_INTERVAL_SECONDS
-                    ):
-                        next_hourly_tick_base = now_monotonic
+                    user_key = str(user_id)
+
+                    def run_hourly_cycle():
+                        next_hourly_tick_base = time.monotonic()
+                        result = None
                         try:
-                            self.tick(user_id, submit_order=True, mode=mode, family="btchourly")
-                            self._record_loop_success(user_id, "btchourly", mode)
+                            result = self.tick(
+                                user_id,
+                                submit_order=True,
+                                mode=mode,
+                                family="btchourly",
+                            )
+                            self._record_loop_success(
+                                user_id,
+                                "btchourly",
+                                mode,
+                            )
                         except Exception as exc:
-                            self._record_loop_failure(user_id, "btchourly", mode, exc)
+                            self._record_loop_failure(
+                                user_id,
+                                "btchourly",
+                                mode,
+                                exc,
+                            )
                             if (
                                 isinstance(exc, KalshiApiError)
                                 and exc.code == KALSHI_PUBLIC_RATE_LIMITED
@@ -8223,7 +8370,72 @@ class _PaperRobotController:
                                     - KALSHI_HOURLY_LOOP_INTERVAL_SECONDS
                                 )
                         finally:
-                            self._last_hourly_tick[str(user_id)] = next_hourly_tick_base
+                            self._last_hourly_tick[user_key] = (
+                                next_hourly_tick_base
+                            )
+                        return result
+
+                    # An hourly first frame from the previous loop is evaluated
+                    # before routine work so the second frame can be genuinely
+                    # fresh and still land inside the unchanged 25-second gate.
+                    hourly_ran = False
+                    if self._hourly_confirmation_followups.pop(
+                        user_key,
+                        None,
+                    ):
+                        run_hourly_cycle()
+                        hourly_ran = True
+
+                    btc15_result = self.tick(
+                        user_id,
+                        submit_order=True,
+                        mode=mode,
+                        family="btc15m",
+                    )
+                    self._record_loop_success(user_id, "btc15m", mode)
+                    btc15_signature = (
+                        _pending_entry_confirmation_signature(
+                            btc15_result,
+                            "btc15m",
+                        )
+                    )
+                    # Defer the slower hourly ladder exactly once for a new
+                    # BTC15 ticker/side first frame. If that same signal still
+                    # cannot confirm on the next cycle, hourly resumes instead
+                    # of being starved indefinitely.
+                    btc15_defer_hourly = bool(
+                        btc15_signature
+                        and self._btc15_confirmation_deferrals.get(user_key)
+                        != btc15_signature
+                    )
+                    if btc15_signature:
+                        self._btc15_confirmation_deferrals[user_key] = (
+                            btc15_signature
+                        )
+                    else:
+                        self._btc15_confirmation_deferrals.pop(
+                            user_key,
+                            None,
+                        )
+                    now_monotonic = time.monotonic()
+                    if (
+                        not hourly_ran
+                        and not btc15_defer_hourly
+                        and now_monotonic
+                        - self._last_hourly_tick.get(user_key, 0.0)
+                        >= KALSHI_HOURLY_LOOP_INTERVAL_SECONDS
+                    ):
+                        hourly_result = run_hourly_cycle()
+                        hourly_signature = (
+                            _pending_entry_confirmation_signature(
+                                hourly_result or {},
+                                "btchourly",
+                            )
+                        )
+                        if hourly_signature:
+                            self._hourly_confirmation_followups[
+                                user_key
+                            ] = hourly_signature
                 except Exception as exc:
                     self._record_loop_failure(user_id, "btc15m", mode, exc)
 

@@ -298,6 +298,146 @@ def test_kalshi_routine_wait_observations_are_sampled_across_buckets(monkeypatch
             backend._KALSHI_PERSISTENCE_TRAFFIC.update(original_stats)
 
 
+def test_kalshi_material_observations_preserve_source_and_confirmation_lineage(
+    monkeypatch,
+):
+    class Store:
+        def __init__(self):
+            self.rows = []
+
+        def put_kalshi_observation(self, user_id, observation):
+            row = {'user_id': user_id, **dict(observation)}
+            self.rows.append(row)
+            return row
+
+    store = Store()
+    clock = {'now': 1000.0}
+    monkeypatch.setattr(backend, 'operations_store', store)
+    monkeypatch.setattr(backend.time, 'monotonic', lambda: clock['now'])
+    with backend._KALSHI_PERSISTENCE_TRAFFIC_LOCK:
+        original_cache = dict(backend._KALSHI_OBSERVATION_WRITE_CACHE)
+        original_state_cache = dict(backend._KALSHI_OBSERVATION_STATE_CACHE)
+        original_stats = dict(backend._KALSHI_PERSISTENCE_TRAFFIC)
+        backend._KALSHI_OBSERVATION_WRITE_CACHE.clear()
+        backend._KALSHI_OBSERVATION_STATE_CACHE.clear()
+
+    def observation(
+        key,
+        source,
+        policy='routine_15s',
+        confirmation=None,
+        champion=False,
+    ):
+        return {
+            'environment': 'real',
+            'ticker': 'KXBTC15M-LINEAGE',
+            'observation_key': key,
+            'observed_at': '2026-08-30T12:00:00Z',
+            'action': 'WAIT',
+            'side': 'YES',
+            'execution_intent': 'WAIT_ENTRY_CONFIRMATION',
+            'blocked_reasons': ['entry_confirmation'],
+            'features': {
+                'observation': {
+                    'source': source,
+                    'samplingPolicy': policy,
+                },
+                'entryConfirmation': dict(confirmation or {}),
+                'entryShadow': {
+                    'champion': {'qualifyingFrame': champion},
+                },
+            },
+            'order_result': None,
+        }
+
+    try:
+        browser = observation(
+            'KXBTC15M-LINEAGE:browser:routine:1000',
+            'browser_read_only',
+        )
+        scheduler = observation(
+            'KXBTC15M-LINEAGE:scheduler:routine:1000',
+            'scheduler',
+        )
+        first_frame = observation(
+            'KXBTC15M-LINEAGE:scheduler:confirmation:s1-c0:1000',
+            'scheduler',
+            policy='entry_confirmation_5s',
+            confirmation={
+                'required': True,
+                'requiredSnapshots': 2,
+                'streak': 1,
+                'confirmed': False,
+                'ticker': 'KXBTC15M-LINEAGE',
+                'side': 'YES',
+            },
+            champion=True,
+        )
+        first_frame_next_bucket = {
+            **first_frame,
+            'observation_key': (
+                'KXBTC15M-LINEAGE:scheduler:confirmation:s1-c0:1005'
+            ),
+        }
+        confirmed_frame = observation(
+            'KXBTC15M-LINEAGE:scheduler:confirmation:s2-c1:1010',
+            'scheduler',
+            policy='entry_confirmation_5s',
+            confirmation={
+                'required': True,
+                'requiredSnapshots': 2,
+                'streak': 2,
+                'confirmed': True,
+                'ticker': 'KXBTC15M-LINEAGE',
+                'side': 'YES',
+                'durableProgressUsed': True,
+            },
+            champion=True,
+        )
+        champion_frame = observation(
+            'KXBTC15M-LINEAGE:scheduler:champion:1015',
+            'scheduler',
+            policy='champion_qualifying_5s',
+            champion=True,
+        )
+
+        backend._kalshi_save_observation('user-a', browser)
+        backend._kalshi_save_observation('user-a', scheduler)
+        backend._kalshi_save_observation('user-a', first_frame)
+        backend._kalshi_save_observation('user-a', first_frame_next_bucket)
+        backend._kalshi_save_observation('user-a', confirmed_frame)
+        backend._kalshi_save_observation('user-a', champion_frame)
+        duplicate = backend._kalshi_save_observation(
+            'user-a',
+            dict(first_frame_next_bucket),
+        )
+
+        assert duplicate['persistenceDeduplicated'] is True
+        assert len(store.rows) == 6
+        assert {
+            row['features']['observation']['source']
+            for row in store.rows[:2]
+        } == {'browser_read_only', 'scheduler'}
+        assert [
+            row['features']['entryConfirmation'].get('streak')
+            for row in store.rows[2:5]
+        ] == [1, 1, 2]
+        assert (
+            store.rows[-1]['features']['entryShadow']['champion'][
+                'qualifyingFrame'
+            ]
+            is True
+        )
+    finally:
+        with backend._KALSHI_PERSISTENCE_TRAFFIC_LOCK:
+            backend._KALSHI_OBSERVATION_WRITE_CACHE.clear()
+            backend._KALSHI_OBSERVATION_WRITE_CACHE.update(original_cache)
+            backend._KALSHI_OBSERVATION_STATE_CACHE.clear()
+            backend._KALSHI_OBSERVATION_STATE_CACHE.update(original_state_cache)
+            backend._KALSHI_PERSISTENCE_TRAFFIC.clear()
+            backend._KALSHI_PERSISTENCE_TRAFFIC.update(original_stats)
+
+
 def test_short_topic_keywords_do_not_match_inside_unrelated_words():
     enriched = _market_intelligence_enrich_news({
         'headline': 'Markets shrug off political turmoil',

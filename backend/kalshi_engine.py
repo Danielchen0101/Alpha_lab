@@ -467,6 +467,33 @@ def _book_levels(raw: Any) -> List[Tuple[float, float]]:
     return sorted(levels, key=lambda level: level[0])
 
 
+def _worst_fill_price(
+    levels: Sequence[Tuple[float, float]],
+    contracts: float,
+) -> Optional[float]:
+    """Return the highest price needed to fill ``contracts`` from asks.
+
+    ``eligible_levels`` can contain substantially more depth than an order is
+    allowed to consume.  Using the last eligible level as the IOC limit makes
+    a small order look more expensive to the final account preflight than it
+    was to sizing.  Walk only the depth the planned quantity actually needs so
+    sizing, reported economics, and the routed limit share one price basis.
+    """
+    remaining = max(0.0, float(contracts))
+    if remaining <= 1e-12:
+        return None
+    worst_price: Optional[float] = None
+    for price, size in sorted(levels, key=lambda level: level[0]):
+        available = max(0.0, float(size))
+        if available <= 0.0:
+            continue
+        worst_price = float(price)
+        remaining -= min(remaining, available)
+        if remaining <= 1e-9:
+            return worst_price
+    return None
+
+
 def _age_seconds(value: Any, now: datetime) -> Optional[float]:
     parsed = _parse_time(value)
     if parsed is None:
@@ -1055,7 +1082,9 @@ def evaluate_btc15_contract(
             ):
                 eligible_levels.append((price, size))
         edge_eligible_depth = sum(size for _, size in eligible_levels)
-        execution_limit_price = max((price for price, _ in eligible_levels), default=selected_price)
+        # The actual execution limit is assigned after sizing.  The farthest
+        # positive-edge level is not necessarily touched by the planned order.
+        execution_limit_price = selected_price
     depth_ok = edge_eligible_depth >= settings["minDepthContracts"]
     edge_ok = net_edge is not None and net_edge >= effective_min_net_edge
     conservative_edge_ok = (
@@ -1361,8 +1390,18 @@ def evaluate_btc15_contract(
             max_loss_budget,
         )
         while contracts > 0.0:
+            candidate_execution_price = _worst_fill_price(
+                eligible_levels,
+                contracts,
+            )
+            if candidate_execution_price is None:
+                contracts = _floor_contracts(
+                    contracts - contract_step,
+                    contract_step,
+                )
+                continue
             candidate_cost = kalshi_order_cost(
-                selected_price,
+                candidate_execution_price,
                 contracts,
                 settings["takerFeeRate"],
             )
@@ -1410,6 +1449,14 @@ def evaluate_btc15_contract(
             and contracts < minimum_economic_contracts
         ):
             contracts = 0.0
+        execution_limit_price = (
+            _worst_fill_price(eligible_levels, contracts)
+            if contracts > 0.0
+            else selected_price
+        )
+        if contracts > 0.0 and execution_limit_price is None:
+            contracts = 0.0
+            execution_limit_price = selected_price
         planned_contracts_fp = contracts
         if contracts <= 0:
             blocking.append("position_size")
@@ -1427,7 +1474,7 @@ def evaluate_btc15_contract(
             ))
         else:
             order_cost = kalshi_order_cost(
-                selected_price,
+                execution_limit_price,
                 contracts,
                 settings["takerFeeRate"],
             )
@@ -1435,7 +1482,7 @@ def evaluate_btc15_contract(
             rounding_fee = order_cost["roundingFee"]
             estimated_fee = order_cost["allInFee"]
             max_loss = order_cost["cashDebit"]
-            gross_potential_profit = contracts * (1.0 - selected_price)
+            gross_potential_profit = contracts * (1.0 - execution_limit_price)
             fee_to_potential_profit_pct = (
                 estimated_fee / gross_potential_profit * 100.0
                 if gross_potential_profit > 1e-12
@@ -1448,7 +1495,7 @@ def evaluate_btc15_contract(
             )
             expected_value = expected_win_profit - expected_loss
             planned_recovery = _recovery_profile(
-                selected_price,
+                execution_limit_price,
                 settings,
                 contracts,
             )
@@ -1503,7 +1550,7 @@ def evaluate_btc15_contract(
     distance_bps = ((spot / strike) - 1.0) * 10_000.0 if spot and strike else None
     is_real_execution = settings.get("executionMode") == "real"
     return {
-        "engine": "btc15_settlement_aligned_v8",
+        "engine": "btc15_settlement_aligned_v11",
         "generatedAt": _iso(now),
         "paperOnly": not is_real_execution,
         "executionEnvironment": "kalshi_real" if is_real_execution else "alphalab_paper",

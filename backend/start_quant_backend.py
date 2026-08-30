@@ -56311,6 +56311,37 @@ def _kalshi_enabled_users():
 
 def _kalshi_save_observation(user_id, observation):
     row = dict(observation)
+    features = (
+        dict(row.get('features') or {})
+        if isinstance(row.get('features'), dict)
+        else {}
+    )
+    observation_meta = (
+        dict(features.get('observation') or {})
+        if isinstance(features.get('observation'), dict)
+        else {}
+    )
+    entry_confirmation = (
+        dict(features.get('entryConfirmation') or {})
+        if isinstance(features.get('entryConfirmation'), dict)
+        else {}
+    )
+    entry_shadow = (
+        dict(features.get('entryShadow') or {})
+        if isinstance(features.get('entryShadow'), dict)
+        else {}
+    )
+    champion = (
+        dict(entry_shadow.get('champion') or {})
+        if isinstance(entry_shadow.get('champion'), dict)
+        else {}
+    )
+    observation_source = str(
+        observation_meta.get('source') or 'legacy'
+    )[:40]
+    sampling_policy = str(
+        observation_meta.get('samplingPolicy') or 'legacy'
+    )[:40]
     cache_key = '{}:{}:{}'.format(
         str(user_id),
         str(row.get('environment') or ''),
@@ -56322,16 +56353,37 @@ def _kalshi_save_observation(user_id, observation):
         'executionIntent': row.get('execution_intent'),
         'blockedReasons': list(row.get('blocked_reasons') or []),
         'orderResult': row.get('order_result'),
+        'observationSource': observation_source,
+        'samplingPolicy': sampling_policy,
+        'entryConfirmation': {
+            key: entry_confirmation.get(key)
+            for key in (
+                'required', 'requiredSnapshots', 'streak', 'confirmed',
+                'ticker', 'side', 'durableProgressUsed',
+            )
+        },
+        'championQualifyingFrame': champion.get('qualifyingFrame'),
     }, sort_keys=True, separators=(',', ':'), default=str)
-    state_key = '{}:{}:{}'.format(
+    state_key = '{}:{}:{}:{}:{}'.format(
         str(user_id),
         str(row.get('environment') or ''),
         str(row.get('ticker') or ''),
+        observation_source,
+        sampling_policy,
     )
     now_monotonic = time.monotonic()
     force_material_write = bool(
         row.get('order_result')
         or str(row.get('action') or 'WAIT').upper() not in ('WAIT', 'NO_ACTION', 'HOLD')
+        or sampling_policy in (
+            'entry_confirmation_5s',
+            'champion_qualifying_5s',
+            'order_event_unique',
+        )
+        or entry_confirmation.get('required') is True
+        or entry_confirmation.get('confirmed') is True
+        or int(entry_confirmation.get('streak') or 0) > 0
+        or champion.get('qualifyingFrame') is True
     )
     with _KALSHI_PERSISTENCE_TRAFFIC_LOCK:
         _KALSHI_PERSISTENCE_TRAFFIC['observationAttempts'] += 1
