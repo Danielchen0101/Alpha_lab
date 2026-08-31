@@ -92,6 +92,11 @@ KALSHI_ENVIRONMENTS = {
 KALSHI_ROUTING_LEASE_TTL_SECONDS = 30
 KALSHI_ROUTING_LEASE_TIMEOUT_SECONDS = 5.0
 KALSHI_REAL_ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS = 30.0
+KALSHI_LIVE_MARKET_STATE_CONFLICTS = frozenset({
+    "kalshi_market_not_found",
+    "kalshi_market_inactive",
+    "kalshi_market_already_closed",
+})
 KALSHI_LIVE_ROUTING_STATE_CONFLICTS = frozenset({
     "kalshi_live_cash_changed",
     "kalshi_live_exposure_changed",
@@ -102,7 +107,7 @@ KALSHI_LIVE_ROUTING_STATE_CONFLICTS = frozenset({
     "kalshi_reversal_cooldown_active",
     "kalshi_reentry_confirmation_required",
     "kalshi_entry_confirmation_required",
-})
+}) | KALSHI_LIVE_MARKET_STATE_CONFLICTS
 RETIRED_KALSHI_BLOCKING_REASONS = frozenset({
     "daily_loss_limit",
 })
@@ -660,6 +665,34 @@ def _kalshi_response_error_detail(response: Any) -> str:
         except Exception:
             detail = ""
     return " ".join(detail.split())[:240]
+
+
+def _kalshi_response_error_code(response: Any) -> str:
+    """Extract Kalshi's stable nested error code for safe classification."""
+    if response is None:
+        return ""
+    try:
+        payload = response.json() if hasattr(response, "json") else response
+    except Exception:
+        return ""
+
+    def code(value: Any) -> str:
+        if isinstance(value, Mapping):
+            direct = str(value.get("code") or "").strip()
+            if direct:
+                return direct
+            for nested_key in ("error", "errors"):
+                nested = code(value.get(nested_key))
+                if nested:
+                    return nested
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                nested = code(item)
+                if nested:
+                    return nested
+        return ""
+
+    return code(payload).lower()
 
 
 def _finite_number(value: Any, default: float = 0.0) -> float:
@@ -2746,6 +2779,7 @@ def _paper_order_payload(
     count_override: Optional[float] = None,
     price_tolerance: float = 0.0,
     client_order_id: Optional[str] = None,
+    exchange_index: Optional[Any] = None,
 ) -> Optional[Dict[str, Any]]:
     """Translate a cleared engine decision into Kalshi's V2 YES-book shape."""
     action = str(decision.get("action") or "")
@@ -2790,6 +2824,12 @@ def _paper_order_payload(
     yes_book_price = execution_price if side == "YES" else 1.0 - execution_price
     if not str(ticker or "").strip() or not 0.0 < yes_book_price < 1.0:
         return None
+    try:
+        authoritative_exchange_index = int(exchange_index)
+    except (TypeError, ValueError):
+        authoritative_exchange_index = -1
+    if authoritative_exchange_index < 0:
+        authoritative_exchange_index = -1
     return {
         "ticker": str(ticker),
         "client_order_id": str(client_order_id or uuid.uuid4()),
@@ -2805,7 +2845,11 @@ def _paper_order_payload(
         "cancel_order_on_pause": True,
         "reduce_only": bool(is_sell),
         "subaccount": 0,
-        "exchange_index": 0,
+        # Crypto markets created after Kalshi's August 2026 exchange-sharding
+        # rollout no longer live on shard 0. Use the public market's
+        # authoritative shard when present; ``-1`` is Kalshi's documented
+        # ticker-based auto-route fallback for older/missing market metadata.
+        "exchange_index": authoritative_exchange_index,
     }
 
 
@@ -7811,6 +7855,9 @@ class _PaperRobotController:
                     str(decision.get("side") or ""),
                     held_count,
                 ),
+                exchange_index=(
+                    (snapshot.get("market") or {}).get("exchange_index")
+                ),
             )
             if order_payload:
                 side = str(decision.get("side") or "").upper()
@@ -7828,78 +7875,86 @@ class _PaperRobotController:
                             decision,
                         )
                     except KalshiApiError as exc:
-                        if (
-                            exc.status != 409
-                            or exc.code
-                            not in KALSHI_LIVE_ROUTING_STATE_CONFLICTS
-                        ):
+                        if exc.code not in KALSHI_LIVE_ROUTING_STATE_CONFLICTS:
                             raise
-                        # A fresh final account read can legitimately differ
-                        # from the evaluation snapshot. Treat that as a
-                        # fail-closed WAIT decision, persist it, and let the
-                        # next five-second cycle recalculate from a newly
-                        # fetched portfolio instead of poisoning scheduler
-                        # health and leaving the last good snapshot to expire.
-                        try:
-                            portfolio = self.portfolio(
-                                user_id,
-                                mode=execution_mode,
-                                mutate=True,
-                            )
-                            refreshed_context = _paper_account_context(
-                                portfolio,
-                                robot_state,
-                                ticker,
-                                bankroll,
-                                event_ticker=(
-                                    str(snapshot.get("eventTicker") or "")
-                                    if family == "btchourly"
-                                    else None
-                                ),
-                            )
-                            decision["account"] = {
-                                **dict(decision.get("account") or {}),
-                                "cashAvailable": refreshed_context.get(
-                                    "cashAvailable"
-                                ),
-                                "portfolioExposure": refreshed_context.get(
-                                    "portfolioExposure"
-                                ),
-                                "currentMarketExposure": refreshed_context.get(
-                                    "currentMarketExposure"
-                                ),
-                                "currentTickerExposure": refreshed_context.get(
-                                    "currentTickerExposure"
-                                ),
-                                "currentEventExposure": refreshed_context.get(
-                                    "currentEventExposure"
-                                ),
-                                "hasOpenOrder": refreshed_context.get(
-                                    "hasOpenOrder"
-                                ),
-                                "openOrderTickers": refreshed_context.get(
-                                    "openOrderTickers"
-                                ),
-                            }
-                        except Exception as refresh_exc:
-                            self.safe_print(
-                                "[KalshiReal] conflict portfolio refresh failed "
-                                f"user={user_id} "
-                                f"error={type(refresh_exc).__name__}"
-                            )
+                        market_state_conflict = (
+                            exc.code in KALSHI_LIVE_MARKET_STATE_CONFLICTS
+                        )
+                        # Final account state or the matching-engine market
+                        # route can legitimately differ from the evaluation
+                        # snapshot. Persist a fail-closed WAIT so the next
+                        # cycle recalculates from fresh inputs instead of
+                        # poisoning scheduler health. Account conflicts also
+                        # refresh the portfolio immediately; market conflicts
+                        # avoid that unrelated extra account traffic.
+                        if not market_state_conflict:
+                            try:
+                                portfolio = self.portfolio(
+                                    user_id,
+                                    mode=execution_mode,
+                                    mutate=True,
+                                )
+                                refreshed_context = _paper_account_context(
+                                    portfolio,
+                                    robot_state,
+                                    ticker,
+                                    bankroll,
+                                    event_ticker=(
+                                        str(snapshot.get("eventTicker") or "")
+                                        if family == "btchourly"
+                                        else None
+                                    ),
+                                )
+                                decision["account"] = {
+                                    **dict(decision.get("account") or {}),
+                                    "cashAvailable": refreshed_context.get(
+                                        "cashAvailable"
+                                    ),
+                                    "portfolioExposure": refreshed_context.get(
+                                        "portfolioExposure"
+                                    ),
+                                    "currentMarketExposure": refreshed_context.get(
+                                        "currentMarketExposure"
+                                    ),
+                                    "currentTickerExposure": refreshed_context.get(
+                                        "currentTickerExposure"
+                                    ),
+                                    "currentEventExposure": refreshed_context.get(
+                                        "currentEventExposure"
+                                    ),
+                                    "hasOpenOrder": refreshed_context.get(
+                                        "hasOpenOrder"
+                                    ),
+                                    "openOrderTickers": refreshed_context.get(
+                                        "openOrderTickers"
+                                    ),
+                                }
+                            except Exception as refresh_exc:
+                                self.safe_print(
+                                    "[KalshiReal] conflict portfolio refresh failed "
+                                    f"user={user_id} "
+                                    f"error={type(refresh_exc).__name__}"
+                                )
                         intended_action = str(
                             decision.get("action") or ""
                         )
                         decision["action"] = "WAIT"
                         decision["executionIntent"] = (
-                            "WAIT_LIVE_ACCOUNT_REFRESH"
+                            "WAIT_LIVE_MARKET_REFRESH"
+                            if market_state_conflict
+                            else "WAIT_LIVE_ACCOUNT_REFRESH"
                         )
                         decision["blockingReasons"] = list(dict.fromkeys(
                             list(decision.get("blockingReasons") or [])
                             + [exc.code]
                         ))
-                        decision["account"] = {
-                            **dict(decision.get("account") or {}),
+                        conflict_section = (
+                            "dataQuality"
+                            if market_state_conflict
+                            else "account"
+                        )
+                        decision[conflict_section] = {
+                            **dict(decision.get(conflict_section) or {}),
                             "executionBlocked": True,
                             "intendedAction": intended_action,
                             "preflightConflict": exc.code,
@@ -7907,12 +7962,22 @@ class _PaperRobotController:
                         decision["gates"] = list(
                             decision.get("gates") or []
                         ) + [{
-                            "category": "account",
-                            "name": "Final Real account reconciliation",
+                            "category": (
+                                "market"
+                                if market_state_conflict
+                                else "account"
+                            ),
+                            "name": (
+                                "Final Real market routing"
+                                if market_state_conflict
+                                else "Final Real account reconciliation"
+                            ),
                             "status": "block",
                             "value": exc.code,
                             "threshold": (
-                                "evaluation and final account state agree"
+                                "selected ticker is routable on its active exchange"
+                                if market_state_conflict
+                                else "evaluation and final account state agree"
                             ),
                             "detail": str(exc),
                         }]
@@ -8824,6 +8889,23 @@ def register_kalshi_api(
                         endpoint=endpoint,
                     ) from exc
                 detail = _kalshi_response_error_detail(response)
+                remote_code = _kalshi_response_error_code(response)
+                live_market_code = {
+                    "market_not_found": "kalshi_market_not_found",
+                    "market_inactive": "kalshi_market_inactive",
+                    "market_already_closed": "kalshi_market_already_closed",
+                }.get(remote_code)
+                if (
+                    request_method == "POST"
+                    and endpoint == "/portfolio/events/orders"
+                    and live_market_code
+                ):
+                    raise KalshiApiError(
+                        detail or remote_code,
+                        status=int(status_code) if status_code else 409,
+                        code=live_market_code,
+                        endpoint=endpoint,
+                    ) from exc
                 raise KalshiApiError(
                     detail or f"Kalshi {environment} account request failed",
                     status=int(status_code) if status_code else 502,

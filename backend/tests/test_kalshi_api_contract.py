@@ -2795,9 +2795,16 @@ def test_analytics_exposes_per_family_opportunity_funnels(tmp_path):
 def test_paper_order_payload_uses_yes_book_shape():
     yes = _paper_order_payload({"action": "BUY_YES", "side": "YES", "edge": {"price": 0.42}, "sizing": {"contracts": 7}}, "T")
     no = _paper_order_payload({"action": "BUY_NO", "side": "NO", "edge": {"price": 0.31}, "sizing": {"contracts": 4}}, "T")
+    sharded = _paper_order_payload(
+        {"action": "BUY_YES", "side": "YES", "edge": {"price": 0.42}, "sizing": {"contracts": 1}},
+        "T",
+        exchange_index=2,
+    )
     assert yes["side"] == "bid" and yes["price"] == "0.4200"
     assert no["side"] == "ask" and no["price"] == "0.6900"
     assert yes["time_in_force"] == "immediate_or_cancel"
+    assert yes["exchange_index"] == no["exchange_index"] == -1
+    assert sharded["exchange_index"] == 2
 
 
 def test_close_order_payload_uses_reduce_only_yes_book_shape():
@@ -2991,6 +2998,7 @@ def test_live_order_payload_keeps_symmetric_yes_and_no_order_shapes():
     assert yes_live["side"] == "bid" and yes_live["price"] == "0.4200"
     assert no_live["side"] == "ask" and no_live["price"] == "0.6900"
     assert yes_live["count"] == "7.00" and no_live["count"] == "4.00"
+    assert yes_live["exchange_index"] == no_live["exchange_index"] == -1
 
 
 class _EnabledRealState:
@@ -3412,6 +3420,74 @@ def test_signed_account_get_retries_once_but_never_retries_a_post(
             json_body={"ticker": "KXBTC15M-TEST"},
         )
     assert calls[("POST", "/portfolio/events/orders")] == 1
+
+
+@pytest.mark.parametrize(
+    ("remote_code", "internal_code", "status_code"),
+    [
+        ("market_not_found", "kalshi_market_not_found", 404),
+        ("market_inactive", "kalshi_market_inactive", 400),
+        ("market_already_closed", "kalshi_market_already_closed", 400),
+    ],
+)
+def test_signed_live_order_preserves_market_state_error_without_post_retry(
+    tmp_path,
+    monkeypatch,
+    remote_code,
+    internal_code,
+    status_code,
+):
+    durable = {
+        "production_api_key_id": "key-id-12345678",
+        "production_private_key": "private-material",
+        "production_test_status": "saved",
+    }
+    calls = []
+
+    def http_request(method, url, **_kwargs):
+        calls.append((method, url))
+        return _StatusResponse(
+            {
+                "error": {
+                    "code": remote_code,
+                    "message": "market is not routable",
+                },
+            },
+            status_code,
+        )
+
+    monkeypatch.setattr(kalshi_api, "_signed_headers", lambda *_a, **_k: {})
+    app = Flask(__name__)
+    controls = register_kalshi_api(
+        app,
+        require_auth=lambda: {"id": "user-1"},
+        http_get=lambda *_a, **_k: _Response({}),
+        http_request=http_request,
+        get_user_config=lambda *_args: copy.deepcopy(durable),
+        authoritative_config_loader=lambda *_args: copy.deepcopy(durable),
+        save_user_config=lambda *_args: (True, None),
+        worker_lease_store=_FencedLeaseStore(),
+        robot_state_path=str(tmp_path / "state.json"),
+        paper_account_path=str(tmp_path / "paper.json"),
+    )
+
+    with pytest.raises(KalshiApiError) as raised:
+        controls["paper_robot"].signed_request(
+            durable,
+            "production",
+            "POST",
+            "/portfolio/events/orders",
+            json_body={
+                "ticker": "KXBTC15M-SHARD2",
+                "exchange_index": -1,
+            },
+        )
+
+    assert raised.value.code == internal_code
+    assert raised.value.status == status_code
+    assert raised.value.endpoint == "/portfolio/events/orders"
+    assert remote_code in str(raised.value)
+    assert len(calls) == 1
 
 
 def test_production_config_bypass_reads_supabase_instead_of_ttl_cache(
@@ -4549,8 +4625,38 @@ def test_real_preflight_recomputes_account_wide_exposure_before_buy():
     assert posts == []
 
 
-def test_real_tick_records_wait_and_refreshes_after_final_account_conflict(
+@pytest.mark.parametrize(
+    (
+        "conflict_code",
+        "status_code",
+        "expected_intent",
+        "expected_portfolio_reads",
+        "conflict_section",
+    ),
+    [
+        (
+            "kalshi_live_exposure_changed",
+            409,
+            "WAIT_LIVE_ACCOUNT_REFRESH",
+            2,
+            "account",
+        ),
+        (
+            "kalshi_market_not_found",
+            404,
+            "WAIT_LIVE_MARKET_REFRESH",
+            1,
+            "dataQuality",
+        ),
+    ],
+)
+def test_real_tick_records_wait_after_final_routing_conflict(
     monkeypatch,
+    conflict_code,
+    status_code,
+    expected_intent,
+    expected_portfolio_reads,
+    conflict_section,
 ):
     recorded = {}
     portfolio_reads = []
@@ -4586,7 +4692,10 @@ def test_real_tick_records_wait_and_refreshes_after_final_account_conflict(
     class Client:
         def snapshot(self, **_kwargs):
             return {
-                "market": {"ticker": "KXBTC15M-REFRESH"},
+                "market": {
+                    "ticker": "KXBTC15M-REFRESH",
+                    "exchange_index": 2,
+                },
                 "reference": {
                     "price": 65_000,
                     "candles": [],
@@ -4642,17 +4751,15 @@ def test_real_tick_records_wait_and_refreshes_after_final_account_conflict(
         }
 
     monkeypatch.setattr(controller, "portfolio", portfolio)
-    monkeypatch.setattr(
-        controller,
-        "_submit_live_order",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            KalshiApiError(
-                "Fresh Kalshi exposure changed.",
-                status=409,
-                code="kalshi_live_exposure_changed",
-            )
-        ),
-    )
+    def fail_live_order(_user_id, payload, _decision):
+        assert payload["exchange_index"] == 2
+        raise KalshiApiError(
+            "Final Kalshi routing state changed.",
+            status=status_code,
+            code=conflict_code,
+        )
+
+    monkeypatch.setattr(controller, "_submit_live_order", fail_live_order)
 
     result = controller.tick(
         "user-1",
@@ -4662,19 +4769,13 @@ def test_real_tick_records_wait_and_refreshes_after_final_account_conflict(
 
     assert result["orderSubmitted"] is False
     assert result["decision"]["action"] == "WAIT"
-    assert (
-        result["decision"]["executionIntent"]
-        == "WAIT_LIVE_ACCOUNT_REFRESH"
-    )
-    assert (
-        "kalshi_live_exposure_changed"
-        in result["decision"]["blockingReasons"]
-    )
+    assert result["decision"]["executionIntent"] == expected_intent
+    assert conflict_code in result["decision"]["blockingReasons"]
     assert recorded["order"] is None
-    assert recorded["decision"]["account"]["preflightConflict"] == (
-        "kalshi_live_exposure_changed"
+    assert recorded["decision"][conflict_section]["preflightConflict"] == (
+        conflict_code
     )
-    assert portfolio_reads == [("real", True), ("real", True)]
+    assert portfolio_reads == [("real", True)] * expected_portfolio_reads
 
 
 def test_real_reduce_only_close_is_preserved_and_normalised_as_sell():
