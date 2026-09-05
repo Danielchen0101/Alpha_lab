@@ -3,6 +3,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from kalshi_engine import (
+    MAX_ECONOMIC_SIZE_SEARCH_STEPS,
+    _smaller_economic_order_size,
+    _worst_fill_price,
     evaluate_btc15_contract,
     kalshi_fee,
     kalshi_order_cost,
@@ -572,7 +575,12 @@ def test_rounding_economics_blocks_fractional_order_with_negative_ev():
         now=now,
         reference_time=now,
         book_time=now,
-        config={"executionMode": "real"},
+        config={
+            "executionMode": "real",
+            # A smaller quantity would have positive EV, but is below this
+            # configured floor and must never be used to force an entry.
+            "minimumEconomicContracts": 0.18,
+        },
         account_context={
             "bankroll": 19.87,
             "cashAvailable": 19.87,
@@ -586,6 +594,138 @@ def test_rounding_economics_blocks_fractional_order_with_negative_ev():
     assert result["sizing"]["plannedContractsFp"] >= 0.10
     assert result["sizing"]["contractsFp"] == 0
     assert result["sizing"]["expectedValue"] <= 0
+
+
+def test_fractional_sizing_recovers_smaller_positive_ev_order_without_more_risk():
+    now = datetime.now(timezone.utc)
+    candles, spot = _candles()
+    result = evaluate_btc15_contract(
+        _early_market(now, floor_strike=64_625.0),
+        spot_price=spot,
+        candles=candles,
+        now=now,
+        reference_time=now,
+        book_time=now,
+        config={"executionMode": "real"},
+        account_context={
+            "bankroll": 19.87,
+            "cashAvailable": 19.87,
+            "portfolioExposure": 0,
+            "currentMarketExposure": 0,
+        },
+    )
+
+    sizing = result["sizing"]
+    assert result["action"] == "BUY_YES"
+    assert result["blockingReasons"] == []
+    assert sizing["preEconomicContractsFp"] == pytest.approx(0.18)
+    assert sizing["contractsFp"] == pytest.approx(0.17)
+    assert sizing["economicSizeAdjustmentApplied"] is True
+    assert sizing["economicSizeCandidatesTested"] == 2
+    old_cost = kalshi_order_cost(0.74, 0.18)["cashDebit"]
+    conservative_probability = result["edge"]["conservativeProbability"]
+    assert conservative_probability * 0.18 - old_cost < 0
+    assert sizing["maximumLoss"] < old_cost
+    assert sizing["maximumLoss"] <= sizing["riskBudget"]
+    assert sizing["expectedValue"] > 0
+    assert sizing["feeToPotentialProfitPct"] <= 20.0
+
+
+def test_fractional_economics_search_preserves_signal_blocks():
+    now = datetime.now(timezone.utc)
+    candles, spot = _candles()
+    result = evaluate_btc15_contract(
+        _early_market(now, floor_strike=64_625.0),
+        spot_price=spot,
+        candles=candles,
+        now=now,
+        reference_time=now,
+        book_time=now,
+        config={"executionMode": "real", "minConservativeEdge": 0.08},
+        account_context={"bankroll": 19.87, "cashAvailable": 19.87},
+    )
+
+    assert result["action"] == "WAIT"
+    assert "conservative_edge" in result["blockingReasons"]
+    assert result["sizing"]["economicSizeCandidatesTested"] == 0
+    assert result["sizing"]["economicSizeAdjustmentApplied"] is False
+
+
+def test_economic_quantity_search_grid_uses_largest_valid_smaller_size():
+    # Includes hourly and BTC15 prices, varying cent-rounding phases, and a
+    # second book level. This tests mechanics, not historical profitability.
+    for price in (0.48, 0.60, 0.70, 0.74, 0.78, 0.80):
+        levels = [(price, 0.15), (price + 0.01, 100.0)]
+        for count_hundredths in range(10, 51, 2):
+            original = count_hundredths / 100.0
+            for probability in (price + 0.025, price + 0.04, 0.95):
+                dollar_cap = kalshi_order_cost(
+                    _worst_fill_price(levels, original), original
+                )["cashDebit"]
+
+                def valid(count):
+                    limit = _worst_fill_price(levels, count)
+                    cost = kalshi_order_cost(limit, count)
+                    return (
+                        probability * count - cost["cashDebit"] > 0.0
+                        and cost["allInFee"] / (count * (1.0 - limit))
+                        * 100.0 <= 20.0
+                        and cost["cashDebit"] <= dollar_cap + 1e-12
+                    )
+
+                expected = next(
+                    (
+                        count / 100.0
+                        for count in range(count_hundredths, 9, -1)
+                        if valid(count / 100.0)
+                    ),
+                    original,
+                )
+                selected, tested = _smaller_economic_order_size(
+                    levels,
+                    original,
+                    step=0.01,
+                    minimum_contracts=0.10,
+                    conservative_probability=probability,
+                    dollar_cap=dollar_cap,
+                    fee_rate=0.07,
+                    max_fee_to_profit_pct=20.0,
+                )
+                assert selected == pytest.approx(expected)
+                assert 0.10 <= selected <= original
+                assert 1 <= tested <= count_hundredths - 9
+                if selected < original:
+                    assert valid(selected)
+                    assert selected * 100 == pytest.approx(round(selected * 100))
+                if valid(original):
+                    assert tested == 1
+
+
+def test_economic_quantity_search_is_bounded_and_preserves_noncent_steps():
+    selected, tested = _smaller_economic_order_size(
+        [(0.74, 1_000_000)],
+        100_000.0,
+        step=0.01,
+        minimum_contracts=0.10,
+        conservative_probability=0.01,
+        dollar_cap=100_000.0,
+        fee_rate=0.07,
+        max_fee_to_profit_pct=20.0,
+    )
+    assert selected == 100_000.0
+    assert tested == MAX_ECONOMIC_SIZE_SEARCH_STEPS
+    selected, tested = _smaller_economic_order_size(
+        [(0.50, 100)],
+        0.15,
+        step=0.05,
+        minimum_contracts=0.10,
+        conservative_probability=0.95,
+        dollar_cap=0.07,
+        fee_rate=0.07,
+        max_fee_to_profit_pct=20.0,
+    )
+    assert selected == pytest.approx(0.10)
+    assert tested == 2
 
 
 def test_btc15_time_stage_premiums_only_tighten_later_windows():

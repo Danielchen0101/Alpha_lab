@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timedelta, timezone
+from functools import partial
 
 import start_quant_backend as backend
 
@@ -946,6 +947,17 @@ def test_exit_scan_reduces_half_once_then_closes_remainder_at_target2(monkeypatc
 
 
 def _install_exit_runtime_scenario(monkeypatch, position_specs, on_submit=None):
+    # These fixtures opened on July 24 and quote July 25. Use the production
+    # planner with that same clock so ordinary holdings do not eventually age
+    # into an unrelated time exit as the calendar advances.
+    monkeypatch.setattr(
+        backend,
+        "_pa_build_dynamic_exit_plan",
+        partial(
+            backend._pa_build_dynamic_exit_plan,
+            now=datetime(2026, 7, 25, 14, 0, tzinfo=timezone.utc),
+        ),
+    )
     positions = []
     managed_by_symbol = {}
     for spec in position_specs:

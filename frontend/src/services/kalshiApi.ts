@@ -147,6 +147,23 @@ export interface KalshiGate {
   category?: 'data' | 'signal' | 'execution' | 'account' | string;
 }
 
+export interface KalshiShardFunding {
+  exchangeIndex?: number | null;
+  aggregateCashAvailable?: number | null;
+  shardCashAvailable?: number | null;
+  shardCashKnown?: boolean;
+  fundingStatus?: 'funded' | 'empty' | 'unverified';
+  strategyAction?: string;
+  strategyQualified?: boolean;
+  applicable?: boolean;
+  requiresUserFunding?: boolean;
+  executionBlocked?: boolean;
+  requiredCash?: number;
+  fundingGap?: number;
+  routedContracts?: number;
+  fundedCashDebit?: number;
+}
+
 export interface KalshiDecision {
   engine: string;
   generatedAt: string;
@@ -155,6 +172,8 @@ export interface KalshiDecision {
   side?: 'YES' | 'NO' | null;
   signalQuality: number;
   blockingReasons: string[];
+  account?: KalshiShardFunding & { cashAvailable?: number };
+  shardFunding?: KalshiShardFunding;
   market: {
     ticker?: string;
     status?: string;

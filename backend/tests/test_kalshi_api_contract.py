@@ -3042,10 +3042,13 @@ def _real_preflight_response(
     positions=None,
     orders=None,
 ):
+    if endpoint.startswith("/markets/"):
+        return {"market": {"ticker": endpoint.removeprefix("/markets/"), "exchange_index": 2}}
     if endpoint == "/portfolio/balance":
         return {
             "balance": balance,
             "portfolio_value": portfolio_value,
+            "balance_breakdown": [{"exchange_index": 2, "balance": str(balance / 100.0)}],
         }
     if endpoint == "/portfolio/positions":
         return {"market_positions": list(positions or [])}
@@ -4140,6 +4143,7 @@ def test_real_order_submission_uses_current_event_order_endpoint_without_side_re
     payload = _paper_order_payload(
         {"action": "BUY_YES", "side": "YES", "edge": {"price": 0.42}, "sizing": {"contracts": 7}},
         "KXBTC15M-TEST",
+        exchange_index=2,
     )
     order = controller._submit_live_order("user-1", payload, {"side": "YES", "config": {"executionMode": "real"}})
 
@@ -4648,6 +4652,8 @@ def test_real_preflight_recomputes_account_wide_exposure_before_buy():
             1,
             "dataQuality",
         ),
+        ("kalshi_account_request_failed", 503, "WAIT_LIVE_ROUTING_FAILURE", 1, "routingFailure"),
+        ("ReadTimeout", None, "WAIT_LIVE_ROUTING_FAILURE", 1, "routingFailure"),
     ],
 )
 def test_real_tick_records_wait_after_final_routing_conflict(
@@ -4660,6 +4666,8 @@ def test_real_tick_records_wait_after_final_routing_conflict(
 ):
     recorded = {}
     portfolio_reads = []
+    submit_attempts = []
+    observations = []
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     class State:
@@ -4751,8 +4759,12 @@ def test_real_tick_records_wait_after_final_routing_conflict(
         }
 
     monkeypatch.setattr(controller, "portfolio", portfolio)
+    controller.observation_saver = lambda _user_id, observation: observations.append(observation)
     def fail_live_order(_user_id, payload, _decision):
+        submit_attempts.append(payload)
         assert payload["exchange_index"] == 2
+        if conflict_code == "ReadTimeout":
+            raise kalshi_api.requests.exceptions.ReadTimeout("synthetic timeout")
         raise KalshiApiError(
             "Final Kalshi routing state changed.",
             status=status_code,
@@ -4760,6 +4772,20 @@ def test_real_tick_records_wait_after_final_routing_conflict(
         )
 
     monkeypatch.setattr(controller, "_submit_live_order", fail_live_order)
+
+    if conflict_section == "routingFailure":
+        with pytest.raises(Exception) as failed:
+            controller.tick("user-1", submit_order=True, mode="real")
+        assert str(getattr(failed.value, "code", None) or type(failed.value).__name__) == conflict_code
+        assert len(submit_attempts) == 1
+        assert recorded["order"] is None
+        assert recorded["decision"]["executionIntent"] == "WAIT_LIVE_ROUTING_FAILURE"
+        assert len(observations) == 1
+        assert observations[0]["features"]["routingFailure"]["code"] == conflict_code
+        assert observations[0]["features"]["routingFailure"]["outcome"] == "unknown"
+        assert observations[0]["features"]["observation"]["samplingPolicy"] == "routing_failure_unique"
+        assert not observations[0].get("order_result")
+        return
 
     result = controller.tick(
         "user-1",
@@ -5014,6 +5040,7 @@ def test_real_order_allows_reentry_after_durable_stop_loss():
         "/portfolio/balance",
         "/portfolio/positions",
         "/portfolio/orders",
+        "/markets/KXBTC15M-STOPPED",
         "/portfolio/events/orders",
     ]
 
@@ -6456,6 +6483,7 @@ def test_fractional_ioc_uses_planned_worst_price_and_passes_live_preflight():
         decision,
         ticker,
         price_tolerance=0.01,
+        exchange_index=2,
     )
     latest_state = {
         "config": decision["config"],
@@ -6464,7 +6492,7 @@ def test_fractional_ioc_uses_planned_worst_price_and_passes_live_preflight():
     }
     account = {
         # Synthetic $20 balance; it is not derived from an account.
-        "balance": {"balance": 2_000, "portfolio_value": 0},
+        "balance": _real_preflight_response("/portfolio/balance", balance=2_000),
         "positions": [],
         "orders": [],
     }
@@ -6531,6 +6559,7 @@ def test_fractional_ioc_exact_cap_uses_marginal_fee_not_top_quote_fee():
         decision,
         ticker,
         price_tolerance=0.01,
+        exchange_index=2,
     )
     latest_state = {
         "config": decision["config"],
@@ -6539,7 +6568,7 @@ def test_fractional_ioc_exact_cap_uses_marginal_fee_not_top_quote_fee():
     }
     account = {
         # Synthetic $50 balance: the 2% market cap is exactly $1.00.
-        "balance": {"balance": 5_000, "portfolio_value": 0},
+        "balance": _real_preflight_response("/portfolio/balance", balance=5_000),
         "positions": [],
         "orders": [],
     }
@@ -6583,7 +6612,7 @@ def test_real_preflight_accepts_authoritative_durable_entry_confirmation():
         },
         "config": {"executionMode": "real"},
     }
-    payload = _paper_order_payload(decision, ticker)
+    payload = _paper_order_payload(decision, ticker, exchange_index=2)
     state = {
         "config": {"executionMode": "real"},
         "strategy": {
@@ -6609,7 +6638,7 @@ def test_real_preflight_accepts_authoritative_durable_entry_confirmation():
     result = controller._validate_live_order_preflight(
         state,
         {
-            "balance": {"balance": 10_000, "portfolio_value": 0},
+            "balance": _real_preflight_response("/portfolio/balance", balance=10_000),
             "positions": [],
             "orders": [],
         },
@@ -6669,3 +6698,289 @@ def test_hourly_shrink_uses_effective_conservative_edge_floor():
 
     assert diagnostic["minimumShrunkenScore"] == 0.019
     assert diagnostic["penaltyCleared"] is False
+
+
+def _shard_test_decision(ticker="KXBTC15M-SHARD", action="BUY_YES"):
+    return {
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "market": {"ticker": ticker, "exchangeIndex": 2},
+        "action": action,
+        "side": "YES",
+        "edge": {"price": 0.50, "fairProbability": 0.80, "conservativeProbability": 0.75, "netEdge": 0.28, "conservativeEdge": 0.25},
+        "sizing": {"plannedContractsFp": 1.0, "contractStep": 0.01},
+        "config": {"executionMode": "real", "takerFeeRate": 0.07},
+        "blockingReasons": [],
+        "gates": [],
+        "entryShadow": {"champion": {"qualifyingFrame": True}},
+    }
+
+
+@pytest.mark.parametrize("bad_index", [None, -1, "bad", 2.5, True, float("inf")])
+def test_shard_index_never_guesses_from_invalid_metadata(bad_index):
+    assert kalshi_api._exchange_shard_index(bad_index) is None
+
+
+@pytest.mark.parametrize("rows", [None, [], [{"exchange_index": 2, "balance": "bad"}], [{"exchange_index": 2, "balance": "1.0"}] * 2])
+def test_unknown_shard_balance_is_not_aggregate_cash(rows):
+    assert kalshi_api._shard_cash_dollars({"balance": 100_000, "balance_breakdown": rows}, 2) is None
+
+
+def test_shard_breakdown_preserves_dollars_and_zero_without_cent_conversion():
+    balance = {"balance": 9_993, "balance_dollars": "99.9380", "balance_breakdown": [
+        {"exchange_index": 0, "balance": "99.9380"},
+        {"exchange_index": 2, "balance": "0.0000"},
+    ]}
+    context = _paper_account_context({"balance": balance}, {}, "KXBTC15M-SHARD", 99.938, exchange_index=2)
+    assert context["aggregateCashAvailable"] == pytest.approx(99.938)
+    assert context["shardCashAvailable"] == 0
+    assert context["shardCashKnown"] is True
+    assert context["fundingStatus"] == "empty"
+    assert kalshi_api._shard_cash_dollars(balance, 0) == pytest.approx(99.938)
+
+
+@pytest.mark.parametrize("ticker", ["KXBTC15M-SHARD", "KXBTCD-E-T65000"])
+def test_empty_crypto_shard_explains_qualified_entry_without_hiding_strategy(ticker):
+    decision = _shard_test_decision(ticker)
+    context = kalshi_api._shard_funding_context({"balance": 10_000, "balance_breakdown": [
+        {"exchange_index": 0, "balance": "100.0000"}, {"exchange_index": 2, "balance": "0.0000"},
+    ]}, 2)
+    assert kalshi_api._apply_real_shard_funding_gate(decision, context) is True
+    assert decision["action"] == "WAIT"
+    assert decision["executionIntent"] == "WAIT_LIVE_SHARD_FUNDING"
+    assert decision["shardFunding"]["strategyAction"] == "BUY_YES"
+    assert decision["shardFunding"]["strategyQualified"] is True
+    assert decision["shardFunding"]["requiredCash"] == pytest.approx(0.52)
+    assert decision["sizing"]["plannedContractsFp"] == 1.0
+    observation = _market_observation("real", decision, submit_order=True)
+    assert observation["features"]["market"]["exchangeIndex"] == 2
+    assert observation["features"]["shardFunding"]["shardCashAvailable"] == 0
+    assert observation["features"]["entryShadow"]["champion"]["qualifyingFrame"] is True
+
+
+def test_empty_shard_never_blocks_reduce_only_exit():
+    decision = _shard_test_decision(action="SELL_YES")
+    assert kalshi_api._apply_real_shard_funding_gate(decision, {
+        "exchangeIndex": 2, "shardCashAvailable": 0.0,
+        "shardCashKnown": True, "fundingStatus": "empty",
+    }) is False
+    assert decision["action"] == "SELL_YES"
+    assert decision["blockingReasons"] == []
+    assert decision["shardFunding"]["applicable"] is False
+
+
+def test_partial_shard_funding_caps_exact_rounded_debit_without_loosening_strategy():
+    decision = _shard_test_decision()
+    assert kalshi_api._apply_real_shard_funding_gate(decision, {
+        "exchangeIndex": 2, "aggregateCashAvailable": 100.0,
+        "shardCashAvailable": 0.15, "shardCashKnown": True, "fundingStatus": "funded",
+    }) is False
+    assert decision["action"] == "BUY_YES"
+    assert decision["shardFunding"]["strategyPlannedContracts"] == 1.0
+    assert decision["sizing"]["plannedContractsFp"] == pytest.approx(0.28)
+    assert decision["shardFunding"]["fundedCashDebit"] == pytest.approx(0.15)
+    assert decision["shardFunding"]["resizedExpectedValue"] > 0
+
+
+def test_shard_downsizing_cannot_erase_fee_adjusted_expected_profit():
+    decision = _shard_test_decision()
+    decision["edge"]["fairProbability"] = 0.521
+    decision["edge"]["conservativeProbability"] = 0.521
+    assert kalshi_api._apply_real_shard_funding_gate(decision, {
+        "exchangeIndex": 2, "aggregateCashAvailable": 100.0,
+        "shardCashAvailable": 0.02, "shardCashKnown": True, "fundingStatus": "funded",
+    }) is True
+    assert decision["action"] == "WAIT"
+    assert decision["shardFunding"]["resizedExpectedValue"] < 0
+
+
+@pytest.mark.parametrize("shard_cash,expected_error", [("0.0000", "kalshi_live_shard_cash_insufficient"), (None, "kalshi_live_shard_cash_unavailable"), ("10.0000", None)])
+def test_final_preflight_verifies_local_shard_cash(shard_cash, expected_error):
+    controller = _PaperRobotController(None, None, None)
+    decision = _shard_test_decision()
+    payload = _paper_order_payload(decision, decision["market"]["ticker"], exchange_index=2)
+    balance = {"balance": 10_000, "portfolio_value": 0, "balance_breakdown": [
+        {"exchange_index": 0, "balance": "100.0000"},
+    ]}
+    if shard_cash is not None:
+        balance["balance_breakdown"].append({"exchange_index": 2, "balance": shard_cash})
+    args = ({"config": decision["config"], "strategy": {}, "filledTrades": []},
+            {"balance": balance, "positions": [], "orders": []}, payload, _live_order_payload(payload), decision)
+    if expected_error:
+        with pytest.raises(KalshiApiError) as blocked:
+            controller._validate_live_order_preflight(*args)
+        assert blocked.value.code == expected_error
+    else:
+        assert controller._validate_live_order_preflight(*args) is None
+
+
+def test_restricted_key_uses_one_explicit_shard_balance_read():
+    calls = []
+    def signed(_config, _environment, method, endpoint, **kwargs):
+        calls.append((method, endpoint, kwargs))
+        return {"balance": 56, "balance_dollars": "0.5670", "portfolio_value": 0}
+    controller = _PaperRobotController(None, None, None, signed_request=signed)
+    account = {"balance": {"balance": 10_000, "portfolio_value": 0}}
+    payload = {"ticker": "KXBTC15M-SHARD", "exchange_index": 2, "reduce_only": False}
+    controller._complete_live_shard_preflight({}, account, payload)
+    assert calls == [("GET", "/portfolio/balance", {"params": {"subaccount": 0, "exchange_index": 2}})]
+    assert account["balance"]["balance"] == 10_000
+    assert kalshi_api._shard_cash_dollars(account["balance"], 2) == pytest.approx(0.567)
+    controller._complete_live_shard_preflight({}, account, payload)
+    assert len(calls) == 1
+
+
+def test_unknown_entry_shard_resolves_by_market_metadata_not_crypto_prefix():
+    calls = []
+    def signed(_config, _environment, method, endpoint, **kwargs):
+        calls.append((method, endpoint))
+        return {"market": {"ticker": "KXBTC15M-SHARD", "exchange_index": 3}}
+    controller = _PaperRobotController(None, None, None, signed_request=signed)
+    account = {"balance": {"balance": 1000, "balance_breakdown": [{"exchange_index": 3, "balance": "10.0000"}]}}
+    payload = {"ticker": "KXBTC15M-SHARD", "exchange_index": -1}
+    controller._complete_live_shard_preflight({}, account, payload)
+    assert payload["exchange_index"] == 3
+    assert calls == [("GET", "/markets/KXBTC15M-SHARD")]
+
+
+def test_existing_order_idempotency_precedes_shard_funding_requirement():
+    decision = _shard_test_decision()
+    payload = _paper_order_payload(decision, decision["market"]["ticker"], exchange_index=-1)
+    existing = {"client_order_id": payload["client_order_id"], "order_id": "already-submitted", "status": "filled"}
+    controller = _PaperRobotController(None, None, None)
+    assert controller._validate_live_order_preflight({}, {"orders": [existing]}, payload, _live_order_payload(payload), decision) == existing
+
+
+@pytest.mark.parametrize("durable", [True, False])
+def test_entry_confirmation_rejects_the_same_frame_replayed(durable):
+    now = datetime.now(timezone.utc)
+    ticker = "KXBTC15M-SAME-FRAME"
+    frame = {"ticker": ticker, "side": "YES", "generatedAt": now.isoformat(),
+             "streak": 1, "dataQualityEligible": True, "blockingReasons": ["entry_confirmation"]}
+    state = {"strategy": {"entryConfirmations": {"btc15m": frame}} if durable else {}, "decisions": [frame]}
+    result = _entry_confirmation(state, ticker, "YES", {"action": "BUY_YES", "generatedAt": now.isoformat()}, {})
+    assert result["streak"] == 1
+    assert result["confirmed"] is False
+
+
+def test_durable_confirmation_cannot_skip_a_newer_invalid_frame():
+    now = datetime.now(timezone.utc)
+    ticker = "KXBTC15M-INVALID-FRAME"
+    state = {
+        "strategy": {"entryConfirmations": {"btc15m": {
+            "ticker": ticker, "side": "YES", "generatedAt": (now - timedelta(seconds=10)).isoformat(),
+            "streak": 1, "dataQualityEligible": True,
+        }}},
+        "decisions": [{"ticker": ticker, "side": "YES", "generatedAt": (now - timedelta(seconds=5)).isoformat(), "blockingReasons": ["net_edge"]}],
+    }
+    result = _entry_confirmation(state, ticker, "YES", {"action": "BUY_YES", "generatedAt": now.isoformat()}, {})
+    assert result["streak"] == 1
+    assert result["confirmed"] is False
+
+
+@pytest.mark.parametrize("status,outcome", [(400, "rejected"), (503, "unknown"), (408, "unknown"), (None, "unknown")])
+def test_live_submit_failure_keeps_uncertain_outcome_and_never_retries_post(status, outcome):
+    posts = []
+    def signed(_config, _environment, method, endpoint, **kwargs):
+        if method == "GET":
+            return _real_preflight_response(endpoint)
+        posts.append(kwargs["json_body"])
+        if status is None:
+            raise kalshi_api.requests.exceptions.ReadTimeout("synthetic timeout")
+        raise KalshiApiError("synthetic exchange error", status=status, code="kalshi_account_request_failed", endpoint=endpoint)
+    controller = _PaperRobotController(
+        None, _EnabledRealState(), None,
+        connection_loader=_test_real_credentials,
+        authoritative_connection_loader=_test_real_credentials,
+        signed_request=signed, worker_lease_store=_FencedLeaseStore(),
+    )
+    decision = _shard_test_decision()
+    payload = _paper_order_payload(decision, decision["market"]["ticker"], exchange_index=2)
+    with pytest.raises(Exception) as failed:
+        controller._submit_live_order("user-1", payload, decision)
+    assert len(posts) == 1
+    evidence = failed.value.kalshi_routing_failure
+    assert evidence["phase"] == "submission"
+    assert evidence["outcome"] == outcome
+    assert evidence["httpStatus"] == status
+    assert evidence["clientOrderId"] == payload["client_order_id"]
+    assert evidence["plannedCount"] == 1.0
+
+
+def test_live_submit_with_empty_shard_never_calls_post():
+    posts = []
+    def signed(_config, _environment, method, endpoint, **kwargs):
+        if method == "POST":
+            posts.append(kwargs)
+            raise AssertionError("empty shard must never be routed")
+        response = _real_preflight_response(endpoint)
+        if endpoint == "/portfolio/balance":
+            response["balance_breakdown"] = [
+                {"exchange_index": 0, "balance": "1000.0000"},
+                {"exchange_index": 2, "balance": "0.0000"},
+            ]
+        return response
+    controller = _PaperRobotController(
+        None, _EnabledRealState(), None,
+        connection_loader=_test_real_credentials,
+        authoritative_connection_loader=_test_real_credentials,
+        signed_request=signed, worker_lease_store=_FencedLeaseStore(),
+    )
+    decision = _shard_test_decision()
+    payload = _paper_order_payload(decision, decision["market"]["ticker"], exchange_index=2)
+    with pytest.raises(KalshiApiError) as blocked:
+        controller._submit_live_order("user-1", payload, decision)
+    assert blocked.value.code == "kalshi_live_shard_cash_insufficient"
+    assert posts == []
+
+
+def test_shard_resizer_uses_engine_default_economic_floor_when_sizing_omits_it():
+    decision = _shard_test_decision()
+    decision["edge"].update({"price": 0.10, "conservativeProbability": 0.90})
+    context = {"exchangeIndex": 2, "aggregateCashAvailable": 100.0,
+               "shardCashAvailable": 0.01, "shardCashKnown": True, "fundingStatus": "funded"}
+    assert kalshi_api._apply_real_shard_funding_gate(decision, context) is True
+    assert decision["action"] == "WAIT"
+
+
+def test_shard_resizer_uses_engine_twenty_percent_default_not_twenty_five():
+    decision = _shard_test_decision()
+    decision["edge"].update({"price": 0.70, "conservativeProbability": 0.90})
+    context = {"exchangeIndex": 2, "aggregateCashAvailable": 100.0,
+               "shardCashAvailable": 0.10, "shardCashKnown": True, "fundingStatus": "funded"}
+    assert kalshi_api._apply_real_shard_funding_gate(decision, context) is False
+    # 0.13 contracts fit cash but their fee burden is23.08%;0.12 clears20%.
+    assert decision["sizing"]["plannedContractsFp"] == pytest.approx(0.12)
+    assert decision["shardFunding"]["resizedFeeToPotentialProfitPct"] <= 20.0
+
+
+def test_scoped_final_preflight_updates_funding_diagnostics_without_erasing_thesis():
+    posts = []
+    def signed(_config, _environment, method, endpoint, **kwargs):
+        if method == "POST":
+            posts.append(kwargs["json_body"])
+            return {"order": {"order_id": "synthetic-scoped-order"}}
+        if endpoint.startswith("/markets/"):
+            return {"market": {"ticker": "KXBTC15M-SHARD", "exchange_index": 3}}
+        if endpoint == "/portfolio/balance":
+            if (kwargs.get("params") or {}).get("exchange_index") == 3:
+                return {"balance": 500, "balance_dollars": "5.0000", "portfolio_value": 0}
+            return {"balance": 10_000, "portfolio_value": 0}
+        return _real_preflight_response(endpoint)
+    controller = _PaperRobotController(
+        None, _EnabledRealState(), None,
+        connection_loader=_test_real_credentials,
+        authoritative_connection_loader=_test_real_credentials,
+        signed_request=signed, worker_lease_store=_FencedLeaseStore(),
+    )
+    decision = _shard_test_decision()
+    decision["shardFunding"] = {"fundingStatus": "unverified", "strategyAction": "BUY_YES", "strategyPlannedContracts": 1.0}
+    payload = _paper_order_payload(decision, "KXBTC15M-SHARD")
+    controller._submit_live_order("user-1", payload, decision)
+    assert len(posts) == 1
+    assert posts[0]["exchange_index"] == 3
+    assert decision["market"]["exchangeIndex"] == 3
+    assert decision["account"]["shardCashAvailable"] == 5.0
+    assert decision["shardFunding"]["verifiedAtPreflight"] is True
+    assert decision["shardFunding"]["requiresUserFunding"] is False
+    assert decision["shardFunding"]["strategyAction"] == "BUY_YES"
+    assert decision["shardFunding"]["strategyPlannedContracts"] == 1.0

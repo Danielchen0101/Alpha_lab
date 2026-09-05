@@ -332,6 +332,27 @@
 .kalshi-error { border-left-color: var(--kalshi-red); }
 .kalshi-error span { display: grid; gap: 2px; }
 .kalshi-error button { min-height: 30px; margin-left: auto; }
+.kalshi-funding-notice {
+  padding: 16px 20px;
+  border: 1px solid var(--kalshi-rule);
+  border-left: 3px solid var(--kalshi-green);
+  background: var(--kalshi-surface);
+  color: var(--kalshi-ink);
+}
+.kalshi-funding-notice.needs-attention {
+  border-left-color: var(--kalshi-orange);
+  background: color-mix(in srgb, var(--kalshi-orange) 5%, var(--kalshi-surface));
+}
+.kalshi-funding-heading { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.kalshi-funding-heading > .anticon { color: var(--kalshi-green); font-size: 18px; }
+.needs-attention .kalshi-funding-heading > .anticon { color: var(--kalshi-orange); }
+.kalshi-funding-heading strong { font-size: 14px; }
+.kalshi-funding-heading small { display: block; color: var(--kalshi-muted); margin-top: 3px; }
+.kalshi-funding-heading > span:last-child:not(.anticon) { margin-left: auto; color: var(--kalshi-muted); font-size: 12px; }
+.kalshi-funding-balances { display: flex; flex-wrap: wrap; gap: 14px 32px; margin: 16px 0 12px; }
+.kalshi-funding-balances dt { color: var(--kalshi-muted); font-size: 12px; }
+.kalshi-funding-balances dd { margin: 4px 0 0; color: var(--kalshi-ink); font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.kalshi-funding-notice p { margin: 0; color: var(--kalshi-muted); font-size: 12px; line-height: 1.6; }
 .kalshi-loading { min-height: 120px; justify-content: center; border: 1px solid var(--kalshi-rule); }
 
 .kalshi-metric-strip {

@@ -1422,7 +1422,7 @@ def test_routine_wait_decisions_never_upload_full_durable_heartbeats(tmp_path):
     assert len(calls) == 1
 
 
-def test_entry_confirmation_persists_only_compact_authoritative_cursor(tmp_path):
+def test_entry_confirmation_persists_compact_cursor_and_clears_invalid_frame(tmp_path):
     durable = {}
     saves = []
 
@@ -1481,16 +1481,46 @@ def test_entry_confirmation_persists_only_compact_authoritative_cursor(tmp_path)
         "blockingReasons": ["net_edge"],
         "entryConfirmation": {},
     })
-    assert len(saves) == 1
+    assert len(saves) == 2
 
     restored = KalshiRobotState(
         str(tmp_path / "restored.json"),
         state_loader=durable.get,
         state_saver=save,
     ).get("user-a", environment="real")
-    progress = restored["strategy"]["entryConfirmations"]["btc15m"]
-    assert progress["ticker"] == "KXBTC15M-DURABLE"
-    assert progress["streak"] == 1
+    assert "btc15m" not in restored["strategy"]["entryConfirmations"]
+
+    store.record("user-a", {
+        **candidate,
+        "generatedAt": "2026-08-03T12:00:10Z",
+    })
+    # A delayed older record must not erase a newer valid family cursor.
+    store.record("user-a", {
+        **candidate,
+        "generatedAt": "2026-08-03T12:00:06Z",
+        "blockingReasons": ["data_freshness"],
+        "entryConfirmation": {},
+    })
+    progress = store.get("user-a", environment="real")["strategy"]["entryConfirmations"]["btc15m"]
+    assert progress["generatedAt"] == "2026-08-03T12:00:10Z"
+    # Another strategy family must not erase BTC15's progress.
+    store.record("user-a", {
+        **candidate,
+        "generatedAt": "2026-08-03T12:00:12Z",
+        "market": {"ticker": "KXBTCD-OTHER"},
+        "blockingReasons": ["net_edge"],
+        "entryConfirmation": {},
+    })
+    assert "btc15m" in store.get("user-a", environment="real")["strategy"]["entryConfirmations"]
+    # A confirmed strategy signal with an execution blocker is not a
+    # consecutive executable frame; preserving it could bypass revalidation.
+    store.record("user-a", {
+        **candidate,
+        "generatedAt": "2026-08-03T12:00:15Z",
+        "blockingReasons": ["entry_confirmation", "kalshi_live_shard_insufficient_cash"],
+        "entryConfirmation": {**candidate["entryConfirmation"], "confirmed": True, "streak": 2},
+    })
+    assert "btc15m" not in store.get("user-a", environment="real")["strategy"]["entryConfirmations"]
 
 
 def test_transient_errors_never_rewrite_full_durable_state(tmp_path):

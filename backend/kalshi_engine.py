@@ -14,6 +14,9 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
 BTC_15M_SERIES = "KXBTC15M"
+# Fractional cash rounding can make a slightly smaller order more economical.
+# This is a bounded fallback, never a reason to expand an account's risk cap.
+MAX_ECONOMIC_SIZE_SEARCH_STEPS = 1_000
 
 DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "executionMode": "paper",
@@ -557,6 +560,53 @@ def _ceil_contracts(value: float, step: float) -> float:
     normalized_step = max(0.01, float(step))
     units = math.ceil((max(0.0, float(value)) - 1e-12) / normalized_step)
     return round(units * normalized_step, 8)
+
+
+def _smaller_economic_order_size(
+    levels: Sequence[Tuple[float, float]],
+    contracts: float,
+    *,
+    step: float,
+    minimum_contracts: float,
+    conservative_probability: float,
+    dollar_cap: float,
+    fee_rate: float,
+    max_fee_to_profit_pct: float,
+) -> Tuple[float, int]:
+    """Keep the largest cap-fitting size unless a smaller size clears economics.
+
+    Cash debit is rounded to cents, so fee burden and EV are not monotone in
+    fractional quantity. A rejected maximum therefore does not imply that all
+    smaller quantities are invalid. Search downward using the same marginal
+    book price and exact cost as execution. Never cross the minimum quantity,
+    expand the budget, or relax the existing positive-EV / fee-burden gates.
+    Exhausting the bounded search returns the original rejected size so the
+    caller still reports its normal order-economics blocker and diagnostics.
+    """
+    original = max(0.0, float(contracts))
+    candidate = original
+    tested = 0
+    for _ in range(MAX_ECONOMIC_SIZE_SEARCH_STEPS):
+        if candidate < minimum_contracts - 1e-12 or candidate <= 0.0:
+            break
+        tested += 1
+        price = _worst_fill_price(levels, candidate)
+        if price is not None:
+            cost = kalshi_order_cost(price, candidate, fee_rate)
+            gross_profit = candidate * (1.0 - price)
+            expected_value = (
+                conservative_probability * candidate - cost["cashDebit"]
+            )
+            if (
+                gross_profit > 0.0
+                and expected_value > 0.0
+                and cost["allInFee"] / gross_profit * 100.0
+                <= max_fee_to_profit_pct
+                and cost["cashDebit"] <= dollar_cap + 1e-12
+            ):
+                return candidate, tested
+        candidate = _floor_contracts(candidate - step, step)
+    return original, tested
 
 
 def _recovery_profile(
@@ -1302,6 +1352,9 @@ def evaluate_btc15_contract(
         else 1.0
     )
     fractional_sizing_applied = False
+    economic_size_adjustment_applied = False
+    economic_size_candidates_tested = 0
+    pre_economic_contracts_fp = 0.0
     small_account_sizing_applied = False
     small_account_risk_budget = 0.0
     small_account_unscaled_risk_target = 0.0
@@ -1449,6 +1502,25 @@ def evaluate_btc15_contract(
             and contracts < minimum_economic_contracts
         ):
             contracts = 0.0
+        pre_economic_contracts_fp = contracts
+        if fractional_sizing_enabled and contracts > 0.0:
+            contracts, economic_size_candidates_tested = (
+                _smaller_economic_order_size(
+                    eligible_levels,
+                    contracts,
+                    step=contract_step,
+                    minimum_contracts=minimum_economic_contracts,
+                    conservative_probability=conservative_probability,
+                    dollar_cap=exact_dollar_cap,
+                    fee_rate=settings["takerFeeRate"],
+                    max_fee_to_profit_pct=settings[
+                        "maxAllInFeeToPotentialProfitPct"
+                    ],
+                )
+            )
+            economic_size_adjustment_applied = (
+                contracts < pre_economic_contracts_fp - 1e-12
+            )
         execution_limit_price = (
             _worst_fill_price(eligible_levels, contracts)
             if contracts > 0.0
@@ -1677,6 +1749,9 @@ def evaluate_btc15_contract(
             "microPositionLossCap": micro_position_loss_cap,
             "fractionalSizingEnabled": fractional_sizing_enabled,
             "fractionalSizingApplied": fractional_sizing_applied,
+            "economicSizeAdjustmentApplied": economic_size_adjustment_applied,
+            "economicSizeCandidatesTested": economic_size_candidates_tested,
+            "preEconomicContractsFp": pre_economic_contracts_fp,
             "smallAccountSizingApplied": small_account_sizing_applied,
             "smallAccountRiskTargetPct": settings["smallAccountRiskTargetPct"],
             "smallAccountUnscaledRiskTarget": small_account_unscaled_risk_target,
