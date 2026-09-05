@@ -204,6 +204,85 @@ export interface KalshiPrimaryWaitReason {
   source: 'backend' | 'current' | 'aggregate';
 }
 
+const SHARD_FUNDING_BLOCKERS = {
+  kalshi_live_shard_cash_insufficient: [
+    'Contract exchange funds are insufficient', '合约所属分片资金不足',
+  ],
+  kalshi_live_shard_cash_unavailable: [
+    'Contract exchange balance is unverified', '合约所属分片余额尚未核实',
+  ],
+} as const;
+
+export interface KalshiFundingReadiness {
+  status: 'funded' | 'insufficient' | 'unverified' | 'exit';
+  exchangeIndex: number | null;
+  aggregateCash: number | null;
+  shardCash: number | null;
+  requiredCash: number | null;
+  fundingGap: number | null;
+  strategyQualified: boolean;
+}
+
+/** Aggregate account cash is not collateral available to this contract. */
+export const deriveKalshiFundingReadiness = (
+  decision: Partial<KalshiDecision> | null | undefined,
+  isRealMode: boolean,
+): KalshiFundingReadiness | null => {
+  if (!isRealMode || !decision) return null;
+  const source = { ...decision.account, ...decision.shardFunding };
+  const blockers = activeKalshiBlockingReasons(decision.blockingReasons);
+  const blocked = blockers.includes('kalshi_live_shard_cash_insufficient');
+  const unavailable = blockers.includes('kalshi_live_shard_cash_unavailable');
+  if (
+    !decision.shardFunding
+    && source.fundingStatus === undefined
+    && source.shardCashKnown === undefined
+    && !blocked
+    && !unavailable
+  ) return null;
+  const cash = number(source.shardCashAvailable);
+  const cashKnown = source.shardCashKnown === true && cash !== null && cash >= 0;
+  const rawIndex = number(source.exchangeIndex);
+  const exchangeIndex = rawIndex !== null && Number.isInteger(rawIndex) && rawIndex >= 0
+    ? rawIndex : null;
+  const exit = source.applicable === false || String(decision.action || '').startsWith('SELL_');
+  const insufficient = blocked || source.executionBlocked === true
+    || source.requiresUserFunding === true || source.fundingStatus === 'empty'
+    || (cashKnown && cash === 0);
+  return {
+    status: exit ? 'exit' : unavailable ? 'unverified' : insufficient ? 'insufficient'
+      : cashKnown ? 'funded' : 'unverified',
+    exchangeIndex,
+    aggregateCash: number(source.aggregateCashAvailable),
+    // Never replace an unknown/zero shard balance with aggregate cash.
+    shardCash: cashKnown ? cash : null,
+    requiredCash: number(source.requiredCash),
+    fundingGap: number(source.fundingGap),
+    strategyQualified: source.strategyQualified === true,
+  };
+};
+
+export const kalshiFundingSummary = (funding: KalshiFundingReadiness, chinese: boolean): string => {
+  if (funding.status === 'exit') {
+    return chinese
+      ? '分片现金不足不会阻止减仓和平仓；退出仍须通过持仓、盘口与最终路由检查。'
+      : 'Low exchange cash does not block reduce-only exits; inventory, liquidity, and final routing checks still apply.';
+  }
+  if (funding.status === 'insufficient') {
+    return chinese
+      ? '资金不足阻止新开仓和加仓，不阻止减仓和平仓。其他分片的现金不能直接用于该合约；AlphaLab 未自动转移任何资金。'
+      : 'Insufficient funds block new entries and adds, not reduce-only exits. Cash on other exchanges cannot directly fund this contract; AlphaLab has not transferred any funds.';
+  }
+  if (funding.status === 'unverified') {
+    return chinese
+      ? '总账户现金不等于该合约的可用资金。后台须核实所属分片余额后才能开仓；未核实不代表余额为零。'
+      : 'Aggregate cash is not this contract’s available collateral. The backend must verify its exchange balance before an entry; unverified does not mean zero.';
+  }
+  return chinese
+    ? '合约所属分片有可用现金，但这不代表已经下单；仍须通过交易信号、仓位限制与最终账户检查。'
+    : 'This contract’s exchange has cash available, but no order is implied; signal, sizing, and final account checks must still pass.';
+};
+
 const normalizedPrimaryBlocker = (value: unknown): { key: string; count?: number } | null => {
   if (typeof value === 'string') {
     const key = activeKalshiBlockingReasons([value])[0];
@@ -226,6 +305,8 @@ export const primaryKalshiNoTradeReason = (
     const operationalPriority = [
       'robot_scheduler_unhealthy',
       'account_snapshot_stale',
+      'kalshi_live_shard_cash_unavailable',
+      'kalshi_live_shard_cash_insufficient',
       'reference_ready',
       'data_freshness',
     ];
@@ -677,6 +758,10 @@ export const actionSummary = (decision: KalshiDecision | null, chinese: boolean,
         ? `后台账户快照已过期（${ageLabel}）；必须等机器人取得新的余额、持仓和订单数据后才能下单。`
         : `The scheduler-owned account snapshot is stale (${ageLabel}); fresh balance, position, and order data are required before routing.`;
     }
+    const funding = deriveKalshiFundingReadiness(decision, isRealMode);
+    if (funding && ['insufficient', 'unverified'].includes(funding.status)) {
+      return kalshiFundingSummary(funding, chinese);
+    }
     const count = activeReasons.length;
     const accountLabel = isRealMode ? (chinese ? 'Kalshi 实盘账户' : 'Kalshi Real account') : (chinese ? 'AlphaLab 模拟账户' : 'AlphaLab Paper account');
     return chinese
@@ -691,6 +776,44 @@ export const actionSummary = (decision: KalshiDecision | null, chinese: boolean,
   return chinese
     ? `扣除费用和模型不确定性后仍有正边际，并通过盘口与账户门控；只有机器人运行时才会提交限价单。`
     : 'Edge remains positive after fees and uncertainty, and all book and account gates clear; only the running robot submits limit orders.';
+};
+
+export const KalshiFundingNotice: React.FC<{
+  decision: Partial<KalshiDecision> | null;
+  isRealMode: boolean;
+  chinese: boolean;
+}> = ({ decision, isRealMode, chinese }) => {
+  const funding = deriveKalshiFundingReadiness(decision, isRealMode);
+  if (!funding) return null;
+  const copy = (en: string, zh: string) => chinese ? zh : en;
+  const attention = funding.status === 'insufficient' || funding.status === 'unverified';
+  const titles = {
+    funded: copy('Contract exchange funds available', '合约分片资金可用'),
+    insufficient: copy('Entry blocked: contract exchange needs funds', '开仓受阻：合约所属分片资金不足'),
+    unverified: copy('Contract exchange balance awaiting verification', '合约分片余额待核实'),
+    exit: copy('Position exits remain eligible for checks', '持仓退出仍可接受检查'),
+  };
+  const exchangeName = funding.exchangeIndex === 2
+    ? copy('Crypto Predictions · exchange 2', '加密预测 · 分片 2')
+    : funding.exchangeIndex === null
+      ? copy('Contract exchange unverified', '合约分片待核实')
+      : copy(`Contract exchange ${funding.exchangeIndex}`, `合约分片 ${funding.exchangeIndex}`);
+  return (
+    <section className={`kalshi-funding-notice${attention ? ' needs-attention' : ''}`} data-testid="kalshi-funding-readiness" aria-label={copy('Contract funding readiness', '合约资金状态')}>
+      <div className="kalshi-funding-heading">
+        {attention ? <WarningOutlined /> : <SafetyCertificateOutlined />}
+        <div><strong>{titles[funding.status]}</strong><small>{exchangeName}</small></div>
+        {funding.strategyQualified && <span>{copy('Signal qualified · funding checked separately', '信号已通过 · 资金单独检查')}</span>}
+      </div>
+      <dl className="kalshi-funding-balances">
+        <div><dt>{copy('Cash across all exchanges', '所有分片合计现金')}</dt><dd>{money(funding.aggregateCash)}</dd></div>
+        <div><dt>{copy('Cash on this contract’s exchange', '该合约分片可用现金')}</dt><dd>{funding.shardCash === null ? copy('Unverified', '待核实') : money(funding.shardCash)}</dd></div>
+        {funding.requiredCash !== null && <div><dt>{copy('Planned entry debit', '计划开仓支出')}</dt><dd>{money(funding.requiredCash)}</dd></div>}
+        {funding.fundingGap !== null && funding.fundingGap > 0 && <div><dt>{copy('Planned entry funding gap', '计划开仓资金缺口')}</dt><dd>{money(funding.fundingGap)}</dd></div>}
+      </dl>
+      <p>{kalshiFundingSummary(funding, chinese)}</p>
+    </section>
+  );
 };
 
 const Kalshi: React.FC = () => {
@@ -1517,6 +1640,7 @@ const Kalshi: React.FC = () => {
       minimum_hold_period: copy('Minimum hold time has not elapsed', '尚未达到最短持仓时间'),
       account_snapshot_stale: copy('The scheduler-owned Real account snapshot is stale', '后台实盘账户快照已过期'),
       robot_scheduler_unhealthy: copy('The live robot scheduler is unhealthy', '实盘机器人调度器当前不健康'),
+      ...Object.fromEntries(Object.entries(SHARD_FUNDING_BLOCKERS).map(([key, label]) => [key, copy(label[0], label[1])])),
     };
     const reasons = activeKalshiBlockingReasons(item?.blockingReasons)
       .map((reason: string) => reasonLabels[reason] || reason.replace(/_/g, ' '));
@@ -1867,7 +1991,7 @@ const Kalshi: React.FC = () => {
       { key: 'orders', en: 'Order recorded', zh: '已记录订单' },
     ];
     const denominator = Math.max(1, Number(funnel?.observations || 0));
-    const blockerLabels: Record<string, [string, string]> = {
+    const blockerLabels: Record<string, readonly [string, string]> = {
       conservative_edge: ['Conservative edge', '保守边际'],
       net_edge: ['Net edge after fees', '扣费后边际'],
       entry_window: ['Entry window', '进场时窗'],
@@ -1883,6 +2007,7 @@ const Kalshi: React.FC = () => {
       position_size: ['Risk-sized position', '风险仓位数量'],
       single_market_exposure: ['Single-market exposure', '单市场敞口'],
       portfolio_exposure: ['Portfolio exposure', '组合敞口'],
+      ...SHARD_FUNDING_BLOCKERS,
     };
     const blockerName = (key: string) => {
       const label = blockerLabels[key];
@@ -1924,6 +2049,8 @@ const Kalshi: React.FC = () => {
       position_size: ['The risk budget cannot support an economically valid contract size.', '当前风险预算不足以支持经济上合理的合约数量。'],
       single_market_exposure: ['This market has reached its exposure ceiling.', '该市场已经达到单市场敞口上限。'],
       portfolio_exposure: ['The Kalshi portfolio has reached its exposure ceiling.', 'Kalshi 组合已经达到总敞口上限。'],
+      kalshi_live_shard_cash_insufficient: ['Cash on other exchanges cannot fund this contract; entries need collateral on the contract’s exchange.', '其他分片的现金不能用于该合约，开仓需要合约所属分片有足够资金。'],
+      kalshi_live_shard_cash_unavailable: ['The contract’s exchange balance must be verified before opening a position.', '开仓前必须核实合约所属分片的可用余额。'],
     };
     const primaryDetail = primaryReason
       ? primaryReasonDetails[primaryReason.key]?.[chinese ? 1 : 0]
@@ -2148,6 +2275,8 @@ const Kalshi: React.FC = () => {
         <div><span>{copy('AUTOMATION', '自动交易')}</span><strong className={robotState?.enabled ? 'is-on' : ''}>{robotState?.enabled ? copy('RUNNING', '运行中') : copy('STOPPED', '已停止')}</strong></div>
         <div><span>{copy('ACCOUNT SOURCE', '账户数据源')}</span><strong>{isRealMode ? 'KALSHI API' : 'ALPHALAB'}</strong></div>
       </section>
+
+      {showRobotActions && <KalshiFundingNotice decision={decision} isRealMode={isRealMode} chinese={chinese} />}
 
       {requiresExplicitEnable && showRobotActions && (
         <div className="kalshi-rearm-banner" role="status" data-testid="kalshi-rearm-required">

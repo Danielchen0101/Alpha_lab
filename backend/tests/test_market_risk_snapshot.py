@@ -428,6 +428,35 @@ def test_kalshi_material_observations_preserve_source_and_confirmation_lineage(
             ]
             is True
         )
+        # Failed exits may have neither an entry-confirmation nor a champion
+        # frame. Preserve each attempt despite routine WAIT throttling, but
+        # deduplicate a repeated write of the identical attempt.
+        failure = observation(
+            'KXBTC15M-LINEAGE:scheduler:routing_failure:attempt-a',
+            'scheduler',
+            policy='routing_failure_unique',
+        )
+        failure.update({
+            'execution_intent': 'WAIT_LIVE_ROUTING_FAILURE',
+            'blocked_reasons': ['kalshi_account_request_failed'],
+        })
+        failure['features']['routingFailure'] = {
+            'code': 'kalshi_account_request_failed',
+            'outcome': 'unknown',
+            'intendedAction': 'SELL_YES',
+            'clientOrderId': 'attempt-a',
+        }
+        backend._kalshi_save_observation('user-a', failure)
+        next_failure = {
+            **failure,
+            'observation_key': 'KXBTC15M-LINEAGE:scheduler:routing_failure:attempt-b',
+            'observed_at': '2026-08-30T12:00:05Z',
+        }
+        backend._kalshi_save_observation('user-a', next_failure)
+        duplicate_failure = backend._kalshi_save_observation('user-a', next_failure)
+        assert len(store.rows) == 8
+        assert duplicate_failure['persistenceDeduplicated'] is True
+        assert store.rows[-1]['order_result'] is None
     finally:
         with backend._KALSHI_PERSISTENCE_TRAFFIC_LOCK:
             backend._KALSHI_OBSERVATION_WRITE_CACHE.clear()

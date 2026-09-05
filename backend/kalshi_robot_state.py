@@ -1636,17 +1636,18 @@ class KalshiRobotState:
                 decision.get("entryConfirmation") or {}
             )
             confirmation_progress_changed = False
+            confirmation_reasons = {
+                str(value) for value in (decision.get("blockingReasons") or [])
+            }
             confirmation_eligible = bool(
                 confirmation_family
                 and entry_confirmation.get("required")
                 and entry_confirmation.get("dataQualityEligible") is not False
                 and str(decision.get("side") or "").upper() in {"YES", "NO"}
                 and int(_number(entry_confirmation.get("streak"), 0.0)) >= 1
+                and confirmation_reasons <= {"entry_confirmation"}
                 and (
-                    "entry_confirmation" in set(
-                        str(value)
-                        for value in (decision.get("blockingReasons") or [])
-                    )
+                    "entry_confirmation" in confirmation_reasons
                     or bool(entry_confirmation.get("confirmed"))
                 )
             )
@@ -1725,6 +1726,22 @@ class KalshiRobotState:
                 )
                 durable_progress[confirmation_family] = progress
                 strategy["entryConfirmations"] = durable_progress
+
+            elif confirmation_family:
+                # Only execution cycles call record(); browser observations
+                # cannot advance or clear this cursor. A newer disqualified
+                # frame breaks the consecutive signal even across restarts.
+                # Keeping the old cursor would let a later good frame bridge
+                # an intervening stale quote, failed edge, or funding block.
+                strategy = bucket["strategy"]
+                durable_progress = dict(strategy.get("entryConfirmations") or {})
+                previous = dict(durable_progress.get(confirmation_family) or {})
+                previous_time = _utc_time_sort_key(previous.get("generatedAt"))[1]
+                row_time = _utc_time_sort_key(row.get("generatedAt"))[1]
+                if previous and row_time >= previous_time:
+                    durable_progress.pop(confirmation_family, None)
+                    strategy["entryConfirmations"] = durable_progress
+                    confirmation_progress_changed = True
 
             if (
                 order

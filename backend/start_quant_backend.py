@@ -56363,6 +56363,7 @@ def _kalshi_save_observation(user_id, observation):
             )
         },
         'championQualifyingFrame': champion.get('qualifyingFrame'),
+        'routingFailure': features.get('routingFailure'),
     }, sort_keys=True, separators=(',', ':'), default=str)
     state_key = '{}:{}:{}:{}:{}'.format(
         str(user_id),
@@ -56379,6 +56380,7 @@ def _kalshi_save_observation(user_id, observation):
             'entry_confirmation_5s',
             'champion_qualifying_5s',
             'order_event_unique',
+            'routing_failure_unique',
         )
         or entry_confirmation.get('required') is True
         or entry_confirmation.get('confirmed') is True

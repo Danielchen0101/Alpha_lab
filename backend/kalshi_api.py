@@ -32,6 +32,7 @@ try:
         kalshi_order_cost,
         normalize_strategy_config,
         select_btc15_market,
+        _smaller_economic_order_size,
     )
 except ImportError:  # pragma: no cover - package-style test imports
     from .kalshi_engine import (
@@ -40,6 +41,7 @@ except ImportError:  # pragma: no cover - package-style test imports
         kalshi_order_cost,
         normalize_strategy_config,
         select_btc15_market,
+        _smaller_economic_order_size,
     )
 try:
     from kalshi_robot_state import KalshiRobotState
@@ -99,6 +101,8 @@ KALSHI_LIVE_MARKET_STATE_CONFLICTS = frozenset({
 })
 KALSHI_LIVE_ROUTING_STATE_CONFLICTS = frozenset({
     "kalshi_live_cash_changed",
+    "kalshi_live_shard_cash_insufficient",
+    "kalshi_live_shard_cash_unavailable",
     "kalshi_live_exposure_changed",
     "kalshi_live_open_order_conflict",
     "kalshi_live_position_ownership_conflict",
@@ -1224,7 +1228,18 @@ def _market_observation(
     observation_policy = "routine_15s"
     bucket_seconds = 15
     bucket_epoch = int(observed.timestamp()) // bucket_seconds * bucket_seconds
-    if order:
+    routing_failure = dict(decision.get("routingFailure") or {})
+    if routing_failure and not order:
+        identity = "|".join((
+            str(routing_failure.get("clientOrderId") or ""),
+            str(routing_failure.get("code") or ""),
+            observed.isoformat(),
+        ))
+        token = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+        observation_key = f"{ticker}:{normalized_source}:routing_failure:{token}"
+        observation_policy = "routing_failure_unique"
+        bucket_seconds = 0
+    elif order:
         order_identity = str(
             order.get("order_id")
             or order.get("client_order_id")
@@ -1308,6 +1323,7 @@ def _market_observation(
                     "status", "yesBid", "yesAsk", "noBid", "noAsk",
                     "yesAskDepth", "noAskDepth", "selectedDepth",
                     "edgeEligibleDepth", "referenceAgeSeconds",
+                    "exchangeIndex",
                 )
             },
             "model": {
@@ -1348,6 +1364,8 @@ def _market_observation(
                 for key in (
                     "heldSide", "heldCount", "cashAvailable",
                     "portfolioExposure", "currentMarketExposure",
+                    "exchangeIndex", "aggregateCashAvailable",
+                    "shardCashAvailable", "shardCashKnown", "fundingStatus",
                 )
             },
             "positionManagement": dict(decision.get("positionManagement") or {}),
@@ -1369,6 +1387,8 @@ def _market_observation(
             "feeReconciliation": _fee_reconciliation(decision, order),
             "feePolicy": dict(decision.get("feePolicy") or {}),
             "makerShadow": dict(decision.get("makerShadow") or {}),
+            "shardFunding": dict(decision.get("shardFunding") or {}),
+            "routingFailure": routing_failure,
         },
         "order_result": ({
             key: order.get(key)
@@ -1440,6 +1460,57 @@ def _open_order_exposure(row: Mapping[str, Any]) -> float:
     return remaining * (price if price is not None and price > 0.0 else 1.0)
 
 
+def _exchange_shard_index(value: Any) -> Optional[int]:
+    """Only an explicit nonnegative integer identifies a collateral shard."""
+    if isinstance(value, bool):
+        return None
+    number = _finite_number(value, None)
+    if number is None or number < 0 or not number.is_integer():
+        return None
+    return int(number)
+
+
+def _shard_cash_dollars(balance: Mapping[str, Any], exchange_index: Any) -> Optional[float]:
+    """Kalshi breakdown.balance is DOLLARS, unlike top-level balance cents.
+
+    Missing, duplicate, or malformed rows are unknown, never aggregate cash.
+    Restricted API keys omit the breakdown; the final router reads a scoped
+    balance for those keys instead.
+    """
+    index = _exchange_shard_index(exchange_index)
+    rows = balance.get("balance_breakdown")
+    if index is None or not isinstance(rows, list):
+        return None
+    matches = [
+        row for row in rows
+        if isinstance(row, Mapping)
+        and _exchange_shard_index(row.get("exchange_index")) == index
+    ]
+    if len(matches) != 1:
+        return None
+    value = _finite_number(matches[0].get("balance"), None)
+    return value if value is not None and value >= 0 else None
+
+
+def _shard_funding_context(balance: Mapping[str, Any], exchange_index: Any) -> Dict[str, Any]:
+    index = _exchange_shard_index(exchange_index)
+    cash = _shard_cash_dollars(balance, index)
+    aggregate = _finite_number(balance.get("balance_dollars"), None)
+    if aggregate is None:
+        aggregate = _finite_number(balance.get("balance"), 0.0) / 100.0
+    return {
+        "exchangeIndex": index,
+        "aggregateCashAvailable": max(0.0, aggregate),
+        "shardCashAvailable": cash,
+        "shardCashKnown": cash is not None,
+        "fundingStatus": (
+            "funded" if cash is not None and cash > 0
+            else "empty" if cash == 0
+            else "unverified"
+        ),
+    }
+
+
 def _paper_account_context(
     portfolio: Mapping[str, Any],
     state: Mapping[str, Any],
@@ -1447,6 +1518,7 @@ def _paper_account_context(
     bankroll: float,
     *,
     event_ticker: Optional[str] = None,
+    exchange_index: Optional[Any] = None,
 ) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     positions = list(portfolio.get("positions") or [])
@@ -1525,6 +1597,10 @@ def _paper_account_context(
     return {
         "bankroll": bankroll,
         "cashAvailable": max(0.0, cash_available),
+        # Keep aggregate-capital strategy/shadow evaluation independent of
+        # funding logistics. A separate real-entry gate caps shard-local cash
+        # while retaining the intended action as opportunity evidence.
+        **_shard_funding_context(balance, exchange_index),
         "portfolioExposure": portfolio_exposure,
         "currentMarketExposure": current_market_exposure,
         "currentTickerExposure": sum(
@@ -2037,6 +2113,10 @@ def _entry_confirmation(
         if isinstance(durable_progress, Mapping) and family
         else None
     )
+    family_history = [
+        row for row in list(robot_state.get("decisions") or [])
+        if _market_family(str(row.get("ticker") or "")) == family
+    ]
     if isinstance(persisted, Mapping):
         persisted_time = _parse_utc(persisted.get("generatedAt"))
         elapsed = (
@@ -2044,14 +2124,29 @@ def _entry_confirmation(
             if persisted_time is not None
             else None
         )
+        newest = family_history[0] if family_history else {}
+        newest_time = _parse_utc(newest.get("generatedAt"))
+        newest_reasons = set(str(value) for value in newest.get("blockingReasons") or [])
+        newer_invalid_frame = bool(
+            persisted_time is not None
+            and newest_time is not None
+            and newest_time >= persisted_time
+            and (
+                str(newest.get("ticker") or "") != normalized_ticker
+                or str(newest.get("side") or "").upper() != normalized_side
+                or newest_reasons - {"entry_confirmation"}
+                or (newest.get("entryConfirmation") or {}).get("dataQualityEligible") is False
+            )
+        )
         if (
             str(persisted.get("ticker") or "") == normalized_ticker
             and str(persisted.get("side") or "").upper()
             == normalized_side
             and persisted.get("dataQualityEligible") is True
             and elapsed is not None
-            and elapsed >= -1e-6
+            and elapsed > 1e-6
             and elapsed <= max_gap
+            and not newer_invalid_frame
         ):
             prior_streak = max(
                 1,
@@ -2081,7 +2176,9 @@ def _entry_confirmation(
     # The most recent decision in this same strategy family must describe the
     # same ticker and side.  This deliberately resets an hourly confirmation
     # whenever the selected strike changes, even if an older strike reappears.
-    for row in list(robot_state.get("decisions") or []):
+    # An explicit durable frame that cannot extend the streak must reset it;
+    # do not resurrect a stale eligible row hidden behind that invalid frame.
+    for row in ([] if isinstance(persisted, Mapping) else family_history):
         row_ticker = str(row.get("ticker") or "")
         if _market_family(row_ticker) != family:
             continue
@@ -2092,9 +2189,11 @@ def _entry_confirmation(
             row_ticker != normalized_ticker
             or row_side != normalized_side
             or row_time is None
-            or (previous_time - row_time).total_seconds() < -1e-6
+            or (previous_time - row_time).total_seconds() <= 1e-6
             or (previous_time - row_time).total_seconds() > max_gap
             or "entry_confirmation" not in reasons
+            or reasons - {"entry_confirmation"}
+            or (row.get("entryConfirmation") or {}).get("dataQualityEligible") is False
         ):
             break
         streak += 1
@@ -2851,6 +2950,145 @@ def _paper_order_payload(
         # ticker-based auto-route fallback for older/missing market metadata.
         "exchange_index": authoritative_exchange_index,
     }
+
+
+def _apply_real_shard_funding_gate(
+    decision: Dict[str, Any],
+    context: Mapping[str, Any],
+    *,
+    price_tolerance: float = 0.0,
+    count_override: Optional[float] = None,
+) -> bool:
+    """Separate executable collateral from the capital-qualified signal.
+
+    This never moves money and never restricts reduce-only exits. Unknown
+    collateral is resolved by an uncached scoped read in the final preflight;
+    a known empty shard is visible even while the signal itself is WAIT.
+    """
+    action = str(decision.get("action") or "WAIT")
+    funding = {
+        key: context.get(key) for key in (
+            "exchangeIndex", "aggregateCashAvailable", "shardCashAvailable",
+            "shardCashKnown", "fundingStatus",
+        )
+    }
+    funding.update({
+        "strategyAction": action,
+        "strategyQualified": action.startswith("BUY_"),
+        "applicable": not action.startswith("SELL_"),
+        "requiresUserFunding": context.get("fundingStatus") == "empty",
+    })
+    decision["shardFunding"] = funding
+    if action.startswith("SELL_"):
+        return False
+    cash = _finite_number(context.get("shardCashAvailable"), None)
+    if context.get("shardCashKnown") is not True or cash is None:
+        return False
+    payload = _paper_order_payload(
+        decision,
+        str((decision.get("market") or {}).get("ticker") or ""),
+        price_tolerance=price_tolerance,
+        count_override=count_override,
+        exchange_index=context.get("exchangeIndex"),
+    )
+    insufficient = cash <= 0.0
+    if action.startswith("BUY_") and payload:
+        sizing = dict(decision.get("sizing") or {})
+        settings = normalize_strategy_config(decision.get("config") or {})
+        quantity = _contract_quantity(payload.get("count"))
+        price = _finite_number(payload.get("user_side_limit_price"), 0.0)
+        fee_rate = settings["takerFeeRate"]
+        required = kalshi_order_cost(price, quantity, fee_rate)["cashDebit"]
+        funding.update({
+            "strategyPlannedContracts": quantity,
+            "requiredCash": required,
+            "fundingGap": round(max(0.0, required - cash), 4),
+        })
+        if required > cash + 1e-9:
+            # Monotone exact-cost search preserves the engine's contract step,
+            # worst-fill limit and all existing risk/depth caps while avoiding
+            # needless rejections when only part of the capital is on-shard.
+            step = max(0.01, _finite_number(sizing.get("contractStep"), 1.0))
+            low, high = 0, int(math.floor(quantity / step + 1e-9))
+            while low < high:
+                middle = (low + high + 1) // 2
+                debit = kalshi_order_cost(price, middle * step, fee_rate)["cashDebit"]
+                if debit <= cash + 1e-9:
+                    low = middle
+                else:
+                    high = middle - 1
+            funded_quantity = _contract_quantity(low * step)
+            insufficient = funded_quantity <= 0
+            if not insufficient:
+                minimum_quantity = max(step, _finite_number(sizing.get("minimumEconomicContracts"), settings["minimumEconomicContracts"]))
+                conservative_probability = _finite_number((decision.get("edge") or {}).get("conservativeProbability"), None)
+                max_fee_ratio = settings["maxAllInFeeToPotentialProfitPct"]
+                if conservative_probability is not None:
+                    funded_quantity, _tested = _smaller_economic_order_size(
+                        [(price, quantity)], funded_quantity,
+                        step=step, minimum_contracts=minimum_quantity,
+                        conservative_probability=conservative_probability,
+                        dollar_cap=cash, fee_rate=fee_rate,
+                        max_fee_to_profit_pct=max_fee_ratio,
+                    )
+                economics = kalshi_order_cost(price, funded_quantity, fee_rate)
+                expected_value = conservative_probability * funded_quantity - economics["cashDebit"] if conservative_probability is not None else None
+                possible_profit = funded_quantity * (1.0 - price)
+                fee_ratio = 100.0 * economics["allInFee"] / possible_profit if possible_profit > 0 else float("inf")
+                # Downsizing must not bypass the engine's rounding-aware
+                # economic floor. Missing probability evidence is not consent
+                # to accept a newly resized real order.
+                insufficient = funded_quantity < minimum_quantity - 1e-9 or expected_value is None or expected_value <= 0 or fee_ratio > max_fee_ratio
+                funding["resizedExpectedValue"] = expected_value
+                funding["resizedFeeToPotentialProfitPct"] = fee_ratio if math.isfinite(fee_ratio) else None
+            if not insufficient:
+                decision["sizing"] = {
+                    **sizing,
+                    "contracts": funded_quantity,
+                    "contractsFp": funded_quantity,
+                    "plannedContractsFp": funded_quantity,
+                    "notional": round(price * funded_quantity, 4),
+                    "maximumLoss": economics["cashDebit"],
+                    "expectedValue": expected_value,
+                    "estimatedTradeFee": economics["tradeFee"],
+                    "roundingFee": economics["roundingFee"],
+                    "allInFee": economics["allInFee"],
+                    "estimatedFee": economics["allInFee"],
+                    "feeToPotentialProfitPct": fee_ratio,
+                    "shardCashSizingApplied": True,
+                }
+                funding["routedContracts"] = funded_quantity
+                funding["fundedCashDebit"] = kalshi_order_cost(price, funded_quantity, fee_rate)["cashDebit"]
+        else:
+            funding["routedContracts"] = quantity
+    if insufficient:
+        reason = "kalshi_live_shard_cash_insufficient"
+        decision["blockingReasons"] = list(dict.fromkeys(
+            list(decision.get("blockingReasons") or []) + [reason]
+        ))
+        funding["requiresUserFunding"] = True
+        funding["executionBlocked"] = True
+        if action.startswith("BUY_"):
+            decision["action"] = "WAIT"
+            decision["executionIntent"] = "WAIT_LIVE_SHARD_FUNDING"
+        decision["gates"] = list(decision.get("gates") or []) + [{
+            "key": reason,
+            "category": "account",
+            "name": "Market exchange collateral",
+            "nameZh": "合约分片可用资金",
+            "label": "Market exchange collateral",
+            "labelZh": "合约分片可用资金",
+            "status": "block",
+            "blocking": True,
+            "value": cash,
+            "threshold": funding.get("requiredCash") or "> 0",
+            "detail": (
+                f"Exchange shard {context.get('exchangeIndex')} has ${cash:.4f}; "
+                f"account total is ${_finite_number(context.get('aggregateCashAvailable')):.4f}. "
+                "Cash on other shards cannot fund this entry. No money was transferred."
+            ),
+        }]
+    return insufficient
 
 
 def _order_fill_count(order: Optional[Mapping[str, Any]]) -> float:
@@ -5813,6 +6051,17 @@ class _PaperRobotController:
             "balance": {
                 "balance": _cents_amount(balance_payload.get("balance")),
                 "portfolio_value": _cents_amount(balance_payload.get("portfolio_value") or balance_payload.get("portfolioValue")),
+                "balance_dollars": balance_payload.get("balance_dollars"),
+                "balance_breakdown": [
+                    {"exchange_index": index, "balance": str(cash)}
+                    for index in sorted({
+                        _exchange_shard_index(row.get("exchange_index"))
+                        for row in balance_payload.get("balance_breakdown") or []
+                        if isinstance(row, Mapping)
+                        and _exchange_shard_index(row.get("exchange_index")) is not None
+                    })
+                    if (cash := _shard_cash_dollars(balance_payload, index)) is not None
+                ],
             },
             "positions": [_tag_market_family(row) for row in positions],
             "orders": [_tag_market_family(row) for row in orders],
@@ -6110,6 +6359,8 @@ class _PaperRobotController:
         payload: Mapping[str, Any],
         live_payload: Mapping[str, Any],
         decision: Mapping[str, Any],
+        *,
+        verify_shard_cash: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """Re-evaluate irreversible account gates from the final fresh reads."""
         ticker = str(live_payload.get("ticker") or "")
@@ -6572,7 +6823,76 @@ class _PaperRobotController:
                 status=409,
                 code="kalshi_live_exposure_changed",
             )
+        if verify_shard_cash:
+            shard_cash = _shard_cash_dollars(balance, live_payload.get("exchange_index"))
+            if shard_cash is None:
+                raise KalshiApiError(
+                    "The target Kalshi exchange shard's available cash is unverified.",
+                    status=409,
+                    code="kalshi_live_shard_cash_unavailable",
+                )
+            if required_cash > shard_cash + 1e-9:
+                raise KalshiApiError(
+                    "Available cash on the target Kalshi exchange shard cannot fund this entry.",
+                    status=409,
+                    code="kalshi_live_shard_cash_insufficient",
+                )
         return None
+
+    def _complete_live_shard_preflight(
+        self,
+        config: Mapping[str, Any],
+        account: Dict[str, Any],
+        live_payload: Dict[str, Any],
+    ) -> None:
+        """Resolve entry collateral using authoritative metadata, never ticker prefixes."""
+        if live_payload.get("reduce_only"):
+            return
+        index = _exchange_shard_index(live_payload.get("exchange_index"))
+        if index is None:
+            # This read is only needed for older market responses without a
+            # shard. It does not retry or auto-submit an order.
+            ticker = str(live_payload.get("ticker") or "")
+            response = self._signed(config, "GET", f"/markets/{ticker}")
+            market = response.get("market") if isinstance(response, Mapping) else None
+            if not isinstance(market, Mapping) or str(market.get("ticker") or "") != ticker:
+                index = None
+            else:
+                index = _exchange_shard_index(market.get("exchange_index"))
+            if index is None:
+                raise KalshiApiError(
+                    "Kalshi did not identify the target market's exchange shard.",
+                    status=409,
+                    code="kalshi_live_shard_cash_unavailable",
+                )
+            live_payload["exchange_index"] = index
+        balance = dict(account.get("balance") or {})
+        if _shard_cash_dollars(balance, index) is not None:
+            return
+        scoped = self._signed(
+            config,
+            "GET",
+            "/portfolio/balance",
+            params={"subaccount": 0, "exchange_index": index},
+        )
+        cash = _finite_number(scoped.get("balance_dollars"), None) if isinstance(scoped, Mapping) else None
+        if cash is None and isinstance(scoped, Mapping):
+            cents = _finite_number(scoped.get("balance"), None)
+            cash = cents / 100.0 if cents is not None else None
+        if cash is None or cash < 0:
+            raise KalshiApiError(
+                "Kalshi omitted the target exchange shard's available balance.",
+                status=409,
+                code="kalshi_live_shard_cash_unavailable",
+            )
+        account["balance"] = {
+            **balance,
+            "balance_breakdown": [
+                row for row in balance.get("balance_breakdown") or []
+                if isinstance(row, Mapping)
+                and _exchange_shard_index(row.get("exchange_index")) != index
+            ] + [{"exchange_index": index, "balance": str(cash)}],
+        }
 
     def _submit_live_order(self, user_id: str, payload: Mapping[str, Any], decision: Mapping[str, Any]) -> Dict[str, Any]:
         live_payload = _live_order_payload(payload)
@@ -6623,6 +6943,7 @@ class _PaperRobotController:
                 payload,
                 live_payload,
                 decision,
+                verify_shard_cash=False,
             )
             if existing is not None:
                 normalized_existing = _normalise_live_order(
@@ -6645,6 +6966,28 @@ class _PaperRobotController:
             # The account read above can outlive both configuration and lease
             # generations. Reload durable mode/arming state once more, then
             # renew the exact fencing token immediately before the real POST.
+            self._complete_live_shard_preflight(config, account, live_payload)
+            if isinstance(decision, dict):
+                # Restricted API keys and older market metadata can require a
+                # final scoped read. Expose the verified execution funding,
+                # without replacing the separately retained strategy thesis.
+                funding_context = _shard_funding_context(
+                    account.get("balance") or {}, live_payload.get("exchange_index"),
+                )
+                decision["market"] = {
+                    **dict(decision.get("market") or {}),
+                    "exchangeIndex": funding_context["exchangeIndex"],
+                }
+                decision["account"] = {
+                    **dict(decision.get("account") or {}),
+                    **funding_context,
+                }
+                decision["shardFunding"] = {
+                    **dict(decision.get("shardFunding") or {}),
+                    **funding_context,
+                    "requiresUserFunding": funding_context["fundingStatus"] == "empty",
+                    "verifiedAtPreflight": True,
+                }
             latest = validate_authoritative_state()
             self._validate_live_order_preflight(
                 latest,
@@ -6654,12 +6997,28 @@ class _PaperRobotController:
                 decision,
             )
             self._renew_live_routing_lease(lease)
-            response = self._signed(
-                config,
-                "POST",
-                "/portfolio/events/orders",
-                json_body=live_payload,
-            )
+            try:
+                response = self._signed(
+                    config,
+                    "POST",
+                    "/portfolio/events/orders",
+                    json_body=live_payload,
+                )
+            except Exception as exc:
+                # A timeout/5xx does not prove that the exchange rejected the
+                # order. Persist uncertainty; never send a second POST here.
+                status = getattr(exc, "status", None)
+                setattr(exc, "kalshi_routing_failure", {
+                    "code": str(getattr(exc, "code", None) or type(exc).__name__),
+                    "httpStatus": status,
+                    "endpoint": "/portfolio/events/orders",
+                    "outcome": "rejected" if isinstance(status, int) and 400 <= status < 500 and status != 408 else "unknown",
+                    "phase": "submission",
+                    "intendedAction": str(decision.get("action") or ""),
+                    "plannedCount": _contract_quantity(live_payload.get("count")),
+                    "clientOrderId": str(live_payload.get("client_order_id") or ""),
+                })
+                raise
         raw_order = response.get("order") or response.get("order_response") or response
         if not isinstance(raw_order, Mapping):
             raw_order = {}
@@ -6680,6 +7039,42 @@ class _PaperRobotController:
         })
         self._notify_order(user_id, order, decision)
         return order
+
+    def _persist_routing_failure(
+        self,
+        user_id: str,
+        decision: Mapping[str, Any],
+        payload: Mapping[str, Any],
+        error: Exception,
+    ) -> None:
+        """Retain failed-attempt evidence even though scheduler health raises."""
+        failure = dict(getattr(error, "kalshi_routing_failure", None) or {
+            "code": str(getattr(error, "code", None) or type(error).__name__),
+            "httpStatus": getattr(error, "status", None),
+            "endpoint": getattr(error, "endpoint", None),
+            "outcome": "not_submitted" if getattr(error, "endpoint", None) and getattr(error, "endpoint", None) != "/portfolio/events/orders" else "unknown",
+            "phase": "preflight" if getattr(error, "endpoint", None) and getattr(error, "endpoint", None) != "/portfolio/events/orders" else "routing",
+            "intendedAction": str(decision.get("action") or ""),
+            "plannedCount": _contract_quantity(payload.get("count")),
+            "clientOrderId": str(payload.get("client_order_id") or ""),
+        })
+        failed_decision = {
+            **dict(decision),
+            "action": "WAIT",
+            "executionIntent": "WAIT_LIVE_ROUTING_FAILURE",
+            "routingFailure": failure,
+            "blockingReasons": list(dict.fromkeys(list(decision.get("blockingReasons") or []) + [failure["code"]])),
+        }
+        try:
+            self.state.record(user_id, failed_decision, None)
+        except Exception as persist_error:
+            self.safe_print(f"[KalshiReal] failed-attempt state write error={type(persist_error).__name__}")
+        observation = _market_observation("real", failed_decision, source="scheduler", submit_order=True)
+        if observation and callable(self.observation_saver):
+            try:
+                self.observation_saver(user_id, observation)
+            except Exception as persist_error:
+                self.safe_print(f"[KalshiReal] failed-attempt observation write error={type(persist_error).__name__}")
 
     def tick(
         self,
@@ -6806,6 +7201,7 @@ class _PaperRobotController:
                     robot_state,
                     candidate_ticker,
                     bankroll,
+                    exchange_index=(market or {}).get("exchange_index"),
                     event_ticker=str(
                         (market or {}).get("event_ticker")
                         or ladder.get("eventTicker")
@@ -7023,7 +7419,10 @@ class _PaperRobotController:
                 strategy_config["takerFeeRate"] = snapshot_fee_rate
                 shadow_strategy_config["takerFeeRate"] = snapshot_fee_rate
             candidate_ticker = str((snapshot.get("market") or {}).get("ticker") or "")
-            context = _paper_account_context(portfolio, robot_state, candidate_ticker, bankroll)
+            context = _paper_account_context(
+                portfolio, robot_state, candidate_ticker, bankroll,
+                exchange_index=(snapshot.get("market") or {}).get("exchange_index"),
+            )
             if context.get("hasPosition"):
                 context["hasPosition"] = False
                 context["alreadyTraded"] = False
@@ -7140,11 +7539,17 @@ class _PaperRobotController:
         }
         decision["feePolicy"] = dict(snapshot.get("feePolicy") or {})
         ticker = str((snapshot.get("market") or {}).get("ticker") or "")
+        decision["market"] = {
+            **dict(decision.get("market") or {}),
+            "ticker": ticker,
+            "exchangeIndex": _exchange_shard_index((snapshot.get("market") or {}).get("exchange_index")),
+        }
         account_context = _paper_account_context(
             portfolio,
             robot_state,
             ticker,
             bankroll,
+            exchange_index=(snapshot.get("market") or {}).get("exchange_index"),
             event_ticker=(
                 str(snapshot.get("eventTicker") or "")
                 if family == "btchourly"
@@ -7289,6 +7694,12 @@ class _PaperRobotController:
                 + [confirmation_reason]
             ))
         decision["account"] = {
+            **{
+                key: account_context.get(key) for key in (
+                    "exchangeIndex", "aggregateCashAvailable",
+                    "shardCashAvailable", "shardCashKnown", "fundingStatus",
+                )
+            },
             "heldSide": held_side,
             "heldCount": held_count,
             "unmanagedPositionCount": unmanaged_position_count,
@@ -7837,6 +8248,20 @@ class _PaperRobotController:
                     "reference, and history inputs are fresh."
                 ),
             }]
+        if execution_mode == "real" and _apply_real_shard_funding_gate(
+            decision,
+            account_context,
+            price_tolerance=_finite_number(strategy_config.get("executionPriceTolerance"), 0.01),
+            count_override=route_count_override,
+        ):
+            can_route = False
+        if (
+            execution_mode == "real"
+            and route_count_override is not None
+            and str(decision.get("action") or "").startswith("BUY_")
+            and (decision.get("shardFunding") or {}).get("routedContracts") is not None
+        ):
+            route_count_override = min(route_count_override, decision["shardFunding"]["routedContracts"])
         if (
             submit_order
             and bool(robot_state.get("enabled"))
@@ -7874,9 +8299,12 @@ class _PaperRobotController:
                             order_payload,
                             decision,
                         )
-                    except KalshiApiError as exc:
-                        if exc.code not in KALSHI_LIVE_ROUTING_STATE_CONFLICTS:
+                    except Exception as exc:
+                        if not isinstance(exc, KalshiApiError) or exc.code not in KALSHI_LIVE_ROUTING_STATE_CONFLICTS:
+                            self._persist_routing_failure(user_id, decision, order_payload, exc)
                             raise
+                        if getattr(exc, "kalshi_routing_failure", None):
+                            decision["routingFailure"] = dict(exc.kalshi_routing_failure)
                         market_state_conflict = (
                             exc.code in KALSHI_LIVE_MARKET_STATE_CONFLICTS
                         )
@@ -7899,6 +8327,7 @@ class _PaperRobotController:
                                     robot_state,
                                     ticker,
                                     bankroll,
+                                    exchange_index=(snapshot.get("market") or {}).get("exchange_index"),
                                     event_ticker=(
                                         str(snapshot.get("eventTicker") or "")
                                         if family == "btchourly"
@@ -7907,6 +8336,12 @@ class _PaperRobotController:
                                 )
                                 decision["account"] = {
                                     **dict(decision.get("account") or {}),
+                                    **{
+                                        key: refreshed_context.get(key) for key in (
+                                            "exchangeIndex", "aggregateCashAvailable",
+                                            "shardCashAvailable", "shardCashKnown", "fundingStatus",
+                                        )
+                                    },
                                     "cashAvailable": refreshed_context.get(
                                         "cashAvailable"
                                     ),
@@ -7942,6 +8377,8 @@ class _PaperRobotController:
                         decision["executionIntent"] = (
                             "WAIT_LIVE_MARKET_REFRESH"
                             if market_state_conflict
+                            else "WAIT_LIVE_SHARD_FUNDING"
+                            if exc.code.startswith("kalshi_live_shard_cash_")
                             else "WAIT_LIVE_ACCOUNT_REFRESH"
                         )
                         decision["blockingReasons"] = list(dict.fromkeys(
