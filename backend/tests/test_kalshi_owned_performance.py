@@ -73,6 +73,13 @@ def test_even_matching_quantities_do_not_claim_exact_lot_ownership():
     assert "even when quantities" in " ".join(report["limitations"])
 
 
+def test_net_pnl_explicitly_excludes_operating_costs_and_taxes():
+    limitations = " ".join(MODULE.audit(state())["limitations"])
+    assert "after recorded exchange/trading fees only" in limitations
+    assert "excludes hosting, market-data and AI subscription costs and taxes" in limitations
+    assert "not net business profit" in limitations
+
+
 def test_partial_and_open_positions_not_counted_as_completed_wins():
     report = MODULE.audit(state([entry(), entry("KXBTC15M-B")], [outcome(count="0.3", pnl="0.12")]))
     assert report["complete"]["markets"] == 0

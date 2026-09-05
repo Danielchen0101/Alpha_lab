@@ -23,6 +23,8 @@ The 20 complete hourly tickers had 12 positive and 8 negative results, net
 195 unowned outcome tickers are excluded from these statistics.
 
 These are small, mixed-policy historical samples, not a return forecast.
+Reported trading P/L excludes hosting, data/AI subscriptions and taxes; trading
+break-even alone does not cover the website's running costs.
 Same-ticker manual activity and truncated history can still make attribution
 imperfect even when quantities match. The audit reports those limitations and
 separates incomplete/ambiguous cases. Account-wide settlements must not silently
@@ -71,7 +73,11 @@ hold-value requirements at the observed bid, tighten the limit; otherwise wait.
 Do not increase the sale quantity or invent a better bid to pass the test.
 
 The final real-order preflight repeats this check with the actual route size
-and limit. Protective and emergency reduce-only exits are not constrained by
+and limit. Exact planned multi-level proceeds must also satisfy the existing
+requirements: separate fee rounding across ladder fills can make a single-fill
+limit-price estimate optimistic for a tiny slice. Missing or mismatched planned
+quantity evidence cannot be repaired by prorating fees. Protective and
+emergency reduce-only exits are not constrained by
 voluntary profit-taking requirements or entry collateral gates. An IOC may fill
 partially or not at all: the estimate is conditional on filling the requested
 slice and is not a guarantee of realized profit. Authenticated fills and actual

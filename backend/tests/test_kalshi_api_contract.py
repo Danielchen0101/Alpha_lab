@@ -5294,6 +5294,7 @@ def _voluntary_sale_decision(side="YES", break_even=0.7425742574257426):
             "trigger": "fee_adjusted_take_profit",
             "breakEvenExitValuePerContract": break_even,
             "heldProbability": 0.73,
+            "routeQuote": _estimate_reduce_only_sale(side, 0.50, {side.lower(): [[0.78, 0.50]]}),
         },
     }
 
@@ -5316,6 +5317,62 @@ def test_voluntary_sale_tightens_ioc_limit_before_scale_out_can_realize_loss(sid
     assert final["count"] == "0.50"
     assert final["user_side_limit_price"] == "0.7800"
     assert _voluntary_exit_route_economics(decision, final, {}, allow_tightening=False)["allowed"] is True
+
+
+@pytest.mark.parametrize("side", ["YES", "NO"])
+def test_voluntary_exit_requires_observed_fragmented_slice_profit_not_single_fill_only(side):
+    decision = _voluntary_sale_decision(side, break_even=0.65)
+    decision["edge"]["price"] = 0.7155
+    decision["exitAnalysis"]["heldProbability"] = 0.60
+    quote = _estimate_reduce_only_sale(side, 0.10, {side.lower(): [[0.7156, 0.05], [0.7155, 0.05]]})
+    decision["exitAnalysis"]["routeQuote"] = quote
+    payload = _paper_order_payload(decision, "KXBTC15M-FRAGMENTED", count_override=0.10)
+    guard = _voluntary_exit_route_economics(decision, payload, {})
+    assert quote["netProceeds"] == 0.06
+    assert guard["singleFillLimitNetProceeds"] == 0.07
+    assert guard["routeQuoteMatchesPayload"] is True
+    assert guard["observedSliceProfitable"] is False
+    assert guard["netExitPnl"] == pytest.approx(-0.005)
+    assert guard["allowed"] is False
+    assert _voluntary_exit_route_economics(decision, payload, {}, allow_tightening=False)["allowed"] is False
+    ticker = payload["ticker"]
+    state = {"filledTrades": [{"orderFilled": True, "orderId": "fragmented-entry", "ticker": ticker,
+                                "action": f"BUY_{side}", "side": side, "fillCount": 0.10}]}
+    account = {"orders": [], "positions": [{"ticker": ticker, "position_fp": 0.10 if side == "YES" else -0.10,
+                                            f"{side.lower()}_count_fp": 0.10, "market_exposure_dollars": 0.065}]}
+    controller = _PaperRobotController(None, None, None)
+    with pytest.raises(KalshiApiError) as failed:
+        controller._validate_live_order_preflight(state, account, payload, _live_order_payload(payload), decision)
+    assert failed.value.code == "kalshi_live_voluntary_exit_economics_changed"
+    decision["exitAnalysis"]["trigger"] = "protective_stop_loss"
+    assert _voluntary_exit_route_economics(decision, payload, {}) == {"applicable": False, "allowed": True}
+    assert controller._validate_live_order_preflight(state, account, payload, _live_order_payload(payload), decision) is None
+
+
+@pytest.mark.parametrize("change", [
+    None, {"requestedCount": 1.0}, {"fillableCount": 0.49}, {"takerFeeRate": 0.14},
+    {"grossProceeds": 0.80}, {"netProceeds": None}, {"worstBid": 0.77},
+])
+def test_voluntary_exit_rejects_missing_or_mismatched_ladder_quote(change):
+    decision = _voluntary_sale_decision()
+    payload = _paper_order_payload(decision, "KXBTC15M-EXIT", count_override=0.50)
+    if change is None:
+        decision["exitAnalysis"].pop("routeQuote")
+    else:
+        decision["exitAnalysis"]["routeQuote"].update(change)
+    guard = _voluntary_exit_route_economics(decision, payload, {}, allow_tightening=False)
+    assert guard["allowed"] is False
+    assert guard["routeQuoteMatchesPayload"] is False
+
+
+def test_final_exit_size_change_cannot_prorate_old_slice_economics():
+    decision = _voluntary_sale_decision()
+    payload = _paper_order_payload(decision, "KXBTC15M-EXIT", count_override=0.50)
+    assert _voluntary_exit_route_economics(decision, payload, {}, allow_tightening=False)["allowed"] is True
+    payload["count"] = "0.25"
+    changed = _voluntary_exit_route_economics(decision, payload, {}, allow_tightening=False)
+    assert changed["allowed"] is False
+    assert changed["routeQuoteMatchesPayload"] is False
 
 
 def test_voluntary_exit_does_not_increase_size_when_scale_out_is_uneconomic():

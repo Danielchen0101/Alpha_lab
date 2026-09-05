@@ -43,6 +43,8 @@ LIMITATIONS = [
     "bot entries; it is not proof that the exported history is complete or unmixed.",
     "Stored pnl is treated as after-fee dollars and fees are not subtracted twice. "
     "Fallback derivation requires revenue, cost and fees. Reported fees/cost basis are not independently verified.",
+    "Net P/L is after recorded exchange/trading fees only. It excludes hosting, market-data "
+    "and AI subscription costs and taxes; it is not net business profit.",
     "Only quantity-complete, valid markets contribute wins, losses and profit factor. "
     "Partial realizations are not classified as completed winning/losing trades.",
     "Drawdown is the cumulative completed-market net-P&L curve starting at zero, ordered by "

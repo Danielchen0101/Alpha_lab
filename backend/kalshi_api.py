@@ -1918,12 +1918,15 @@ def _voluntary_exit_route_economics(
     *,
     allow_tightening: bool = True,
 ) -> Dict[str, Any]:
-    """Check the actual sale slice at its worst permitted IOC fill price.
+    """Check both the observed sale slice and a single-fill limit scenario.
 
     A full-position VWAP profit does not establish profitability for a small
     scale-out after cent rounding or crossing tolerance. This guard is only
     for voluntary profit-taking; risk-reducing stops must remain executable.
-    It assumes the requested slice fills, not that an IOC guarantees a fill.
+    Per-fill trade-fee rounding means a single fill at the limit is not always
+    a lower bound than a slightly better, fragmented fill. Both scenarios
+    must clear the existing profit hurdle. Neither guarantees IOC execution
+    or the eventual number of fills when the live orderbook changes.
     """
     exit_analysis = dict(decision.get("exitAnalysis") or {})
     applicable = bool(
@@ -1954,9 +1957,41 @@ def _voluntary_exit_route_economics(
         "minimumExitProfit": config["minimumExitProfit"],
         "requiredExitValueEdge": config["exitValueBuffer"],
         "limitTightened": False,
-        "assumption": "requested_slice_fills_at_limit; IOC may fill partially",
+        "assumption": "observed_full_slice_and_single_fill_limit_scenarios; live fragmentation or partial fills may differ",
     }
     if count <= 0 or limit is None or not 0.0 < limit < 1.0 or required_value is None:
+        return result
+    quote = dict(exit_analysis.get("routeQuote") or {})
+    quote_net = _finite_number(quote.get("netProceeds"), None)
+    quote_gross = _finite_number(quote.get("grossProceeds"), None)
+    quote_fee = _finite_number(quote.get("estimatedExitFee"), None)
+    quote_trade_fee = _finite_number(quote.get("estimatedExitTradeFee"), None)
+    quote_price = _finite_number(quote.get("worstBid"), None)
+    quote_rate = _finite_number(quote.get("takerFeeRate"), None)
+    quote_matches = bool(
+        abs(_finite_number(quote.get("requestedCount"), -1) - count) <= 1e-9
+        and abs(_finite_number(quote.get("fillableCount"), -1) - count) <= 1e-9
+        and quote_net is not None and quote_net >= 0
+        and quote_gross is not None and quote_gross >= quote_net
+        and quote_fee is not None and quote_fee >= 0
+        and quote_trade_fee is not None and quote_trade_fee >= 0
+        and abs(quote_gross - quote_fee - quote_net) <= 1e-8
+        and quote_price is not None and 0 < quote_price < 1
+        and limit <= quote_price + 1e-9
+        and reference is not None and abs(reference - quote_price) <= 1e-8
+        and quote_rate is not None and abs(quote_rate - config["takerFeeRate"]) <= 1e-9
+    )
+    quote_value = quote_net / count if quote_matches else None
+    quote_clears = bool(quote_value is not None and quote_value + 1e-9 >= required_value)
+    result.update({
+        "routeQuoteMatchesPayload": quote_matches,
+        "observedSliceNetProceeds": quote_net,
+        "observedSliceNetValuePerContract": quote_value,
+        "observedSliceProfitable": quote_clears,
+    })
+    # Final preflight checks this exact quantity again; never scale/prorate an
+    # old ladder fee after a count or fee-policy change.
+    if not quote_matches:
         return result
     prices = [limit]
     # Removing the crossing allowance preserves the observed executable bid;
@@ -1968,18 +2003,20 @@ def _voluntary_exit_route_economics(
             [(price, count)], count, price,
             fee_multiplier=config["takerFeeRate"] / 0.07,
         )
-        net = sale["credit_cents"] / 100.0
+        limit_net = sale["credit_cents"] / 100.0
+        net = min(limit_net, quote_net)
         net_per_contract = net / count
         result.update({
             "minimumExecutionPrice": price,
             "limitTightened": price > limit + 1e-9,
-            "estimatedExitFee": sale["fee_cost"],
+            "estimatedExitFee": max(sale["fee_cost"], quote_fee),
             "estimatedNetProceeds": net,
+            "singleFillLimitNetProceeds": limit_net,
             "netExitValuePerContract": net_per_contract,
             "netExitPnlPerContract": net_per_contract - break_even,
             "netExitPnl": net - count * break_even,
             "exitValueEdge": net_per_contract - hold_value,
-            "allowed": net_per_contract + 1e-9 >= required_value,
+            "allowed": quote_clears and net_per_contract + 1e-9 >= required_value,
         })
         if result["allowed"]:
             break
@@ -8424,7 +8461,8 @@ class _PaperRobotController:
                     decision["edge"]["price"] = planned_sale["worstBid"]
                 decision["exitAnalysis"]["routeQuote"] = {
                     key: planned_sale.get(key) for key in (
-                        "requestedCount", "fillableCount", "averageBid", "worstBid", "estimatedExitFee", "netProceeds",
+                        "requestedCount", "fillableCount", "averageBid", "worstBid", "grossProceeds",
+                        "estimatedExitFee", "estimatedExitTradeFee", "netProceeds", "takerFeeRate",
                     )
                 }
             proposed_exit_payload = _paper_order_payload(
