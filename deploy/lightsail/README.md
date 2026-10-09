@@ -32,3 +32,13 @@ production image, and starts the app in passive mode.
 The deploy timer checks `main` every five minutes and deploys only commits whose
 GitHub Actions CI workflow completed successfully. A failed health check rolls
 back to the previous commit. The watchdog restarts an unhealthy app container.
+
+The Dockerfile pulls Node and Python from Docker's Official Images on
+[ECR Public](https://www.docker.com/press-release/docker-official-images-available-amazon-elastic-container-registry/)
+using the same runtime versions and variants. This avoids Docker Hub's anonymous
+pull quota for both CI and Lightsail builds and requires no registry credentials.
+PR validation uses the runner's [embedded Docker BuildKit driver](https://docs.docker.com/build/builders/drivers/docker/)
+and loads its single-platform image locally, avoiding a separate BuildKit image
+pull. The optional release-image push retains the container builder and its
+provenance metadata; it logs in with the existing Docker Hub credentials before
+pulling the builder image. Publishing still requires Docker Hub availability.
