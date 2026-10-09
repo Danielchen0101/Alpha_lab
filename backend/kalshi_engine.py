@@ -22,7 +22,7 @@ MAX_COMPLETED_HISTORY_AGE_SECONDS = 120.0
 DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "executionMode": "paper",
     "paperBankroll": 1000.0,
-    "riskPerTradePct": 0.50,
+    "riskPerTradePct": 15.0,
     # These are policy floors, not an asserted win rate. They must be
     # recalibrated against genuinely out-of-sample contract outcomes.
     "minNetEdge": 0.010,
@@ -81,8 +81,9 @@ DEFAULT_STRATEGY_CONFIG: Dict[str, Any] = {
     "btc15LateEdgePremium": 0.0050,
     "btc15MiddleUncertaintyPremium": 0.0050,
     "btc15LateUncertaintyPremium": 0.0100,
-    "maxPortfolioExposurePct": 10.0,
-    "maxSingleMarketExposurePct": 2.0,
+    # Shared account-wide ceiling for both BTC families, not a per-order target.
+    "maxPortfolioExposurePct": 15.0,
+    "maxSingleMarketExposurePct": 15.0,
     # Percentage-only sizing can round every valid setup to zero on a small
     # account.  A one-contract micro position is allowed only after every
     # signal/data/liquidity gate clears, and only when both an absolute loss
@@ -186,7 +187,7 @@ def normalize_strategy_config(raw: Optional[Mapping[str, Any]] = None) -> Dict[s
     raw = dict(raw or {})
     bounds: Dict[str, Tuple[float, float]] = {
         "paperBankroll": (100.0, 1_000_000.0),
-        "riskPerTradePct": (0.10, 2.0),
+        "riskPerTradePct": (0.10, 15.0),
         "minNetEdge": (0.005, 0.15),
         "minConservativeEdge": (0.0, 0.08),
         "maxSpread": (0.01, 0.20),
@@ -1396,6 +1397,18 @@ def evaluate_btc15_contract(
                 category="account",
             ),
             _gate("open_order", not bool(account.get("hasOpenOrder")), "No open order", "无未完成订单", "no resting order for this contract" if not account.get("hasOpenOrder") else "open order already exists", category="account"),
+            _gate(
+                "daily_loss_streak",
+                not bool(account.get("dailyLossStreakStopped")),
+                "Daily consecutive-loss stop",
+                "当日连败停手",
+                (
+                    f"{(account.get('dailyRisk') or {}).get('consecutiveLosses', 0)} / "
+                    f"{(account.get('dailyRisk') or {}).get('limit', 3)} completed losses; "
+                    "resets at America/New_York midnight"
+                ),
+                category="account",
+            ),
             _gate("portfolio_exposure", exposure_pct < settings["maxPortfolioExposurePct"], "Portfolio exposure", "组合总敞口", f"{exposure_pct:.1f}% / max {settings['maxPortfolioExposurePct']:.1f}%", category="account"),
             _gate("market_exposure", market_exposure_pct < settings["maxSingleMarketExposurePct"], "Single-market exposure", "单市场敞口", f"{market_exposure_pct:.1f}% / max {settings['maxSingleMarketExposurePct']:.1f}%", category="account"),
         ]
@@ -1869,6 +1882,7 @@ def evaluate_btc15_contract(
             "recoveryMultipleTarget": settings["recoveryMultipleTarget"],
             "breakEvenProbability": break_even_probability,
         },
+        "dailyRisk": dict(account.get("dailyRisk") or {}),
         "sizing": {
             "paperBankroll": bankroll,
             "riskPerTradePct": settings["riskPerTradePct"],
@@ -1936,8 +1950,9 @@ def evaluate_btc15_contract(
             "directionMode": "normal",
             "samplePolicy": "deterministic fee-adjusted entry; no AI or random exploration overrides",
             "dailyLossPolicy": (
-                "Realized profit and loss is informational and never blocks "
-                "new entries"
+                "Three consecutive fee-net completed market/event losses stop "
+                "new entries and adds for that family until New York midnight; "
+                "position exits remain available. Daily P/L alone is informational."
             ),
             "orderPolicy": (
                 "Kalshi Real IOC limit order signed and submitted by the backend only after every deterministic gate passes"

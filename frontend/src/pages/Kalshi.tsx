@@ -1546,7 +1546,7 @@ const Kalshi: React.FC = () => {
       step: number;
       scale?: number;
     }> = [
-      { key: 'riskPerTradePct', label: ['Risk per order', '每次下单风险'], unit: ['%', '%'], min: 0.1, max: 0.5, step: 0.05 },
+      { key: 'riskPerTradePct', label: ['Risk per order', '每次下单风险'], unit: ['%', '%'], min: 0.1, max: 15, step: 0.5 },
       { key: 'minModelProbability', label: ['Model probability floor', '模型概率下限'], unit: ['%', '%'], min: 64, max: 90, step: 1, scale: 100 },
       { key: 'minPrice', label: ['Entry price floor', '进场价格下限'], unit: ['cents', '美分'], min: 47, max: 60, step: 1, scale: 100 },
       { key: 'maxPrice', label: ['Entry price ceiling', '进场价格上限'], unit: ['cents', '美分'], min: 60, max: 92, step: 1, scale: 100 },
@@ -1557,8 +1557,8 @@ const Kalshi: React.FC = () => {
       { key: 'maxSpread', label: ['Maximum spread', '最大点差'], unit: ['cents', '美分'], min: 1, max: 20, step: 0.5, scale: 100 },
       { key: 'minDepthContracts', label: ['Minimum ask depth', '最低卖方深度'], unit: ['contracts', '份'], min: 1, max: 10000, step: 5 },
       { key: 'maxBookParticipation', label: ['Book participation cap', '盘口参与率上限'], unit: ['%', '%'], min: 1, max: 50, step: 1, scale: 100 },
-      { key: 'maxPortfolioExposurePct', label: ['Portfolio exposure cap', '组合敞口上限'], unit: ['%', '%'], min: 2, max: 10, step: 1 },
-      { key: 'maxSingleMarketExposurePct', label: ['Single-market / event exposure cap', '单一市场 / 事件敞口上限'], unit: ['%', '%'], min: 1, max: 2, step: 0.25 },
+      { key: 'maxPortfolioExposurePct', label: ['Shared BTC portfolio exposure cap', '两个 BTC 策略合计敞口上限'], unit: ['%', '%'], min: 2, max: 15, step: 1 },
+      { key: 'maxSingleMarketExposurePct', label: ['Single-market / event exposure cap', '单一市场 / 事件敞口上限'], unit: ['%', '%'], min: 1, max: 15, step: 0.5 },
       { key: 'microPositionMaxLossDollars', label: ['Small-account absolute loss cap', '小账户单笔绝对风险上限'], unit: ['USD', '美元'], min: 0.25, max: 1, step: 0.05 },
       { key: 'microPositionMaxLossPct', label: ['Small-account equity loss cap', '小账户单笔权益风险上限'], unit: ['%', '%'], min: 1, max: 5, step: 0.25 },
       { key: 'microPositionMinNetEdge', label: ['Small-account minimum net edge', '小账户最低净边际'], unit: ['%', '%'], min: 2, max: 10, step: 0.25, scale: 100 },
@@ -1595,7 +1595,7 @@ const Kalshi: React.FC = () => {
           return <label key={control.key}><span>{copy(control.label[0], control.label[1])}<small>{copy(control.unit[0], control.unit[1])}</small></span><input type="number" min={control.min} max={control.max} step={control.step} value={Number(config[control.key]) * scale} onChange={(event) => updateConfig(control.key, event.target.valueAsNumber, scale)} /></label>;
         })}
       </div>
-      <div className="kalshi-policy-note"><SafetyCertificateOutlined /><span><b>{copy('No trade-count cap.', '不限制交易次数。')}</b>{copy(' Every order still needs positive fee-adjusted edge, fresh data, sufficient liquidity, and available exposure. Positions are held to settlement unless a fee-adjusted exit or protective exit is better.', ' 但每次下单仍须满足扣费后正边际、数据新鲜、流动性充足和敞口可用；仓位默认持有至结算，只有扣费后平仓更优或触发保护性退出时才离场。')}</span></div>
+      <div className="kalshi-policy-note"><SafetyCertificateOutlined /><span><b>{copy('Stop after 3 consecutive losses.', '连续亏损 3 场，当天停手。')}</b>{copy(' Each BTC strategy pauses entries and adds until New York midnight after three completed losses, net of fees. Hourly strikes in one event count together; partial exits do not count separately. Exits remain available. Both strategies share the account exposure cap, including existing orders and positions.', ' 每个 BTC 策略按扣费后的完整结果计算，连续亏损三场后暂停开仓和加仓，纽约午夜恢复。同一整点事件的多个执行价合并计算，分批平仓不重复计数；平仓仍可执行。两个策略共享账户敞口上限，已有订单和持仓也计入。')}</span></div>
     </section>;
   };
   const renderDecisionLog = () => {
@@ -1982,6 +1982,7 @@ const Kalshi: React.FC = () => {
   const renderDiagnostics = () => {
     const familyKey: 'btc15m' | 'btchourly' = isHourly ? 'btchourly' : 'btc15m';
     const diagnostics = analytics?.analytics?.families?.[familyKey];
+    const dailyRisk = decision?.dailyRisk;
     const referenceFeed = analytics?.referenceFeed;
     const funnel = diagnostics?.funnel;
     const funnelSteps: Array<{ key: keyof KalshiFamilyDiagnostics['funnel']; en: string; zh: string }> = [
@@ -2006,6 +2007,9 @@ const Kalshi: React.FC = () => {
       relative_spread: ['Relative spread', '相对点差'],
       data_freshness: ['Data freshness', '数据新鲜度'],
       reference_ready: ['BRTI reference', 'BRTI 参考价'],
+      daily_loss_streak: ['Daily loss streak stop', '当日连败停手'],
+      kalshi_daily_loss_streak: ['Daily loss streak stop', '当日连败停手'],
+      kalshi_live_order_risk_changed: ['Current per-order risk cap', '当前单笔风险上限'],
       robot_scheduler_unhealthy: ['Automation health', '自动化运行状态'],
       account_snapshot_stale: ['Account snapshot', '账户快照'],
       position_size: ['Risk-sized position', '风险仓位数量'],
@@ -2048,6 +2052,9 @@ const Kalshi: React.FC = () => {
       relative_spread: ['The spread is too large relative to the contract price.', '相对合约价格而言，点差过大。'],
       data_freshness: ['Market evidence is not fresh enough for a safe order.', '行情证据不够新鲜，暂不允许安全下单。'],
       reference_ready: ['The official BRTI reference is not ready.', '官方 BRTI 参考数据尚未就绪。'],
+      daily_loss_streak: ['Three completed losses paused entries until New York midnight. Exits remain available.', '连续三场完整亏损，暂停开仓至纽约午夜；平仓仍可执行。'],
+      kalshi_daily_loss_streak: ['The final risk check found today’s loss streak stop active.', '最终风控检查发现当日连败停手已触发。'],
+      kalshi_live_order_risk_changed: ['The order exceeds the latest per-order loss cap after fees.', '计入费用后，该订单超过最新单笔最大损失上限。'],
       robot_scheduler_unhealthy: ['The 24/7 scheduler is not healthy, so routing is blocked safely.', '24/7 调度器当前不健康，系统已安全阻止下单。'],
       account_snapshot_stale: ['Account buying power or exposure is stale.', '账户购买力或敞口快照已过期。'],
       position_size: ['The risk budget cannot support an economically valid contract size.', '当前风险预算不足以支持经济上合理的合约数量。'],
@@ -2085,11 +2092,12 @@ const Kalshi: React.FC = () => {
           </div>
           <span className={`kalshi-source-health${officialNow ? ' is-live' : ''}`}>
             <i />
-            <b>{officialNow ? copy('OFFICIAL BRTI LIVE', '官方 BRTI 实时') : copy('PROXY FALLBACK', '代理源回退')}</b>
+            <b>{officialNow ? copy('OFFICIAL BRTI LIVE', '官方 BRTI 实时') : isHourly ? copy('BRTI UNAVAILABLE', 'BRTI 暂不可用') : copy('PROXY FALLBACK', '代理源回退')}</b>
             <small>{referenceFeed?.ageSeconds == null ? '--' : `${Number(referenceFeed.ageSeconds).toFixed(1)}s`}</small>
           </span>
         </div>
         <div className="kalshi-diagnostic-stats">
+          <div><span>{copy('TODAY’S LOSS STREAK', '今日连败')}</span><strong>{dailyRisk ? `${dailyRisk.consecutiveLosses} / ${dailyRisk.limit}` : '--'}</strong><small>{dailyRisk?.stopped ? copy('Paused until New York midnight; exits enabled', '暂停至纽约午夜；仍可平仓') : copy('Completed results after fees · New York day', '扣费后的完整结果 · 纽约自然日')}</small></div>
           <div><span>{copy('OBSERVATIONS', '评估次数')}</span><strong>{diagnostics?.observations?.toLocaleString() || '0'}</strong><small>{copy('durable server samples', '服务端持久样本')}</small></div>
           <div><span>{copy('MARKETS SCANNED', '扫描市场')}</span><strong>{diagnostics?.uniqueMarkets || 0}</strong><small>{isHourly ? copy('hourly strike contracts', '整点执行价合约') : copy('rolling 15-minute contracts', '滚动 15 分钟合约')}</small></div>
           <div><span>{copy('OFFICIAL FEED', '官方行情')}</span><strong>{diagnostics?.officialBrtiSamples || 0}</strong><small>{copy('BRTI-confirmed samples', 'BRTI 确认样本')}</small></div>

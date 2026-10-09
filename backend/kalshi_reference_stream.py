@@ -20,6 +20,39 @@ from typing import Any, Callable, Dict, Mapping, Optional
 
 KALSHI_WS_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
 KALSHI_WS_SIGN_PATH = "/trade-api/ws/v2"
+MAX_SOURCE_CLOCK_LEAD_SECONDS = 1.0
+
+
+class KalshiReferenceFeedError(RuntimeError):
+    """Safe, actionable diagnostic without upstream text or credentials."""
+
+
+def _feed_error_detail(message: Mapping[str, Any]) -> str:
+    raw_code = _number(message.get("code"))
+    code = str(int(raw_code)) if raw_code is not None and 0 <= raw_code <= 99999 else "unknown"
+    upstream = str(message.get("msg") or message.get("message") or "").lower()
+    if any(word in upstream for word in ("entitlement", "not entitled", "permission", "forbidden", "access denied")):
+        category = "access_denied"
+    elif any(word in upstream for word in ("authentication", "unauthorized", "invalid api key")):
+        category = "authentication_failed"
+    else:
+        category = "subscription_rejected"
+    return f"cfbenchmarks_{category}:code_{code}"
+
+
+def _connection_error_detail(exc: Exception) -> str:
+    if isinstance(exc, KalshiReferenceFeedError):
+        return str(exc)
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return "cfbenchmarks_receive_or_connect_timeout"
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    status = _number(status if status is not None else getattr(exc, "status_code", None))
+    if status is not None and 100 <= status <= 599:
+        category = {
+            401: "authentication_failed", 403: "access_denied", 429: "rate_limited",
+        }.get(int(status), "upstream_unavailable" if status >= 500 else "handshake_rejected")
+        return f"cfbenchmarks_{category}:http_{int(status)}"
+    return type(exc).__name__
 
 
 def _number(value: Any, default: Optional[float] = None) -> Optional[float]:
@@ -34,9 +67,12 @@ def _iso_from_milliseconds(value: Any) -> Optional[str]:
     milliseconds = _number(value)
     if milliseconds is None or milliseconds <= 0:
         return None
-    return datetime.fromtimestamp(milliseconds / 1000.0, tz=timezone.utc).isoformat().replace(
-        "+00:00", "Z"
-    )
+    try:
+        return datetime.fromtimestamp(milliseconds / 1000.0, tz=timezone.utc).isoformat().replace(
+            "+00:00", "Z"
+        )
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 class KalshiReferenceStream:
@@ -75,12 +111,16 @@ class KalshiReferenceStream:
             raw = json.loads(str(message.get("data") or "{}"))
         except (TypeError, ValueError, json.JSONDecodeError):
             raw = {}
+        if not isinstance(raw, Mapping):
+            return None
         raw_price = _number(raw.get("value"))
         if raw_price is None or raw_price <= 0:
             return None
 
         trailing = message.get("avg_60s_data") or {}
         settlement = message.get("last_60s_windowed_average_15min") or {}
+        if not isinstance(trailing, Mapping) or not isinstance(settlement, Mapping):
+            return None
         trailing_value = _number(trailing.get("value"), raw_price) or raw_price
         settlement_value = _number(settlement.get("value"))
         settlement_samples = max(0, min(60, int(_number(settlement.get("window_size"), 0) or 0)))
@@ -95,10 +135,11 @@ class KalshiReferenceStream:
                 + raw_price * (60 - settlement_samples)
             ) / 60.0
 
-        source_ms = raw.get("time") or message.get("received_at")
-        timestamp = _iso_from_milliseconds(source_ms) or datetime.now(timezone.utc).isoformat().replace(
-            "+00:00", "Z"
-        )
+        # Receipt time cannot establish when the underlying index was sampled.
+        # A malformed/stale upstream clock must never become a fresh quote.
+        timestamp = _iso_from_milliseconds(raw.get("time"))
+        if timestamp is None:
+            return None
         return {
             "symbol": "BTC-USD",
             "price": settlement_estimate,
@@ -185,17 +226,49 @@ class KalshiReferenceStream:
             self._entries[uid] = entry
             thread.start()
 
+    def _freshness(self, entry: Mapping[str, Any]) -> Dict[str, Any]:
+        sample = entry.get("sample")
+        cached_at = _number(entry.get("sampleMonotonic"))
+        age = max(0.0, time.monotonic() - cached_at) if cached_at is not None else None
+        source_age = None
+        if isinstance(sample, Mapping):
+            try:
+                source_at = datetime.fromisoformat(str(sample.get("timestamp") or "").replace("Z", "+00:00"))
+                if source_at.tzinfo is not None:
+                    source_age = (datetime.now(timezone.utc) - source_at).total_seconds()
+            except (TypeError, ValueError, OverflowError):
+                pass
+        if not isinstance(sample, Mapping):
+            error = "cfbenchmarks_no_sample"
+        elif source_age is None:
+            error = "cfbenchmarks_source_timestamp_invalid"
+        elif source_age < -MAX_SOURCE_CLOCK_LEAD_SECONDS:
+            error = "cfbenchmarks_source_timestamp_future"
+        elif source_age > self.freshness_seconds:
+            error = "cfbenchmarks_source_stale"
+        elif age is None or age > self.freshness_seconds:
+            error = "cfbenchmarks_stream_stale"
+        else:
+            error = ""
+        return {
+            "fresh": not error,
+            "ageSeconds": round(age, 3) if age is not None else None,
+            "sourceAgeSeconds": round(source_age, 3) if source_age is not None else None,
+            "freshnessError": error,
+        }
+
     def snapshot(self, user_id: str) -> Optional[Dict[str, Any]]:
         self.ensure(user_id)
         uid = str(user_id or "").strip()
         with self._lock:
             entry = dict(self._entries.get(uid) or {})
             sample = entry.get("sample")
-            age = max(0.0, time.monotonic() - float(entry.get("sampleMonotonic") or 0.0))
-        if not isinstance(sample, Mapping) or age > self.freshness_seconds:
+        freshness = self._freshness(entry)
+        if not freshness["fresh"]:
             return None
         result = dict(sample)
-        result["streamAgeSeconds"] = round(age, 3)
+        result["streamAgeSeconds"] = freshness["ageSeconds"]
+        result["sourceAgeSeconds"] = freshness["sourceAgeSeconds"]
         result["streamStatus"] = str(entry.get("status") or "live")
         return result
 
@@ -204,13 +277,10 @@ class KalshiReferenceStream:
         uid = str(user_id or "").strip()
         with self._lock:
             entry = dict(self._entries.get(uid) or {})
-        age = None
-        if entry.get("sampleMonotonic"):
-            age = max(0.0, time.monotonic() - float(entry["sampleMonotonic"]))
+        freshness = self._freshness(entry)
         return {
             "status": str(entry.get("status") or ("disabled" if not self.enabled else "starting")),
-            "fresh": bool(age is not None and age <= self.freshness_seconds),
-            "ageSeconds": round(age, 3) if age is not None else None,
+            **freshness,
             "lastError": str(entry.get("lastError") or ""),
             "source": "CF Benchmarks BRTI via Kalshi WebSocket",
         }
@@ -236,9 +306,10 @@ class KalshiReferenceStream:
                 asyncio.run(self._consume(uid, key_id, private_key, stop))
                 delay = 1.0
             except Exception as exc:  # reconnect is deliberately fail-soft
-                self._set_status(uid, "reconnecting", type(exc).__name__)
+                detail = _connection_error_detail(exc)
+                self._set_status(uid, "reconnecting", detail)
                 self.safe_print(
-                    f"[KalshiBRTI] stream reconnect user={uid[:8]} error={type(exc).__name__}"
+                    f"[KalshiBRTI] stream reconnect user={uid[:8]} error={detail}"
                 )
             if stop.wait(delay):
                 return
@@ -272,9 +343,13 @@ class KalshiReferenceStream:
             while not stop.is_set():
                 raw = await asyncio.wait_for(websocket.recv(), timeout=35)
                 payload = json.loads(raw)
+                if not isinstance(payload, Mapping):
+                    continue
                 if payload.get("type") == "error":
                     message = payload.get("msg") or {}
-                    raise RuntimeError(f"Kalshi feed error {message.get('code')}")
+                    raise KalshiReferenceFeedError(_feed_error_detail(
+                        message if isinstance(message, Mapping) else {}
+                    ))
                 sample = self.normalize_message(payload)
                 if sample:
                     self._store_sample(uid, sample)

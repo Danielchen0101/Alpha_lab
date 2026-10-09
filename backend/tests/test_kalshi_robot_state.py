@@ -1,4 +1,5 @@
 import json
+import pytest
 import copy
 from datetime import datetime, timezone
 
@@ -261,10 +262,10 @@ def test_every_configure_enforces_safety_floors_and_preserves_stricter_values(tm
     assert floored["config"]["minNetEdge"] == 0.01
     assert floored["config"]["minConservativeEdge"] == 0.0075
     assert floored["config"]["maxPrice"] == 0.92
-    assert floored["config"]["riskPerTradePct"] == 0.50
+    assert floored["config"]["riskPerTradePct"] == 2.0
     assert floored["config"]["fractionalKelly"] == 0.15
-    assert floored["config"]["maxPortfolioExposurePct"] == 10.0
-    assert floored["config"]["maxSingleMarketExposurePct"] == 2.0
+    assert floored["config"]["maxPortfolioExposurePct"] == 15.0
+    assert floored["config"]["maxSingleMarketExposurePct"] == 15.0
     assert floored["config"]["entryConfirmationMaxGapSeconds"] == 25.0
     assert floored["config"]["microPositionMaxLossDollars"] == 1.0
     assert floored["config"]["microPositionMaxLossPct"] == 5.0
@@ -330,7 +331,7 @@ def test_v10_real_migration_preserves_ledger_and_disarms_live_mode(tmp_path):
     restored = KalshiRobotState(str(path)).get("user-1")
     real = restored["modeState"]["real"]
 
-    assert restored["storageVersion"] == 15
+    assert restored["storageVersion"] == 16
     assert restored["enabled"] is False
     assert real["arming"]["awaitingExplicitEnable"] is True
     assert real["displayBaseline"]["alphaLabOnly"] is True
@@ -371,14 +372,14 @@ def test_v11_micro_sizing_migration_preserves_live_arming(tmp_path):
     restored = KalshiRobotState(str(path)).get("user-1")
     real = restored["modeState"]["real"]
 
-    assert restored["storageVersion"] == 15
+    assert restored["storageVersion"] == 16
     assert restored["enabled"] is True
     assert real["arming"]["armed"] is True
     assert real["arming"]["awaitingExplicitEnable"] is False
     assert real["config"]["microPositionMaxLossDollars"] == 1.0
     assert real["config"]["microPositionMaxLossPct"] == 5.0
     assert real["config"]["smallAccountRiskTargetPct"] == 2.0
-    assert real["strategy"]["version"] == 11
+    assert real["strategy"]["version"] == 12
 
 
 def test_v12_quality_scaled_sizing_preserves_live_arming_and_custom_lower_target(
@@ -413,12 +414,12 @@ def test_v12_quality_scaled_sizing_preserves_live_arming_and_custom_lower_target
     restored = KalshiRobotState(str(path)).get("user-1")
     real = restored["modeState"]["real"]
 
-    assert restored["storageVersion"] == 15
+    assert restored["storageVersion"] == 16
     assert restored["enabled"] is True
     assert real["arming"]["armed"] is True
     assert real["arming"]["awaitingExplicitEnable"] is False
     assert real["config"]["smallAccountRiskTargetPct"] == 1.0
-    assert real["strategy"]["version"] == 11
+    assert real["strategy"]["version"] == 12
 
 
 def test_v15_execution_consistency_preserves_live_arming_and_ledger(tmp_path):
@@ -457,11 +458,11 @@ def test_v15_execution_consistency_preserves_live_arming_and_ledger(tmp_path):
     restored = KalshiRobotState(str(path)).get("user-1")
     real = restored["modeState"]["real"]
 
-    assert restored["storageVersion"] == 15
+    assert restored["storageVersion"] == 16
     assert restored["enabled"] is True
     assert real["arming"]["armed"] is True
     assert real["arming"]["awaitingExplicitEnable"] is False
-    assert real["strategy"]["version"] == 11
+    assert real["strategy"]["version"] == 12
     assert real["config"]["minNetEdge"] == 0.02
     assert real["config"]["minConservativeEdge"] == 0.025
     assert real["filledTrades"][0]["orderId"] == "keep-v11-fill"
@@ -469,7 +470,7 @@ def test_v15_execution_consistency_preserves_live_arming_and_ledger(tmp_path):
         real["strategy"]["settlementRecords"][0]["key"]
         == "keep-v11-settlement"
     )
-    assert "Execution-consistent v11" in real["strategy"]["changes"][0][
+    assert "Daily-risk v12" in real["strategy"]["changes"][0][
         "summary"
     ]
 
@@ -599,7 +600,7 @@ def test_pre_v6_trade_and_learning_data_is_removed_during_upgrade(tmp_path):
 
     restored = KalshiRobotState(str(path)).get("user-1")
 
-    assert restored["storageVersion"] == 15
+    assert restored["storageVersion"] == 16
     assert restored["enabled"] is True
     assert restored["decisions"] == []
     assert restored["filledTrades"] == []
@@ -628,12 +629,12 @@ def test_v6_state_adopts_calibrated_defaults_without_losing_records(tmp_path):
 
     restored = KalshiRobotState(str(path)).get("user-1")
 
-    assert restored["storageVersion"] == 15
+    assert restored["storageVersion"] == 16
     assert restored["config"]["minNetEdge"] == 0.015
     assert restored["config"]["minModelProbability"] == 0.64
     assert restored["config"]["marketBlendWeight"] == 0.45
     assert restored["config"]["probabilityLogitScale"] == 1.70
-    assert restored["strategy"]["version"] == 11
+    assert restored["strategy"]["version"] == 12
     assert restored["decisions"][0]["ticker"] == "KXBTC15M-KEEP"
     assert restored["filledTrades"][0]["ticker"] == "KXBTC15M-KEEP"
 
@@ -1215,6 +1216,138 @@ def test_partial_early_close_keeps_remaining_settlement_outcome(tmp_path):
         "settlement",
     }
     assert strategy["realizedTotalPnl"] == 0.57
+
+
+@pytest.mark.parametrize("side,result", [("YES", "YES"), ("NO", "NO"), ("YES", "NO"), ("NO", "YES")])
+def test_gross_partial_settlement_uses_remaining_authenticated_fifo_basis(tmp_path, side, result):
+    """A sale appears as a gross opposite-side acquisition in exchange history."""
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    ticker = "KXBTC15M-GROSS-PARTIAL"
+    opposite = "no" if side == "YES" else "yes"
+    settlement = {
+        "ticker": ticker, "market_result": result,
+        "settled_time": "2026-10-04T21:00:07Z",
+        f"{side.lower()}_count_fp": "1.28", f"{opposite}_count_fp": "0.64",
+        f"{side.lower()}_total_cost_dollars": "0.9344",
+        f"{opposite}_total_cost_dollars": "0.00512",
+        "fee_cost_dollars": "0.01808", "revenue_dollars": 0.64 if side == result else 0,
+    }
+    buys = [{
+        "ticker": ticker, "fill_id": "buy-1", "order_id": "buy-order", "action": "BUY",
+        "environment": "real", "outcome_side": side, "fill_count_fp": "1.28",
+        "average_price_dollars": "0.73", "fee_cost_dollars": "0.0177",
+        "created_time": "2026-10-04T20:47:36Z",
+    }]
+    sale = {
+        "ticker": ticker, "fill_id": "sell-1", "order_id": "sell-order", "action": "SELL",
+        "environment": "real", "outcome_side": side, "fill_count_fp": "0.64",
+        "average_price_dollars": "0.992", "fee_cost_dollars": "0.00038",
+        "position_cost_dollars": "0.4672", "entry_fee_allocated_dollars": "0.00885",
+        "gross_proceeds_dollars": "0.63488", "realized_pnl_dollars": "0.15845",
+        "created_time": "2026-10-04T20:58:47Z",
+    }
+    # Reconciliation repairs an already-processed gross settlement, too.
+    store.reconcile_settlements("u", [settlement], buys, environment="real")
+    repaired = store.reconcile_settlements("u", [settlement], buys + [sale], environment="real")
+    strategy = repaired["modeState"]["real"]["strategy"]
+    record = strategy["settlementRecords"][0]
+    assert record["contracts"] == 0.64
+    assert record["cost"] == 0.4672
+    assert record["fees"] == 0.0089
+    assert record["entryPrice"] == 0.73
+    assert record["accountingMethod"] == "authenticated_fill_residual_v1"
+    assert record["pnl"] == pytest.approx(0.164 if side == result else -0.4761, abs=0.0001)
+    assert strategy["realizedTotalPnl"] == pytest.approx(0.3224 if side == result else -0.3176, abs=0.0001)
+    # Duplicate pages are idempotent and a subsequent shorter window cannot
+    # overwrite the stronger authenticated residual cost basis with gross data.
+    repeated = store.reconcile_settlements("u", [settlement], buys + [sale, sale], environment="real")
+    shortened = store.reconcile_settlements("u", [settlement], buys, environment="real")
+    # A subset with equal BUY/SELL quantities must not hit the full-close
+    # deletion shortcut and erase the certified remaining 0.64 contracts.
+    false_full_close = store.reconcile_settlements(
+        "u", [settlement], [{**buys[0], "fill_count_fp": "0.64"}, sale], environment="real",
+    )
+    assert repeated["modeState"]["real"]["strategy"]["settlementRecords"] == [record]
+    assert shortened["modeState"]["real"]["strategy"]["settlementRecords"] == [record]
+    assert false_full_close["modeState"]["real"]["strategy"]["settlementRecords"] == [record]
+    uncached = KalshiRobotState(str(tmp_path / "uncached.json"))
+    uncertain = uncached.reconcile_settlements(
+        "u", [settlement], [{**buys[0], "fill_count_fp": "0.64"}, sale], environment="real",
+    )
+    # Even without a prior repair, exchange gross count 1.28 contradicts a
+    # supposedly complete 0.64 BUY / 0.64 SELL page. Keep the unresolved source
+    # record for quantity quarantine instead of erasing it as fully closed.
+    unresolved = uncertain["modeState"]["real"]["strategy"]["settlementRecords"]
+    assert len(unresolved) == 1
+    assert unresolved[0]["contracts"] == 1.28
+    assert "accountingMethod" not in unresolved[0]
+
+
+@pytest.mark.parametrize("defect", ["missing_buy", "unknown_fifo", "other_side", "wrong_payout", "missing_payout", "after_settlement"])
+def test_partial_residual_requires_complete_consistent_authenticated_evidence(defect):
+    import kalshi_robot_state as module
+    settlement = {
+        "yes_count_fp": 2, "no_count_fp": 1, "market_result": "YES",
+        "revenue_dollars": 1, "settled_time": "2026-10-04T21:00:00Z",
+    }
+    buy = {"action": "BUY", "outcome_side": "YES", "fill_count_fp": 2,
+           "average_price_dollars": 0.6, "fee_cost_dollars": 0.02,
+           "created_time": "2026-10-04T20:40:00Z"}
+    sell = {"action": "SELL", "outcome_side": "YES", "fill_count_fp": 1,
+            "position_cost_dollars": 0.6, "entry_fee_allocated_dollars": 0.01,
+            "realized_pnl_dollars": 0.1, "created_time": "2026-10-04T20:50:00Z"}
+    rows = [buy, sell]
+    if defect == "missing_buy":
+        buy["fill_count_fp"] = 1.5
+    elif defect == "unknown_fifo":
+        sell.pop("position_cost_dollars")
+    elif defect == "other_side":
+        rows.append({**buy, "outcome_side": "NO"})
+    elif defect == "wrong_payout":
+        settlement["revenue_dollars"] = 0.9
+    elif defect == "missing_payout":
+        settlement.pop("revenue_dollars")
+    elif defect == "after_settlement":
+        sell["created_time"] = "2026-10-04T21:01:00Z"
+    assert module._settlement_residual_from_fills(settlement, rows, "YES", "YES") is None
+
+
+def test_residual_keeps_fifo_cost_and_fees_instead_of_prorating_gross_cost():
+    import kalshi_robot_state as module
+    settlement = {"yes_count_fp": 2, "no_count_fp": 0.5,
+                  "revenue_dollars": 1.5, "settled_time": "2026-10-04T21:00:00Z"}
+    first = {"action": "BUY", "outcome_side": "YES", "fill_count_fp": 1,
+             "average_price_dollars": 0.4, "fee_cost_dollars": 0.01,
+             "created_time": "2026-10-04T20:40:00Z"}
+    second = {**first, "average_price_dollars": 0.8, "fee_cost_dollars": 0.02,
+              "created_time": "2026-10-04T20:45:00Z"}
+    sale = {"action": "SELL", "outcome_side": "YES", "fill_count_fp": 0.5,
+            "position_cost_dollars": 0.2, "entry_fee_allocated_dollars": 0.005,
+            "realized_pnl_dollars": 0.1, "created_time": "2026-10-04T20:50:00Z"}
+    residual = module._settlement_residual_from_fills(settlement, [first, second, sale], "YES", "YES")
+    assert residual["contracts"] == 1.5
+    assert residual["cost"] == pytest.approx(1)
+    assert residual["fees"] == pytest.approx(0.025)
+
+
+def test_settlement_calibration_uses_entry_forecast_not_later_exit_forecast(tmp_path):
+    store = KalshiRobotState(str(tmp_path / "state.json"))
+    bucket = store._mode_bucket(store._state("u"), "real")
+    ticker = "KXBTC15M-FORECAST"
+    bucket["filledTrades"] = [
+        {"ticker": ticker, "environment": "real", "action": "BUY_YES", "side": "YES",
+         "orderFilled": True, "fillCount": 2, "price": 0.6, "fairProbability": 0.7},
+        {"ticker": ticker, "environment": "real", "action": "SELL_YES", "side": "YES",
+         "orderFilled": True, "fillCount": 1, "price": 0.99, "fairProbability": 0.999},
+    ]
+    result = store.reconcile_settlements("u", [{
+        "ticker": ticker, "market_result": "YES", "yes_count_fp": 1,
+        "revenue_dollars": 1, "yes_total_cost_dollars": 0.6, "fee_cost_dollars": 0.01,
+        "settled_time": "2026-10-04T21:00:00Z",
+    }], [], environment="real")
+    strategy = result["modeState"]["real"]["strategy"]
+    assert strategy["settlementRecords"][0]["fairProbability"] == 0.7
+    assert strategy["brierScore"] == pytest.approx(0.09)
 
 
 def test_repeated_settlement_reconciliation_does_not_rewrite_unchanged_state(tmp_path):

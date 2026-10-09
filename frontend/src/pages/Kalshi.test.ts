@@ -49,7 +49,7 @@ describe('Kalshi workspace routing', () => {
 
   it('defaults to official-BRTI v6 position-management controls', () => {
     expect(DEFAULT_KALSHI_BOT_CONFIG.paperBankroll).toBe(1000);
-    expect(DEFAULT_KALSHI_BOT_CONFIG.riskPerTradePct).toBe(0.5);
+    expect(DEFAULT_KALSHI_BOT_CONFIG.riskPerTradePct).toBe(15);
     expect(DEFAULT_KALSHI_BOT_CONFIG.fractionalKelly).toBe(0.15);
     expect(DEFAULT_KALSHI_BOT_CONFIG.maxBookParticipation).toBeLessThanOrEqual(0.2);
     expect(DEFAULT_KALSHI_BOT_CONFIG.minPrice).toBeGreaterThanOrEqual(0.47);
@@ -61,11 +61,11 @@ describe('Kalshi workspace routing', () => {
     expect(DEFAULT_KALSHI_BOT_CONFIG.addMinProbabilityImprovement).toBeGreaterThan(0);
     expect(DEFAULT_KALSHI_BOT_CONFIG.probabilityLogitScale).toBeGreaterThanOrEqual(1.7);
     expect(DEFAULT_KALSHI_BOT_CONFIG.marketBlendWeight).toBeGreaterThanOrEqual(0.45);
-    expect(DEFAULT_KALSHI_BOT_CONFIG.maxSingleMarketExposurePct).toBeLessThan(
+    expect(DEFAULT_KALSHI_BOT_CONFIG.maxSingleMarketExposurePct).toBeLessThanOrEqual(
       DEFAULT_KALSHI_BOT_CONFIG.maxPortfolioExposurePct,
     );
-    expect(DEFAULT_KALSHI_BOT_CONFIG.maxPortfolioExposurePct).toBeLessThanOrEqual(10);
-    expect(DEFAULT_KALSHI_BOT_CONFIG.maxSingleMarketExposurePct).toBeLessThanOrEqual(2);
+    expect(DEFAULT_KALSHI_BOT_CONFIG.maxPortfolioExposurePct).toBe(15);
+    expect(DEFAULT_KALSHI_BOT_CONFIG.maxSingleMarketExposurePct).toBe(15);
     expect(DEFAULT_KALSHI_BOT_CONFIG.microPositionMaxLossDollars).toBe(1);
     expect(DEFAULT_KALSHI_BOT_CONFIG.microPositionMaxLossPct).toBe(5);
     expect(DEFAULT_KALSHI_BOT_CONFIG.microPositionMinNetEdge).toBeGreaterThanOrEqual(0.02);

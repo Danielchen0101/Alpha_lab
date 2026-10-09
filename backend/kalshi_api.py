@@ -45,8 +45,10 @@ except ImportError:  # pragma: no cover - package-style test imports
     )
 try:
     from kalshi_robot_state import KalshiRobotState
+    from kalshi_daily_risk import daily_risk_for_ticker
 except ImportError:  # pragma: no cover - package-style test imports
     from .kalshi_robot_state import KalshiRobotState
+    from .kalshi_daily_risk import daily_risk_for_ticker
 try:
     from kalshi_paper import KalshiPaperAccountStore, aggregate_taker_sale, executable_bid_levels
 except ImportError:  # pragma: no cover - package-style test imports
@@ -105,6 +107,7 @@ KALSHI_LIVE_ROUTING_STATE_CONFLICTS = frozenset({
     "kalshi_live_shard_cash_insufficient",
     "kalshi_live_shard_cash_unavailable",
     "kalshi_live_exposure_changed",
+    "kalshi_live_order_risk_changed",
     "kalshi_live_open_order_conflict",
     "kalshi_live_position_ownership_conflict",
     "kalshi_live_event_position_conflict",
@@ -113,6 +116,7 @@ KALSHI_LIVE_ROUTING_STATE_CONFLICTS = frozenset({
     "kalshi_reversal_cooldown_active",
     "kalshi_reentry_confirmation_required",
     "kalshi_entry_confirmation_required",
+    "kalshi_daily_loss_streak",
 }) | KALSHI_LIVE_MARKET_STATE_CONFLICTS
 RETIRED_KALSHI_BLOCKING_REASONS = frozenset({
     "daily_loss_limit",
@@ -1628,6 +1632,7 @@ def _paper_account_context(
         if (_parse_utc(row.get("created_time")) or datetime.min.replace(tzinfo=timezone.utc)).date() == now.date()
     }
     strategy = dict(state.get("strategy") or {})
+    daily_risk = daily_risk_for_ticker(strategy, ticker, now=now)
     daily_pnl = (
         _finite_number(strategy.get("dailyPnl"))
         if strategy.get("dailyPnlDate") == now.date().isoformat()
@@ -1666,6 +1671,8 @@ def _paper_account_context(
         "alreadyTraded": ticker in set(state.get("tradedTickers") or []),
         "dailyTrades": len(daily_order_ids - {""}),
         "dailyPnl": daily_pnl,
+        "dailyRisk": daily_risk,
+        "dailyLossStreakStopped": bool(daily_risk.get("stopped")),
     }
 
 
@@ -2482,6 +2489,63 @@ def _hourly_candidate_diagnostic(
     }
 
 
+def _hourly_confirmation_continuation_ticker(
+    candidates,
+    diagnostics: Mapping[str, Any],
+    robot_state: Mapping[str, Any],
+    strategy_config: Mapping[str, Any],
+    event_ticker: str,
+    *,
+    warnings=(),
+) -> Optional[str]:
+    """Keep a still-qualified strike long enough to confirm its own thesis.
+
+    Ranking a different sibling first on every scan can perpetually reset a
+    valid two-frame signal. Continuity outranks score only while the pending
+    strike independently passes this scan's entry and penalty gates, and the
+    existing confirmation logic accepts the fresh consecutive frame.
+    """
+    if set(warnings or ()) & KALSHI_EXECUTION_BLOCKING_WARNINGS:
+        return None
+    strategy = robot_state.get("strategy") or {}
+    cursors = strategy.get("entryConfirmations") or {}
+    pending = cursors.get("btchourly") or {}
+    ticker = str(pending.get("ticker") or "")
+    side = str(pending.get("side") or "").upper()
+    previous_at = _parse_utc(pending.get("generatedAt"))
+    if (
+        _market_family(ticker) != "btchourly"
+        or _kalshi_event_ticker(ticker) != str(event_ticker or "")
+        or side not in {"YES", "NO"}
+        or previous_at is None
+        or pending.get("confirmed") is True
+        or pending.get("dataQualityEligible") is not True
+        or _finite_number(pending.get("streak"), 0.0) < 1
+    ):
+        return None
+    for candidate, market, _book in candidates:
+        if str(market.get("ticker") or "") != ticker:
+            continue
+        generated = _parse_utc(candidate.get("generatedAt"))
+        if (
+            generated is None
+            or not 0.0 < (generated - previous_at).total_seconds() <= 25.0
+            or _kalshi_event_ticker(ticker, market) != str(event_ticker or "")
+            or str(candidate.get("action") or "").upper() != f"BUY_{side}"
+            or str(candidate.get("side") or "").upper() != side
+            or candidate.get("blockingReasons")
+            or (diagnostics.get(ticker) or {}).get("penaltyCleared") is not True
+        ):
+            return None
+        confirmation = _entry_confirmation(
+            robot_state, ticker, side, candidate, strategy_config,
+        )
+        if confirmation.get("required") and int(confirmation.get("streak") or 0) > 1:
+            return ticker
+        return None
+    return None
+
+
 def _btc15_live_strategy_config(
     strategy_config: Mapping[str, Any],
 ) -> Dict[str, Any]:
@@ -2599,8 +2663,8 @@ def _hourly_live_strategy_config(
     return normalize_strategy_config({
         **dict(strategy_config or {}),
         "riskPerTradePct": min(
-            _finite_number(strategy_config.get("riskPerTradePct"), 0.50),
-            0.50,
+            _finite_number(strategy_config.get("riskPerTradePct"), 15.0),
+            15.0,
         ),
         "minNetEdge": max(
             0.015,
@@ -2654,9 +2718,9 @@ def _hourly_live_strategy_config(
         "maxSingleMarketExposurePct": min(
             _finite_number(
                 strategy_config.get("maxSingleMarketExposurePct"),
-                2.0,
+                15.0,
             ),
-            2.0,
+            15.0,
         ),
     })
 
@@ -6843,6 +6907,14 @@ class _PaperRobotController:
         config = normalize_strategy_config(
             latest_state.get("config") or {}
         )
+        # Recheck the durable family latch under the routing lease. This is
+        # after the reduce-only return so risk-reducing exits remain available.
+        if daily_risk_for_ticker(latest_state.get("strategy") or {}, ticker).get("stopped"):
+            raise KalshiApiError(
+                "Three consecutive completed losses paused this BTC strategy until New York midnight.",
+                status=409,
+                code="kalshi_daily_loss_streak",
+            )
         if not exact_same_side:
             if "entryConfirmation" in decision:
                 entry_confirmation = _entry_confirmation(
@@ -6965,22 +7037,22 @@ class _PaperRobotController:
             ) == ticker
         )
         portfolio_limit = equity_dollars * min(
-            10.0,
+            15.0,
             max(
                 0.1,
                 _finite_number(
                     config.get("maxPortfolioExposurePct"),
-                    10.0,
+                    15.0,
                 ),
             ),
         ) / 100.0
         market_limit = equity_dollars * min(
-            2.0,
+            15.0,
             max(
                 0.1,
                 _finite_number(
                     config.get("maxSingleMarketExposurePct"),
-                    2.0,
+                    15.0,
                 ),
             ),
         ) / 100.0
@@ -7017,6 +7089,56 @@ class _PaperRobotController:
                 0.01,
             )
         )
+        per_order_limit = equity_dollars * min(
+            15.0,
+            max(0.1, _finite_number(config.get("riskPerTradePct"), 15.0)),
+        ) / 100.0
+        # Fractional micro-account sizing may intentionally exceed the normal
+        # per-trade fraction. Re-prove its bounded exception from current
+        # equity/settings, executable cost, and the engine's sizing evidence.
+        # A stale boolean alone must never authorize a larger order.
+        unit_loss = _finite_number(
+            kalshi_order_cost(user_price, 1.0, taker_fee_rate).get("cashDebit"),
+            1.0,
+        )
+        conservative_probability = _finite_number(
+            edge.get("conservativeProbability"), 0.0,
+        )
+        fresh_full_kelly = max(
+            0.0,
+            (conservative_probability - unit_loss) / max(1.0 - unit_loss, 0.01),
+        )
+        fresh_kelly_budget = equity_dollars * fresh_full_kelly * min(
+            0.15, max(0.0, _finite_number(config.get("fractionalKelly"), 0.15)),
+        )
+        applied_risk_scale = min(
+            1.0, max(0.0, _finite_number(sizing.get("appliedRiskScale"), 0.0)),
+        )
+        fresh_standard_budget = min(per_order_limit * applied_risk_scale, fresh_kelly_budget)
+        small_account_limit = min(
+            equity_dollars
+            * min(2.0, max(0.0, _finite_number(config.get("smallAccountRiskTargetPct"), 2.0)))
+            / 100.0
+            * applied_risk_scale,
+            fresh_kelly_budget,
+            micro_position_loss_cap,
+            max(0.0, _finite_number(sizing.get("smallAccountRiskBudget"), 0.0)),
+            max(0.0, _finite_number(sizing.get("riskBudget"), 0.0)),
+        )
+        small_account_authorized = bool(
+            sizing.get("smallAccountSizingApplied") is True
+            and config.get("fractionalContractSizingEnabled") is True
+            and sizing.get("fractionalSizingEnabled") is True
+            and ticker_exposure <= 1e-9
+            and (not is_hourly or scope_exposure <= 1e-9)
+            and 0.0 < fresh_standard_budget < unit_loss
+            and 0.0 < conservative_probability < 1.0
+            and required_cash <= small_account_limit + 1e-9
+            and _finite_number(edge.get("netEdge"), -1.0)
+            >= _finite_number(config.get("microPositionMinNetEdge"), 0.02)
+            and _finite_number(edge.get("conservativeEdge"), -1.0)
+            >= _finite_number(config.get("microPositionMinConservativeEdge"), 0.01)
+        )
         requested_risk = required_cash
         if portfolio_exposure + requested_risk > portfolio_limit + 1e-9:
             raise KalshiApiError(
@@ -7042,6 +7164,16 @@ class _PaperRobotController:
                 "Fresh KXBTCD event exposure exceeds the Real limit.",
                 status=409,
                 code="kalshi_live_exposure_changed",
+            )
+        if (
+            requested_risk > per_order_limit + 1e-9
+            and not micro_position_authorized
+            and not small_account_authorized
+        ):
+            raise KalshiApiError(
+                "The final fee-inclusive order cost exceeds the current per-order risk limit.",
+                status=409,
+                code="kalshi_live_order_risk_changed",
             )
         if verify_shard_cash:
             shard_cash = _shard_cash_dollars(balance, live_payload.get("exchange_index"))
@@ -7488,6 +7620,17 @@ class _PaperRobotController:
                 )
                 for item in held_candidates
             }
+            continuation_ticker = (
+                _hourly_confirmation_continuation_ticker(
+                    candidates,
+                    candidate_diagnostics,
+                    robot_state,
+                    hourly_config,
+                    str(ladder.get("eventTicker") or ""),
+                    warnings=ladder.get("warnings") or [],
+                )
+                if not held_candidates else None
+            )
             # Prefer a routable opportunity; otherwise expose the closest
             # uncertainty-adjusted candidate so the UI explains why it waited.
             # An owned strike always narrows this pool first: while it is being
@@ -7504,6 +7647,10 @@ class _PaperRobotController:
                         if held_candidates
                         else ()
                     ),
+                    1
+                    if continuation_ticker
+                    and str((item[1] or {}).get("ticker") or "") == continuation_ticker
+                    else 0,
                     1
                     if candidate_diagnostics.get(
                         str((item[1] or {}).get("ticker") or ""),
@@ -7564,6 +7711,12 @@ class _PaperRobotController:
                 "selectedTicker": selected_ticker,
                 "selectedRank": selected_rank,
                 "penaltyWeight": hourly_candidate_penalty_weight,
+                "selectionReason": (
+                    "held_position_management" if held_candidates
+                    else "pending_confirmation_continuity" if continuation_ticker
+                    else "highest_qualified_score"
+                ),
+                "confirmationContinuationTicker": continuation_ticker,
                 "selected": selected_diagnostic,
                 "topCandidates": compact_candidates,
             }
