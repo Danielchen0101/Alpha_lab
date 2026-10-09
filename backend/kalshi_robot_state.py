@@ -13,8 +13,10 @@ from typing import Any, Dict, Mapping, Optional
 
 try:
     from kalshi_engine import DEFAULT_STRATEGY_CONFIG, normalize_strategy_config
+    from kalshi_daily_risk import rebuild_daily_risk
 except ImportError:  # pragma: no cover - package-style test imports
     from .kalshi_engine import DEFAULT_STRATEGY_CONFIG, normalize_strategy_config
+    from .kalshi_daily_risk import rebuild_daily_risk
 
 
 def _now() -> str:
@@ -38,7 +40,7 @@ def _entry_confirmation_family(ticker: Any) -> Optional[str]:
 MAX_DECISION_RECORDS = 50
 MAX_SETTLEMENT_RECORDS = 1000
 MAX_TRADED_TICKERS = 2000
-PAPER_STATE_VERSION = 15
+PAPER_STATE_VERSION = 16
 KALSHI_MODES = ("paper", "real")
 
 # These fields mirror the active mode bucket for older API consumers.  Keeping
@@ -120,6 +122,126 @@ def _utc_time_sort_key(value: Any) -> tuple[int, float]:
     except (OverflowError, OSError, ValueError):
         return (0, 0.0)
     return (1, timestamp)
+
+
+def _unique_fill_rows(rows) -> list[Dict[str, Any]]:
+    """Collapse paginated duplicates before summing quantities or money."""
+    unique = {}
+    for index, row in enumerate(rows):
+        if not isinstance(row, Mapping):
+            continue
+        identity = row.get("fill_id") or row.get("trade_id")
+        # Without a fill identity, keep distinct rows rather than assuming two
+        # executions of the same order are duplicates.
+        key = str(identity) if identity else f"unidentified:{index}"
+        unique[key] = dict(row)
+    return list(unique.values())
+
+
+def _aggregate_close_fills(rows) -> list[Dict[str, Any]]:
+    """A SELL order can have several fills; preserve their combined net P/L."""
+    grouped: Dict[str, list] = {}
+    for row in rows:
+        action = str(row.get("action") or "").upper()
+        if (
+            _order_fill_count(row) <= 0
+            or row.get("realized_pnl_dollars") is None
+            or not (row.get("reduce_only") or action == "SELL" or action.startswith("SELL_"))
+        ):
+            continue
+        identity = str(row.get("order_id") or row.get("client_order_id") or row.get("fill_id") or "")
+        if identity:
+            grouped.setdefault(identity, []).append(row)
+    result = []
+    for rows in grouped.values():
+        combined = dict(max(rows, key=lambda row: _utc_time_sort_key(row.get("created_time") or row.get("ts"))))
+        count = sum(_order_fill_count(row) for row in rows)
+        combined["fill_count_fp"] = count
+        for field in (
+            "position_cost_dollars", "gross_proceeds_dollars",
+            "entry_fee_allocated_dollars", "fee_cost_dollars", "realized_pnl_dollars",
+        ):
+            combined[field] = round(sum(_number(row.get(field)) for row in rows), 8)
+        combined["average_price_dollars"] = round(sum(
+            _order_fill_count(row) * _number(_first_present(row, "average_price_dollars", "price_dollars"))
+            for row in rows
+        ) / count, 8)
+        result.append(combined)
+    return result
+
+
+def _settlement_residual_from_fills(settlement, matching_fills, side, result):
+    """Use complete canonical entry/close economics for a partly sold lot.
+
+    Exchange settlement history can express a YES sale as an acquired NO:
+    its counts/costs are gross transactions, while revenue is only the net
+    settlement payout. Those gross costs cannot be added to realized sales.
+    Accept both this gross format and an explicitly net residual format, but
+    only when authenticated fills reconcile the entire single-side inventory.
+    """
+    if side not in {"YES", "NO"} or result not in {"YES", "NO"}:
+        return None
+    entries, closes = [], []
+    for fill in matching_fills:
+        action = str(fill.get("action") or "").upper()
+        quantity = _order_fill_count(fill)
+        if quantity <= 0 or str(fill.get("outcome_side") or "").upper() != side:
+            return None
+        if action == "BUY" and not fill.get("reduce_only"):
+            entries.append(fill)
+        elif action == "SELL" or action.startswith("SELL_"):
+            closes.append(fill)
+        else:
+            return None
+    if not entries or not closes:
+        return None
+    entry_quantity = sum(_order_fill_count(row) for row in entries)
+    closed_quantity = sum(_order_fill_count(row) for row in closes)
+    remaining = entry_quantity - closed_quantity
+    if remaining <= 1e-9:
+        return None
+    same_count = _number(_first_present(settlement, f"{side.lower()}_count_fp", f"{side.lower()}_count"), float("nan"))
+    opposite = "no" if side == "YES" else "yes"
+    opposite_count = _number(_first_present(settlement, f"{opposite}_count_fp", f"{opposite}_count"), 0.0)
+    gross_matches = abs(same_count - entry_quantity) < 1e-8 and abs(opposite_count - closed_quantity) < 1e-8
+    net_matches = abs(same_count - remaining) < 1e-8 and abs(opposite_count) < 1e-8
+    if not (gross_matches or net_matches):
+        return None
+    settled_at = _utc_time_sort_key(settlement.get("settled_time") or settlement.get("created_time"))
+    if not settled_at[0] or any(
+        not _utc_time_sort_key(row.get("created_time") or row.get("ts"))[0]
+        or _utc_time_sort_key(row.get("created_time") or row.get("ts")) > settled_at
+        for row in matching_fills
+    ):
+        return None
+    costs, fees = 0.0, 0.0
+    for row in entries:
+        price = _number(_first_present(row, "average_price_dollars", "price_dollars"), float("nan"))
+        fee = _number(row.get("fee_cost_dollars"), float("nan"))
+        if not (0 <= price <= 1 and math.isfinite(fee) and fee >= 0):
+            return None
+        costs += _order_fill_count(row) * price
+        fees += fee
+    for row in closes:
+        allocated_cost = _number(row.get("position_cost_dollars"), float("nan"))
+        allocated_fee = _number(row.get("entry_fee_allocated_dollars"), float("nan"))
+        realized = _number(row.get("realized_pnl_dollars"), float("nan"))
+        if not (math.isfinite(allocated_cost) and allocated_cost >= 0
+                and math.isfinite(allocated_fee) and allocated_fee >= 0 and math.isfinite(realized)):
+            return None
+        costs -= allocated_cost
+        fees -= allocated_fee
+    if not _has_present(settlement, "revenue_dollars", "revenue"):
+        return None
+    revenue = _money(settlement, ("revenue_dollars",), ("revenue",))
+    expected_revenue = remaining if side == result else 0.0
+    if costs < -1e-8 or fees < -1e-8 or abs(revenue - expected_revenue) > 1e-8:
+        return None
+    return {
+        "contracts": remaining, "cost": max(0.0, costs), "fees": max(0.0, fees),
+        "revenue": revenue, "accountingMethod": "authenticated_fill_residual_v1",
+        "accountingEvidence": {"entryContracts": entry_quantity, "closedContracts": closed_quantity},
+    }
 
 
 def _update_protective_exit_progress(
@@ -309,7 +431,7 @@ def _safe_strategy_config(
         _number(configured.get("maxPrice"), 0.92),
     )
     configured["riskPerTradePct"] = min(
-        0.50, _number(configured.get("riskPerTradePct"), 0.50)
+        15.0, _number(configured.get("riskPerTradePct"), 15.0)
     )
     # Hourly scans run on a 15-second cadence.  A 15-second confirmation gap
     # is therefore impossible once normal request latency is included; keep
@@ -323,10 +445,10 @@ def _safe_strategy_config(
         0.15, _number(configured.get("fractionalKelly"), 0.15)
     )
     configured["maxPortfolioExposurePct"] = min(
-        10.0, _number(configured.get("maxPortfolioExposurePct"), 10.0)
+        15.0, _number(configured.get("maxPortfolioExposurePct"), 15.0)
     )
     configured["maxSingleMarketExposurePct"] = min(
-        2.0, _number(configured.get("maxSingleMarketExposurePct"), 2.0)
+        15.0, _number(configured.get("maxSingleMarketExposurePct"), 15.0)
     )
     configured["microPositionMaxLossDollars"] = min(
         1.0, _number(configured.get("microPositionMaxLossDollars"), 1.0)
@@ -876,7 +998,61 @@ class KalshiRobotState:
             for environment, bucket in mode_state.items():
                 if isinstance(bucket, dict):
                     update_bucket(bucket, environment)
-        state["storageVersion"] = PAPER_STATE_VERSION
+        state["storageVersion"] = 15
+
+    @staticmethod
+    def _apply_v16_daily_risk(state: Dict[str, Any]) -> None:
+        """Initialize daily stops without raising any existing user's limits."""
+        migrated_at = _now()
+        initial_strategy = KalshiRobotState._initial()["strategy"]
+
+        def update_bucket(bucket: Dict[str, Any], environment: Optional[str]) -> None:
+            config = dict(bucket.get("config") or {})
+            # New bots may use the new 15% ceilings. Existing Paper and Real
+            # accounts retain their selected limits, including old defaults;
+            # an increase belongs to an authenticated user configuration.
+            for field, old_default in (
+                ("maxPortfolioExposurePct", 10.0),
+                ("maxSingleMarketExposurePct", 2.0),
+                ("riskPerTradePct", 0.5),
+            ):
+                config.setdefault(field, old_default)
+            bucket["config"] = _safe_strategy_config(config, environment)
+            strategy = bucket.setdefault("strategy", {})
+            for field in ("name", "version", "philosophy"):
+                strategy[field] = initial_strategy[field]
+            components = list(strategy.get("components") or [])
+            for component in initial_strategy["components"][-2:]:
+                if component not in components:
+                    components.append(component)
+            strategy["components"] = components
+            changes = list(strategy.get("changes") or [])
+            if not changes or changes[0].get("version") != 12:
+                changes.insert(0, {
+                    "at": migrated_at,
+                    "version": 12,
+                    "summary": (
+                        "Daily-risk v12: preserve entry thresholds and existing "
+                        "user limits; add fee-net completed-event loss stops, "
+                        "reconciled partial-fill accounting, and final per-order "
+                        "risk checks with configurable ceilings up to 15%."
+                    ),
+                })
+            strategy["changes"] = changes[:50]
+            strategy["dailyRiskByFamily"] = rebuild_daily_risk(
+                strategy,
+                list(bucket.get("filledTrades") or []),
+                environment=_execution_environment(environment),
+            )
+
+        active = _execution_environment(
+            state.get("activeEnvironment") or (state.get("config") or {}).get("executionMode")
+        )
+        update_bucket(state, active)
+        for environment, bucket in (state.get("modeState") or {}).items():
+            if isinstance(bucket, dict):
+                update_bucket(bucket, environment)
+        state["storageVersion"] = 16
 
     def __init__(
         self,
@@ -958,6 +1134,8 @@ class KalshiRobotState:
                     self._apply_v15_execution_consistency(
                         self._users[user_id]
                     )
+                if int(self._users[user_id].get("storageVersion") or 0) < 16:
+                    self._apply_v16_daily_risk(self._users[user_id])
                 migrated = True
         if migrated and self._persist_migrations:
             self._save_all()
@@ -980,12 +1158,13 @@ class KalshiRobotState:
             "decisions": [],
             "decisionLimit": MAX_DECISION_RECORDS,
             "strategy": {
-                "name": "BTC Dual-Market Execution-Consistent v11",
-                "version": 11,
+                "name": "BTC Dual-Market Daily-Risk v12",
+                "version": 12,
                 "philosophy": (
                     "Retain the walk-forward BTC15 champion and calibrated "
-                    "hourly signals, while making confirmation cadence and "
-                    "fractional IOC execution consistent with live risk caps."
+                    "hourly signal thresholds; evaluate fee-net completed "
+                    "outcomes, stop each strategy after three daily losses, "
+                    "and enforce selected risk limits on actual order costs."
                 ),
                 "components": [
                     "official CF Benchmarks BRTI one-second reference stream",
@@ -997,6 +1176,8 @@ class KalshiRobotState:
                     "freshness, depth, spread, exposure, cooldown, and stop gates",
                     "walk-forward BTC15 70-80c champion with non-routing frequency challengers",
                     "depth-aware fractional IOC sizing with prioritized fresh confirmation follow-ups",
+                    "New York daily three-loss stop on quantity-reconciled fee-net market/event outcomes",
+                    "fresh per-order and shared exposure caps with bounded small-account sizing",
                 ],
                 "settledSamples": 0,
                 "wins": 0,
@@ -1027,17 +1208,19 @@ class KalshiRobotState:
                 "equityCurve": [],
                 "dailyPnlDate": None,
                 "dailyPnl": 0.0,
+                "dailyRiskByFamily": {},
                 "lastEntryTicker": None,
                 "lastEntryAt": None,
                 "lastExitTicker": None,
                 "lastExitAt": None,
                 "changes": [{
                     "at": _now(),
-                    "version": 11,
+                    "version": 12,
                     "summary": (
-                        "Execution-consistent v11: preserve validated signal "
-                        "thresholds, align fractional IOC sizing with exact "
-                        "live costs, and prioritize fresh confirmation follow-ups."
+                        "Daily-risk v12: preserve signal thresholds, reconcile "
+                        "partial fills and residual settlements, and enforce "
+                        "daily completed-event loss stops plus selected "
+                        "per-order and shared exposure ceilings up to 15%."
                     ),
                 }],
             },
@@ -1168,6 +1351,8 @@ class KalshiRobotState:
                     self._apply_v14_walk_forward_champion(self._users[key])
                 if int(self._users[key].get("storageVersion") or 0) < 15:
                     self._apply_v15_execution_consistency(self._users[key])
+                if int(self._users[key].get("storageVersion") or 0) < 16:
+                    self._apply_v16_daily_risk(self._users[key])
                 migrated = True
             migrated = bool(migrated or durable_compaction_required)
         else:
@@ -1941,7 +2126,8 @@ class KalshiRobotState:
                 str(row.get("orderId") or row.get("clientOrderId") or "")
                 for row in filled_trades
             }
-            for fill in fills or []:
+            canonical_fills = _unique_fill_rows(fills or [])
+            for fill in canonical_fills:
                 if not isinstance(fill, Mapping) or _order_fill_count(fill) <= 0:
                     continue
                 order_id = str(
@@ -1968,6 +2154,43 @@ class KalshiRobotState:
                     }
                     filled_trades.append(promoted)
                     known_ids.add(order_id)
+                    changed = True
+            entry_quantities = {}
+            for fill in canonical_fills:
+                action = str(fill.get("action") or "").upper()
+                side = str(fill.get("outcome_side") or "").upper()
+                ticker = str(fill.get("ticker") or fill.get("market_ticker") or "")
+                order_id = str(fill.get("order_id") or fill.get("client_order_id") or "")
+                if (
+                    not (action == "BUY" or action.startswith("BUY_"))
+                    or fill.get("reduce_only")
+                    or side not in {"YES", "NO"}
+                    or not ticker or not order_id
+                    or _execution_environment(fill.get("environment") or environment) != environment
+                ):
+                    continue
+                proof = entry_quantities.setdefault((order_id, ticker, side), {"identified": 0.0, "aggregate": 0.0})
+                if fill.get("fill_id") or fill.get("trade_id"):
+                    proof["identified"] += _order_fill_count(fill)
+                else:
+                    # Some order-history fallbacks are aggregate quantities;
+                    # lacking a fill identity, duplicates cannot be summed.
+                    proof["aggregate"] = max(proof["aggregate"], _order_fill_count(fill))
+            for recorded in filled_trades:
+                if not str(recorded.get("action") or "").upper().startswith("BUY"):
+                    continue
+                key = (
+                    str(recorded.get("orderId") or recorded.get("clientOrderId") or ""),
+                    str(recorded.get("ticker") or ""),
+                    str(recorded.get("side") or "").upper(),
+                )
+                proof = entry_quantities.get(key) or {}
+                proven_count = max(proof.get("identified", 0.0), proof.get("aggregate", 0.0))
+                if proven_count > _number(recorded.get("fillCount")) + 1e-9:
+                    # A delayed fill can increase an acknowledged IOC quantity.
+                    # Persist this authenticated high-water mark so subsequent
+                    # partial pages cannot turn completed outcomes incomplete.
+                    recorded["fillCount"] = round(proven_count, 8)
                     changed = True
             if changed:
                 bucket["filledTrades"] = filled_trades[-MAX_SETTLEMENT_RECORDS:]
@@ -2038,6 +2261,11 @@ class KalshiRobotState:
                 4,
             ) if records else None
             self._sync_realized_analytics(strategy, environment)
+            strategy["dailyRiskByFamily"] = rebuild_daily_risk(
+                strategy,
+                list(bucket.get("filledTrades") or []),
+                environment=environment,
+            )
             self._sync_mode_mirror(state, environment)
             self._save_user(user_id)
             return copy.deepcopy(state)
@@ -2217,10 +2445,10 @@ class KalshiRobotState:
             }
             changed = False
             legacy_forecast_mode = fills is None
-            fill_rows = [
+            fill_rows = _unique_fill_rows([
                 row for row in list(fills or [])
                 if _execution_environment((row or {}).get("environment") or environment) == environment
-            ]
+            ])
             strategy = bucket["strategy"]
             canonical_close_order_ids = {
                 str(row.get("order_id") or row.get("client_order_id") or row.get("fill_id") or "")
@@ -2250,7 +2478,7 @@ class KalshiRobotState:
                     and str(row.get("orderId") or "") not in canonical_close_order_ids
                 )
             }
-            for fill in fill_rows:
+            for fill in _aggregate_close_fills(fill_rows):
                 action = str(fill.get("action") or "").upper()
                 if (
                     _order_fill_count(fill) <= 0
@@ -2284,6 +2512,10 @@ class KalshiRobotState:
                     "executionIntent": "CLOSE_POSITION",
                     "settlementLabel": None,
                 }
+                if _number((closed_by_order.get(order_id) or {}).get("count")) > count + 1e-9:
+                    # A later history page may contain only part of an order.
+                    # It cannot erase a more complete authenticated close.
+                    continue
                 if closed_by_order.get(order_id) != row:
                     closed_by_order[order_id] = row
                     changed = True
@@ -2351,6 +2583,7 @@ class KalshiRobotState:
                 matching_entry_fills = [
                     row for row in matching_fills
                     if str(row.get("action") or "").upper() != "SELL"
+                    and not str(row.get("action") or "").upper().startswith("SELL_")
                     and not row.get("reduce_only")
                 ]
                 forecasts = [
@@ -2365,6 +2598,10 @@ class KalshiRobotState:
                 forecast = next((
                     row for row in reversed(forecasts)
                     if row.get("ticker") == ticker
+                    and (
+                        str(row.get("action") or "").upper() == "BUY"
+                        or str(row.get("action") or "").upper().startswith("BUY_")
+                    )
                     and (bool(row.get("orderFilled")) or (legacy_forecast_mode and row.get("action") != "WAIT"))
                 ), None)
                 if not forecast and not matching_entry_fills:
@@ -2397,6 +2634,19 @@ class KalshiRobotState:
                 close_fill_count = sum(
                     _order_fill_count(row) for row in side_close_fills
                 )
+                previous_record = existing_records.get(settlement_key) or {}
+                previous_evidence = previous_record.get("accountingEvidence") or {}
+                if (
+                    previous_record.get("accountingMethod") == "authenticated_fill_residual_v1"
+                    and (
+                        entry_fill_count + 1e-9 < _number(previous_evidence.get("entryContracts"))
+                        or close_fill_count + 1e-9 < _number(previous_evidence.get("closedContracts"))
+                    )
+                ):
+                    # Check this before the full-close shortcut: a truncated
+                    # page containing one remaining BUY and one SELL can look
+                    # fully closed even though a certified residual still exists.
+                    continue
                 # Kalshi settlement history can retain the original contract
                 # count and cost after the position was sold before expiry,
                 # while reporting zero settlement revenue.  A canonical SELL
@@ -2404,10 +2654,21 @@ class KalshiRobotState:
                 # that those contracts were already realized.  Do not append a
                 # second settlement outcome, and remove a stale duplicate from
                 # earlier reconciliation runs so portfolio totals self-heal.
+                settlement_side_count = _number(_first_present(
+                    settlement, f"{side.lower()}_count_fp", f"{side.lower()}_count",
+                ), float("nan"))
+                opposite_side = "no" if side == "YES" else "yes"
+                settlement_opposite_count = _number(_first_present(
+                    settlement, f"{opposite_side}_count_fp", f"{opposite_side}_count",
+                ), float("nan"))
+                complete_gross_count = abs(settlement_side_count - entry_fill_count) < 1e-8
+                empty_net_counts = settlement_side_count == 0 and settlement_opposite_count == 0
                 fully_closed_before_settlement = bool(
                     side in {"YES", "NO"}
                     and entry_fill_count > 0
                     and close_fill_count + 1e-9 >= entry_fill_count
+                    and abs(_money(settlement, ("revenue_dollars",), ("revenue",))) < 1e-9
+                    and (complete_gross_count or empty_net_counts)
                 )
                 if fully_closed_before_settlement:
                     if existing_records.pop(settlement_key, None) is not None:
@@ -2500,11 +2761,22 @@ class KalshiRobotState:
                     elif side == "NO":
                         no_cost = forecast_price * count
                     revenue = count if side == result else 0.0
+                residual = _settlement_residual_from_fills(
+                    settlement, matching_fills, side, result,
+                )
+                if residual is not None:
+                    count, revenue, fees = residual["contracts"], residual["revenue"], residual["fees"]
+                    yes_cost = residual["cost"] if side == "YES" else 0.0
+                    no_cost = residual["cost"] if side == "NO" else 0.0
+                elif (existing_records.get(settlement_key) or {}).get("accountingMethod") == "authenticated_fill_residual_v1":
+                    # A truncated later history page cannot reinstate gross
+                    # costs after complete authenticated evidence repaired them.
+                    continue
                 pnl = round(revenue - yes_cost - no_cost - fees, 4)
                 won = pnl > 0
                 probability = _number((forecast or {}).get("fairProbability"), 0.5)
                 side_cost = yes_cost if side == "YES" else no_cost if side == "NO" else 0.0
-                side_count = yes_count if side == "YES" else no_count if side == "NO" else 0.0
+                side_count = count if residual is not None else yes_count if side == "YES" else no_count if side == "NO" else 0.0
                 entry_price = round(side_cost / side_count, 6) if side_count > 0 else None
                 exit_price = 1.0 if side and side == result else 0.0 if side else None
                 record = {
@@ -2526,6 +2798,9 @@ class KalshiRobotState:
                     "fairProbability": round(probability, 6),
                     "matchedFill": bool(matching_entry_fills or forecast),
                 }
+                if residual is not None:
+                    record["accountingMethod"] = residual["accountingMethod"]
+                    record["accountingEvidence"] = residual["accountingEvidence"]
                 existing_records[settlement_key] = record
                 if settlement_key in processed:
                     continue
@@ -2566,6 +2841,12 @@ class KalshiRobotState:
                 brier = sum((_number(row.get("fairProbability"), 0.5) - (1.0 if row.get("result") == row.get("side") else 0.0)) ** 2 for row in records) / len(records)
                 strategy["brierScore"] = round(brier, 5)
             self._sync_realized_analytics(strategy, environment)
+            strategy["dailyRiskByFamily"] = rebuild_daily_risk(
+                strategy,
+                list(bucket.get("filledTrades") or []),
+                fills=fill_rows,
+                environment=environment,
+            )
             realized_records = list(reversed(strategy.get("realizedTradeRecords") or []))
             derived_changed = (
                 strategy != strategy_before

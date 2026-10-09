@@ -544,7 +544,7 @@ def test_small_real_account_uses_risk_equal_fractional_contracts():
         now=now,
         reference_time=now,
         book_time=now,
-        config={"executionMode": "real"},
+        config={"executionMode": "real", "riskPerTradePct": 0.50, "maxSingleMarketExposurePct": 2.0},
         account_context={
             "bankroll": 19.87,
             "cashAvailable": 19.87,
@@ -590,7 +590,7 @@ def test_small_account_override_still_respects_two_percent_relative_loss_cap():
         now=now,
         reference_time=now,
         book_time=now,
-        config={"executionMode": "real"},
+        config={"executionMode": "real", "riskPerTradePct": 0.50, "maxSingleMarketExposurePct": 2.0},
         account_context={
             "bankroll": 5.0,
             "cashAvailable": 5.0,
@@ -688,7 +688,7 @@ def test_fractional_sizing_steps_down_at_the_actual_worst_fill_price():
         reference_time=now,
         book_time=now,
         config={
-            "executionMode": "real",
+            "executionMode": "real", "riskPerTradePct": 0.50, "maxSingleMarketExposurePct": 2.0,
             "maxBookParticipation": 0.10,
         },
         account_context={
@@ -779,7 +779,7 @@ def test_legacy_integer_compatibility_path_keeps_bounded_micro_contract():
         reference_time=now,
         book_time=now,
         config={
-            "executionMode": "real",
+            "executionMode": "real", "riskPerTradePct": 0.50, "maxSingleMarketExposurePct": 2.0,
             "fractionalContractSizingEnabled": False,
         },
         account_context={
@@ -1116,7 +1116,7 @@ def test_small_account_override_inherits_quality_and_tail_risk_haircuts():
             spot_price=spot,
             candles=candles,
             now=now,
-            config={"executionMode": "real"},
+            config={"executionMode": "real", "riskPerTradePct": 0.50, "maxSingleMarketExposurePct": 2.0},
             account_context={
                 "bankroll": 22.50,
                 "cashAvailable": 22.50,
@@ -1286,7 +1286,7 @@ def test_daily_realized_loss_never_blocks_new_buy():
     assert at_limit["sizing"]["dailyRealizedLoss"] == pytest.approx(20.0)
     assert "dailyLossLimit" not in at_limit["sizing"]
     assert all(gate["key"] != "daily_loss_limit" for gate in at_limit["gates"])
-    assert "never blocks new entries" in at_limit["methodology"]["dailyLossPolicy"]
+    assert "Three consecutive" in at_limit["methodology"]["dailyLossPolicy"]
 
 
 def test_explicit_daily_realized_pnl_is_reported_without_blocking():
@@ -1410,7 +1410,7 @@ def test_user_config_is_bounded_to_research_limits():
     })
 
     assert config["paperBankroll"] == 100.0
-    assert config["riskPerTradePct"] == 2.0
+    assert config["riskPerTradePct"] == 15.0
     assert "maxContracts" not in config
     assert "maxDailyLossPct" not in config
     assert config["minNetEdge"] == 0.005
@@ -1456,7 +1456,7 @@ def test_default_quality_floors_and_risk_scale_invariants():
     assert normalize_strategy_config({"minPrice": 0.70})[
         "minPrice"
     ] == pytest.approx(0.70)
-    assert defaults["riskPerTradePct"] == pytest.approx(0.50)
+    assert defaults["riskPerTradePct"] == pytest.approx(15.0)
     assert defaults["fractionalKelly"] == pytest.approx(0.15)
     assert defaults["fractionalContractSizingEnabled"] is True
     assert defaults["contractStep"] == pytest.approx(0.01)
@@ -1470,8 +1470,8 @@ def test_default_quality_floors_and_risk_scale_invariants():
     assert defaults["btc15ProtectiveExitConfirmationMaxGapSeconds"] == 30
     assert defaults["hourlyCandidatePenaltyWeight"] == pytest.approx(0.10)
     assert malformed_fractional["fractionalContractSizingEnabled"] is True
-    assert defaults["maxPortfolioExposurePct"] == pytest.approx(10.0)
-    assert defaults["maxSingleMarketExposurePct"] == pytest.approx(2.0)
+    assert defaults["maxPortfolioExposurePct"] == pytest.approx(15.0)
+    assert defaults["maxSingleMarketExposurePct"] == pytest.approx(15.0)
     assert defaults["minimumAddIntervalSeconds"] == 90
     assert defaults["addSizeFraction"] == pytest.approx(0.25)
     assert "maxDailyLossPct" not in defaults
@@ -1492,7 +1492,7 @@ def test_v4_config_ignores_removed_learning_and_bounds_add_on_controls():
     })
 
     assert not any(key.startswith("learning") for key in config)
-    assert config["maxSingleMarketExposurePct"] == 10
+    assert config["maxSingleMarketExposurePct"] == 15
     assert config["minimumAddIntervalSeconds"] == 10
     assert config["addMinModelProbability"] == 0.95
 

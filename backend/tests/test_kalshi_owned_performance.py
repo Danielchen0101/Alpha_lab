@@ -241,3 +241,99 @@ def test_cli_json_gzip_and_input_is_not_mutated(tmp_path, capsys):
     missing = tmp_path / "missing.json"
     assert MODULE.main([str(missing)]) == 2
     assert "audit error:" in capsys.readouterr().err
+
+
+def test_payoff_statistics_explain_why_winning_more_often_can_lose_money():
+    buys = [entry(f"KXBTC15M-{index}") for index in range(3)]
+    exits = [outcome(row["ticker"], pnl=pnl) for row, pnl in zip(buys, [0.2, 0.2, -0.8])]
+    stats = MODULE.audit(state(buys, exits))["complete"]
+    assert stats["winRate"] == pytest.approx(2 / 3)
+    assert stats["averageWin"] == 0.2
+    assert stats["averageLossMagnitude"] == 0.8
+    assert stats["breakEvenWinRate"] == 0.8
+    assert stats["netPnl"] == -0.4
+
+
+def _timed_state(specifications):
+    buys, exits = [], []
+    for ticker, entered, completed, pnl in specifications:
+        buys.append(entry(ticker, generatedAt=entered))
+        exits.append(outcome(ticker, settledAt=completed, pnl=pnl))
+    return state(buys, exits)
+
+
+def test_daily_stop_waits_for_completed_events_and_retains_existing_positions():
+    data = _timed_state([
+        ("KXBTC15M-A", "2026-08-01T12:00:00Z", "2026-08-01T12:10:00Z", -1),
+        ("KXBTC15M-B", "2026-08-01T12:11:00Z", "2026-08-01T12:20:00Z", -1),
+        ("KXBTC15M-C", "2026-08-01T12:21:00Z", "2026-08-01T12:30:00Z", -1),
+        # This position is already open when the third loss completes.
+        ("KXBTC15M-D", "2026-08-01T12:25:00Z", "2026-08-01T12:35:00Z", 1),
+        ("KXBTC15M-E", "2026-08-01T12:31:00Z", "2026-08-01T12:40:00Z", -2),
+        # A later win from an open position must not unlatch the day's stop.
+        ("KXBTC15M-F", "2026-08-01T12:36:00Z", "2026-08-01T12:45:00Z", -2),
+    ])
+    result = MODULE.audit(data, loss_stop_threshold=3)["dailyLossStopScenario"]["btc15"]
+    assert result["baseline"]["events"] == 6
+    assert result["withStop"]["events"] == 4
+    assert result["withStop"]["netPnl"] == -2
+    assert result["skipped"]["netPnl"] == -4
+    assert result["stoppedDays"] == [{"date": "2026-08-01", "haltedAt": "2026-08-01T12:30:00Z"}]
+    assert "not_backtest" in result["mode"]
+
+
+def test_stop_resets_at_new_york_midnight_not_utc_midnight_and_families_are_separate():
+    data = _timed_state([
+        ("KXBTC15M-A", "2026-08-01T23:00:00Z", "2026-08-01T23:15:00Z", -1),
+        ("KXBTC15M-B", "2026-08-02T00:00:00Z", "2026-08-02T00:15:00Z", -1),
+        ("KXBTC15M-C", "2026-08-02T01:00:00Z", "2026-08-02T01:15:00Z", -1),
+        ("KXBTC15M-D", "2026-08-02T03:59:00Z", "2026-08-02T04:05:00Z", -1),
+        ("KXBTC15M-E", "2026-08-02T04:00:00Z", "2026-08-02T04:15:00Z", 0.2),
+        ("KXBTCD-X-T1", "2026-08-02T02:00:00Z", "2026-08-02T03:00:00Z", 0.3),
+    ])
+    result = MODULE.audit(data, loss_stop_threshold=3)["dailyLossStopScenario"]
+    assert result["btc15"]["skipped"]["events"] == 1
+    assert result["btc15"]["withStop"]["events"] == 4
+    assert result["btc15"]["stoppedDays"][0]["date"] == "2026-08-01"
+    assert result["btc_hourly"]["withStop"]["events"] == 1
+
+
+def test_hourly_strikes_aggregate_before_losses_and_partial_events_are_excluded():
+    data = _timed_state([
+        ("KXBTCD-A-T1", "2026-08-01T12:00:00Z", "2026-08-01T12:15:00Z", -0.5),
+        ("KXBTCD-A-T2", "2026-08-01T12:00:00Z", "2026-08-01T12:16:00Z", 1.0),
+        ("KXBTCD-B-T1", "2026-08-01T13:00:00Z", "2026-08-01T13:15:00Z", -1.0),
+        ("KXBTCD-C-T1", "2026-08-01T14:00:00Z", "2026-08-01T14:15:00Z", -1.0),
+        ("KXBTCD-C-T2", "2026-08-01T14:00:00Z", "2026-08-01T14:16:00Z", -0.2),
+    ])
+    data["strategy"]["settlementRecords"][-1]["contracts"] = 0.5
+    result = MODULE.audit(data, loss_stop_threshold=1)["dailyLossStopScenario"]["btc_hourly"]
+    assert result["excludedIncompleteOrAmbiguousEvents"] == 1
+    assert result["baseline"]["events"] == 2
+    assert result["baseline"]["wins"] == 1
+    assert result["baseline"]["netPnl"] == -0.5
+    assert result["stoppedDays"][0]["haltedAt"] == "2026-08-01T13:15:00Z"
+
+
+def test_simultaneous_entry_cannot_use_outcome_at_same_timestamp_and_flat_breaks_streak():
+    data = _timed_state([
+        ("KXBTC15M-A", "2026-08-01T12:00:00Z", "2026-08-01T12:10:00Z", -1),
+        ("KXBTC15M-B", "2026-08-01T12:10:00Z", "2026-08-01T12:20:00Z", 0),
+        ("KXBTC15M-C", "2026-08-01T12:21:00Z", "2026-08-01T12:30:00Z", -1),
+    ])
+    one = MODULE.audit(data, loss_stop_threshold=1)["dailyLossStopScenario"]["btc15"]
+    assert one["withStop"]["events"] == 2
+    two = MODULE.audit(data, loss_stop_threshold=2)["dailyLossStopScenario"]["btc15"]
+    assert two["withStop"]["events"] == 3
+    assert two["stoppedDays"] == []
+
+
+@pytest.mark.parametrize("threshold", [True, 0, -1, 2.5])
+def test_loss_stop_rejects_invalid_thresholds(threshold):
+    with pytest.raises(ValueError, match="positive integer"):
+        MODULE.audit(state(), loss_stop_threshold=threshold)
+
+
+def test_loss_stop_rejects_unknown_timezone():
+    with pytest.raises(ValueError, match="IANA timezone"):
+        MODULE.audit(state(), loss_stop_threshold=3, loss_stop_timezone="invalid/zone")

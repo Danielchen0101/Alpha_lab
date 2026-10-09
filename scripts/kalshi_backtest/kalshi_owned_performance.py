@@ -31,6 +31,7 @@ import json
 from pathlib import Path
 import sys
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 ZERO = Decimal(0)
@@ -171,6 +172,8 @@ def _stats(markets: list[dict]) -> dict:
         peak = max(peak, equity)
         drawdown = max(drawdown, peak - equity)
     gross_profit, gross_loss = sum(wins, ZERO), -sum(losses, ZERO)
+    average_win = gross_profit / len(wins) if wins else None
+    average_loss = gross_loss / len(losses) if losses else None
     return {
         "markets": len(markets), "wins": len(wins), "losses": len(losses),
         "flat": len(pnls) - len(wins) - len(losses),
@@ -179,6 +182,10 @@ def _stats(markets: list[dict]) -> dict:
         "grossProfit": _money(gross_profit), "grossLoss": _money(gross_loss),
         "profitFactor": _money(gross_profit / gross_loss) if gross_loss else None,
         "profitFactorNote": None if gross_loss else "undefined_without_losing_markets",
+        "averageWin": _money(average_win) if average_win is not None else None,
+        "averageLossMagnitude": _money(average_loss) if average_loss is not None else None,
+        "breakEvenWinRate": float(average_loss / (average_win + average_loss))
+        if average_win is not None and average_loss is not None else None,
         "maxCompletedMarketDrawdown": _money(drawdown),
         "firstEntryAt": _iso(min((row["entered"] for row in markets), default=None)),
         "lastCompletedAt": _iso(max((row["completed"] for row in markets), default=None)),
@@ -190,6 +197,75 @@ def _event_key(ticker: str) -> str:
     if ticker.startswith("KXBTCD-") and "-T" in ticker:
         return ticker.rsplit("-T", 1)[0]
     return ticker
+
+
+def loss_stop_scenario(markets: list[dict], *, threshold: int = 3,
+                       timezone_name: str = "America/New_York") -> dict:
+    """Descriptive fixed-outcome replay; never optimize or recommend a threshold.
+
+    Accepts the validated internal market records, including incomplete records so
+    that one incomplete hourly strike excludes its entire shared event. Outcomes
+    become available only at the last realization, strictly before a later entry.
+    Already-entered events retain their recorded outcomes after the daily latch.
+    """
+    if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 1:
+        raise ValueError("loss-stop threshold must be a positive integer")
+    try:
+        day_zone = ZoneInfo(timezone_name)
+    except (ValueError, ZoneInfoNotFoundError) as error:
+        raise ValueError("loss-stop timezone must be an IANA timezone") from error
+    grouped = defaultdict(list)
+    for row in markets:
+        grouped[_event_key(row["ticker"])].append(row)
+    events, excluded = [], 0
+    for key, rows in grouped.items():
+        if any(row["status"] != "quantity_complete_ticker_scoped" for row in rows):
+            excluded += 1
+            continue
+        events.append({"ticker": key, "entered": min(row["entered"] for row in rows),
+                       "completed": max(row["completed"] for row in rows),
+                       "pnl": sum((row["pnl"] for row in rows), ZERO)})
+
+    def event_stats(rows):
+        metrics = _stats(rows)
+        metrics["events"] = metrics.pop("markets")
+        return metrics
+
+    selected, skipped, day_states = [], [], {}
+    # Entries precede completions with identical timestamps: a completion at the
+    # same instant is not assumed to have been known to the entry decision.
+    timeline = [(row["entered"], 0, row["ticker"], row) for row in events]
+    timeline += [(row["completed"], 1, row["ticker"], row) for row in events]
+    accepted = set()
+    for at, kind, key, row in sorted(timeline):
+        day = at.astimezone(day_zone).date().isoformat()
+        state = day_states.setdefault(day, {"streak": 0, "halted": False, "haltedAt": None})
+        if kind == 0:
+            if state["halted"]:
+                skipped.append(row)
+            else:
+                accepted.add(key)
+                selected.append(row)
+        elif key in accepted:
+            # Flat outcomes break a consecutive-loss streak, as do wins.
+            state["streak"] = state["streak"] + 1 if row["pnl"] < ZERO else 0
+            if state["streak"] >= threshold and not state["halted"]:
+                state["halted"], state["haltedAt"] = True, _iso(at)
+    return {
+        "mode": "descriptive_fixed_recorded_event_outcomes_not_backtest",
+        "threshold": threshold, "timezone": timezone_name,
+        "excludedIncompleteOrAmbiguousEvents": excluded,
+        "baseline": event_stats(events), "withStop": event_stats(selected),
+        "skipped": event_stats(skipped),
+        "stoppedDays": [{"date": day, "haltedAt": value["haltedAt"]}
+                        for day, value in sorted(day_states.items()) if value["halted"]],
+        "limitations": [
+            "Only complete recorded bot-entry events participate; missing or ambiguous events can change the true loss streak.",
+            "Each event is accepted at its first entry and retains its full recorded size and outcome; later adds, alternative fills, signals and sizing are not resimulated.",
+            "Losses count on the local completion day, flat/winning events reset the streak, and a reached stop stays latched until the next local day.",
+            "This selected historical sample and user-chosen rule are not out-of-sample profitability evidence.",
+        ],
+    }
 
 
 def _splits(markets: list[dict], train_end: str | None, validation_end: str | None) -> dict:
@@ -234,7 +310,8 @@ def _splits(markets: list[dict], train_end: str | None, validation_end: str | No
 
 def audit(payload: Any, *, environment: str = "real", entries: Any = None,
           train_end: str | None = None, validation_end: str | None = None,
-          include_markets: bool = False) -> dict:
+          include_markets: bool = False, loss_stop_threshold: int | None = None,
+          loss_stop_timezone: str = "America/New_York") -> dict:
     if environment not in {"real", "paper"}:
         raise ValueError("environment must be real or paper")
     if isinstance(payload, list) and entries is not None:
@@ -386,6 +463,16 @@ def audit(payload: Any, *, environment: str = "real", entries: Any = None,
         "chronologicalSplit": _splits(complete, train_end, validation_end),
         "limitations": list(LIMITATIONS),
     }
+    if loss_stop_threshold is not None:
+        scenario_families = defaultdict(list)
+        for row in markets.values():
+            family = "btc15" if row["ticker"].startswith("KXBTC15M-") else "btc_hourly" if row["ticker"].startswith("KXBTCD-") else "other"
+            scenario_families[family].append(row)
+        report["dailyLossStopScenario"] = {
+            key: loss_stop_scenario(rows, threshold=loss_stop_threshold,
+                                    timezone_name=loss_stop_timezone)
+            for key, rows in sorted(scenario_families.items())
+        }
     if include_markets:
         report["markets"] = [{
             "ticker": row["ticker"], "status": row["status"], "issues": sorted(row["issues"]),
@@ -406,12 +493,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--train-end", help="exclusive training boundary, ISO UTC date or offset timestamp")
     parser.add_argument("--validation-end", help="exclusive validation boundary, ISO UTC date or offset timestamp")
     parser.add_argument("--include-markets", action="store_true", help="include private per-ticker performance in output")
+    parser.add_argument("--loss-stop-threshold", type=int, help="descriptive consecutive completed-event loss stop, separately by family")
+    parser.add_argument("--loss-stop-timezone", default="America/New_York", help="IANA timezone for descriptive daily reset")
     args = parser.parse_args(argv)
     try:
         report = audit(load_json(args.input), environment=args.environment,
                        entries=load_json(args.entries) if args.entries else None,
                        train_end=args.train_end, validation_end=args.validation_end,
-                       include_markets=args.include_markets)
+                       include_markets=args.include_markets,
+                       loss_stop_threshold=args.loss_stop_threshold,
+                       loss_stop_timezone=args.loss_stop_timezone)
         print(json.dumps(report, indent=2, allow_nan=False))
     except (OSError, ValueError, TypeError, OverflowError) as error:
         print(f"audit error: {error}", file=sys.stderr)

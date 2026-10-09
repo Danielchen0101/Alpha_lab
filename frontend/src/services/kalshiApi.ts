@@ -87,7 +87,7 @@ export interface KalshiBotConfig {
 export const DEFAULT_KALSHI_BOT_CONFIG: KalshiBotConfig = {
   executionMode: 'paper',
   paperBankroll: 1000,
-  riskPerTradePct: 0.50,
+  riskPerTradePct: 15,
   minNetEdge: 0.010,
   minConservativeEdge: 0.0075,
   maxSpread: 0.06,
@@ -112,7 +112,7 @@ export const DEFAULT_KALSHI_BOT_CONFIG: KalshiBotConfig = {
   fullRiskConservativeEdge: 0.030,
   highPriceRiskStart: 0.75,
   highPriceRiskFloor: 0.50,
-  maxPortfolioExposurePct: 10,
+  maxPortfolioExposurePct: 15,
   microPositionMaxLossDollars: 1,
   microPositionMaxLossPct: 5,
   microPositionMinNetEdge: 0.020,
@@ -123,7 +123,7 @@ export const DEFAULT_KALSHI_BOT_CONFIG: KalshiBotConfig = {
   takeProfitScaleOutPct: 0.50,
   stopLossPct: 0.45,
   emergencyStopLossPct: 0.25,
-  maxSingleMarketExposurePct: 2,
+  maxSingleMarketExposurePct: 15,
   minimumAddIntervalSeconds: 90,
   addMinModelProbability: 0.64,
   addMinConservativeEdge: 0.0075,
@@ -253,6 +253,7 @@ export interface KalshiDecision {
     payoffIfWin?: number | null;
     lossIfWrong?: number | null;
   };
+  dailyRisk?: KalshiDailyRisk;
   sizing: {
     paperBankroll: number;
     riskPerTradePct: number;
@@ -297,6 +298,20 @@ export interface KalshiDecision {
     schedulerLastError?: string;
     ready?: boolean;
   };
+}
+
+export interface KalshiDailyRisk {
+  date: string;
+  timezone: string;
+  family: 'btc15m' | 'btchourly';
+  limit: number;
+  consecutiveLosses: number;
+  maxConsecutiveLosses: number;
+  stopped: boolean;
+  stoppedAt?: string | null;
+  resumeAt?: string | null;
+  completedOutcomes: number;
+  netPnl: number;
 }
 
 export interface KalshiSnapshot {
@@ -426,6 +441,7 @@ export interface KalshiPaperRobotState {
     winRate?: number | null;
     brierScore?: number | null;
     dailyPnl?: number;
+    dailyRiskByFamily?: Partial<Record<'btc15m' | 'btchourly', KalshiDailyRisk>>;
     totalPnl?: number;
     averagePnl?: number;
     losses?: number;
