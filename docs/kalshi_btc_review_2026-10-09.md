@@ -102,6 +102,15 @@ partial sales and multiple SELL fills, replay/truncated-history preservation,
 fee-inclusive sizing, a cap lowered after a decision, two market families,
 mode isolation, sticky loss stops and New York daylight-saving boundaries.
 
+Local verification passed the full 1,125-test backend suite, the final 381-test
+accounting/risk/routing/audit subset, 38 Kalshi frontend tests, TypeScript, ESLint
+and the production frontend build. CI also passed backend, frontend and browser
+smoke tests. Release validation found an existing Axios high-severity advisory;
+minimal Axios 1.20.0 and React Router DOM 6.30.6 updates passed 63 relevant
+frontend tests and the production high/critical dependency gate. Two moderate
+router advisories still require a major-version upgrade. The isolated backend
+dependency audit found no known vulnerabilities in 62 resolved packages.
+
 Run the offline audit against a private export with:
 
 ```sh

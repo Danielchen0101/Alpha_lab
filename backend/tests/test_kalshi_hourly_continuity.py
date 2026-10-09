@@ -148,7 +148,11 @@ def test_tick_prefers_valid_continuation_but_held_management_has_priority(monkey
             }
 
     decisions = {market["ticker"]: decision for decision, market, _ in candidates}
-    monkeypatch.setattr(kalshi_api, "evaluate_btc15_contract", lambda market, **_: copy.deepcopy(decisions[market["ticker"]]))
+    monkeypatch.setattr(
+        kalshi_api,
+        kalshi_api.evaluate_btc15_contract.__name__,
+        lambda market, **_: copy.deepcopy(decisions[market["ticker"]]),
+    )
     controller = _PaperRobotController(Client(), State(), None)
     monkeypatch.setattr(controller, "portfolio", lambda *_args, **_kwargs: {
         "environment": "paper", "balance": {"balance": 100_000, "portfolio_value": 0},
