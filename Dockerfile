@@ -1,7 +1,10 @@
 # AlphaLab v3 multi-stage production image
 
+# Docker publishes these Official Images to ECR Public as well as Docker Hub.
+# Use the public ECR copies so CI and host builds do not share Docker Hub's
+# anonymous pull quota. The runtime versions and image variants stay the same.
 # Stage 1: Build frontend
-FROM node:20-alpine AS frontend-builder
+FROM public.ecr.aws/docker/library/node:20-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 
@@ -39,7 +42,7 @@ ENV REACT_APP_ENV=$REACT_APP_ENV
 RUN npm run build
 
 # Stage 2: Build backend
-FROM python:3.11-slim AS backend-builder
+FROM public.ecr.aws/docker/library/python:3.11-slim AS backend-builder
 
 WORKDIR /app/backend
 
@@ -61,7 +64,7 @@ RUN python -m pip install --no-cache-dir --disable-pip-version-check \
 COPY backend/ ./
 
 # Stage 3: Production image
-FROM python:3.11-slim
+FROM public.ecr.aws/docker/library/python:3.11-slim
 
 WORKDIR /app
 

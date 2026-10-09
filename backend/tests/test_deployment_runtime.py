@@ -28,7 +28,7 @@ def test_container_uses_single_scheduler_worker_and_real_health_route():
     assert "127.0.0.1:8080/api/health" in start_script
     assert "/api/system/status" not in start_script
     assert "127.0.0.1:8080/api/health" in dockerfile
-    assert "FROM node:20-alpine" in dockerfile
+    assert "FROM public.ecr.aws/docker/library/node:20-alpine" in dockerfile
     assert "ARG REACT_APP_SUPABASE_URL" in dockerfile
     assert "COPY --from=backend-builder /usr/local/bin /usr/local/bin" in dockerfile
     assert "command -v gunicorn" in start_script

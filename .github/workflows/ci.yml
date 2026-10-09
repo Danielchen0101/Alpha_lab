@@ -183,6 +183,10 @@ jobs:
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      with:
+        # Single-platform builds use the runner's embedded BuildKit, avoiding
+        # a separate moby/buildkit bootstrap pull from Docker Hub.
+        driver: docker
 
     - name: Build production image
       uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
@@ -190,6 +194,9 @@ jobs:
         context: .
         file: ./Dockerfile
         push: false
+        # Validate a local image with the embedded driver. Registry provenance
+        # stays enabled on the separate publishing build below.
+        load: true
         tags: alphalab:ci
         build-args: |
           REACT_APP_API_BASE_URL=/api
@@ -228,16 +235,18 @@ jobs:
         REACT_APP_API_BASE_URL: /api
       run: node scripts/validate-build-env.mjs
     
-    - name: Set up Docker Buildx
-      if: env.DOCKER_USERNAME != '' && env.DOCKER_PASSWORD != ''
-      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
-    
     - name: Login to DockerHub
       if: env.DOCKER_USERNAME != '' && env.DOCKER_PASSWORD != ''
       uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
       with:
         username: ${{ env.DOCKER_USERNAME }}
         password: ${{ env.DOCKER_PASSWORD }}
+
+    # Authenticate before bootstrap so the publishing builder's image pull
+    # uses the existing registry account rather than the anonymous quota.
+    - name: Set up Docker Buildx
+      if: env.DOCKER_USERNAME != '' && env.DOCKER_PASSWORD != ''
+      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
     
     - name: Build and push
       if: env.DOCKER_USERNAME != '' && env.DOCKER_PASSWORD != ''
