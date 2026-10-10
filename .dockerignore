@@ -17,6 +17,7 @@ backend/.venv
 backend/venv
 backend/__pycache__
 backend/.pytest_cache
+backend/.equity-data
 backend/*.log
 backend/*.lock
 backend/.*.lock

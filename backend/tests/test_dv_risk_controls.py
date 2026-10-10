@@ -18,7 +18,7 @@ def _candidate():
 
 
 def _packet(oos_trades=6, bars=252, strategy_trials=5, return_spread=12, positive_fold_ratio=0.67,
-            candidate_updates=None):
+            candidate_updates=None, oos_return=6):
     candidate = _candidate()
     candidate["_dvStrategyTrialCount"] = strategy_trials
     candidate.update(candidate_updates or {})
@@ -61,7 +61,7 @@ def _packet(oos_trades=6, bars=252, strategy_trials=5, return_spread=12, positiv
             "foldCount": 3,
             "positiveFoldRatio": positive_fold_ratio,
             "worstFoldReturn": 0.5,
-            "holdoutReturn": 6,
+            "holdoutReturn": oos_return,
             "holdoutSharpe": 0.8,
             "holdoutTrades": oos_trades,
             "trainBars": 176,
@@ -127,6 +127,11 @@ def test_dv_does_not_pass_with_thin_oos_sample():
     assert any("thin walk-forward sample" in warning for warning in packet["institutionalGate"]["warnings"])
 
 
+def test_negative_oos_cannot_pass_despite_strong_training_metrics():
+    assert _packet(oos_return=-0.5)["dvDecision"] != "PASS_DV"
+    assert _packet(oos_return=0)["dvDecision"] != "PASS_DV"
+
+
 def test_dv_parameter_rank_is_cost_and_risk_adjusted():
     raw_winner = {"totalReturn": 20, "sharpeRatio": 0.4, "maxDrawdown": 30, "tradeCount": 40}
     robust = {"totalReturn": 16, "sharpeRatio": 1.4, "maxDrawdown": 10, "tradeCount": 8}
@@ -177,7 +182,7 @@ def test_dv_walk_forward_uses_chronological_anchored_folds(monkeypatch):
     calls = []
 
     def fake_backtest(symbol, strategy, params, rows, initial_capital):
-        calls.append((len(rows), params["lookback"]))
+        calls.append((len(rows), params["lookback"], params.get("_tradeStartIndex", 0)))
         return {
             "metrics": {
                 "totalReturn": 4 + params["lookback"] / 10,
@@ -200,7 +205,11 @@ def test_dv_walk_forward_uses_chronological_anchored_folds(monkeypatch):
     assert train_lengths == sorted(train_lengths)
     assert len(set(train_lengths)) == 3
     assert all(fold["testBars"] > 0 for fold in result["folds"])
-    assert max(length for length, _ in calls) < len(rows)
+    train_calls = [length for length, _, start in calls if not start]
+    test_calls = [(length, start) for length, _, start in calls if start]
+    assert max(train_calls) < len(rows)
+    assert test_calls == [(fold["warmupBars"] + fold["testBars"], fold["warmupBars"]) for fold in result["folds"]]
+    assert all(start < length <= len(rows) for length, start in test_calls)
 
 
 def test_dv_ai_cache_hit_keeps_routing_decision_in_sync(monkeypatch):

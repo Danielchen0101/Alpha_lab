@@ -83,7 +83,7 @@ jobs:
       run: |
         pip install flake8 black
         cd backend
-        flake8 start_quant_backend.py config.py technical_indicators.py --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 start_quant_backend.py config.py technical_indicators.py equity_*.py --count --select=E9,F63,F7,F82 --show-source --statistics
         black --check start_quant_backend.py config.py technical_indicators.py || echo "Black formatting report is advisory for legacy files"
 
   test-e2e:

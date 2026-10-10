@@ -7,6 +7,7 @@ import {
   SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import type { TradingAccountResponse, TradingPosition } from '../services/api';
+import type { EquityAccountEvidence } from '../services/equityEvidenceService';
 import { exportJsonReport, exportRowsAsCsv, timestampedFilename } from '../utils/exportReport';
 import { formatNumericValue, resolveDataFreshness } from '../utils/dataPresentation';
 import './PortfolioInsights.css';
@@ -27,6 +28,7 @@ type Props = {
   updatedAt?: string;
   language: string;
   stale?: boolean;
+  accountEvidence?: EquityAccountEvidence | null;
 };
 
 const number = (value: unknown): number | null => {
@@ -55,6 +57,9 @@ const percent = (value: unknown, locale: 'en-US' | 'zh-CN' = 'en-US') => {
   })}%`;
 };
 
+const evidenceDate = (value: string | null | undefined, zh: boolean) => value && !Number.isNaN(Date.parse(value))
+  ? new Date(value).toLocaleString(zh ? 'zh-CN' : 'en-US', { timeZone: 'America/New_York' }) + ' ET' : '—';
+
 const PortfolioInsights: React.FC<Props> = ({
   account,
   positions,
@@ -64,6 +69,7 @@ const PortfolioInsights: React.FC<Props> = ({
   updatedAt,
   language,
   stale = false,
+  accountEvidence,
 }) => {
   const zh = language === 'zh-CN';
   const copy = zh ? {
@@ -72,13 +78,13 @@ const PortfolioInsights: React.FC<Props> = ({
     subtitle: '把持仓集中度、资金使用与历史回撤放在同一个风险视图中。',
     concentration: '最大持仓占比',
     cashWeight: '现金占比',
-    drawdown: '区间最大回撤',
+    drawdown: '账本资金调整后最大回撤',
     unrealized: '未实现盈亏',
     winners: '盈利持仓',
     losers: '亏损持仓',
     grossExposure: '总敞口',
     source: '证据来源',
-    sourceHint: '组合诊断仅使用当前账户快照和已验证的 Alpaca 历史净值。',
+    sourceHint: '持仓使用券商快照；回撤仅使用资金调整后的核对账本，未知显示 —。',
     empty: '当前没有可分析的持仓。',
     exportCsv: '导出持仓 CSV',
     exportJson: '导出审计 JSON',
@@ -92,13 +98,13 @@ const PortfolioInsights: React.FC<Props> = ({
     subtitle: 'Concentration, capital usage, and historical drawdown in one risk view.',
     concentration: 'Largest position weight',
     cashWeight: 'Cash weight',
-    drawdown: 'Period max drawdown',
+    drawdown: 'Ledger cash-flow-adjusted max drawdown',
     unrealized: 'Unrealized P/L',
     winners: 'Winning positions',
     losers: 'Losing positions',
     grossExposure: 'Gross exposure',
     source: 'Evidence source',
-    sourceHint: 'Diagnostics use only the current account snapshot and verified Alpaca equity history.',
+    sourceHint: 'Holdings use the broker snapshot; drawdown requires a cash-flow-adjusted ledger. Unknown values display —.',
     empty: 'There are no positions to analyze.',
     exportCsv: 'Export holdings CSV',
     exportJson: 'Export audit JSON',
@@ -125,16 +131,7 @@ const PortfolioInsights: React.FC<Props> = ({
     const winners = positions.filter((position) => (number(position.unrealizedPL) ?? 0) > 0).length;
     const losers = positions.filter((position) => (number(position.unrealizedPL) ?? 0) < 0).length;
 
-    let maxDrawdown: number | null = null;
-    if (history.length >= 2) {
-      let highWater = 0;
-      maxDrawdown = 0;
-      history.forEach((point) => {
-        const pointEquity = number(point.equity) ?? 0;
-        highWater = Math.max(highWater, pointEquity);
-        if (highWater > 0) maxDrawdown = Math.min(maxDrawdown ?? 0, ((pointEquity - highWater) / highWater) * 100);
-      });
-    }
+    const maxDrawdown = number(accountEvidence?.max_drawdown_pct);
 
     return {
       equity,
@@ -149,7 +146,7 @@ const PortfolioInsights: React.FC<Props> = ({
       maxDrawdown,
       ranked,
     };
-  }, [account, history, positions]);
+  }, [account, accountEvidence, positions]);
 
   const exportCsv = () => exportRowsAsCsv(
     timestampedFilename(`alphalab-${mode}-holdings`, 'csv'),
@@ -208,7 +205,7 @@ const PortfolioInsights: React.FC<Props> = ({
             <article><span>{copy.concentration}</span><strong>{percent(metrics.largestWeight, locale)}</strong><small>{metrics.largest?.symbol || '-'}</small></article>
             <article><span>{copy.grossExposure}</span><strong>{percent(metrics.grossExposure, locale)}</strong><small>{money(positions.reduce((sum, item) => sum + Math.abs(number(item.marketValue) ?? 0), 0), locale)}</small></article>
             <article><span>{copy.cashWeight}</span><strong>{percent(metrics.cashWeight, locale)}</strong><small>{money(metrics.cash, locale)}</small></article>
-            <article><span>{copy.drawdown}</span><strong className={metrics.maxDrawdown !== null && metrics.maxDrawdown < 0 ? 'is-negative' : ''}>{percent(metrics.maxDrawdown, locale)}</strong><small>{history.length} points</small></article>
+            <article><span>{copy.drawdown}</span><strong className={metrics.maxDrawdown !== null && metrics.maxDrawdown > 0 ? 'is-negative' : ''}>{percent(metrics.maxDrawdown, locale)}</strong><small>{zh ? '观测开始' : 'Observed since'}: {evidenceDate(accountEvidence?.performanceSince, zh)}<br />{zh ? '截至' : 'Through'}: {evidenceDate(accountEvidence?.performanceThrough, zh)}</small></article>
             <article><span>{copy.unrealized}</span><strong className={metrics.unrealized < 0 ? 'is-negative' : metrics.unrealized > 0 ? 'is-positive' : ''}>{money(metrics.unrealized, locale)}</strong><small>{copy.winners} {metrics.winners} · {copy.losers} {metrics.losers}</small></article>
           </div>
 
