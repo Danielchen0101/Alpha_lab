@@ -624,13 +624,13 @@ export interface TradingAccountResponse {
   portfolioValue?: number;
   longMarketValue?: number;
   shortMarketValue?: number;
-  dayTradeBuyingPower?: number;
+  dayTradeBuyingPower?: number | null;
   initialMargin?: number;
   maintenanceMargin?: number;
   lastEquity?: number;
-  patternDayTrader?: boolean;
-  tradingBlocked?: boolean;
-  accountBlocked?: boolean;
+  patternDayTrader?: boolean | null;
+  tradingBlocked?: boolean | null;
+  accountBlocked?: boolean | null;
   currency?: string;
   id?: string;
   modeUsed?: 'paper' | 'real';
@@ -758,7 +758,7 @@ export const pipelineAutoAPI = {
       reason?: string;
       message?: string;
     }>('/ai-agent/live-auto-authority', { enabled }),
-  saveConfig: (data: { enabled: boolean; intervalMinutes?: number | null; mode: string; lastRunAt?: string; riskProfile?: string; timeHorizon?: string; tradeMode?: string; leverageEnabled?: boolean; liveAutoTradingEnabled?: boolean }) =>
+  saveConfig: (data: { enabled: boolean; intervalMinutes?: number | null; mode?: string; lastRunAt?: string; riskProfile?: string; timeHorizon?: string; tradeMode?: string; leverageEnabled?: boolean; liveAutoTradingEnabled?: boolean }) =>
     api.post('/ai-agent/pipeline-auto/config', data),
   getHistory: (limit = 5) =>
     api.get<{ success: boolean; history: any[]; count: number }>(`/ai-agent/pipeline-auto/history?limit=${limit}`),

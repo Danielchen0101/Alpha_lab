@@ -5,6 +5,17 @@ from functools import partial
 import start_quant_backend as backend
 
 
+def _completed_session_bars(start='2026-05-01', end='2026-07-24'):
+    day = datetime.fromisoformat(start)
+    finish = datetime.fromisoformat(end)
+    rows = []
+    while day <= finish:
+        if day.weekday() < 5 and day.strftime('%Y-%m-%d') not in {'2026-05-25', '2026-06-19', '2026-07-03'}:
+            rows.append({'date': day.date().isoformat(), 'open': 100, 'high': 102, 'low': 98, 'close': 100, 'volume': 10000})
+        day += timedelta(days=1)
+    return rows
+
+
 def test_target_only_sell_is_not_protective():
     state = backend._pa_classify_sell_protection([
         {
@@ -560,12 +571,14 @@ def test_second_target_and_time_stops_are_terminal_exit_actions():
             **common_plan,
             "currentStop": 95,
             "highWaterMark": 103,
-            "createdAt": "2026-05-20T14:00:00Z",
+            "createdAt": "2026-05-01T14:00:00Z",
+            "filledAt": "2026-05-01T14:00:00Z",
         },
         initial_stop=95,
         target_1=112,
         target_2=118,
-        indicators={"atr14": 2, "trendState": "mixed", "historyDays": 180},
+        indicators={"atr14": 2, "trendState": "mixed", "historyDays": 180,
+                    "completedBars": _completed_session_bars(end='2026-07-10')},
         risk_profile="medium",
         time_horizon="mid",
         now=datetime(2026, 7, 13, 14, 1, tzinfo=timezone.utc),
@@ -584,12 +597,14 @@ def test_second_target_and_time_stops_are_terminal_exit_actions():
             "highWaterMark": 106,
             "target1Completed": False,
             "target1ReductionStatus": "eligible",
-            "createdAt": "2026-07-11T14:00:00Z",
+            "createdAt": "2026-07-10T14:00:00Z",
+            "filledAt": "2026-07-10T14:00:00Z",
         },
         initial_stop=95,
         target_1=112,
         target_2=118,
-        indicators={"atr14": 2, "trendState": "uptrend", "historyDays": 180},
+        indicators={"atr14": 2, "trendState": "uptrend", "historyDays": 180,
+                    "completedBars": _completed_session_bars(end='2026-07-10')},
         risk_profile="high",
         time_horizon="short",
         now=datetime(2026, 7, 13, 14, 1, tzinfo=timezone.utc),
@@ -984,6 +999,7 @@ def _install_exit_runtime_scenario(monkeypatch, position_specs, on_submit=None):
             "initialRiskPerShare": avg_entry - float(spec.get("stop", 95)),
             "highWaterMark": max(price, avg_entry),
             "createdAt": spec.get("createdAt", "2026-07-24T14:00:00Z"),
+            "filledAt": spec.get("filledAt", spec.get("createdAt", "2026-07-24T14:00:00Z")),
             "isLeveraged": bool(spec.get("isLeveraged", False)),
             "target1Completed": False,
             "target1ReductionStatus": "eligible",
@@ -1018,6 +1034,7 @@ def _install_exit_runtime_scenario(monkeypatch, position_specs, on_submit=None):
                 "quoteTime": "2026-07-25T14:00:00Z",
                 "quoteAgeSeconds": 1,
                 "historyDays": 180,
+                "completedBars": _completed_session_bars(),
             }}
         return rows, {"source": "test"}
 

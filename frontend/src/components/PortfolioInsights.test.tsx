@@ -27,9 +27,24 @@ describe('PortfolioInsights', () => {
       />,
     );
 
-    expect(view).toContain('Period max drawdown</span><strong class="">—</strong>');
+    expect(view).toContain('Ledger cash-flow-adjusted max drawdown</span><strong class="">—</strong>');
     expect(view).toContain('Cash weight</span><strong>0.0%</strong>');
     expect(view).toContain('Unrealized P/L</span><strong class="">$0.00</strong>');
+  });
+
+  it('does not turn a withdrawal-driven equity drop into strategy drawdown', () => {
+    const view = renderToStaticMarkup(<PortfolioInsights account={account} positions={[position]}
+      history={[{ timestamp: 1, equity: 98.11, profitLoss: 0, profitLossPct: 0 },
+        { timestamp: 2, equity: 18.11, profitLoss: -80, profitLossPct: -0.8154 }]}
+      mode="real" language="en-US" />);
+    expect(view).toContain('Ledger cash-flow-adjusted max drawdown</span><strong class="">—</strong>');
+    expect(view).not.toContain('81.5%');
+  });
+
+  it('uses verified ledger drawdown independently of the raw equity curve', () => {
+    const view = renderToStaticMarkup(<PortfolioInsights account={account} positions={[position]} history={[]}
+      accountEvidence={{ max_drawdown_pct: 1.25 }} mode="paper" language="en-US" />);
+    expect(view).toContain('1.3%');
   });
 
   it('marks a retained snapshot stale when refresh failed', () => {

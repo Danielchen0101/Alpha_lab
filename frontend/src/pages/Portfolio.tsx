@@ -29,6 +29,9 @@ import { PieChartOutlined, ReloadOutlined, ArrowUpOutlined, ArrowDownOutlined, S
 import { useNavigate } from 'react-router-dom';
 import { tradingAccountAPI, TradingAccountResponse, TradingPosition } from '../services/api';
 import PortfolioInsights from '../components/PortfolioInsights';
+import BrokerRiskStatus from '../components/BrokerRiskStatus';
+import { EquityAccountMetrics } from '../components/EquityEvidencePanel';
+import { equityEvidenceAPI, EquityAccountEvidence, evidenceNumber, unwrapAccountEvidence } from '../services/equityEvidenceService';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTradeMode } from '../contexts/TradeModeContext';
 import './PortfolioEditorial.css';
@@ -81,6 +84,7 @@ const toneColor = (value: number, precision = 2): string => {
 };
 
 const formatMoney = (value: any): string => {
+  if (evidenceNumber(value) === null) return '—';
   const n = normalizeDisplayNumber(value);
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
@@ -105,6 +109,7 @@ const formatCompactMoney = (value: any, visibleSpread = Number.POSITIVE_INFINITY
 };
 
 const formatSignedMoney = (value: any): string => {
+  if (evidenceNumber(value) === null) return '—';
   const n = normalizeDisplayNumber(value);
   const formatted = formatMoney(Math.abs(n));
   if (n > 0) return `+${formatted}`;
@@ -113,6 +118,7 @@ const formatSignedMoney = (value: any): string => {
 };
 
 const formatPercent = (value: any, input: 'ratio' | 'percent' = 'percent'): string => {
+  if (evidenceNumber(value) === null) return '—';
   const raw = asNumber(value);
   const n = normalizeDisplayNumber(input === 'ratio' ? raw * 100 : raw);
   const sign = n > 0 ? '+' : '';
@@ -246,6 +252,7 @@ const Portfolio: React.FC = () => {
   const navigate = useNavigate();
 
   const [account, setAccount] = useState<TradingAccountResponse | null>(null);
+  const [accountEvidence, setAccountEvidence] = useState<EquityAccountEvidence | null>(null);
   const [positions, setPositions] = useState<TradingPosition[]>([]);
   const [portfolioHistory, setPortfolioHistory] = useState<HistoryPoint[]>([]);
   const [portfolioRange, setPortfolioRange] = useState<string>('1M');
@@ -355,6 +362,7 @@ const Portfolio: React.FC = () => {
       const apiCalls: Promise<any>[] = [
         tradingAccountAPI.getAccount(mode),
         tradingAccountAPI.getPositions(mode),
+        equityEvidenceAPI.accountEvidence(mode),
       ];
       if (includeHistory) {
         apiCalls.push(tradingAccountAPI.getPortfolioHistory(mode, range));
@@ -363,7 +371,9 @@ const Portfolio: React.FC = () => {
       const results = await Promise.allSettled(apiCalls);
       if (!isCurrentRequest()) return;
 
-      const [accountRes, positionsRes, historyRes] = results;
+      const [accountRes, positionsRes, evidenceRes, historyRes] = results;
+      setAccountEvidence(evidenceRes.status === 'fulfilled' && evidenceRes.value.data?.mode === mode
+        ? unwrapAccountEvidence(evidenceRes.value.data) : null);
 
       let nextError: string | null = null;
       let nextHistoryError: string | null = null;
@@ -485,6 +495,7 @@ const Portfolio: React.FC = () => {
   useEffect(() => {
     mountedRef.current = true;
     setAccount(null);
+    setAccountEvidence(null);
     setPositions([]);
     setPortfolioHistory([]);
     setPortfolioChange({ value: 0, percent: 0 });
@@ -551,20 +562,7 @@ const Portfolio: React.FC = () => {
     return (marketValue / equity) * 100;
   }, [account, positions]);
 
-  const todayPL = useMemo(() => {
-    const equity = asNumber(account?.equity);
-    const lastEquity = asNumber(account?.lastEquity);
-    if (equity && lastEquity) return equity - lastEquity;
-    const latest = portfolioHistory[portfolioHistory.length - 1];
-    return latest ? latest.profitLoss : 0;
-  }, [account, portfolioHistory]);
-
-  const todayPLPercent = useMemo(() => {
-    const lastEquity = asNumber(account?.lastEquity);
-    if (lastEquity) return (todayPL / lastEquity) * 100;
-    const latest = portfolioHistory[portfolioHistory.length - 1];
-    return latest ? latest.profitLossPct * 100 : 0;
-  }, [account, portfolioHistory, todayPL]);
+  const todayPL = evidenceNumber(accountEvidence?.risk?.daily_pnl);
 
   const yDomain = useMemo((): [number, number] => {
     const equityValues = portfolioHistory
@@ -605,10 +603,10 @@ const Portfolio: React.FC = () => {
       tone: asNumber(account?.buyingPower),
     },
     {
-      label: t.portfolio.todayPL,
-      value: account || portfolioHistory.length ? formatSignedMoney(todayPL) : '-',
-      detail: formatPercent(todayPLPercent),
-      tone: todayPL,
+      label: isZh ? '当日调整后盈亏' : 'Adjusted daily P/L',
+      value: formatSignedMoney(todayPL),
+      detail: isZh ? '已扣除入出金；未知显示 —' : 'Excludes transfers; — means unknown',
+      tone: todayPL ?? 0,
     },
     {
       label: t.portfolio.totalUnrealizedPL,
@@ -815,16 +813,16 @@ const Portfolio: React.FC = () => {
         <Col xs={24} xl={17}>
           <Card
             className="portfolio-editorial__panel portfolio-editorial__performance"
-            title={<div className="portfolio-card-title"><span>{editorialCopy.equityCurve}</span><strong>{t.portfolio.portfolioPerformance}</strong></div>}
+            title={<div className="portfolio-card-title"><span>{editorialCopy.equityCurve}</span><strong>{isZh ? '账户净值（含入出金）' : 'Account equity (includes transfers)'}</strong></div>}
             extra={
               <Space wrap>
-                {portfolioHistory.length > 0 && (
+                {portfolioHistory.length > 1 && (
                   <Tag
                     color={portfolioChange.value >= 0 ? 'success' : 'error'}
                     icon={portfolioChange.value >= 0 ? <ArrowUpOutlined /> : <ArrowDownOutlined />}
                     className="portfolio-performance-change"
                   >
-                    {formatSignedMoney(portfolioChange.value)} ({formatPercent(portfolioChange.percent)})
+                    {isZh ? '净值变化 ' : 'Equity change '}{formatSignedMoney(portfolioChange.value)} ({formatPercent(portfolioChange.percent)})
                   </Tag>
                 )}
                 <Select 
@@ -844,6 +842,7 @@ const Portfolio: React.FC = () => {
             }
             style={{ marginBottom: 18, background: 'var(--app-card-bg)', border: '1px solid var(--app-border-soft)', boxShadow: 'var(--app-shadow)' }}
           >
+            <p style={{ color: 'var(--app-text-muted)' }}>{isZh ? '这条曲线包含入金和取款。交易盈亏与资金调整后的回撤以核对账本为准。' : 'This curve includes deposits and withdrawals. Use the reconciled ledger for trading P/L and cash-flow-adjusted drawdown.'}</p>
             {historyLoading ? (
               <Skeleton active paragraph={{ rows: 8 }} />
             ) : historyError ? (
@@ -1008,12 +1007,7 @@ const Portfolio: React.FC = () => {
 
                 <div>
                   <Text style={{ display: 'block', marginBottom: 12, fontWeight: 700, color: 'var(--app-text-muted)', textTransform: 'uppercase', fontSize: 11, letterSpacing: '0.5px' }}>{t.portfolio.riskStatus}</Text>
-                  <Space wrap>
-                    {account?.tradingBlocked && <Tag color="red" style={{ fontWeight: 700 }}>{t.portfolio.tradingBlocked}</Tag>}
-                    {account?.accountBlocked && <Tag color="red" style={{ fontWeight: 700 }}>{t.portfolio.accountBlocked}</Tag>}
-                    {account?.patternDayTrader && <Tag color="gold" style={{ fontWeight: 700 }}>{t.portfolio.patternDayTrader}</Tag>}
-                    {!account?.tradingBlocked && !account?.accountBlocked && !account?.patternDayTrader && <Tag color="green" style={{ fontWeight: 700 }}>{t.portfolio.riskClear}</Tag>}
-                  </Space>
+                  <BrokerRiskStatus account={account} language={language} />
                 </div>
 
                 <div className="portfolio-account-boundary">
@@ -1026,7 +1020,12 @@ const Portfolio: React.FC = () => {
         </Col>
       </Row>
 
+      <Card style={{ marginBottom: 18 }} title={isZh ? '入出金与交易盈亏核对' : 'Cash flows & trading P/L reconciliation'}>
+        <EquityAccountMetrics evidence={accountEvidence} language={language} />
+      </Card>
+
       <PortfolioInsights
+        accountEvidence={accountEvidence}
         account={account}
         positions={positions}
         history={portfolioHistory}

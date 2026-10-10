@@ -24,6 +24,8 @@ import aiTradingService from '../services/aiTradingService';
 import { deeperValidationAPI, entryPlanAPI, tradingAccountAPI, aiAgentWatchlistAPI, aiExecutionAPI, pipelineAutoAPI, workspacePreferencesAPI, notificationAPI, loadConfigStatus } from '../services/api';
 import api from '../services/api';
 import OrderModal from '../components/OrderModal';
+import EquityEvidencePanel, { equityBusinessLabel } from '../components/EquityEvidencePanel';
+import { equitySchedulePatch, EquityProgramStatus } from '../services/equityEvidenceService';
 import MarketScannerWorkbench from '../components/MarketScannerWorkbench';
 import FineScanWorkbench from '../components/FineScanWorkbench';
 import DeeperValidationWorkbench from '../components/DeeperValidationWorkbench';
@@ -1376,6 +1378,15 @@ const Agent: React.FC = (): React.ReactElement => {
     tradeMode === 'paper' || liveAutoTradingEnabled
   );
   const [pipelineAutoStatus, setPipelineAutoStatus] = useState<any>(null);
+  const [equityProgramActive, setEquityProgramActive] = useState(false);
+  const [equityProgramEvidence, setEquityProgramEvidence] = useState<EquityProgramStatus | null>(null);
+  const [equityEvidenceRefresh, setEquityEvidenceRefresh] = useState(0);
+  useEffect(() => { setEquityProgramEvidence(null); }, [tradeMode]);
+  const equityShadowActive = equityProgramActive && equityProgramEvidence?.executionMode === 'shadow';
+  const equityBrokerOrdersAllowed = equityProgramActive && equityProgramEvidence?.brokerOrdersAllowed === true;
+  const equityCanAuthorize = equityProgramActive && equityProgramEvidence?.researchAdmission?.eligible === true && pipelineAutoStatus?.tradeMode === 'real';
+  const equityAuthorityLabel = equityProgramEvidence?.brokerOrdersAllowed === true ? agentText('Broker authority enabled', '券商订单权限开启')
+    : equityProgramEvidence?.brokerOrdersAllowed === false ? agentText('Broker orders disabled', '券商订单关闭') : agentText('Order authority unknown', '下单权限未知');
   const pipelineAutoStatusRef = useRef<any>(null);
   useEffect(() => { pipelineAutoStatusRef.current = pipelineAutoStatus; }, [pipelineAutoStatus]);
   const strategyMandate = useMemo(() => resolveResearchStrategyPolicy(pipelineAutoStatus, {
@@ -1434,6 +1445,8 @@ const Agent: React.FC = (): React.ReactElement => {
     initialAutoSyncRef.current = true;
     pipelineAutoStatusRef.current = null;
     setPipelineAutoStatus(null);
+    setEquityProgramActive(false);
+    setEquityProgramEvidence(null);
 
     const cachedRisk = readAccountStorage('agent_riskProfile', accountUserId);
     const cachedHorizon = readAccountStorage('agent_timeHorizon', accountUserId);
@@ -1459,6 +1472,7 @@ const Agent: React.FC = (): React.ReactElement => {
         const reconciled = reconcileMarketScannerWithBackend(currentScanner, res.data.activeRun);
         if (reconciled) scannerStateStore.updateMarketScanner(reconciled);
         setPipelineAutoStatus(res.data);
+        if (res.data.strategyProgram === 'equity_swing_v1') setEquityProgramActive(true);
         return res.data;
       }
     } catch {
@@ -1529,15 +1543,16 @@ const Agent: React.FC = (): React.ReactElement => {
     try {
       const enabled = schedule !== 'off';
       const intervalMap: Record<string, number> = { '15m': 15, '30m': 30, '1h': 60, '2h': 120 };
-      const res = await pipelineAutoAPI.saveConfig({
+      const res = await pipelineAutoAPI.saveConfig(equitySchedulePatch(equityProgramActive, {
         enabled,
         intervalMinutes: enabled ? intervalMap[schedule] : null,
+      }, {
         mode: pipelineMode,
         riskProfile,
         timeHorizon,
         tradeMode,
         leverageEnabled,
-      });
+      }));
       if (!res?.data?.success) {
         const reason = res?.data?.reason || res?.data?.message || 'Unknown error';
         throw new Error('Save failed: ' + reason);
@@ -1596,7 +1611,7 @@ const Agent: React.FC = (): React.ReactElement => {
     } finally {
       setPipelineAutoLoading(false);
     }
-  }, [accountUserId, pipelineMode, fetchPipelineAutoStatus, pipelineSchedule, riskProfile, timeHorizon, tradeMode, leverageEnabled]);
+  }, [accountUserId, equityProgramActive, pipelineMode, fetchPipelineAutoStatus, pipelineSchedule, riskProfile, timeHorizon, tradeMode, leverageEnabled]);
 
   const persistLiveAutoTrading = useCallback(async (nextValue: boolean) => {
     setPipelineAutoLoading(true);
@@ -1609,6 +1624,7 @@ const Agent: React.FC = (): React.ReactElement => {
       // The switch follows persisted backend truth. Do not optimistically show
       // live authority before broker verification and database persistence pass.
       setLiveAutoTradingEnabled(response.data.liveAutoTradingEnabled === true);
+      setEquityEvidenceRefresh(value => value + 1);
       await fetchPipelineAutoStatus();
       return true;
     } catch (err: any) {
@@ -1666,7 +1682,7 @@ const Agent: React.FC = (): React.ReactElement => {
   const autoSaveRequestRef = useRef(0);
   const prevAutoSaveRef = useRef<{ mode: string; risk: string; horizon: string; trade: string; leverage: boolean }>({ mode: '', risk: '', horizon: '', trade: '', leverage: false });
   useEffect(() => {
-    if (pipelineSchedule === 'off') return;
+    if (equityProgramActive || pipelineSchedule === 'off') return;
     const current = { mode: pipelineMode, risk: riskProfile, horizon: timeHorizon, trade: tradeMode, leverage: leverageEnabled };
     const prev = prevAutoSaveRef.current;
     if (current.mode === prev.mode && current.risk === prev.risk && current.horizon === prev.horizon && current.trade === prev.trade && current.leverage === prev.leverage) return;
@@ -1722,7 +1738,7 @@ const Agent: React.FC = (): React.ReactElement => {
       }
     }, 600);
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
-  }, [agentText, fetchPipelineAutoStatus, pipelineMode, riskProfile, timeHorizon, tradeMode, pipelineSchedule, leverageEnabled]);
+  }, [agentText, equityProgramActive, fetchPipelineAutoStatus, pipelineMode, riskProfile, timeHorizon, tradeMode, pipelineSchedule, leverageEnabled]);
 
   // Initial fetch: always fetch pipeline-auto status on mount to correct stale localStorage
   useEffect(() => {
@@ -5814,16 +5830,17 @@ const Agent: React.FC = (): React.ReactElement => {
       // before the auto pipeline reads them via _pa_resolve_auto_run_context.
       const intervalMap: Record<string, number> = { '15m': 15, '30m': 30, '1h': 60, '2h': 120 };
       const scheduleEnabled = pipelineSchedule !== 'off';
-      const configResponse = await pipelineAutoAPI.saveConfig({
+      const configResponse = await pipelineAutoAPI.saveConfig(equitySchedulePatch(equityProgramActive, {
         enabled: scheduleEnabled,
         intervalMinutes: scheduleEnabled ? intervalMap[pipelineSchedule] || 15 : null,
+      }, {
         mode: pipelineMode,
         riskProfile,
         timeHorizon,
         tradeMode,
         leverageEnabled,
         liveAutoTradingEnabled,
-      });
+      }));
       if (!configResponse?.data?.success) {
         throw new Error(configResponse?.data?.message || configResponse?.data?.reason || 'Automation settings could not be saved');
       }
@@ -5839,7 +5856,11 @@ const Agent: React.FC = (): React.ReactElement => {
       setAutoRunProgress(1);
       setAutoRunClock(Date.now());
       const authority = res.data.orderAuthority;
-      if (authority && !authority.authorized) {
+      if (equityShadowActive) {
+        message.success(agentText('The fixed shadow cycle is running; no broker orders will be submitted.', '固定影子流程已启动，不会提交券商订单。'));
+      } else if (equityProgramActive) {
+        message.success(agentText('The fixed v1 cycle is running under the saved broker authority and risk gates.', '固定 v1 流程已启动，遵循已保存的券商权限和风控门槛。'));
+      } else if (authority && !authority.authorized) {
         message.warning(agentText(
           `The research cycle is running, but broker orders are locked: ${authority.message}`,
           `研究流程已启动，但自动买卖仍被锁定：${authority.code === 'live_auto_not_enabled' ? '请先开启实盘自动交易授权。' : '需要使用完整 AI 模式。'}`,
@@ -5862,16 +5883,16 @@ const Agent: React.FC = (): React.ReactElement => {
   };
 
   const confirmRunAutoNow = () => {
-    const canSubmitOrders = pipelineMode === 'ai' && (
+    const canSubmitOrders = equityProgramActive ? equityBrokerOrdersAllowed : pipelineMode === 'ai' && (
       tradeMode === 'paper' || (tradeMode === 'real' && liveAutoTradingEnabled)
     );
     Modal.confirm({
       title: agentText('Run one complete cycle?', '运行一次完整流程？'),
       content: (
         <div className="agent-confirm-content">
-          <div>{agentText('All seven stages will run once in the background. This uses the active account and saved settings.', '系统会使用当前账户和已保存设置，在后台依次运行全部七个阶段。')}</div>
+          <div>{equityShadowActive ? agentText('The frozen protocol will run once against the separate $2,000 shadow ledger, without submitting broker orders.', '使用冻结协议和独立的 $2,000 影子账本运行一次，不提交券商订单。') : equityProgramActive ? agentText('The frozen protocol will run once using the saved broker environment, authority and risk gates.', '冻结协议将依据已保存的券商环境、下单权限和风控运行一次。') : agentText('All seven stages will run once in the background. This uses the active account and saved settings.', '系统会使用当前账户和已保存设置，在后台依次运行全部七个阶段。')}</div>
           <div className={canSubmitOrders ? (tradeMode === 'real' ? 'is-risk' : 'is-paper') : 'is-review'}>
-            {canSubmitOrders
+            {equityProgramActive ? (canSubmitOrders ? agentText('Eligible broker orders may be submitted using the fixed v1 rules.', '可能依据固定 v1 规则提交符合条件的券商订单。') : equityAuthorityLabel) : canSubmitOrders
               ? tradeMode === 'real'
                 ? agentText('Full AI and live authorization are active. Eligible live limit orders may be submitted.', '完整 AI 与实盘授权已启用，符合条件的实盘限价单可能会被提交。')
                 : agentText('Full AI is active. Eligible paper limit orders may be submitted.', '完整 AI 已启用，符合条件的模拟限价单可能会被提交。')
@@ -5889,6 +5910,10 @@ const Agent: React.FC = (): React.ReactElement => {
   };
 
   const runAIPipeline = async (opts?: { trigger?: string }) => {
+    if (equityProgramActive) {
+      message.info(agentText('Use Run complete cycle above for the frozen v1 program.', '固定 v1 请使用上方“运行完整流程”。'));
+      return;
+    }
     if (autoRunActive) {
       console.log('[PipelineUI] early return reason=background_auto_run_active');
       message.warning(agentText('A background cycle is already running. Wait for it to finish or stop it first.', '后台流程正在运行，请等待完成或先停止它。'));
@@ -6733,6 +6758,8 @@ const Agent: React.FC = (): React.ReactElement => {
         </div>
       </header>
 
+      <EquityEvidencePanel language={language} mode={tradeMode} scopeKey={accountUserId} refreshKey={equityEvidenceRefresh} onActiveChange={(active, evidence) => { setEquityProgramActive(active); setEquityProgramEvidence(evidence); }} onActivated={() => { setEquityProgramActive(true); void fetchPipelineAutoStatus(); }} />
+
       <div className="agent-control-plane" role="status" aria-label={agentConsoleCopy.controlPlaneAria}>
         <div className="agent-control-plane-item">
           <span>{agentConsoleCopy.scheduler}</span>
@@ -6751,9 +6778,9 @@ const Agent: React.FC = (): React.ReactElement => {
         <div className="agent-control-plane-item">
           <span>{agentConsoleCopy.orderAuthority}</span>
           <b className={tradeMode === 'real' && !liveAutoTradingEnabled ? 'is-warn' : 'is-ok'}>
-            {tradeMode === 'paper' ? agentConsoleCopy.paperAuto : liveAutoTradingEnabled ? agentConsoleCopy.liveAuthorized : agentConsoleCopy.liveLocked}
+            {equityProgramActive ? equityAuthorityLabel : tradeMode === 'paper' ? agentConsoleCopy.paperAuto : liveAutoTradingEnabled ? agentConsoleCopy.liveAuthorized : agentConsoleCopy.liveLocked}
           </b>
-          <small>{pipelineMode === 'ai' ? agentConsoleCopy.fullAiMode : pipelineMode === 'hybrid' ? agentConsoleCopy.reviewRequired : agentConsoleCopy.noAutoOrders}</small>
+          <small>{equityProgramActive ? (equityShadowActive ? agentText('Fixed v1 · shadow', '固定 v1 · 影子') : agentText('Fixed v1 · broker environment', '固定 v1 · 券商环境')) : pipelineMode === 'ai' ? agentConsoleCopy.fullAiMode : pipelineMode === 'hybrid' ? agentConsoleCopy.reviewRequired : agentConsoleCopy.noAutoOrders}</small>
         </div>
         <div className="agent-control-plane-item">
           <span>{agentConsoleCopy.notifications}</span>
@@ -6833,7 +6860,7 @@ const Agent: React.FC = (): React.ReactElement => {
           <span>{agentConsoleCopy.operations}</span>
           <h2>{agentConsoleCopy.automationControl}</h2>
         </div>
-        <b>{tradeMode === 'paper' ? agentConsoleCopy.paperEnvironment : liveAutoTradingEnabled ? agentConsoleCopy.liveAuthorizedEnvironment : agentConsoleCopy.liveLockedEnvironment}</b>
+        <b>{equityShadowActive ? agentText('$2,000 shadow validation', '$2,000 影子验证') : equityProgramActive ? agentText('Fixed v1 broker program', '固定 v1 券商策略') : tradeMode === 'paper' ? agentConsoleCopy.paperEnvironment : liveAutoTradingEnabled ? agentConsoleCopy.liveAuthorizedEnvironment : agentConsoleCopy.liveLockedEnvironment}</b>
       </div>
 
       {/* 1.5 Trading Account Mode */}
@@ -6847,12 +6874,12 @@ const Agent: React.FC = (): React.ReactElement => {
             <div className="agent-account-heading" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <span style={{ fontSize: 16, fontWeight: 800, color: 'var(--app-text-strong)', display: 'flex', alignItems: 'center', gap: 8 }}>
                 <WalletOutlined style={{ color: '#1890ff', fontSize: 18 }} />
-                {t.agent.tradingAccountMode}
+                {equityProgramActive ? agentText('Broker reference account (separate from shadow)', '券商参考账户（独立于影子本金）') : t.agent.tradingAccountMode}
               </span>
               <Tag color={tradeMode === 'paper' ? 'blue' : 'error'} bordered={false} style={{ fontSize: 11, fontWeight: 800, borderRadius: 4, margin: 0, padding: '2px 8px' }}>
                 {tradeMode === 'paper' ? t.agent.paperTrading : t.agent.realTrading}
               </Tag>
-              {tradeMode === 'real' && (
+              {tradeMode === 'real' && !equityProgramActive && (
                 <span style={{ fontSize: 12, color: '#faad14', display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(250, 173, 20, 0.1)', padding: '2px 8px', borderRadius: 4, border: '1px solid rgba(250, 173, 20, 0.2)' }}>
                   <WarningOutlined />
                   {t.agent.tradingModeRealHint}
@@ -6861,7 +6888,7 @@ const Agent: React.FC = (): React.ReactElement => {
             </div>
             <div style={{ fontSize: 13, color: 'var(--app-text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
               <InfoCircleOutlined style={{ color: '#1890ff' }} />
-              {t.agent.tradingAccountDescNote}
+              {equityProgramActive ? agentText('The fixed shadow account starts at $2,000.', '固定影子账户以 $2,000 开始。') : t.agent.tradingAccountDescNote}
             </div>
           </div>
           
@@ -7102,13 +7129,15 @@ const Agent: React.FC = (): React.ReactElement => {
                 <span className="agent-auto-command-label">{agentConsoleCopy.orderAuthority}</span>
                 <div>
                   <strong>
-                    {tradeMode === 'paper'
+                    {equityProgramActive ? equityAuthorityLabel : tradeMode === 'paper'
                       ? agentConsoleCopy.paperAutomation
                       : liveAutoTradingEnabled
                         ? agentConsoleCopy.liveOrdersAuthorized
                         : agentConsoleCopy.liveOrdersLocked}
                   </strong>
-                  {tradeMode === 'real' ? (
+                  {equityProgramActive && !equityCanAuthorize && !liveAutoTradingEnabled ? (
+                    <Tag bordered={false} color="blue">{agentText('Evidence required', '尚需证据')}</Tag>
+                  ) : (equityProgramActive ? equityCanAuthorize || liveAutoTradingEnabled : tradeMode === 'real') ? (
                     <Switch
                       aria-label={liveAutoCopy.switchLabel}
                       size="small"
@@ -7121,7 +7150,7 @@ const Agent: React.FC = (): React.ReactElement => {
                   )}
                 </div>
                 <small>
-                  {liveAutoTradingEnabled
+                  {equityProgramActive ? agentText('Frozen v1 rules apply; AI authority is not required.', '使用冻结的 v1 规则，不需要 AI 交易权限。') : liveAutoTradingEnabled
                     ? agentText('Authorization stays saved until you turn it off. Orders are active only in Real + Full AI.', '授权会一直保留，直到你手动关闭；只有实盘 + 全 AI 时才会实际生效。')
                     : pipelineMode === 'ai'
                       ? agentConsoleCopy.eligibleOrders
@@ -7188,9 +7217,9 @@ const Agent: React.FC = (): React.ReactElement => {
               <div className="agent-auto-fact">
                 <span>{agentConsoleCopy.savedContext}</span>
                 <strong>
-                  {(pipelineAutoStatus?.mode || pipelineMode || 'hybrid').toUpperCase()}
+                  {equityProgramActive ? 'FIXED V1' : (pipelineAutoStatus?.mode || pipelineMode || 'hybrid').toUpperCase()}
                   {' / '}
-                  {pipelineAutoStatus?.tradeMode === 'real' ? agentConsoleCopy.real : agentConsoleCopy.paperCode}
+                  {equityProgramActive ? (equityProgramEvidence?.executionMode || 'UNKNOWN').toUpperCase() : pipelineAutoStatus?.tradeMode === 'real' ? agentConsoleCopy.real : agentConsoleCopy.paperCode}
                 </strong>
                 <small>
                   {agentConsoleCopy.riskHorizon(
@@ -7333,12 +7362,17 @@ const Agent: React.FC = (): React.ReactElement => {
                         <Tag
                           bordered={false}
                           color={
+                            entry.summary?.businessStatus ? (
+                              entry.summary.businessStatus === 'completed' ? 'green' :
+                              ['risk_paused', 'failed'].includes(entry.summary.businessStatus) ? 'red' :
+                              ['capital_blocked', 'research_blocked', 'data_insufficient', 'ai_degraded'].includes(entry.summary.businessStatus) ? 'orange' : 'default'
+                            ) :
                             entry.status === 'success' ? 'green' :
                             entry.status === 'failed' ? 'red' :
                             entry.status === 'blocked' ? 'orange' : 'default'
                           }
                         >
-                          {agentConsoleCopy.runStatusLabels[entry.status] || entry.status || agentConsoleCopy.unknown}
+                          {entry.summary?.businessStatus ? equityBusinessLabel(entry.summary.businessStatus, language === 'zh-CN') : agentConsoleCopy.runStatusLabels[entry.status] || entry.status || agentConsoleCopy.unknown}
                         </Tag>
                         <strong>{entry.trigger_type || agentConsoleCopy.automatic}</strong>
                         <span>
@@ -7347,7 +7381,7 @@ const Agent: React.FC = (): React.ReactElement => {
                             : agentConsoleCopy.timeUnavailable}
                         </span>
                         <span>{entry.duration_seconds ? entry.duration_seconds + 's' : '--'}</span>
-                        <small>{entry.reason || entry.error || agentConsoleCopy.completedWithoutException}</small>
+                        <small>{entry.reason || entry.error || (entry.summary?.businessStatus ? equityBusinessLabel(entry.summary.businessStatus, language === 'zh-CN') : agentConsoleCopy.completedWithoutException)}</small>
                       </div>
                     ))}
                   </div>
@@ -7361,6 +7395,8 @@ const Agent: React.FC = (): React.ReactElement => {
       </div>
 
       {/* Portfolio Automation — one source of truth for scan, entry, exit and automation */}
+      {equityProgramActive && <Alert type="info" showIcon style={{ marginBottom: 20 }} message={agentText('Fixed stock v1 policy is active. Legacy risk, horizon, AI authority and leverage selectors are superseded by the frozen protocol above.', '固定股票 v1 已生效。原有风险等级、周期、AI 权限和杠杆选项由上方冻结协议取代。')} />}
+      {!equityProgramActive && (
       <section id="portfolio-mandate" className="agent-preferences-panel agent-mandate-panel" aria-labelledby="strategy-mandate-title">
         <header className="agent-mandate-header">
           <div>
@@ -7481,6 +7517,7 @@ const Agent: React.FC = (): React.ReactElement => {
           <div className="agent-mandate-prohibition"><SafetyCertificateOutlined /><div><strong>{agentText('OPTIONS PROHIBITED', '禁止期权')}</strong><span>{agentText('US equities only. This cannot be overridden by AI mode.', '仅限美股；任何 AI 模式都不能绕过。')}</span></div></div>
         </div>
       </section>
+      )}
 
       {/* 1.55 AI Auto Pipeline */}
       <div className="agent-interactive-pipeline agent-legacy-ai-pipeline" id="research-pipeline-control" aria-hidden="true">
@@ -7514,7 +7551,7 @@ const Agent: React.FC = (): React.ReactElement => {
                     type="primary"
                     icon={<ThunderboltOutlined />}
                     onClick={() => runAIPipeline({ trigger: 'manual' })}
-                    disabled={autoRunActive || (pipelineMode === 'manual' ? false : isAnyScanRunning)}
+                    disabled={equityProgramActive || autoRunActive || (pipelineMode === 'manual' ? false : isAnyScanRunning)}
                     style={{ 
                       background: '#1677ff',
                       borderColor: '#1677ff',
@@ -9056,13 +9093,15 @@ const Agent: React.FC = (): React.ReactElement => {
               className="agent-pipeline-action agent-pipeline-start-button"
               icon={<ThunderboltOutlined />}
               onClick={() => runAIPipeline({ trigger: 'manual' })}
-              disabled={autoRunActive || isAnyScanRunning}
+              disabled={equityProgramActive || autoRunActive || isAnyScanRunning}
             >
               {agentText('Auto Pipeline', '自动流程')}
             </Button>
           )}
         </div>
       </div>
+
+      {equityProgramActive && <Alert type="info" showIcon message={agentText('Legacy stage records are read-only while fixed v1 is active. Use Run complete cycle above for the frozen strategy.', '固定 v1 启用后，以下旧版阶段记录仅供查看；请使用上方“运行完整流程”执行冻结策略。')} />}
 
       {/* 2. Market Scanner */}
       <CollapsibleStageSection
@@ -9104,7 +9143,7 @@ const Agent: React.FC = (): React.ReactElement => {
                 icon={detailedScanStatus.currentStatus === 'scanning' ? <PauseCircleOutlined /> : <ThunderboltOutlined />}
                 onClick={handleToggleMarketScanner}
                 loading={detailedScanStatus.currentStatus === 'stopping'}
-                disabled={pipelineRunning && detailedScanStatus.currentStatus !== 'scanning'}
+                disabled={(equityProgramActive || pipelineRunning) && detailedScanStatus.currentStatus !== 'scanning'}
                 style={AI_AGENT_PRIMARY_BTN_STYLE}
               >
                 {detailedScanStatus.currentStatus === 'scanning' ? t.agent.stop : t.agent.runScanner}
@@ -9172,7 +9211,7 @@ const Agent: React.FC = (): React.ReactElement => {
                 type="primary"
                 icon={<ThunderboltOutlined />}
                 onClick={handleRunFineScan}
-                disabled={fineScanStatus === 'running' || marketScannerResults.length === 0 || pipelineRunning}
+                disabled={equityProgramActive || fineScanStatus === 'running' || marketScannerResults.length === 0 || pipelineRunning}
                 loading={fineScanStatus === 'running'}
                 style={AI_AGENT_PRIMARY_BTN_STYLE}
               >
@@ -9257,7 +9296,7 @@ const Agent: React.FC = (): React.ReactElement => {
                 icon={<CheckCircleOutlined />}
                 onClick={handleDeeperValidation}
                 loading={deeperValidationStatus === 'loading'}
-                disabled={fineScanStatus !== 'completed' || fineScanResults.length === 0 || selectValidationCandidates().length === 0 || pipelineRunning}
+                disabled={equityProgramActive || fineScanStatus !== 'completed' || fineScanResults.length === 0 || selectValidationCandidates().length === 0 || pipelineRunning}
                 style={AI_AGENT_PRIMARY_BTN_STYLE}
               >
             {deeperValidationStatus === 'loading' ? t.agent.validating : (() => {
@@ -9327,7 +9366,7 @@ const Agent: React.FC = (): React.ReactElement => {
                 type="primary"
                 icon={<SafetyCertificateOutlined />}
                 loading={admissionStatus === 'loading'}
-                disabled={admissionStatus === 'loading' || !getEntryPlanCandidates().length || pipelineRunning}
+                disabled={equityProgramActive || admissionStatus === 'loading' || !getEntryPlanCandidates().length || pipelineRunning}
                 onClick={handleRunAdmission}
                 style={AI_AGENT_PRIMARY_BTN_STYLE}
               >
@@ -9492,7 +9531,7 @@ const Agent: React.FC = (): React.ReactElement => {
                 type="primary"
                 icon={<ThunderboltOutlined />}
                 loading={entryPlanStatus === 'loading'}
-                disabled={entryPlanStatus === 'loading' || admissionStatus !== 'completed' || !admittedCandidatesFromRows(admissionResults).length || pipelineRunning}
+                disabled={equityProgramActive || entryPlanStatus === 'loading' || admissionStatus !== 'completed' || !admittedCandidatesFromRows(admissionResults).length || pipelineRunning}
                 onClick={handleRunEntryPlan}
                 style={AI_AGENT_PRIMARY_BTN_STYLE}
               >
@@ -9750,7 +9789,7 @@ const Agent: React.FC = (): React.ReactElement => {
                       if (!exitScanExpanded) setExitScanExpanded(true);
                     }
                   }}
-                  disabled={holdings.length === 0 && exitScanStatus !== 'scanning'}
+                  disabled={(equityProgramActive || holdings.length === 0) && exitScanStatus !== 'scanning'}
                   style={{
                     borderRadius: '8px',
                     fontWeight: 700,
@@ -10159,7 +10198,7 @@ const Agent: React.FC = (): React.ReactElement => {
             </div>
             <div>
               <span>02</span>
-              <p>{liveAutoCopy.modeBoundary}</p>
+              <p>{equityProgramActive ? agentText('Fixed v1 requires admitted historical and forward evidence. Its deterministic rules and risk limits remain binding.', '固定 v1 需要历史及前向证据通过，确定性规则和风险上限始终生效。') : liveAutoCopy.modeBoundary}</p>
             </div>
             <div>
               <span>03</span>
@@ -10169,7 +10208,7 @@ const Agent: React.FC = (): React.ReactElement => {
 
           <div className="agent-live-auto-note" role="note">
             <InfoCircleOutlined aria-hidden="true" />
-            <span>{liveAutoCopy.note}</span>
+            <span>{equityProgramActive ? agentText('This authorization does not place an order now. It enables admitted fixed v1 broker execution and can be revoked with this switch.', '本次授权不会立即下单，将开启通过验证的固定 v1 券商执行，可随时通过此开关撤销。') : liveAutoCopy.note}</span>
           </div>
 
           <label className={`agent-live-auto-acceptance${liveAutoRiskAccepted ? ' is-accepted' : ''}`}>

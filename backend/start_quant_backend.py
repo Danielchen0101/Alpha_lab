@@ -22173,7 +22173,7 @@ def get_trading_account():
 
                 'portfolioValue': _alpaca_number(data.get('portfolio_value')),
 
-                'dayTradeBuyingPower': _alpaca_number(data.get('daytrade_buying_power')),
+                'dayTradeBuyingPower': _alpaca_number(data['daytrade_buying_power']) if data.get('daytrade_buying_power') is not None else None,
 
                 'initialMargin': _alpaca_number(data.get('initial_margin')),
 
@@ -22185,11 +22185,11 @@ def get_trading_account():
 
                 'shortMarketValue': _alpaca_number(data.get('short_market_value')),
 
-                'patternDayTrader': _alpaca_bool(data.get('pattern_day_trader', False)),
+                'patternDayTrader': _alpaca_bool(data['pattern_day_trader']) if data.get('pattern_day_trader') is not None else None,
 
-                'tradingBlocked': _alpaca_bool(data.get('trading_blocked', False)),
+                'tradingBlocked': _alpaca_bool(data['trading_blocked']) if data.get('trading_blocked') is not None else None,
 
-                'accountBlocked': _alpaca_bool(data.get('account_blocked', False)),
+                'accountBlocked': _alpaca_bool(data['account_blocked']) if data.get('account_blocked') is not None else None,
 
                 'currency': data.get('currency', 'USD'),
 
@@ -26345,7 +26345,7 @@ def run_backtest():
                         z_score = (price - mean) / std if std > 0 else 0
 
                         # Trend filter
-                        trend_ok = True
+                        trend_ok = not enable_trend
                         if enable_trend and i >= trend_ma:
                             trend_mean = sum(prices[i-trend_ma:i]) / trend_ma
                             trend_ok = price > trend_mean * 0.92  # allow 8% below trend MA
@@ -28017,7 +28017,7 @@ def run_mean_reversion_strategy_for_optimization(data, params, initial_capital, 
             std = variance ** 0.5
             z_score = (price - mean) / std if std > 0 else 0
 
-            trend_ok = True
+            trend_ok = not enable_trend
             if enable_trend and i >= trend_ma:
                 trend_mean = sum(prices[i-trend_ma:i]) / trend_ma
                 trend_ok = price > trend_mean * 0.92
@@ -28426,7 +28426,8 @@ def _bt_params_with_round_trip_cost(params, round_trip_cost_bps):
 
 
 def _bt_execute_long_signals(data, signal_fn, initial_capital, symbol,
-                             round_trip_cost_bps=0, enter_on_first_open=False):
+                             round_trip_cost_bps=0, enter_on_first_open=False,
+                             trade_start_index=0):
     """Execute long-only close signals at the *next* bar's open.
 
     ``signal_fn`` is called only after a bar is complete.  Its BUY/SELL result is
@@ -28439,6 +28440,7 @@ def _bt_execute_long_signals(data, signal_fn, initial_capital, symbol,
     rows = list(data or [])
     if not rows:
         return [], []
+    trade_start_index = max(0, min(len(rows), int(trade_start_index)))
 
     try:
         cash = float(initial_capital)
@@ -28489,7 +28491,7 @@ def _bt_execute_long_signals(data, signal_fn, initial_capital, symbol,
 
     def open_long(raw_price, date, bar_index, signal):
         nonlocal cash, position, active_trade, cumulative_cost, high_water
-        if raw_price <= 0 or cash <= 0 or position > 0:
+        if raw_price <= 0 or cash <= 0 or position > 0 or bar_index < trade_start_index:
             return
         effective_price = raw_price * (1.0 + side_cost_rate)
         shares = int(cash // effective_price)
@@ -28576,7 +28578,7 @@ def _bt_execute_long_signals(data, signal_fn, initial_capital, symbol,
         open_price = bar_price(bar, 'open', close_price)
         date = bar.get('timestamp')
 
-        if index == 0 and enter_on_first_open:
+        if index == trade_start_index and enter_on_first_open:
             open_long(open_price, date, index, {
                 'signalDate': date,
                 'reason': 'BUY_AND_HOLD_START',
@@ -28597,14 +28599,15 @@ def _bt_execute_long_signals(data, signal_fn, initial_capital, symbol,
             close_long(close_price, date, index, forced=True)
 
         net_equity = cash + position * close_price
-        equity_curve.append({
-            'date': date,
-            'equity': round(net_equity, 6),
-            'grossEquity': round(net_equity + cumulative_cost, 6),
-            'price': close_price,
-            'position': position,
-            'cumulativeTransactionCost': round(cumulative_cost, 6),
-        })
+        if index >= trade_start_index:
+            equity_curve.append({
+                'date': date,
+                'equity': round(net_equity, 6),
+                'grossEquity': round(net_equity + cumulative_cost, 6),
+                'price': close_price,
+                'position': position,
+                'cumulativeTransactionCost': round(cumulative_cost, 6),
+            })
 
         if index >= len(rows) - 1:
             continue
@@ -28622,7 +28625,7 @@ def _bt_execute_long_signals(data, signal_fn, initial_capital, symbol,
             'barIndex': index,
             'bar': bar,
         }
-        pending_signal = normalize_signal(signal_fn(index, context), index)
+        pending_signal = normalize_signal(signal_fn(index, context), index) if index >= trade_start_index - 1 else None
 
     return trades, equity_curve
 
@@ -28764,7 +28767,7 @@ def _bt_build_causal_signal_fn(strategy_name, data, params):
             mean = sum(window) / lookback
             std = (sum((value - mean) ** 2 for value in window) / lookback) ** 0.5
             z_score = (closes[index] - mean) / std if std > 0 else 0.0
-            trend_ok = True
+            trend_ok = not enable_trend
             if enable_trend and index >= trend_period:
                 trend_ok = closes[index] > (sum(closes[index - trend_period:index]) / trend_period) * 0.92
             rsi_value = rsi_values[index]
@@ -28937,6 +28940,7 @@ def _bt_run_causal_strategy(strategy_name, data, params, initial_capital, symbol
         symbol,
         round_trip_cost_bps=_bt_round_trip_cost_bps(params),
         enter_on_first_open=enter_on_first_open,
+        trade_start_index=int((params or {}).get('_tradeStartIndex') or 0),
     )
 
 
@@ -32954,7 +32958,8 @@ def _build_entry_limit_preflight(
         try:
             if value in (None, ''):
                 return default
-            return float(value)
+            result = float(value)
+            return result if math.isfinite(result) else default
         except (TypeError, ValueError):
             return default
 
@@ -33004,6 +33009,26 @@ def _build_entry_limit_preflight(
     limit_price = _entry_round_price(limit_price, 'down')
     marketable = limit_price + (_entry_price_tick(limit_price) / 10.0) >= ask
 
+    if plan_snapshot.get('equitySwingV1') is True:
+        from equity_program import equity_policy
+        from equity_strategy import entry_price_levels
+        fixed_policy = equity_policy()
+        entry_atr = number(plan_snapshot.get('entryAtr14'))
+        try:
+            slippage_bps = fixed_policy['maxSlippageBps']
+            levels = entry_price_levels(ask, entry_atr, slippage_bps)
+        except ValueError:
+            return {'ok': False, 'code': 'invalid_swing_atr', 'blockers': ['A positive entry ATR is required for the swing stop']}
+        limit_price, stop = levels['limitPrice'], levels['stopPrice']
+        if limit_price > zone_cap:
+            return {'ok': False, 'code': 'price_outside_zone', 'blockers': ['Fresh swing limit exceeds the registered entry-zone cap; regenerate the entry plan']}
+        if ((ask - bid) / midpoint * 10000.0) > fixed_policy['maxSpreadBps']:
+            return {'ok': False, 'code': 'spread_too_wide', 'blockers': ['Fresh swing quote exceeds the registered spread cap']}
+        if number(quote.get('bidSize')) <= 0 or number(quote.get('askSize')) <= 0:
+            return {'ok': False, 'code': 'quote_depth_unavailable', 'blockers': ['Fresh displayed bid and ask sizes are required for swing entry']}
+        marketable = limit_price >= ask
+        require_attached_protection = True
+
     if require_marketable and not marketable:
         return {
             'ok': False,
@@ -33015,7 +33040,7 @@ def _build_entry_limit_preflight(
             'quote': {'bid': bid, 'ask': ask, 'last': last},
         }
 
-    risk_per_share = limit_price - stop
+    risk_per_share = limit_price - _entry_round_price(stop, 'down')
     if risk_per_share <= 0:
         return {
             'ok': False,
@@ -33033,9 +33058,9 @@ def _build_entry_limit_preflight(
         0.0, min(25.0, number(plan_snapshot.get('buyingPowerBufferPct'), 5.0))
     )
     caps = [planned_shares, (buying_power * (1.0 - buying_power_buffer_pct / 100.0)) / limit_price]
-    if risk_budget > 0:
+    if risk_budget > 0 or 'riskBudget' in plan_snapshot:
         caps.append(risk_budget / risk_per_share)
-    if max_allocation > 0:
+    if max_allocation > 0 or 'maxAllocationDollars' in plan_snapshot:
         caps.append(max_allocation / limit_price)
     executable_shares = max(0.0, min(caps))
 
@@ -33055,6 +33080,9 @@ def _build_entry_limit_preflight(
         executable_shares = float(math.floor(executable_shares))
     else:
         executable_shares = round(executable_shares, 4)
+
+    if plan_snapshot.get('equitySwingV1') is True and executable_shares > number(quote.get('askSize')):
+        return {'ok': False, 'code': 'quote_depth_insufficient', 'blockers': ['Planned swing quantity exceeds fresh displayed ask size']}
 
     min_shares = 0.01 if fractionable else 1.0
     if executable_shares < min_shares or executable_shares * limit_price < 1.0:
@@ -33103,7 +33131,7 @@ def _build_entry_limit_preflight(
 
 
 def _build_entry_order_payload(symbol, shares, limit_price, stop_loss,
-                               client_order_id, order_class):
+                               client_order_id, order_class, time_in_force='day'):
     """Build the broker payload without allowing a whole-position target leg."""
     normalized_class = str(order_class or 'simple').strip().lower()
     qty_value = (
@@ -33117,7 +33145,7 @@ def _build_entry_order_payload(symbol, shares, limit_price, stop_loss,
         'qty': qty_value,
         'type': 'limit',
         'limit_price': str(limit_price),
-        'time_in_force': 'day',
+        'time_in_force': time_in_force,
         'extended_hours': False,
         'client_order_id': str(client_order_id or '')[:48],
     }
@@ -33202,7 +33230,12 @@ def entry_plan_execute():
     import requests as _req
     import time as _time
     import json as _json
+    from equity_risk import DurableEntryReservations, cash_funded_buying_power, portfolio_entry_budget
 
+    entry_user_lease = None
+    entry_account_lease = None
+    reservation_store = None
+    data = None
     try:
         data = request.get_json()
         if not data:
@@ -33282,6 +33315,7 @@ def entry_plan_execute():
                 active_time_horizon,
                 active_pipeline_mode,
                 active_leverage_enabled,
+                equity_swing_v1=_equity_swing_enabled(authoritative_config),
             ),
             user['id'],
         )
@@ -33348,7 +33382,7 @@ def entry_plan_execute():
         take_profit_plan = _as_float(plan_snapshot.get('takeProfit1', plan_snapshot.get('takeProfit', plan_snapshot.get('target'))))
 
         # B9: Explicitly reject GTC for buy orders — all buy orders must be day
-        if time_in_force and str(time_in_force).lower() == 'gtc':
+        if time_in_force and str(time_in_force).lower() == 'gtc' and not strategy_policy.get('equitySwingV1'):
             blockers.append('GTC time-in-force is not allowed for buy orders. Entry Plan orders must use day orders only.')
 
         if final_action != 'BUY_READY':
@@ -33520,6 +33554,16 @@ def entry_plan_execute():
                 'blockers': ['Broker API keys not configured']
             })
 
+        entry_user_lease = _pa_acquire_runtime_file_lock(
+            'equity-entry-user', '%s:%s' % (user['id'], mode_label),
+        )
+        if entry_user_lease is None or entry_user_lease is _PA_FILE_LOCK_UNSUPPORTED:
+            return jsonify({
+                'success': False, 'action': 'BLOCKED', 'code': 'equity_entry_busy',
+                'reason': 'Another account entry is active or the execution lock is unavailable.',
+                'blockers': ['Account entry serialization is unavailable.'],
+            }), 409
+
         headers = {
             'APCA-API-KEY-ID': api_key,
             'APCA-API-SECRET-KEY': api_secret,
@@ -33532,6 +33576,19 @@ def entry_plan_execute():
             clock_resp = _req.get(f'{base_url}/v2/clock', headers=headers, timeout=8)
             if clock_resp.status_code == 200:
                 market_clock = clock_resp.json() or {}
+                if strategy_policy.get('equitySwingV1'):
+                    clock_now = datetime.now(timezone.utc)
+                    session_date = clock_now.astimezone(ZoneInfo('America/New_York')).date().isoformat()
+                    calendar_resp = _req.get(f'{base_url}/v2/calendar', headers=headers,
+                                             params={'start': session_date, 'end': session_date}, timeout=8)
+                    calendar = calendar_resp.json() if calendar_resp.status_code == 200 else []
+                    sessions = [row for row in calendar if row.get('date') == session_date]
+                    if len(sessions) != 1:
+                        raise ValueError('Verified execution-session calendar is unavailable')
+                    close_at = datetime.fromisoformat(session_date + 'T' + sessions[0]['close']).replace(tzinfo=ZoneInfo('America/New_York')).astimezone(timezone.utc)
+                    if close_at <= clock_now:
+                        raise ValueError('The verified entry session has already expired')
+                    plan_snapshot['entryExpiresAt'] = close_at.isoformat()
             elif is_auto_execute:
                 blockers.append(f'Cannot verify market clock: HTTP {clock_resp.status_code}')
         except Exception as clock_error:
@@ -33573,6 +33630,12 @@ def entry_plan_execute():
                         'feed': snapshot.get('feed') or 'Alpaca Market Data snapshot',
                     }
                     quote_age_seconds = _entry_quote_age_seconds(quote_packet.get('timestamp'))
+                    if strategy_policy.get('equitySwingV1'):
+                        from equity_risk import timestamp as equity_timestamp
+                        quote_freshness_seconds = min(30, quote_freshness_seconds)
+                        quote_time = equity_timestamp(quote_packet.get('timestamp'))
+                        if quote_time and quote_time > datetime.now(timezone.utc):
+                            blockers.append('Swing quote timestamp is in the future')
                 else:
                     blockers.append(f'Fresh Alpaca quote unavailable: HTTP {snapshot_resp.status_code}')
         except Exception as quote_error:
@@ -33580,7 +33643,7 @@ def entry_plan_execute():
 
         if not quote_packet.get('bid') or not quote_packet.get('ask'):
             blockers.append('Fresh executable bid/ask quote unavailable')
-        if is_auto_execute and block_on_stale_quote and market_clock.get('is_open') is True:
+        if (strategy_policy.get('equitySwingV1') or (is_auto_execute and block_on_stale_quote)) and market_clock.get('is_open') is True:
             if quote_age_seconds is None:
                 blockers.append('Quote timestamp unavailable; automatic execution requires freshness verification')
             elif quote_age_seconds > quote_freshness_seconds:
@@ -33624,11 +33687,64 @@ def entry_plan_execute():
         daily_filled_order_count = None
         existing_symbol_market_value = 0.0
         sector_market_values = {}
+        position_rows = []
+        broker_open_orders = []
+        reconciled_reservation_orders = []
+        risk_snapshot = {}
+        acc_data = {}
         fractionable = bool(plan_snapshot.get('fractionable', True))
         try:
             acc_resp = _req.get(f'{base_url}/v2/account', headers=headers, timeout=10)
             if acc_resp.status_code == 200:
                 acc_data = acc_resp.json()
+                account_identity = str(acc_data.get('id') or '')
+                if not account_identity and strategy_policy.get('equitySwingV1'):
+                    blockers.append('Broker account identity is required for swing risk reconciliation')
+                account_identity = account_identity or ('legacy-user:' + user['id'])
+                entry_account_lease = _pa_acquire_runtime_file_lock(
+                    'equity-entry-account', '%s:%s' % (mode_label, account_identity),
+                )
+                if entry_account_lease is None or entry_account_lease is _PA_FILE_LOCK_UNSUPPORTED:
+                    return jsonify({
+                        'success': False, 'action': 'BLOCKED', 'code': 'equity_entry_busy',
+                        'reason': 'Another entry is active for this broker account.',
+                        'blockers': ['Broker account entry serialization is unavailable.'],
+                    }), 409
+                if strategy_policy.get('equitySwingV1'):
+                    expiry_result = _equity_reconcile_entry_expiry(
+                        user['id'], mode_label, account_id=account_identity,
+                        broker_cfg={'api_key': api_key, 'api_secret': api_secret, 'base_url': base_url},
+                        already_locked=True,
+                    )
+                    if not expiry_result.get('ok'):
+                        blockers.extend(expiry_result.get('blockers') or ['Prior entry expiry reconciliation is unavailable'])
+                reservation_store = DurableEntryReservations(
+                    _equity_operations_store(), user['id'], account_identity, mode_label,
+                )
+                for reserved_id, reserved_intent in reservation_store.read().items():
+                    prior_order, prior_error = _alpaca_lookup_order_by_client_id(
+                        base_url, headers, reserved_id,
+                    )
+                    if prior_error or not prior_order:
+                        blockers.append('An earlier entry submission is unresolved; reconcile its client order ID before another entry')
+                        continue
+                    if reserved_intent.get('strategyVersion') == 'equity_fixed_v1':
+                        if not _equity_record_broker_receipt(user['id'], mode_label, account_identity, prior_order):
+                            blockers.append('Prior swing order attribution is awaiting durable reconciliation')
+                            continue
+                    if str(prior_order.get('status') or '').lower() in (
+                        'filled', 'canceled', 'cancelled', 'expired', 'rejected', 'replaced',
+                    ):
+                        reservation_store.release(reserved_id)
+                    else:
+                        reconciled_reservation_orders.append(prior_order)
+                # Re-read after taking the broker-account lock and reconciling
+                # prior intents. Never size from a snapshot taken before a
+                # concurrent order finished its critical section.
+                acc_resp = _req.get(f'{base_url}/v2/account', headers=headers, timeout=10)
+                if acc_resp.status_code != 200:
+                    raise ValueError('Fresh locked account snapshot unavailable')
+                acc_data = acc_resp.json() or {}
                 buying_power = float(acc_data.get('buying_power', 0))
                 cash = float(acc_data.get('cash', 0))
                 non_marginable_buying_power = float(acc_data.get('non_marginable_buying_power', 0) or 0)
@@ -33641,16 +33757,21 @@ def entry_plan_execute():
                     strategy_policy.get('leverageEnabled') is True
                     and plan_snapshot.get('allowMargin') is True
                 )
-                cash_capacity = max(cash, non_marginable_buying_power, 0.0)
-                spendable_buying_power = buying_power if allow_margin else min(buying_power, cash_capacity)
+                spendable_buying_power = buying_power if allow_margin else cash_funded_buying_power(acc_data)
                 if acc_data.get('trading_blocked') or acc_data.get('account_blocked') or acc_data.get('trade_suspended_by_user'):
                     blockers.append('Alpaca account is currently blocked or trading is suspended')
                     _bp_check_passed = False
                 if spendable_buying_power <= 0:
                     blockers.append('Available cash-funded buying power is zero')
                     _bp_check_passed = False
-                if last_equity > 0 and equity > 0:
-                    session_loss_pct = max(0.0, (last_equity - equity) / last_equity * 100.0)
+                risk_snapshot = _equity_account_risk_snapshot(
+                    user['id'], 'real' if mode_label == 'live' else 'paper', acc_data, strategy_policy,
+                )
+                if strategy_policy.get('equitySwingV1') and not risk_snapshot.get('entry_allowed'):
+                    blockers.extend(risk_snapshot.get('reasons') or ['Cashflow-adjusted account risk evidence is unavailable'])
+                    _bp_check_passed = False
+                if risk_snapshot.get('complete') and risk_snapshot.get('daily_loss_pct') is not None:
+                    session_loss_pct = max(0.0, float(risk_snapshot['daily_loss_pct']))
                     daily_loss_stop_pct = _as_float(strategy_policy.get('dailyLossStopPct'), 2.5)
                     daily_loss_stop_pct = min(max(daily_loss_stop_pct, 0.5), 4.0)
                     if session_loss_pct >= daily_loss_stop_pct:
@@ -33676,6 +33797,8 @@ def entry_plan_execute():
                 )
                 fractionable = bool(asset_data.get('fractionable', fractionable))
                 asset_class = str(asset_data.get('class') or asset_data.get('asset_class') or '').strip().lower()
+                if strategy_policy.get('equitySwingV1') and (asset_class != 'us_equity' or asset_data.get('tradable') is not True or asset_data.get('status') != 'active'):
+                    blockers.append('Swing entry requires explicitly active, tradable US-equity asset metadata')
                 if asset_class not in ('us_equity', ''):
                     blockers.append(
                         f'{symbol} asset class {asset_class or "unknown"} is outside the US-equity-only mandate'
@@ -33753,8 +33876,19 @@ def entry_plan_execute():
                 params={'status': 'open', 'nested': 'true', 'limit': 500}, timeout=10,
             )
             if ord_resp.status_code == 200:
+                broker_open_orders = ord_resp.json() or []
+                if not isinstance(broker_open_orders, list):
+                    raise ValueError('Invalid open order snapshot')
+                observed_order_ids = {
+                    str(row.get('id') or row.get('client_order_id') or '')
+                    for row in _pa_flatten_alpaca_order_tree(broker_open_orders)
+                }
+                broker_open_orders += [
+                    row for row in reconciled_reservation_orders
+                    if str(row.get('id') or row.get('client_order_id') or '') not in observed_order_ids
+                ]
                 symbol_sell_orders = []
-                for order in _pa_flatten_alpaca_order_tree(ord_resp.json() or []):
+                for order in _pa_flatten_alpaca_order_tree(broker_open_orders):
                     order_side = str(order.get('side', '')).lower()
                     order_symbol = str(order.get('symbol', '')).upper()
                     if order_side == 'sell' and order_symbol == symbol:
@@ -33827,6 +33961,35 @@ def entry_plan_execute():
                 f'Cannot verify daily filled-order limit: {str(daily_orders_error)[:80]}'
             )
 
+        # Orders can fill at the broker while snapshots are being fetched.
+        # Refresh cash after reading positions/orders so a newly filled buy
+        # cannot disappear from pending reservations against an older cash mark.
+        try:
+            final_account_resp = _req.get(f'{base_url}/v2/account', headers=headers, timeout=10)
+            if final_account_resp.status_code != 200:
+                raise ValueError('Final account snapshot unavailable')
+            final_account = final_account_resp.json() or {}
+            if str(final_account.get('id') or '') != str(acc_data.get('id') or ''):
+                raise ValueError('Broker account identity changed during verification')
+            acc_data = final_account
+            equity = _as_float(acc_data.get('equity'))
+            buying_power = _as_float(acc_data.get('buying_power'))
+            cash = _as_float(acc_data.get('cash'))
+            spendable_buying_power = buying_power if allow_margin else cash_funded_buying_power(acc_data)
+            if any(acc_data.get(key) for key in ('trading_blocked', 'account_blocked', 'trade_suspended_by_user')):
+                blockers.append('Broker account became blocked during verification')
+            if strategy_policy.get('equitySwingV1') and any(acc_data.get(key) is not False for key in ('trading_blocked', 'account_blocked', 'trade_suspended_by_user')):
+                blockers.append('Swing entry requires explicit unblocked broker account flags')
+            risk_snapshot = _equity_account_risk_snapshot(
+                user['id'], 'real' if mode_label == 'live' else 'paper', acc_data, strategy_policy,
+            )
+            if strategy_policy.get('equitySwingV1') and not risk_snapshot.get('entry_allowed'):
+                blockers.extend(risk_snapshot.get('reasons') or ['Final account risk verification failed'])
+            if risk_snapshot.get('complete') and _as_float(risk_snapshot.get('daily_loss_pct')) >= _as_float(strategy_policy.get('dailyLossStopPct'), 2.5):
+                blockers.append('Final account snapshot reached the daily loss stop')
+        except Exception as final_account_error:
+            blockers.append('Final account verification failed: %s' % str(final_account_error)[:120])
+
         # Server-owned limits replace all client-provided budget fields.
         if equity <= 0:
             blockers.append('Account equity is unavailable for platform risk-limit verification')
@@ -33868,6 +34031,55 @@ def entry_plan_execute():
             plan_snapshot['effectiveProductRiskPct'] = product_risk_pct
             plan_snapshot['effectiveProductMaxPositionPct'] = product_position_pct
 
+        managed_budget_positions = {
+            str(record.get('symbol') or '').upper(): record
+            for record in _pa_managed_records_for_user(user['id'], mode_label).values()
+        }
+        portfolio_candidate = {
+            'symbol': symbol, 'sector': plan_snapshot.get('sector'),
+            'correlationGroup': plan_snapshot.get('correlationGroup'),
+            'correlatedSymbols': plan_snapshot.get('correlatedSymbols') or [],
+            'allowMargin': bool(strategy_policy.get('leverageEnabled') and plan_snapshot.get('allowMargin')),
+        }
+        portfolio_budget = portfolio_entry_budget(
+            acc_data, position_rows, broker_open_orders, managed_budget_positions,
+            strategy_policy, portfolio_candidate,
+        )
+        blockers.extend(portfolio_budget['blockers'])
+        spendable_buying_power = min(spendable_buying_power, portfolio_budget['cashAvailable'])
+        plan_snapshot['maxAllocationDollars'] = min(
+            max(0.0, _as_float(plan_snapshot.get('maxAllocationDollars'))),
+            portfolio_budget['maxAdditionalNotional'],
+        )
+        plan_snapshot['riskBudget'] = min(
+            max(0.0, _as_float(plan_snapshot.get('riskBudget'))),
+            portfolio_budget['maxAdditionalRisk'],
+        )
+        # Persist only the server-authoritative program identity.
+        plan_snapshot['equitySwingV1'] = strategy_policy.get('equitySwingV1') is True
+        if plan_snapshot['equitySwingV1']:
+            if plan_snapshot.get('strategyVersion') != 'equity_fixed_v1':
+                blockers.append('Entry plan strategy version does not match fixed swing v1')
+            from equity_program import ETF_GROUPS
+            plan_snapshot['correlationGroup'] = ETF_GROUPS.get(symbol, 'unknown')
+            plan_snapshot['sector'] = plan_snapshot['correlationGroup']
+            try:
+                validator = globals().get('_equity_validate_entry_plan')
+                verified_plan = validator(
+                    user['id'], 'real' if mode_label == 'live' else 'paper', symbol, plan_snapshot,
+                ) if callable(validator) else {}
+                if not verified_plan.get('ok'):
+                    blockers.extend(verified_plan.get('blockers') or ['Trusted swing entry validation is unavailable'])
+                elif _as_float(verified_plan.get('atr14')) <= 0:
+                    blockers.append('Trusted swing entry ATR is unavailable')
+                else:
+                    plan_snapshot['entryAtr14'] = float(verified_plan['atr14'])
+                    plan_snapshot['strategyVersion'] = 'equity_fixed_v1'
+                    plan_snapshot['protocolKey'] = verified_plan.get('protocolKey')
+                    plan_snapshot['validatedSignal'] = verified_plan.get('signal')
+            except Exception as validation_error:
+                blockers.append('Trusted swing entry validation failed: %s' % str(validation_error)[:120])
+
         if blockers:
             # Build a specific reason with code for frontend status display
             if _existing_position_found and str(plan_snapshot.get('entryIntent') or '').upper() != 'SCALE_IN':
@@ -33893,7 +34105,7 @@ def entry_plan_execute():
             quote_packet,
             spendable_buying_power,
             fractionable=fractionable,
-            require_attached_protection=is_auto_execute,
+            require_attached_protection=is_auto_execute or strategy_policy.get('equitySwingV1') is True,
             require_marketable=is_auto_execute,
             limit_offset_bps=(workspace_preferences.get('trading') or {}).get('limitOffsetBps'),
         )
@@ -33915,6 +34127,20 @@ def entry_plan_execute():
         # changes to that helper cannot bypass account-level concentration caps.
         hard_position_budget = equity * strategy_policy['maxSinglePositionPct'] / 100.0
         candidate_notional = float(preflight.get('notional') or 0)
+        portfolio_budget = portfolio_entry_budget(
+            acc_data, position_rows, broker_open_orders, managed_budget_positions,
+            strategy_policy, {
+                **portfolio_candidate, 'notional': candidate_notional,
+                'riskDollars': float(preflight.get('riskDollars') or 0),
+            },
+        )
+        if not portfolio_budget['ok']:
+            return jsonify({
+                'success': False, 'action': 'BLOCKED', 'symbol': symbol,
+                'code': 'portfolio_risk_hard_cap',
+                'reason': '; '.join(portfolio_budget['blockers'])[:300],
+                'blockers': portfolio_budget['blockers'], 'portfolioBudget': portfolio_budget,
+            }), 409
         maximum_order_notional = float(workspace_risk_preferences.get('maxOrderNotional') or 10000)
         if candidate_notional > maximum_order_notional + 0.01:
             return jsonify({
@@ -33967,6 +34193,10 @@ def entry_plan_execute():
         take_profit = preflight['takeProfit']
         order_class = preflight['orderClass']
         protection_mode = preflight['protectionMode']
+        plan_snapshot.update({'stopLoss': stop_loss, 'limitPrice': limit_price, 'shares': shares})
+        plan_snapshot['brokerAccountId'] = acc_data.get('id')
+        if plan_snapshot.get('equitySwingV1'):
+            plan_snapshot['initialRiskPerShare'] = limit_price - stop_loss
         client_order_seed = (
             data.get('clientOrderId')
             or data.get('client_order_id')
@@ -33992,6 +34222,7 @@ def entry_plan_execute():
             stop_loss,
             client_order_id,
             order_class,
+            time_in_force='gtc' if strategy_policy.get('equitySwingV1') else 'day',
         )
         qty_value = order_payload['qty']
 
@@ -34015,6 +34246,8 @@ def entry_plan_execute():
         def _idempotent_existing_order_response(existing_order):
             existing_order_id = existing_order.get('id') or 'unknown'
             existing_status = existing_order.get('status') or 'unknown'
+            if strategy_policy.get('equitySwingV1'):
+                _equity_record_broker_receipt(user['id'], mode_label, acc_data.get('id'), existing_order)
             _record_order_lifecycle(
                 user['id'], existing_order_id, 'entry_idempotent_replay', existing_status,
                 payload={
@@ -34115,6 +34348,34 @@ def entry_plan_execute():
                 'detail': lookup_error,
             }), 503
 
+        # Record before POST while holding both user and broker-account locks.
+        # Keep this reservation after a timeout/5xx, even when lookup returns
+        # 404: eventual broker visibility is not proof that submission failed.
+        if reservation_store is None:
+            raise ValueError('Durable entry reservation storage is unavailable')
+        final_quote_age = _entry_quote_age_seconds(quote_packet.get('timestamp'))
+        if strategy_policy.get('equitySwingV1'):
+            from equity_risk import timestamp as equity_timestamp
+            entry_expiry = equity_timestamp(plan_snapshot.get('entryExpiresAt'))
+            if not entry_expiry or datetime.now(timezone.utc) >= entry_expiry:
+                return jsonify({'success': False, 'action': 'BLOCKED', 'code': 'entry_session_expired',
+                                'blockers': ['Verified entry session expired before broker submission']}), 409
+        if (strategy_policy.get('equitySwingV1') or (is_auto_execute and block_on_stale_quote)) and (
+            final_quote_age is None or final_quote_age > quote_freshness_seconds
+        ):
+            return jsonify({
+                'success': False, 'action': 'BLOCKED', 'symbol': symbol,
+                'code': 'stale_quote', 'reason': 'Quote expired during final account verification; rerun entry planning.',
+                'blockers': ['Final executable quote is stale.'],
+            }), 409
+        reservation_store.reserve(client_order_id, {
+            'symbol': symbol, 'qty': qty_value, 'limitPrice': limit_price,
+            'notional': preflight['notional'], 'riskDollars': preflight['riskDollars'],
+            'strategyVersion': plan_snapshot.get('strategyVersion') if strategy_policy.get('equitySwingV1') else None,
+            'protocolKey': plan_snapshot.get('protocolKey') if strategy_policy.get('equitySwingV1') else None,
+            'entryExpiresAt': plan_snapshot.get('entryExpiresAt') if strategy_policy.get('equitySwingV1') else None,
+            'stopPrice': stop_loss if strategy_policy.get('equitySwingV1') else None,
+        })
         try:
             order_resp = _req.post(
                 f'{base_url}/v2/orders',
@@ -34137,6 +34398,13 @@ def entry_plan_execute():
 
         if order_resp.status_code in (200, 201):
             order_data = order_resp.json()
+            if strategy_policy.get('equitySwingV1'):
+                _equity_record_broker_receipt(
+                    user['id'], mode_label, acc_data.get('id'), order_data,
+                    validated_entry=True, protocol_key=plan_snapshot.get('protocolKey'),
+                    entry_expires_at=plan_snapshot.get('entryExpiresAt'),
+                    initial_stop_price=stop_loss,
+                )
             order_id = order_data.get('id', 'unknown')
             order_status = order_data.get('status', 'unknown')
             print(f'[ENTRY EXECUTE] {symbol}: ORDER SUBMITTED id={order_id} status={order_status}')
@@ -34172,7 +34440,9 @@ def entry_plan_execute():
             if order_class == 'oto':
                 note = (
                     f'Protected limit entry: stop ${stop_loss:.2f} activates after the fill. '
-                    f'Target ${take_profit:.2f} is managed as a staged reduction by Exit Scan.'
+                    + ('Whole-position exits use the fixed swing stop and session rules.'
+                       if plan_snapshot.get('equitySwingV1') else
+                       f'Target ${take_profit:.2f} is managed as a staged reduction by Exit Scan.')
                 )
             else:
                 note = (
@@ -34220,6 +34490,10 @@ def entry_plan_execute():
                 return _ambiguous_submission_response(
                     _lookup_error or 'duplicate_client_order_id_not_visible'
                 )
+            if order_resp.status_code >= 500 or order_resp.status_code in (408, 429):
+                return _ambiguous_submission_response('broker_http_%s' % order_resp.status_code)
+            # A definite validation/authorization rejection reserves no capital.
+            reservation_store.release(client_order_id)
             if user and not suppress_discord:
                 send_discord_notification(user['id'], 'error', {
                     'event_id': f'entry-execute-api-{symbol}-{int(time.time())}',
@@ -34245,6 +34519,9 @@ def entry_plan_execute():
             'success': False, 'action': 'ERROR', 'symbol': data.get('symbol', '?') if data else '?',
             'reason': str(e), 'blockers': [str(e)[:200]]
         }), 500
+    finally:
+        _pa_release_runtime_file_lock(entry_account_lease)
+        _pa_release_runtime_file_lock(entry_user_lease)
 
 
 # ============ AI Execution Order Endpoint ============
@@ -34400,7 +34677,10 @@ def ai_execution_order():
             })
     if automation_mode == 'full-ai':
         automation_config = _pa_get_config(user['id']) or {}
-        if str(automation_config.get('mode') or 'hybrid').lower() != 'ai':
+        fixed_v1_authorized = _equity_swing_enabled(automation_config) and _pa_order_authority(
+            automation_config, trade_mode=trading_mode,
+        ).get('sellAuthorized' if side == 'sell' else 'buyAuthorized') is True
+        if str(automation_config.get('mode') or 'hybrid').lower() != 'ai' and not fixed_v1_authorized:
             _notify_ai_exec_block(
                 'full_ai_required',
                 'Saved Market Auto Run mode is not Full AI.',
@@ -36913,8 +37193,8 @@ def _build_institutional_dv_packet(cand, metrics, stability, recent_vs_long, ent
     if oos_fold_count >= 2:
         pass_oos_ok = (
             oos_available and oos_trades >= 4 and
-            oos_return is not None and oos_return >= -1 and
-            (oos_sharpe is None or oos_sharpe >= -0.1) and
+            oos_return is not None and oos_return > 0 and
+            (oos_sharpe is not None and oos_sharpe >= 0) and
             oos_positive_fold_ratio is not None and oos_positive_fold_ratio >= 0.5 and
             (oos_worst_fold_return is None or oos_worst_fold_return >= -10)
         )
@@ -36922,8 +37202,8 @@ def _build_institutional_dv_packet(cand, metrics, stability, recent_vs_long, ent
         # Backward-compatible path for stored DV packets created before v5.
         pass_oos_ok = (
             oos_available and not oos_method and oos_trades >= 2 and
-            oos_return is not None and oos_return >= -1 and
-            (oos_sharpe is None or oos_sharpe >= -0.1)
+            oos_return is not None and oos_return > 0 and
+            (oos_sharpe is not None and oos_sharpe >= 0)
         )
     pass_edge_ok = (
         annualized_net_return is not None and annualized_net_return > 0 and
@@ -38062,10 +38342,10 @@ def _dv_walk_forward_validation(symbol, strategy, param_sets, fallback_params, d
         test_bt, _test_error = _run_backtest_core(
             symbol,
             strategy,
-            _bt_params_with_round_trip_cost(
+            {**_bt_params_with_round_trip_cost(
                 best_train['params'], round_trip_cost_bps,
-            ),
-            test_data,
+            ), '_tradeStartIndex': train_end},
+            rows[:test_end],
             initial_capital,
         )
         if not test_bt:
@@ -38076,6 +38356,9 @@ def _dv_walk_forward_validation(symbol, strategy, param_sets, fallback_params, d
             'fold': fold_index + 1,
             'trainBars': len(train_data),
             'testBars': len(test_data),
+            'warmupBars': train_end,
+            'testStart': test_data[0].get('timestamp'),
+            'testEnd': test_data[-1].get('timestamp'),
             'bestTrainParams': best_train['params'],
             'trainReturn': _dv_round(best_train['metrics'].get('totalReturn'), 2),
             'trainNetReturn': _dv_round(best_train['netReturn'], 2),
@@ -38527,8 +38810,170 @@ def _geared_product_policy_blockers(product_profile, strategy_policy, entry_inte
     return blockers
 
 
+def _equity_swing_enabled(config):
+    return (config or {}).get('strategy_program') == 'equity_swing_v1'
+
+
+def _equity_operations_store():
+    from equity_store import EquityAuthenticatedStore
+    return EquityAuthenticatedStore(operations_store, APP_SECRET_KEY or app.secret_key)
+
+
+def _equity_read_client(uid, mode='market_data'):
+    """Build a read-only authenticated client without leaking broker responses."""
+    cfg = resolve_alpaca_config_for_user(uid, mode)
+    if not cfg.get('api_key') or not cfg.get('api_secret'):
+        raise ValueError('broker_credentials_missing')
+    headers = {'APCA-API-KEY-ID': cfg['api_key'], 'APCA-API-SECRET-KEY': cfg['api_secret']}
+    base = 'https://data.alpaca.markets' if mode == 'market_data' else _trusted_alpaca_trading_base_url(cfg.get('base_url'), mode)
+
+    def read(path, params=None):
+        if not str(path).startswith(('/v1/', '/v2/')) or '..' in path:
+            raise ValueError('invalid_read_path')
+        response = requests.get(base + path, headers=headers, params=params or {}, timeout=20)
+        if response.status_code != 200:
+            raise ValueError('broker_read_http_%s' % response.status_code)
+        return response.json()
+    return read
+
+
+def _equity_account_risk_snapshot(uid, trade_mode, account, strategy_policy):
+    try:
+        state = _equity_collect_account_evidence(uid, trade_mode, account)
+        return state['risk']
+    except Exception:
+        return {'entry_allowed': False, 'complete': False,
+                'daily_loss_pct': None, 'drawdown_latched': False,
+                'reasons': ['equity_evidence_unavailable']}
+
+
+def _equity_record_broker_receipt(uid, trade_mode, account_id, order, **ownership):
+    """Evidence failure never changes the known outcome of a submitted order."""
+    if not account_id:
+        return False
+    try:
+        from equity_runtime import record_v1_order
+        return record_v1_order(_equity_operations_store(), uid, account_id, trade_mode, order, **ownership)
+    except Exception as exc:
+        safe_print('[EquityReceipt] Attribution remains unknown: %s' % type(exc).__name__)
+        return False
+
+
+def _equity_reconcile_entry_expiry(uid, trade_mode, account_id=None, broker_cfg=None, already_locked=False):
+    """Run even outside market hours; expired GTC entry parents are not valid new signals."""
+    expiry_config = _pa_get_config(uid) or {}
+    if not _equity_swing_enabled(expiry_config) and not expiry_config.get('equity_broker_monitoring_required'):
+        return {'ok': True, 'blockers': [], 'quarantinedOrderIds': []}
+    lease = None
+    try:
+        from equity_entry_lifecycle import reconcile_entry_expiry
+        from equity_runtime import read_order_attribution
+        cfg = broker_cfg or resolve_alpaca_config_for_user(uid, trade_mode)
+        base = cfg.get('base_url') or ('https://paper-api.alpaca.markets' if trade_mode == 'paper' else 'https://api.alpaca.markets')
+        if not cfg.get('api_key') or not cfg.get('api_secret'):
+            raise ValueError('Expiry reconciliation credentials unavailable')
+        headers = {'APCA-API-KEY-ID': cfg['api_key'], 'APCA-API-SECRET-KEY': cfg['api_secret']}
+        def get_order(order_id):
+            response = requests.get(base + '/v2/orders/' + order_id, headers=headers, timeout=8)
+            if response.status_code != 200:
+                raise ValueError('Broker order reconciliation unavailable')
+            return response.json()
+        def find_order(client_id):
+            order, error = _alpaca_lookup_order_by_client_id(base, headers, client_id)
+            if error or not order:
+                raise ValueError('Broker entry receipt unavailable')
+            return order
+        def cancel_order(order_id):
+            response = requests.delete(base + '/v2/orders/' + order_id, headers=headers, timeout=8)
+            if response.status_code not in (200, 202, 204, 404, 422):
+                raise ValueError('Broker entry cancellation unavailable')
+        if not account_id:
+            response = requests.get(base + '/v2/account', headers=headers, timeout=8)
+            account_id = (response.json() or {}).get('id') if response.status_code == 200 else None
+        if not account_id:
+            raise ValueError('Broker account identity unavailable')
+        if not already_locked:
+            lease = _pa_acquire_runtime_file_lock('equity-entry-account', '%s:%s' % ('paper' if trade_mode == 'paper' else 'live', account_id))
+            if lease is None or lease is _PA_FILE_LOCK_UNSUPPORTED:
+                return {'ok': False, 'blockers': ['entry_expiry_account_busy'], 'quarantinedOrderIds': []}
+        store = _equity_operations_store()
+        result = reconcile_entry_expiry(store, uid, account_id, trade_mode, get_order, find_order, cancel_order)
+        if result.get('quarantinedOrderIds'):
+            _, registry = read_order_attribution(store, uid, account_id, trade_mode)
+            for order_id in result['quarantinedOrderIds']:
+                receipt = registry['orders'][order_id]
+                managed = _pa_get_managed_position_plan(uid, trade_mode, receipt['symbol']) or {}
+                if str(managed.get('entryOrderId')) == order_id:
+                    _pa_update_managed_position(uid, trade_mode, receipt['symbol'],
+                        entryValidityReviewRequired=True, entryValidityReviewReason=receipt.get('entryQuarantineReason'))
+        return result
+    except Exception as exc:
+        return {'ok': False, 'blockers': ['entry_expiry_reconciliation_' + type(exc).__name__], 'quarantinedOrderIds': []}
+    finally:
+        if not already_locked:
+            _pa_release_runtime_file_lock(lease)
+
+
+def _equity_collect_account_evidence(uid, trade_mode, account, reader=None):
+    from equity_runtime import account_evidence
+    reader = reader or _equity_read_client(uid, 'paper' if trade_mode == 'paper' else 'live')
+    now = datetime.now(timezone.utc)
+    today = now.astimezone(ZoneInfo('America/New_York')).date()
+    marks, baseline = [], None
+    # Broker last_equity is the previous session close, not a P/L amount.
+    # Bind it to the exchange calendar, including half-day close timestamps.
+    try:
+        calendar = reader('/v2/calendar', {'start': (today - timedelta(days=10)).isoformat(), 'end': today.isoformat()})
+        prior = [row for row in calendar if row.get('date', '') < today.isoformat()]
+        if prior and account.get('last_equity') is not None:
+            session = prior[-1]
+            close = datetime.fromisoformat(session['date'] + 'T' + session['close']).replace(tzinfo=ZoneInfo('America/New_York'))
+            baseline = close.astimezone(timezone.utc).isoformat()
+            marks = [{'as_of': baseline, 'equity': account['last_equity']}]
+    except (ValueError, KeyError, TypeError):
+        pass
+    return account_evidence(_equity_operations_store(), uid, trade_mode, account,
+                            lambda params: (200, reader('/v2/account/activities', params)),
+                            now=now.isoformat(), equity_history=marks, daily_baseline_as_of=baseline)
+
+
+def _equity_validate_entry_plan(uid, trade_mode, symbol, plan):
+    """Recompute eligibility from server evidence, never client pass flags."""
+    from equity_research_service import EquityResearchService
+    from equity_research import evaluate_admission
+    from equity_shadow import read_shadow
+    from equity_data import read_sip_history
+    from equity_strategy import evaluate_daily_signal
+    config = _pa_get_config(uid) or {}
+    service = EquityResearchService(_equity_operations_store())
+    research = service.status(uid, config.get('equity_protocol_key'))
+    protocol = research.get('protocol') or {}
+    if not protocol or symbol not in protocol.get('symbols', []):
+        return {'ok': False, 'blockers': ['symbol_outside_frozen_universe']}
+    forward = research.get('qualification') or {}
+    admission = evaluate_admission(research.get('result'), forward)
+    if not admission.get('eligible'):
+        return {'ok': False, 'blockers': ['research_or_forward_evidence_insufficient'] + admission.get('blockers', [])}
+    if plan.get('strategyVersion') != protocol['strategyVersion'] or plan.get('protocolKey') != protocol['protocolKey']:
+        return {'ok': False, 'blockers': ['entry_plan_protocol_mismatch']}
+    now = datetime.now(timezone.utc)
+    broker = _equity_read_client(uid, 'paper' if trade_mode == 'paper' else 'live')
+    calendar = broker('/v2/calendar', {'start': (now - timedelta(days=500)).date().isoformat(), 'end': now.date().isoformat()})
+    today = now.astimezone(ZoneInfo('America/New_York')).date().isoformat()
+    sessions = [row['date'] for row in calendar if row.get('date', '') < today]
+    history, _ = read_sip_history(_equity_read_client(uid), [symbol],
+                                  (now - timedelta(days=500)).date().isoformat() + 'T00:00:00Z', (now - timedelta(minutes=16)).isoformat(),
+                                  now=now.isoformat(), adjustment='split', expected_sessions=sessions)
+    signal = evaluate_daily_signal(history['rows'].get(symbol), protocol['strategy'], now.isoformat())
+    blockers = signal.get('blockers', []) if not signal.get('eligible') else []
+    if not history['coverage']['complete'] or not sessions or signal.get('session') != sessions[-1]:
+        blockers = blockers + ['latest_completed_session_required']
+    return {'ok': not blockers, 'blockers': blockers, 'signal': signal, 'atr14': signal.get('atr14'),
+            'strategyVersion': protocol['strategyVersion'], 'protocolKey': protocol['protocolKey']}
+
+
 def _strategy_policy(risk_profile='medium', time_horizon='mid', pipeline_mode='hybrid',
-                     leverage_enabled=False):
+                     leverage_enabled=False, equity_swing_v1=False):
     """Return the single strategy mandate used by research, entry, exit and execution.
 
     Percent fields are expressed as human-readable percentages (for example,
@@ -38536,6 +38981,9 @@ def _strategy_policy(risk_profile='medium', time_horizon='mid', pipeline_mode='h
     prohibited for every mandate.  Leveraged equity ETP exposure is opt-in and
     only valid for the aggressive, short-horizon mandate.
     """
+    if equity_swing_v1:
+        from equity_program import equity_policy
+        return equity_policy(_strategy_policy(risk_profile, time_horizon, pipeline_mode, False))
     profile = str(risk_profile or 'medium').strip().lower()
     horizon = str(time_horizon or 'mid').strip().lower()
     mode = str(pipeline_mode or 'hybrid').strip().lower()
@@ -40151,8 +40599,13 @@ def ai_entry_plan():
                     live_portfolio_value = float(acc_data.get('portfolio_value', 0))
                     live_equity = float(acc_data.get('equity', 0))
                     live_last_equity = float(acc_data.get('last_equity', 0) or 0)
-                    if live_last_equity > live_equity > 0:
-                        daily_loss = max(daily_loss, live_last_equity - live_equity)
+                    # last_equity minus equity includes deposits/withdrawals.
+                    # Only the reconciled cash-flow-adjusted ledger may set this gate.
+                    risk_snapshot = _equity_account_risk_snapshot(
+                        entry_user_id, account_mode, acc_data, strategy_policy,
+                    )
+                    if risk_snapshot.get('complete') and risk_snapshot.get('daily_pnl') is not None:
+                        daily_loss = max(0.0, -float(risk_snapshot['daily_pnl']))
                     live_id = acc_data.get('id', '')
                     # Use portfolioValue (not buyingPower) as account_size for position sizing
                     # Buying power is leverage and shouldn't determine position size
@@ -40219,7 +40672,7 @@ def ai_entry_plan():
             'leveraged_max_pct': strategy_policy['leveragedSleeveMaxPct'] / 100.0,
         }
 
-        _cash_capacity = max(live_cash, live_non_marginable_buying_power, 0)
+        _cash_capacity = max(0.0, min(live_cash, live_non_marginable_buying_power))
         if strategy_policy['leverageEnabled']:
             _spendable_bp = max(live_buying_power, 0)
         else:
@@ -40236,7 +40689,8 @@ def ai_entry_plan():
         )
         _max_total_allocation = min(
             _safe_bp,
-            account_size * (_deployment_ceiling_pct / 100.0),
+            max(0.0, account_size * (_deployment_ceiling_pct / 100.0)
+                - sum(abs(float(row.get('market_value') or 0)) for row in position_rows_by_symbol.values())),
         ) if account_size > 0 else 0
         _max_per_trade = min(
             account_size * _rules['max_per_trade_pv_pct'],
@@ -43913,6 +44367,9 @@ def _pa_record_managed_position_plan(uid, trade_mode, symbol, plan, order=None, 
     stop_loss = exits.get('stopLoss') or plan.get('stopLoss') or plan.get('stop')
     target_1 = exits.get('target1') or plan.get('takeProfit1') or plan.get('takeProfit') or plan.get('target')
     target_2 = exits.get('target2') or plan.get('takeProfit2')
+    if plan.get('equitySwingV1') is True:
+        stop_loss = plan.get('stopLoss')
+        target_1 = target_2 = None
     entry_reference = (
         (order or {}).get('filled_avg_price') if isinstance(order, dict) else None
     ) or plan.get('limitPrice') or plan.get('entryZoneHigh') or plan.get('entryHigh') or plan.get('currentPrice')
@@ -43929,10 +44386,13 @@ def _pa_record_managed_position_plan(uid, trade_mode, symbol, plan, order=None, 
         'status': status,
         'entryOrderId': (order or {}).get('id') if isinstance(order, dict) else None,
         'clientOrderId': (order or {}).get('client_order_id') if isinstance(order, dict) else None,
+        'brokerAccountId': plan.get('brokerAccountId'),
+        'entryExpiresAt': plan.get('entryExpiresAt'),
         'entryZoneLow': plan.get('entryZoneLow') or plan.get('entryLow'),
         'entryZoneHigh': plan.get('entryZoneHigh') or plan.get('entryHigh'),
         'stopLoss': stop_loss,
         'initialStop': stop_loss,
+        'originalAttachedStop': stop_loss if plan.get('equitySwingV1') is True else None,
         'currentStop': stop_loss,
         'takeProfit1': target_1,
         'takeProfit2': target_2,
@@ -43941,6 +44401,10 @@ def _pa_record_managed_position_plan(uid, trade_mode, symbol, plan, order=None, 
         'highWaterMark': entry_reference,
         'exitState': 'INITIAL_RISK',
         'exitPolicyVersion': 3,
+        'equitySwingV1': plan.get('equitySwingV1') is True,
+        'strategyVersion': plan.get('strategyVersion'),
+        'correlationGroup': plan.get('correlationGroup') or plan.get('sector') or 'Unknown',
+        'entryAtr14': plan.get('entryAtr14'),
         'planSource': plan.get('exitPlanSource') or 'entry_plan',
         'stopPolicy': 'ratchet_only',
         'targetPolicy': 'fixed_structural',
@@ -43962,13 +44426,27 @@ def _pa_record_managed_position_plan(uid, trade_mode, symbol, plan, order=None, 
     with _PA_MANAGED_POSITIONS_LOCK:
         prior = _PA_MANAGED_POSITIONS.get(key) if isinstance(_PA_MANAGED_POSITIONS.get(key), dict) else {}
         is_scale_in = str(plan.get('entryIntent') or '').upper() == 'SCALE_IN'
+        same_entry = bool(
+            record.get('entryOrderId')
+            and record.get('entryOrderId') == prior.get('entryOrderId')
+        )
         prior_scale_ins = int(_pa_safe_float(prior.get('scaleInCount'), 0) or 0)
         record['entryIntent'] = 'SCALE_IN' if is_scale_in else 'NEW_POSITION'
         # Scale-in limits count broker fills, not submissions.  A rejected or
         # cancelled add order must not consume the user's remaining add slots.
         record['scaleInCount'] = prior_scale_ins
         record['pendingScaleIn'] = bool(is_scale_in)
-        record['entryCount'] = int(_pa_safe_float(prior.get('entryCount'), 0) or 0) + 1
+        record['entryCount'] = int(_pa_safe_float(prior.get('entryCount'), 0) or 0) + (0 if same_entry else 1)
+        if same_entry:
+            for field in (
+                'filledAt', 'entryTimestamp', 'entrySession', 'entryFilledQty',
+                'entryFillPrice', 'fillAnchorVerified', 'initialRiskPerShare',
+                'initialStop', 'originalAttachedStop', 'entryGeometryReviewRequired',
+                'entryExpiresAt', 'entryValidityReviewRequired', 'entryValidityReviewReason',
+                'currentStop', 'highWaterMark', 'trailActive',
+            ):
+                if field in prior:
+                    record[field] = prior[field]
         if is_scale_in:
             record['lastScaleInAt'] = record['updatedAt']
             record['initialStop'] = prior.get('initialStop') or record.get('initialStop')
@@ -43985,7 +44463,7 @@ def _pa_record_managed_position_plan(uid, trade_mode, symbol, plan, order=None, 
                 _pa_safe_float(prior.get('highWaterMark'), 0) or 0,
                 _pa_safe_float(record.get('highWaterMark'), 0) or 0,
             )
-        else:
+        elif not same_entry:
             # A new position lifecycle must not inherit a prior trade's
             # first-target idempotency marker.
             record.update({
@@ -43998,8 +44476,18 @@ def _pa_record_managed_position_plan(uid, trade_mode, symbol, plan, order=None, 
                 'target1PositionQtyBefore': None,
                 'target1SubmittedAt': None,
                 'target1FilledAt': None,
+                'filledAt': None,
+                'entryTimestamp': None,
+                'entrySession': None,
+                'entryFilledQty': 0,
+                'entryFillPrice': None,
+                'fillAnchorVerified': False,
+                'corporateActionReviewRequired': False,
+                'trailActive': False,
             })
-        record['createdAt'] = prior.get('createdAt') or record['updatedAt']
+        record['createdAt'] = (prior.get('createdAt') if is_scale_in or same_entry else None) or record['updatedAt']
+        from equity_risk import entry_fill_anchor_updates
+        record.update(entry_fill_anchor_updates({**prior, **record}, order or {}))
         _PA_MANAGED_POSITIONS[key] = {**prior, **record}
         saved_record = dict(_PA_MANAGED_POSITIONS[key])
     _pa_save_managed_positions()
@@ -44173,6 +44661,11 @@ def _pa_reconcile_order_lifecycle(uid, trade_mode='paper', notify=False):
         )
         managed_record_key = match[0] if match else None
         matched_record = match[1] if match and isinstance(match[1], dict) else {}
+        if matched_record.get('brokerAccountId'):
+            _equity_record_broker_receipt(
+                uid, trade_mode, matched_record['brokerAccountId'], order,
+                entry_order_id=matched_record.get('entryOrderId'),
+            )
         target1_order_id_value = str(
             matched_record.get('target1ReductionOrderId') or ''
         )
@@ -44257,7 +44750,7 @@ def _pa_reconcile_order_lifecycle(uid, trade_mode='paper', notify=False):
             managed_status = 'closed'
         else:
             summary['failed'] += 1
-            managed_status = 'needs_protection' if side == 'sell' else 'entry_failed'
+            managed_status = 'needs_protection' if side == 'sell' else ('position_open' if filled_qty > 0 else 'entry_failed')
 
         if match and not is_oco_sibling_cancel:
             lifecycle_updates = {
@@ -44268,19 +44761,9 @@ def _pa_reconcile_order_lifecycle(uid, trade_mode='paper', notify=False):
                 'filledAvgPrice': filled_price,
                 'lastReconciledAt': datetime.now(timezone.utc).isoformat(),
             }
-            if side == 'buy' and status in ('filled', 'partially_filled'):
-                filled_at = order.get('filled_at') or order.get('updated_at')
-                if filled_at:
-                    lifecycle_updates['filledAt'] = filled_at
-                if filled_price and filled_price > 0:
-                    lifecycle_updates['entryReferencePrice'] = filled_price
-                    prior_high_water = _pa_safe_float(matched_record.get('highWaterMark'), 0) or 0
-                    lifecycle_updates['highWaterMark'] = max(prior_high_water, filled_price)
-                    initial_stop = _pa_safe_float(
-                        matched_record.get('initialStop') or matched_record.get('stopLoss'), None,
-                    )
-                    if initial_stop and filled_price > initial_stop:
-                        lifecycle_updates['initialRiskPerShare'] = round(filled_price - initial_stop, 4)
+            if side == 'buy' and filled_qty > 0:
+                from equity_risk import entry_fill_anchor_updates
+                lifecycle_updates.update(entry_fill_anchor_updates(matched_record, order))
                 if (
                     str(matched_record.get('entryIntent') or '').upper() == 'SCALE_IN'
                     and str(matched_record.get('lastCountedScaleInOrderId') or '') != order_id
@@ -45973,7 +46456,18 @@ def _pa_order_authority(config, mode=None, trade_mode=None):
         (_workspace_preferences_v2(config).get('trading') or {}).get('confirmationPolicy')
         or 'live_only'
     ).lower()
-    if pipeline_mode != 'ai':
+    if _equity_swing_enabled(config) and config.get('equity_execution_mode') != 'broker':
+        return {'authorized': False, 'buyAuthorized': False,
+                'sellAuthorized': pipeline_mode == 'ai' and confirmation_policy != 'always' and (account_mode == 'paper' or live_enabled),
+                'code': 'equity_shadow_only', 'message': 'Frozen stock strategy is collecting shadow evidence; broker entries are disabled.',
+                'pipelineMode': pipeline_mode, 'tradeMode': account_mode}
+    fixed_equity = _equity_swing_enabled(config)
+    if fixed_equity and (confirmation_policy == 'always' or account_mode != 'real'):
+        return {'authorized': False, 'buyAuthorized': False, 'sellAuthorized': False,
+                'code': 'equity_broker_authority_required',
+                'message': 'Stock v1 broker execution requires the explicitly authorized live account; paper mode uses its separate shadow book.',
+                'pipelineMode': pipeline_mode, 'tradeMode': account_mode}
+    if pipeline_mode != 'ai' and not fixed_equity:
         return {
             'authorized': False,
             'buyAuthorized': False,
@@ -46233,6 +46727,7 @@ def _pa_workspace_preferences(config):
     leverage_enabled = bool(config.get('leverage_enabled', False))
     preferences_v2 = _workspace_preferences_v2(config)
     return {
+        'strategyProgram': config.get('strategy_program') or 'legacy',
         'tradeMode': config.get('trade_mode') or config.get('tradeMode') or 'paper',
         'pipelineMode': pipeline_mode,
         'riskProfile': risk_profile,
@@ -46243,7 +46738,8 @@ def _pa_workspace_preferences(config):
         'liveAutoTradingEnabled': bool(config.get('live_auto_trading_enabled', False)),
         'language': config.get('language') if config.get('language') in ('en-US', 'zh-CN') else None,
         'strategyPolicy': _strategy_policy(
-            risk_profile, time_horizon, pipeline_mode, leverage_enabled
+            risk_profile, time_horizon, pipeline_mode, leverage_enabled,
+            _equity_swing_enabled(config),
         ),
         'updatedAt': config.get('updated_at') or '',
         **preferences_v2,
@@ -48881,6 +49377,10 @@ def _pa_classify_sell_protection(orders):
         'stopPrice': max(stop_prices) if stop_prices else None,
         'targetPrice': min(target_prices) if target_prices else None,
         'stopQty': max([qty_value(order) for order in stop_orders] or [0]),
+        'persistentStopQty': sum(max(0.0, qty_value(order) - (_pa_safe_float(order.get('filled_qty'), 0) or 0))
+                                 for order in stop_orders if str(order.get('time_in_force') or '').lower() == 'gtc'
+                                 and str(order.get('status') or '').lower() in ('new', 'accepted', 'partially_filled')
+                                 and str(order.get('type') or '').lower() == 'stop'),
         'targetQty': max([qty_value(order) for order in target_orders] or [0]),
         'stopOrderIds': [order.get('id') for order in stop_orders if order.get('id')],
         'targetOrderIds': [order.get('id') for order in target_orders if order.get('id')],
@@ -48889,6 +49389,7 @@ def _pa_classify_sell_protection(orders):
             'id': order.get('id'),
             'type': order.get('type'),
             'status': order.get('status'),
+            'timeInForce': order.get('time_in_force'),
             'qty': _pa_safe_float(order.get('qty'), None),
             'limitPrice': _pa_safe_float(order.get('limit_price'), None),
             'stopPrice': _pa_safe_float(order.get('stop_price'), None),
@@ -48993,6 +49494,8 @@ def _pa_compute_exit_indicators(bars, snapshot=None, now_et=None):
             continue
         cleaned.append({
             'time': bar.get('t') or bar.get('timestamp') or bar.get('date'),
+            'date': bar.get('t') or bar.get('timestamp') or bar.get('date'),
+            'open': _inst_bar_value(bar, 'o', 'open') or close,
             'close': close,
             'high': _inst_bar_value(bar, 'h', 'high') or close,
             'low': _inst_bar_value(bar, 'l', 'low') or close,
@@ -49080,7 +49583,107 @@ def _pa_compute_exit_indicators(bars, snapshot=None, now_et=None):
         'sessionHigh': snapshot.get('dayHigh'),
         'sessionLow': snapshot.get('dayLow'),
         'historyDays': len(completed),
+        'completedBars': completed,
         'excludedIncompleteDailyBar': len(completed) != len(cleaned),
+    }
+
+
+def _pa_swing_effective_stop(persisted_plan, protection):
+    """Broker evidence overrides an earlier desired but unconfirmed ratchet."""
+    broker_stop = _pa_safe_float(protection.get('stopPrice'), None)
+    return broker_stop if broker_stop and broker_stop > 0 else persisted_plan.get('currentStop')
+
+
+def _pa_ratchet_swing_stop(order_id, symbol, desired_stop, get_order, patch_order):
+    """A PATCH acknowledgement is not proof of active replacement protection."""
+    def remaining(row):
+        if not isinstance(row, dict) or str(row.get('symbol') or '').upper() != symbol or row.get('side') != 'sell' or row.get('type') != 'stop':
+            return None
+        if row.get('time_in_force') != 'gtc' or row.get('status') not in ('new', 'accepted', 'partially_filled'):
+            return None
+        qty = _pa_safe_float(row.get('qty'), None)
+        filled = _pa_safe_float(row.get('filled_qty'), None)
+        return qty - filled if qty is not None and filled is not None and qty > filled >= 0 else None
+    receipt = None
+    try:
+        before = get_order(order_id)
+        before_qty = remaining(before)
+        if before_qty is None or str(before.get('id')) != str(order_id):
+            return {'ok': False, 'reason': 'active_gtc_stop_unverified'}
+        if _pa_safe_float(before.get('stop_price'), None) == desired_stop:
+            return {'ok': True, 'order': before, 'stopPrice': desired_stop}
+        receipt = patch_order(order_id, desired_stop)
+        if not isinstance(receipt, dict) or not receipt.get('id'):
+            return {'ok': False, 'reason': 'stop_replacement_not_acknowledged'}
+        actual = get_order(str(receipt['id']))
+        actual_qty = remaining(actual)
+        actual_stop = _pa_safe_float(actual.get('stop_price'), None) if isinstance(actual, dict) else None
+        if (actual_qty is None or abs(actual_qty - before_qty) > 1e-8
+                or str(actual.get('id')) != str(receipt['id']) or actual_stop is None
+                or abs(actual_stop - desired_stop) > 1e-8):
+            return {'ok': False, 'reason': 'replacement_stop_pending_reconciliation', 'receipt': receipt}
+        return {'ok': True, 'order': actual, 'stopPrice': actual_stop}
+    except Exception:
+        return {'ok': False, 'reason': 'stop_replacement_unavailable', 'receipt': receipt}
+
+
+def _pa_build_swing_exit_plan(position, persisted_plan, indicators, account_equity, now):
+    """Use the same completed-session exit rules as fixed-v1 research."""
+    from equity_strategy import position_exit_decision, normalize_daily_bars
+    from equity_risk import position_anchor_review, timestamp
+    avg_entry = _pa_safe_float(persisted_plan.get('entryFillPrice'), 0) or 0
+    current_price = _pa_safe_float(position.get('current_price'), 0) or 0
+    qty = abs(_pa_safe_float(position.get('qty'), 0) or 0)
+    initial_risk = _pa_safe_float(persisted_plan.get('initialRiskPerShare'), 0) or 0
+    prior_stop = _pa_safe_float(persisted_plan.get('currentStop'), 0) or 0
+    market_value = current_price * qty
+    review = position_anchor_review(position, persisted_plan)
+    bars, bar_errors = normalize_daily_bars(indicators.get('completedBars') or [], now)
+    quote_age = _pa_safe_float(indicators.get('quoteAgeSeconds'), None)
+    bid = _pa_safe_float(indicators.get('bid'), 0) or 0
+    if not persisted_plan.get('fillAnchorVerified') or not persisted_plan.get('entrySession'):
+        review = review or 'Verified entry fill anchors are required before swing exit changes'
+    if bar_errors or len(bars) < 15:
+        review = review or 'Completed daily history is unavailable for swing exit verification'
+    entry_timestamp = timestamp(persisted_plan.get('entryTimestamp') or persisted_plan.get('filledAt'))
+    if bars and entry_timestamp and timestamp(bars[0]['availableAt']) > entry_timestamp:
+        review = review or 'Daily history does not cover the entry session'
+    if bid <= 0 or quote_age is None or quote_age > 300:
+        review = review or 'A fresh bid is required before changing swing protection'
+    decision = position_exit_decision({
+        'entryPrice': avg_entry, 'initialRiskPerShare': initial_risk,
+        'stopPrice': prior_stop, 'entrySession': persisted_plan.get('entrySession'),
+        'entryTimestamp': persisted_plan.get('entryTimestamp') or persisted_plan.get('filledAt'),
+        'trailActive': bool(persisted_plan.get('trailActive')),
+    }, bars, current_bid=bid if not review else None)
+    if decision.get('blockers'):
+        review = review or '; '.join(decision['blockers'])
+    stop = prior_stop if review else max(prior_stop, _pa_safe_float(decision.get('stopPrice'), prior_stop))
+    stop = _entry_round_price(stop, 'down')
+    held_bars = [row for row in bars if entry_timestamp and timestamp(row['availableAt']) > entry_timestamp]
+    high_close = max([avg_entry] + [row['close'] for row in held_bars])
+    action = 'manual_review' if review else ('emergency_exit' if decision.get('reason') == 'STOP' else 'time_exit' if decision.get('reason') == 'TIME_STOP' else 'hold')
+    return {
+        'version': 4, 'equitySwingV1': True, 'strategyVersion': 'equity_fixed_v1',
+        'state': 'RECONCILIATION_REQUIRED' if review else 'TRAILING' if decision.get('trailActive') else 'INITIAL_RISK',
+        'action': action, 'reason': review or decision.get('reason'),
+        'thesisStatus': 'review' if review else 'intact',
+        'initialStop': persisted_plan.get('initialStop'), 'currentStop': stop,
+        'target1': None, 'target2': None, 'target1ReducePct': 0,
+        'partialExitsAllowed': False, 'target1Completed': False,
+        'targetPolicy': 'whole_exit_only', 'stopPolicy': 'ratchet_only',
+        'initialRiskPerShare': initial_risk,
+        'rMultiple': (current_price - avg_entry) / initial_risk if initial_risk else None,
+        'mfeR': (high_close - avg_entry) / initial_risk if initial_risk else None,
+        'highWaterMark': high_close, 'trailActive': bool(decision.get('trailActive')) if not review else bool(persisted_plan.get('trailActive')),
+        'riskRemainingDollars': round(max(0.0, current_price - stop) * qty, 2),
+        'lockedProfitDollars': round(max(0.0, stop - avg_entry) * qty, 2),
+        'marketValue': market_value, 'allocationPct': market_value / account_equity * 100.0 if account_equity > 0 else None,
+        'daysHeld': decision.get('sessionsHeld'), 'sessionsHeld': decision.get('sessionsHeld'),
+        'timeStopDays': 20, 'timeStopSessions': 20, 'isLeveraged': False,
+        'trailStartsAtR': 1.0, 'atrStopMultiple': 2.0,
+        'dataQuality': 'PARTIAL' if review else 'GOOD',
+        'protectionMutationBlocked': bool(review), 'evaluatedAt': _pa_utc_iso(now),
     }
 
 
@@ -49090,6 +49693,8 @@ def _pa_build_dynamic_exit_plan(position, persisted_plan, initial_stop, target_1
                                 event_context=None):
     """Build a ratchet-only long exit plan; prices never loosen between scans."""
     now = now or datetime.now(timezone.utc)
+    if persisted_plan.get('equitySwingV1') is True:
+        return _pa_build_swing_exit_plan(position, persisted_plan, indicators, account_equity, now)
     policy = _pa_exit_policy(risk_profile, time_horizon)
     avg_entry = _pa_safe_float(position.get('avg_entry_price'), 0) or 0
     qty = abs(_pa_safe_float(position.get('qty'), 0) or 0)
@@ -49105,7 +49710,6 @@ def _pa_build_dynamic_exit_plan(position, persisted_plan, initial_stop, target_1
     high_water = max(
         current_price,
         _pa_safe_float(persisted_plan.get('highWaterMark'), 0) or 0,
-        _pa_safe_float(indicators.get('sessionHigh'), 0) or 0,
     )
     allocation_pct = market_value / account_equity * 100.0 if account_equity > 0 else None
     r_multiple = ((current_price - avg_entry) / initial_risk) if initial_risk and avg_entry > 0 else None
@@ -49122,16 +49726,10 @@ def _pa_build_dynamic_exit_plan(position, persisted_plan, initial_stop, target_1
         state = 'TRAILING'
     current_stop = max(value for value in (initial_stop, previous_stop, candidate_stop) if value is not None)
     current_stop = _entry_round_price(current_stop, 'down')
-    created_at = persisted_plan.get('filledAt') or persisted_plan.get('createdAt')
-    days_held = None
-    if created_at:
-        try:
-            opened_at = dateutil.parser.isoparse(str(created_at))
-            if opened_at.tzinfo is None:
-                opened_at = opened_at.replace(tzinfo=timezone.utc)
-            days_held = max(0, (now - opened_at.astimezone(timezone.utc)).days)
-        except Exception:
-            days_held = None
+    from equity_risk import completed_sessions_since
+    days_held = completed_sessions_since(
+        persisted_plan.get('filledAt'), indicators.get('completedBars') or [], now,
+    )
     trend_invalid = bool(
         indicators.get('trendState') == 'downtrend'
         and _pa_safe_float(indicators.get('rsi14'), 50) < 45
@@ -49757,7 +50355,7 @@ def _pa_exit_scan_headless_legacy(uid, entry_plans, mode, dry_run=False, risk_pr
 def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='medium',
                            time_horizon='mid', trade_mode='paper', run_id='',
                            ai_review=True, suppress_discord=False,
-                           deadline_seconds=None):
+                           deadline_seconds=None, protection_only=False):
     """Unified position lifecycle and exit engine.
 
     The broker owns order state, the persisted entry packet owns initial risk,
@@ -49841,6 +50439,7 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
     account_last_equity = 0.0
     account_day_pl_pct = None
     account_trading_blocked = False
+    account_flags_verified = False
     broker_errors = []
     if api_key and api_secret:
         try:
@@ -49866,6 +50465,7 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
                     if account_last_equity > 0 else None
                 )
                 account_trading_blocked = bool(account.get('trading_blocked') or account.get('account_blocked'))
+                account_flags_verified = all(account.get(flag) is False for flag in ('trading_blocked', 'account_blocked', 'trade_suspended_by_user'))
             else:
                 broker_errors.append('account_http_%s' % response.status_code)
         except Exception as exc:
@@ -49890,6 +50490,8 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
         for plan in (entry_plans or []) if isinstance(plan, dict) and plan.get('symbol')
     }
     automation_cfg = _pa_get_config(uid) or {}
+    if _equity_swing_enabled(automation_cfg) and not account_flags_verified:
+        account_trading_blocked = True
     order_authority = _pa_order_authority(
         automation_cfg,
         mode=mode,
@@ -49999,6 +50601,12 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
             response, _ = _pa_call_endpoint(
                 uid, '/api/ai/execution/order', ai_execution_order, body,
             )
+            if isinstance(response, dict) and response.get('success') and isinstance(response.get('order'), dict):
+                managed = _pa_get_managed_position_plan(uid, normalized_trade_mode, symbol) or {}
+                _equity_record_broker_receipt(
+                    uid, normalized_trade_mode, managed.get('brokerAccountId'), response['order'],
+                    entry_order_id=managed.get('entryOrderId'),
+                )
             return (
                 response if isinstance(response, dict)
                 else {'success': False, 'status': 'api_error'}
@@ -50035,6 +50643,8 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
         position_for_plan['current_price'] = current_price
         position_for_plan.setdefault('market_value', current_price * qty)
         persisted_plan = _pa_get_managed_position_plan(uid, normalized_trade_mode, symbol) or {}
+        if protection_only and not persisted_plan.get('equitySwingV1'):
+            continue
         research_plan = current_plan_by_symbol.get(symbol) or {}
         plan = persisted_plan or research_plan
         event_context = _pa_normalize_exit_event_context({
@@ -50122,11 +50732,108 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
             )
             persisted_plan = _pa_get_managed_position_plan(uid, normalized_trade_mode, symbol) or reconstructed
 
+        if persisted_plan.get('equitySwingV1'):
+            from equity_risk import protection_reconciliation_blockers
+            persistent_coverage = (_pa_safe_float(protection.get('persistentStopQty'), 0) or 0) >= qty - coverage_tolerance
+            protection['hasPersistentStopCoverage'] = persistent_coverage
+            if not persistent_coverage:
+                protection.update({'hasFullStopCoverage': False, 'isFullyProtective': False,
+                                   'protectionStatus': 'persistent_stop_required'})
+                repair_reason = 'Verified GTC stop coverage is required for an overnight swing holding'
+                repair_order = None
+                try:
+                    from equity_runtime import read_order_attribution
+                    account_id = persisted_plan.get('brokerAccountId')
+                    _, registry = read_order_attribution(_equity_operations_store(), uid, account_id, normalized_trade_mode)
+                    receipt = registry['orders'].get(str(persisted_plan.get('entryOrderId'))) or {}
+                    terminal_qty = _pa_safe_float(receipt.get('entryTerminalFilledQty'), 0) or 0
+                    original_stop = _pa_safe_float(receipt.get('originalStopPrice'), 0) or 0
+                    parent_verified = bool(receipt.get('entryReconciledTerminal') and receipt.get('symbol') == symbol
+                                           and terminal_qty >= qty - coverage_tolerance and qty.is_integer()
+                                           and original_stop > 0 and not persisted_plan.get('corporateActionReviewRequired'))
+                    # A canceled partial OTO can lose its child. Only after
+                    # broker-confirmed parent termination and a complete empty
+                    # sell snapshot may we attach a replacement for actual shares.
+                    snapshot_verified = bool(api_key and api_secret and not broker_errors and len(open_orders) < 500)
+                    if can_submit and parent_verified and snapshot_verified and not protection.get('orderCount'):
+                        identity = hashlib.sha256((str(persisted_plan.get('entryOrderId')) + ':' + str(qty)).encode()).hexdigest()[:24]
+                        repair_order = submit_exit_order(symbol, qty, {
+                            'type': 'stop', 'stop_price': original_stop, 'time_in_force': 'gtc',
+                            'executionSource': 'exit_scan_stop_protection',
+                            'client_order_id': 'alphalab-gtc-repair-' + identity,
+                        })
+                        if repair_order.get('success'):
+                            _pa_update_managed_position(uid, normalized_trade_mode, symbol,
+                                protectionOrderId=(repair_order.get('order') or {}).get('id'),
+                                protectionType='stop', protectionStatus='pending_gtc_verification')
+                            repair_reason += '; GTC stop submitted, awaiting fresh broker coverage verification'
+                        else:
+                            repair_reason += '; GTC stop repair remains unresolved'
+                    elif protection.get('orderCount'):
+                        # Never remove an active DAY stop to replace an OTO
+                        # child. Replacement support is broker-specific; keep
+                        # current coverage and require explicit reconciliation.
+                        repair_reason += '; existing sell orders retained for reconciliation'
+                except Exception:
+                    repair_reason += '; authenticated parent-fill evidence is unavailable'
+                results.append({'symbol': symbol, 'qty': qty, 'avgEntry': avg_entry, 'currentPrice': current_price,
+                                'action': 'protection_required', 'triggerAction': 'manual_review', 'exitDecision': 'manual_review',
+                                'status': 'unprotected', 'reason': repair_reason, 'protection': protection,
+                                'repairOrderId': ((repair_order or {}).get('order') or {}).get('id'),
+                                'dataQuality': 'RECONCILIATION_REQUIRED'})
+                continue
+            if protection_only:
+                results.append({'symbol': symbol, 'qty': qty, 'action': 'protected_hold', 'triggerAction': 'hold',
+                                'status': 'protected', 'protection': protection,
+                                'reason': 'Verified GTC coverage retained; only protection maintenance is enabled'})
+                continue
+            protection_blockers = protection_reconciliation_blockers(
+                position_for_plan, orders_by_symbol.get(symbol, []),
+                snapshot_complete=bool(api_key and api_secret and not broker_errors and len(open_orders) < 500),
+            )
+            if protection_blockers:
+                protection.update({'hasFullStopCoverage': False, 'isFullyProtective': False,
+                                   'protectionStatus': 'pending_reconciliation'})
+                results.append({
+                    'symbol': symbol, 'qty': qty, 'avgEntry': avg_entry, 'currentPrice': current_price,
+                    'action': 'manual_review', 'triggerAction': 'manual_review', 'exitDecision': 'manual_review',
+                    'status': 'review', 'reason': '; '.join(protection_blockers),
+                    'protection': protection, 'dataQuality': 'RECONCILIATION_REQUIRED',
+                })
+                _pa_update_managed_position(
+                    uid, normalized_trade_mode, symbol,
+                    lastExitAction='manual_review', lastExitReason='; '.join(protection_blockers),
+                    protectionStatus='pending_reconciliation',
+                )
+                continue
+
         if protection.get('stopPrice'):
             broker_stop = _pa_safe_float(protection.get('stopPrice'), None)
             prior_stop = _pa_safe_float(persisted_plan.get('currentStop'), None)
-            if broker_stop and (not prior_stop or broker_stop > prior_stop):
+            if broker_stop and (persisted_plan.get('equitySwingV1') or not prior_stop or broker_stop > prior_stop):
                 persisted_plan = {**persisted_plan, 'currentStop': broker_stop}
+
+        from equity_risk import position_anchor_review
+        anchor_review = position_anchor_review(position_for_plan, persisted_plan)
+        if anchor_review:
+            # Existing broker protection remains untouched. An inferred split
+            # factor must never convert an obsolete stop into an emergency sale.
+            _pa_update_managed_position(
+                uid, normalized_trade_mode, symbol,
+                corporateActionReviewRequired=bool(persisted_plan.get('corporateActionReviewRequired')) or not bool(persisted_plan.get('entryValidityReviewRequired') or persisted_plan.get('entryGeometryReviewRequired')),
+                lastExitAction='manual_review', lastExitReason=anchor_review,
+                brokerObservedStop=protection.get('stopPrice'),
+                brokerObservedPositionQty=qty, brokerObservedEntryPrice=avg_entry,
+            )
+            results.append({
+                'symbol': symbol, 'qty': qty, 'avgEntry': avg_entry,
+                'currentPrice': current_price, 'triggerAction': 'manual_review',
+                'action': 'manual_review', 'exitDecision': 'manual_review',
+                'status': 'review', 'reason': anchor_review, 'protection': protection,
+                'dataQuality': 'RECONCILIATION_REQUIRED',
+                'corporateActionReviewRequired': True,
+            })
+            continue
 
         # Reconcile a first-target reduction from durable intent plus the broker
         # position quantity. This is deliberately independent of an in-memory
@@ -50290,13 +50997,16 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
             uid, normalized_trade_mode, symbol,
             status='monitoring',
             initialStop=dynamic_plan.get('initialStop'),
-            currentStop=dynamic_plan.get('currentStop'),
+            currentStop=(_pa_swing_effective_stop(persisted_plan, protection)
+                         if persisted_plan.get('equitySwingV1') else dynamic_plan.get('currentStop')),
+            desiredStop=dynamic_plan.get('currentStop') if persisted_plan.get('equitySwingV1') else None,
             takeProfit1=dynamic_plan.get('target1'),
             takeProfit2=dynamic_plan.get('target2'),
             initialRiskPerShare=dynamic_plan.get('initialRiskPerShare'),
             highWaterMark=dynamic_plan.get('highWaterMark'),
             exitState=dynamic_plan.get('state'),
-            exitPolicyVersion=3,
+            exitPolicyVersion=dynamic_plan.get('version', 3),
+            trailActive=dynamic_plan.get('trailActive', persisted_plan.get('trailActive', False)),
             planSource=source,
             lastExitAction=trigger_action,
             lastExitReason=dynamic_plan.get('reason'),
@@ -50311,6 +51021,11 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
             eventTags=event_context.get('eventTags') or [],
             eventObservedAt=event_context.get('observedAt'),
         )
+
+        if dynamic_plan.get('protectionMutationBlocked'):
+            signal.update({'status': 'review', 'action': 'manual_review', 'exitDecision': 'manual_review'})
+            results.append(signal)
+            continue
 
         if trigger_action in ('emergency_exit', 'target2_reached', 'time_exit'):
             terminal_is_mandatory = bool(
@@ -50390,7 +51105,7 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
                     else:
                         signal['reason'] += '; broker submission failed: %s' % str(order_response.get('message') or order_response.get('code') or 'unknown')[:160]
             else:
-                signal['status'] = 'exit_ready' if normalized_trade_mode == 'paper' or mode != 'ai' else 'blocked'
+                signal['status'] = 'exit_ready' if normalized_trade_mode == 'paper' or (mode != 'ai' and not _equity_swing_enabled(automation_cfg)) else 'blocked'
                 signal['reason'] += '; automatic order submission is not authorized'
 
         elif trigger_action == 'target_reached':
@@ -50590,22 +51305,66 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
                 if (
                     can_submit and protection.get('managedByAlphaLab')
                     and not protection.get('hasTrailingStop') and desired_stop and broker_stop
-                    and desired_stop >= broker_stop + _entry_price_tick(desired_stop)
+                    and (desired_stop >= broker_stop + _entry_price_tick(desired_stop)
+                         or (persisted_plan.get('equitySwingV1') and persisted_plan.get('stopRatchetReviewRequired')
+                             and abs(desired_stop - broker_stop) < 1e-8))
                 ):
-                    patch_failures = []
+                    patch_failures = [] if protection.get('stopOrderIds') else ['missing_stop_order_id']
                     for stop_order_id in protection.get('stopOrderIds') or []:
                         try:
+                            if persisted_plan.get('equitySwingV1'):
+                                def read_stop(order_id):
+                                    reply = requests.get(f'{base_url}/v2/orders/{order_id}', headers=headers, timeout=8)
+                                    if reply.status_code != 200:
+                                        raise ValueError('Stop reconciliation unavailable')
+                                    return reply.json()
+                                def replace_stop(order_id, price):
+                                    reply = requests.patch(f'{base_url}/v2/orders/{order_id}', headers=headers,
+                                                           json={'stop_price': str(price)}, timeout=10)
+                                    if reply.status_code not in (200, 201):
+                                        raise ValueError('Stop replacement rejected')
+                                    return reply.json()
+                                ratchet = _pa_ratchet_swing_stop(stop_order_id, symbol, desired_stop, read_stop, replace_stop)
+                                if ratchet.get('receipt'):
+                                    # Preserve the broker replacement chain even while
+                                    # activation is pending; this does not clear review.
+                                    _equity_record_broker_receipt(uid, normalized_trade_mode,
+                                        persisted_plan.get('brokerAccountId'), ratchet['receipt'],
+                                        entry_order_id=persisted_plan.get('entryOrderId'))
+                                if not ratchet.get('ok') or not _equity_record_broker_receipt(
+                                        uid, normalized_trade_mode, persisted_plan.get('brokerAccountId'), ratchet.get('order'),
+                                        entry_order_id=persisted_plan.get('entryOrderId')):
+                                    patch_failures.append(str(stop_order_id))
+                                continue
                             response = requests.patch(
                                 f'{base_url}/v2/orders/{stop_order_id}', headers=headers,
                                 json={'stop_price': str(desired_stop)}, timeout=10,
                             )
                             if response.status_code not in (200, 201):
                                 patch_failures.append(str(stop_order_id))
+                            else:
+                                try:
+                                    replacement_receipt = response.json()
+                                except Exception:
+                                    replacement_receipt = None
+                                _equity_record_broker_receipt(
+                                    uid, normalized_trade_mode, persisted_plan.get('brokerAccountId'), replacement_receipt,
+                                    entry_order_id=persisted_plan.get('entryOrderId'),
+                                )
                         except Exception:
                             patch_failures.append(str(stop_order_id))
                     if patch_failures:
-                        signal['status'] = 'review'
+                        signal['status'] = 'blocked' if persisted_plan.get('equitySwingV1') else 'review'
                         signal['reason'] += '; broker stop ratchet failed for %s' % ', '.join(patch_failures)
+                        if persisted_plan.get('equitySwingV1'):
+                            signal['action'] = 'stop_ratchet_reconciliation_required'
+                            signal.update(stopPrice=broker_stop, desiredStop=desired_stop,
+                                          exitDecision='manual_review')
+                            _pa_update_managed_position(uid, normalized_trade_mode, symbol,
+                                currentStop=broker_stop, brokerStopPrice=broker_stop,
+                                desiredStop=desired_stop, stopRatchetReviewRequired=True,
+                                exitState='STOP_RATCHET_RECONCILIATION_REQUIRED',
+                                protectionStatus='pending_reconciliation')
                     else:
                         signal['action'] = 'ratchet_stop'
                         signal['reason'] = 'Broker stop ratcheted from %.2f to %.2f; target remains fixed' % (
@@ -50614,6 +51373,7 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
                         _pa_update_managed_position(
                             uid, normalized_trade_mode, symbol,
                             status='protected', brokerStopPrice=desired_stop,
+                            currentStop=desired_stop, stopRatchetReviewRequired=False,
                         )
             elif protection.get('hasStop') and protection.get('hasExternalOrders'):
                 signal['action'] = 'review_open_orders'
@@ -50686,6 +51446,8 @@ def _pa_exit_scan_headless(uid, entry_plans, mode, dry_run=False, risk_profile='
         enabled=(
             ai_review
             and str(mode).lower() in ('ai', 'hybrid')
+            and not protection_only
+            and not _equity_swing_enabled(automation_cfg)
             and not final_pause
         ),
     )
@@ -50744,7 +51506,11 @@ def _pa_maybe_start_position_guard(uid, config, now_et, mode, risk_profile,
     a user, while this lightweight source intentionally does not consume the
     global research-scanner capacity slot.
     """
-    if not market_open:
+    equity_expiry_guard = bool(
+        config.get('equity_execution_mode') == 'broker'
+        or config.get('equity_broker_monitoring_required') is True
+    )
+    if not market_open and not equity_expiry_guard:
         return False
     if not _pa_try_reserve_user_run(uid, 'position_guard'):
         return False
@@ -50772,6 +51538,28 @@ def _pa_maybe_start_position_guard(uid, config, now_et, mode, risk_profile,
         summary = None
         error = None
         try:
+            if equity_expiry_guard:
+                # v1 broker promotion is live-only. Switching the reference
+                # account shown in the UI must not strand live GTC parents.
+                expiry_mode = 'real' if config.get('equity_broker_monitoring_required') is True else trade_mode
+                expiry = _equity_reconcile_entry_expiry(uid, expiry_mode)
+                if expiry.get('quarantinedOrderIds') and (not market_open or expiry_mode != trade_mode):
+                    # A canceled partial OTO may lose its held child. Repair
+                    # the original account before the closed-session return;
+                    # this mode cannot route ordinary market exits or ratchets.
+                    quarantine_lifecycle = _pa_reconcile_order_lifecycle(uid, expiry_mode, notify=False)
+                    quarantine_protection = _pa_exit_scan_headless(
+                        uid, [], mode, dry_run=False, risk_profile=risk_profile,
+                        time_horizon=time_horizon, trade_mode=expiry_mode, run_id=guard_id,
+                        ai_review=False, suppress_discord=True, protection_only=True,
+                    )
+                    summary = {'entryExpiry': expiry, 'quarantineProtection': quarantine_protection,
+                               'orderLifecycle': quarantine_lifecycle}
+                if not market_open:
+                    summary = summary or {'entryExpiry': expiry}
+                    if not expiry.get('ok'):
+                        raise RuntimeError('equity_entry_expiry_reconciliation_required')
+                    return
             lifecycle = _pa_reconcile_order_lifecycle(uid, trade_mode, notify=True)
             summary = _pa_exit_scan_headless(
                 uid,
@@ -51333,6 +52121,177 @@ def _pa_save_pipeline_debug_dump(uid, run_id, trigger, mode, risk_profile, time_
     return dump
 
 
+def _equity_program_status(uid, protocol_key=None):
+    from equity_runtime import empty_program_status
+    from equity_research_service import EquityResearchService
+    from equity_shadow import read_shadow, public_shadow
+    config = _pa_get_config(uid) or {}
+    key = protocol_key or config.get('equity_protocol_key')
+    research = EquityResearchService(_equity_operations_store()).status(uid, key)
+    protocol = research.get('protocol') or {}
+    key = protocol.get('protocolKey') or key
+    shadow = read_shadow(_equity_operations_store(), uid, key) if key else {}
+    from equity_research import evaluate_admission
+    qualification = research.get('qualification') or {}
+    admission = evaluate_admission(research.get('result'), qualification)
+    # Routine status responses carry metrics/checks, not the full replay archive.
+    research = {k: v for k, v in research.items() if k != 'result'}
+    research['qualification'] = public_shadow(qualification) if qualification else None
+    result = {**empty_program_status(), 'active': _equity_swing_enabled(config),
+              'activeProtocolKey': config.get('equity_protocol_key'),
+              'protocol': protocol or None, 'protocolKey': key,
+              'research': research, 'shadow': public_shadow(shadow)}
+    if protocol:
+        result['blockers'] = list(admission.get('blockers') or [])
+    if shadow:
+        result.update({key: shadow[key] for key in ('businessStatus', 'blockers', 'dataVersion') if key in shadow})
+    result['forward'] = {'tradingSessions': admission.get('forwardSessions', 0),
+                         'completedTrades': admission.get('forwardClosedTrades', 0),
+                         'requiredSessions': 60, 'requiredTrades': 30,
+                         'qualificationStartedAt': (qualification.get('qualification') or {}).get('startedAt')}
+    if result['active'] and config.get('equity_execution_mode') == 'broker':
+        result['executionMode'] = 'broker'
+        authority = _pa_order_authority(config)
+        result['brokerOrdersAllowed'] = bool(admission.get('eligible') and authority.get('buyAuthorized'))
+    result['researchAdmission'] = admission
+    return result
+
+
+def _equity_run_pipeline(uid, config, mode, trade_mode, run_id, trigger, dry_run=False):
+    from equity_shadow import capture_cycle
+    from equity_program import equity_policy
+    started = time.time()
+    summary = {'errors': 0, 'orders_submitted': 0, 'scanned': 0,
+               'strategyPolicy': equity_policy(), 'strategyVersion': 'equity_fixed_v1',
+               'executionMode': 'shadow', 'businessStatus': 'research_blocked',
+               'dryRun': dry_run, 'trigger': trigger, 'startedAt': _pa_utc_iso(),
+               'blockers': [], 'steps': []}
+    context = {'market_results': [], 'fine_results': [], 'validation_results': [],
+               'admission_results': [], 'entry_plans': [], 'execution_results': [],
+               'exit_results': {}}
+    try:
+        if _pa_check_stop_requested(uid, expected_run_id=run_id):
+            summary.update(stopped=True, businessStatus='stopped')
+            return summary
+        _pa_update_active_run(uid, runId=run_id, status='running', startedAt=summary['startedAt'],
+                              expected_run_id=run_id, expected_statuses=('queued', 'running'),
+                              steps=_pa_initial_steps(), currentStep='market_scanner',
+                              progressPct=0, message='Fixed stock strategy: loading evidence')
+        if config.get('equity_execution_mode') == 'broker':
+            summary['executionMode'] = 'broker'
+            # Existing positions must be managed before archive/data reads.
+            # Those reads may fail or take time while this run owns the same
+            # user reservation as the independent Position Guard.
+            expiry = ({'ok': True, 'status': 'not_executed_dry_run'} if dry_run
+                      else _equity_reconcile_entry_expiry(uid, trade_mode))
+            summary['entryExpiry'] = expiry
+            _pa_reconcile_order_lifecycle(uid, trade_mode, notify=False)
+            context['exit_results'] = _pa_exit_scan_headless(
+                uid, [], mode, dry_run=dry_run, risk_profile='low', time_horizon='mid',
+                trade_mode=trade_mode, run_id=run_id, ai_review=False, suppress_discord=True,
+            )
+            if not expiry.get('ok'):
+                summary.update(businessStatus='risk_paused', blockers=expiry.get('blockers') or ['entry_expiry_reconciliation_required'])
+                return summary
+        status = _equity_program_status(uid, config.get('equity_protocol_key'))
+        protocol = status.get('protocol')
+        if not protocol:
+            summary['blockers'] = ['protocol_not_frozen']
+            return summary
+        market_read = _equity_read_client(uid, 'market_data')
+        broker_read = _equity_read_client(uid, 'paper' if trade_mode == 'paper' else 'live')
+        cycle = capture_cycle(_equity_operations_store(), uid, protocol, market_read, broker_read, dry_run=dry_run)
+        if not dry_run and status['researchAdmission'].get('historicalEligible'):
+            from equity_research_service import EquityResearchService
+            import hashlib
+            service = EquityResearchService(_equity_operations_store())
+            qualified = service.qualify(uid, protocol['protocolKey'])
+            if qualified:
+                root = os.environ.get('ALPHALAB_EQUITY_DATA_DIR') or os.path.join(os.path.dirname(__file__), '.equity-data')
+                audit_dir = os.path.join(root, hashlib.sha256(uid.encode()).hexdigest(), protocol['protocolKey'], 'forward-audit')
+                service.audit_forward(uid, protocol['protocolKey'], market_read, cache_dir=audit_dir, max_requests=10)
+            status = _equity_program_status(uid, protocol['protocolKey'])
+        summary.update(cycle)
+        summary['orders_submitted'] = 0
+        summary['scanned'] = len(cycle.get('signals') or [])
+        summary['researchAdmission'] = status['researchAdmission']
+        context['market_results'] = cycle.get('signals') or []
+        context['fine_results'] = cycle.get('signals') or []
+        context['validation_results'] = [status['researchAdmission']]
+        context['admission_results'] = [{'decision': 'SHADOW_ONLY', 'reasons': status['researchAdmission'].get('blockers', [])}]
+        context['execution_results'] = [{'action': 'SHADOW_OBSERVATION', 'brokerOrder': False}]
+        if config.get('equity_execution_mode') != 'broker':
+            context['exit_results'] = {'positions': (cycle.get('state') or {}).get('positions') or {}}
+        if config.get('equity_execution_mode') == 'broker':
+            from equity_broker_plan import prepare_plans
+            summary['executionMode'] = 'broker'
+            admission = _equity_program_status(uid, protocol['protocolKey'])['researchAdmission']
+            authority = _pa_order_authority(config, mode=mode, trade_mode=trade_mode)
+            context['execution_results'] = []
+            if not admission.get('eligible') or not authority.get('buyAuthorized'):
+                summary.update(businessStatus='research_blocked', blockers=admission.get('blockers', []) or [authority.get('code')])
+            else:
+                account = broker_read('/v2/account', {})
+                risk = _equity_account_risk_snapshot(uid, trade_mode, account, equity_policy())
+                summary['accountRisk'] = risk
+                if not risk.get('entry_allowed'):
+                    summary.update(businessStatus='risk_paused', blockers=risk.get('reasons', []))
+                else:
+                    positions = broker_read('/v2/positions', {})
+                    orders = broker_read('/v2/orders', {'status': 'open', 'nested': 'true', 'limit': 500})
+                    managed = {r['symbol']: _pa_get_managed_position_plan(uid, trade_mode, r['symbol']) or {} for r in positions}
+                    quote_data = market_read('/v2/stocks/quotes/latest', {'symbols': ','.join(protocol['symbols']), 'feed': 'iex'})
+                    policy = _apply_account_hard_risk_limits(_strategy_policy('low', 'mid', mode, False, True), uid)
+                    plans, rejected = prepare_plans(protocol, policy, cycle.get('signals', []), quote_data.get('quotes') or {},
+                                                     account, positions, orders, managed, _pa_utc_iso())
+                    context['entry_plans'] = plans
+                    summary['entryRejections'] = rejected
+                    if not plans and rejected:
+                        summary['businessStatus'] = 'capital_blocked'
+                    for plan in plans:
+                        if _pa_check_stop_requested(uid, expected_run_id=run_id):
+                            summary.update(stopped=True, businessStatus='stopped')
+                            break
+                        if dry_run:
+                            context['execution_results'].append({'symbol': plan['symbol'], 'action': 'would_submit'})
+                            continue
+                        response, _ = _pa_call_endpoint(uid, '/api/entry-plan/execute', entry_plan_execute, {
+                            'symbol': plan['symbol'], 'planSnapshot': plan,
+                            'executionMode': 'real' if trade_mode == 'real' else 'paper',
+                            'isAutoExecute': True, 'suppressDiscord': True,
+                            'clientOrderId': 'eqv1-%s-%s' % (run_id[-20:], plan['symbol']),
+                        })
+                        context['execution_results'].append(response)
+                        if response.get('action') == 'ORDER_SUBMITTED':
+                            summary['orders_submitted'] += 1
+        labels = ['Completed SIP daily bars and recorded ETF universe', 'Frozen deterministic signal rules',
+                  'Research evidence and untouched holdout', 'Combined portfolio risk budget',
+                  'Whole-share limit intentions', 'Observed IEX quotes; shadow fills only',
+                  'Shared ATR, trailing and trading-session exits']
+        if summary.get('executionMode') == 'broker':
+            labels[5] = 'Broker execution results and durable order reconciliation'
+        for index, (stage, _) in enumerate(_PA_PIPELINE_STAGES, 1):
+            stage_status = 'completed'
+            label = labels[index - 1]
+            if index == 3 and not (summary.get('researchAdmission') or {}).get('eligible'):
+                stage_status, label = 'partial', 'Historical and forward admission remain incomplete; no profitability claim'
+            if index == 4 and summary.get('businessStatus') in ('capital_blocked', 'risk_paused'):
+                stage_status, label = 'partial', 'Portfolio entry budget is blocked; existing protection remains active'
+            _pa_active_run_step(uid, stage, index, 7, stage_status, label)
+    except Exception as exc:
+        summary.update(errors=1, businessStatus='failed', lastError=type(exc).__name__,
+                       blockers=['equity_cycle_failed:' + type(exc).__name__])
+    finally:
+        summary['finishedAt'] = _pa_utc_iso()
+        summary['durationSeconds'] = round(time.time() - started, 2)
+        _pa_update_active_run(uid, status='failed' if summary['errors'] else 'stopped' if summary.get('stopped') else 'completed',
+                              expected_run_id=run_id, expected_statuses=('queued', 'running'),
+                              progressPct=100, finishedAt=summary['finishedAt'],
+                              message=summary['businessStatus'], lastError=summary.get('lastError'))
+        _pa_save_pipeline_debug_dump(uid, run_id, trigger, mode, 'low', 'mid', trade_mode, summary, context)
+    return summary
+
+
 def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=False,
                      risk_profile='medium', time_horizon='mid', trade_mode='paper',
                      run_id=None, leverage_enabled=None):
@@ -51359,6 +52318,8 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
     started = time.time()
     _run_id = run_id or _pa_new_run_id('headless-scan')
     saved_config = _pa_get_config(uid) or {}
+    if _equity_swing_enabled(saved_config):
+        return _equity_run_pipeline(uid, saved_config, mode, trade_mode, _run_id, trigger, dry_run)
     if leverage_enabled is None:
         leverage_enabled = saved_config.get('leverage_enabled', False)
     leverage_enabled = bool(leverage_enabled)
@@ -52822,6 +53783,8 @@ def _pa_run_pipeline(uid, interval, mode, trigger='market_auto_run', dry_run=Fal
 def _pa_pipeline_outcome(summary):
     if not isinstance(summary, dict):
         return 'failed'
+    from equity_program import business_outcome
+    summary['businessStatus'] = business_outcome(summary)
     try:
         errors = int(summary.get('errors') or 0)
     except (TypeError, ValueError):
@@ -52832,6 +53795,8 @@ def _pa_pipeline_outcome(summary):
         return 'stopped'
     if summary.get('skipped'):
         return 'skipped'
+    if summary['businessStatus'] == 'ai_degraded':
+        return 'degraded'
     return 'success'
 
 
@@ -52878,6 +53843,7 @@ def _pa_execute_and_save(uid, config, interval, mode, trigger,
         config['last_backend_scan_error'] = (
             None
             if outcome in ('success', 'stopped', 'skipped')
+            else 'AI unavailable; deterministic results retained' if outcome == 'degraded'
             else ('%d errors' % summary['errors']) if summary else 'unknown error'
         )
         config['last_run_at'] = _run_started_at.isoformat()
@@ -52934,6 +53900,7 @@ def _pa_execute_and_save(uid, config, interval, mode, trigger,
         config['last_error'] = (
             None
             if outcome in ('success', 'stopped', 'skipped')
+            else 'AI unavailable; deterministic results retained' if outcome == 'degraded'
             else (('%d errors' % summary['errors']) if summary else 'unknown error')
         )
         if outcome == 'failed' and int(config.get('consecutive_failures') or 0) >= 3 and not disabled_during_run:
@@ -53430,12 +54397,22 @@ def _pa_validate_live_auto_authority(uid, config):
     start a pipeline run as a side effect.
     """
     config = config or {}
+    if _equity_swing_enabled(config):
+        try:
+            admission = _equity_program_status(uid, config.get('equity_protocol_key'))['researchAdmission']
+            if not admission.get('eligible'):
+                return {'reason': 'equity_research_not_admitted',
+                        'message': 'Stock v1 requires verified historical and frozen forward evidence before live authorization.',
+                        'blockers': admission.get('blockers', [])}
+        except Exception:
+            return {'reason': 'equity_evidence_unavailable', 'message': 'Research evidence could not be verified.'}
     trade_mode = config.get('trade_mode') or config.get('tradeMode') or 'paper'
     pipeline_mode = config.get('mode') or 'hybrid'
-    if trade_mode != 'real' or pipeline_mode != 'ai':
+    fixed_equity = _equity_swing_enabled(config)
+    if trade_mode != 'real' or (pipeline_mode != 'ai' and not fixed_equity):
         return {
             'reason': 'live_auto_requires_real_ai_mode',
-            'message': 'Live automation requires Real trade mode and Full AI pipeline mode.',
+            'message': 'Stock v1 live authorization requires Real trade mode.' if fixed_equity else 'Live automation requires Real trade mode and Full AI pipeline mode.',
         }
 
     live_config = resolve_alpaca_config_for_user(uid, 'real')
@@ -53466,6 +54443,7 @@ def _pa_validate_live_auto_authority(uid, config):
         account_check.status_code != 200
         or account_payload.get('trading_blocked')
         or account_payload.get('account_blocked')
+        or (fixed_equity and any(account_payload.get(flag) is not False for flag in ('trading_blocked', 'account_blocked', 'trade_suspended_by_user')))
     ):
         return {
             'reason': 'live_account_not_ready',
@@ -53515,6 +54493,14 @@ def pipeline_live_auto_authority():
         'live_auto_trading_enabled': config['live_auto_trading_enabled'],
         'updated_at': config['updated_at'],
     }
+    if _equity_swing_enabled(config):
+        authority_patch['equity_execution_mode'] = 'broker' if enabled_raw else 'shadow'
+        config['equity_execution_mode'] = authority_patch['equity_execution_mode']
+        if enabled_raw:
+            # Monitoring outlives authorization or program changes: an already
+            # submitted GTC parent still has its original entry expiry.
+            authority_patch['equity_broker_monitoring_required'] = True
+            config['equity_broker_monitoring_required'] = True
     if enabled_raw:
         authority_patch.update({
             'live_auto_authorized_method': config['live_auto_authorized_method'],
@@ -54039,6 +55025,13 @@ def _operations_entry_pause_block(user_id, trade_mode):
 
 def _operations_buy_submission_block(user_id, trade_mode):
     """Shared check used both at request validation and immediately pre-POST."""
+    config = _pa_get_config(user_id) or {}
+    if _equity_swing_enabled(config) and config.get('equity_execution_mode') != 'broker':
+        return {'reason': 'equity_shadow_only', 'code': 'equity_shadow_only',
+                'message': 'Stock swing v1 is collecting research and forward shadow evidence. Broker entries are not enabled.'}
+    if _equity_swing_enabled(config) and (not has_request_context() or request.path != '/api/entry-plan/execute'):
+        return {'reason': 'equity_entry_plan_required', 'code': 'equity_entry_plan_required',
+                'message': 'Stock v1 entries require the fixed-strategy protected Entry Plan route.'}
     return _operations_entry_pause_block(user_id, trade_mode)
 
 
@@ -54439,6 +55432,8 @@ def operations_artifacts():
         data = request.get_json(silent=True) or {}
         artifact_type = data.get('artifactType') or request.args.get('artifactType')
         artifact_key = data.get('artifactKey') or request.args.get('artifactKey')
+        if str(artifact_type or '').strip().lower().startswith('equity_'):
+            return jsonify({'success': False, 'message': 'Equity evidence is generated and maintained by the server.'}), 403
         if request.method == 'PUT':
             row = operations_store.put_artifact(
                 uid, artifact_type, artifact_key,
@@ -54522,6 +55517,125 @@ def pipeline_exit_scan():
         return jsonify({'success': not bool(summary.get('error')), **summary}), status_code
     finally:
         _pa_release_user_run(uid)
+
+
+@app.route('/api/ai-agent/equity/status', methods=['GET'])
+def equity_program_status():
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    try:
+        return jsonify({'success': True, **_equity_program_status(user['id'], request.args.get('protocolKey'))})
+    except Exception:
+        return jsonify({'success': False, 'businessStatus': 'data_insufficient',
+                        'blockers': ['equity_evidence_unavailable']}), 503
+
+
+@app.route('/api/ai-agent/equity/protocol', methods=['POST'])
+def equity_program_freeze():
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    data = request.get_json(silent=True) or {}
+    if set(data) - {'strategy'} or data.get('strategy', 'breakout20') not in ('breakout20', 'pullback20'):
+        return jsonify({'success': False, 'message': 'Only the two registered fixed strategies are supported.'}), 400
+    try:
+        from equity_research_service import EquityResearchService
+        protocol = EquityResearchService(_equity_operations_store()).freeze(user['id'], strategy=data.get('strategy', 'breakout20'))
+        return jsonify({'success': True, 'protocol': protocol})
+    except ValueError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 409
+    except Exception:
+        return jsonify({'success': False, 'message': 'Protocol could not be durably frozen.'}), 503
+
+
+@app.route('/api/ai-agent/equity/activate', methods=['POST'])
+def equity_program_activate():
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    data = request.get_json(silent=True) or {}
+    try:
+        status = _equity_program_status(user['id'], data.get('protocolKey'))
+        protocol = status.get('protocol') or {}
+        if not protocol.get('protocolKey') or protocol.get('protocolKey') != data.get('protocolKey'):
+            return jsonify({'success': False, 'message': 'Freeze a protocol first.'}), 409
+        if _pa_user_run_is_reserved(user['id']):
+            return jsonify({'success': False, 'message': 'Wait for the current pipeline run to finish.'}), 409
+        saved, reason = _pa_patch_config(user['id'], {
+            'strategy_program': 'equity_swing_v1', 'equity_protocol_key': protocol['protocolKey'],
+            'equity_execution_mode': 'shadow', 'risk_profile': 'low', 'time_horizon': 'mid',
+            'leverage_enabled': False, 'live_auto_trading_enabled': False,
+        })
+        if not saved:
+            return jsonify({'success': False, 'message': reason}), 503
+        return jsonify({'success': True, 'active': True, 'protocolKey': protocol['protocolKey'],
+                        'executionMode': 'shadow', 'brokerOrdersAllowed': False})
+    except Exception:
+        return jsonify({'success': False, 'message': 'Shadow activation failed; no broker authority changed.'}), 503
+
+
+@app.route('/api/ai-agent/equity/research/run', methods=['POST'])
+def equity_program_research_run():
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    uid = user['id']
+    data = request.get_json(silent=True) or {}
+    key = data.get('protocolKey')
+    try:
+        status = _equity_program_status(uid, key)
+        if not key or (status.get('protocol') or {}).get('protocolKey') != key:
+            return jsonify({'success': False, 'message': 'Unknown research protocol.'}), 404
+        market_read = _equity_read_client(uid, 'market_data')
+        config = _pa_get_config(uid) or {}
+        broker_read = _equity_read_client(uid, 'paper' if config.get('trade_mode', 'paper') == 'paper' else 'live')
+    except Exception:
+        return jsonify({'success': False, 'message': 'Research data or durable storage is unavailable.'}), 503
+    if not _pa_try_reserve_user_run(uid, 'equity_research'):
+        return jsonify({'success': False, 'message': 'A research or pipeline run is already active.'}), 409
+    def run():
+        from equity_research_service import EquityResearchService
+        import hashlib
+        try:
+            root = os.environ.get('ALPHALAB_EQUITY_DATA_DIR') or os.path.join(os.path.dirname(__file__), '.equity-data')
+            cache_dir = os.path.join(root, hashlib.sha256(uid.encode()).hexdigest(), key)
+            EquityResearchService(_equity_operations_store()).run(uid, key, market_read,
+                lambda start, end: broker_read('/v2/calendar', {'start': start, 'end': end}),
+                mode='full', cache_dir=cache_dir, max_requests=120)
+        except Exception as exc:
+            _pa_log_error('Equity research failed: %s' % type(exc).__name__)
+    try:
+        _pa_start_reserved_thread(uid, run, daemon=True, name='equity-research')
+        return jsonify({'success': True, 'status': 'queued', 'protocolKey': key}), 202
+    except Exception:
+        return jsonify({'success': False, 'message': 'Research worker could not start.'}), 503
+
+
+@app.route('/api/ai-agent/equity/account-evidence', methods=['GET'])
+def equity_account_evidence():
+    user = require_auth()
+    if not user:
+        return jsonify({'success': False, 'message': 'Authentication required'}), 401
+    mode = request.args.get('mode', 'paper')
+    if mode not in ('paper', 'real'):
+        return jsonify({'success': False, 'message': 'Invalid account mode.'}), 400
+    try:
+        reader = _equity_read_client(user['id'], 'paper' if mode == 'paper' else 'live')
+        account = reader('/v2/account')
+        evidence = _equity_collect_account_evidence(user['id'], mode, account, reader)
+        # The normalized ledger is private; only aggregate evidence is returned.
+        return jsonify({'success': True, 'mode': mode, 'strategyVersion': 'equity_fixed_v1',
+                        'accounting': evidence.get('accounting'), 'risk': evidence.get('risk'),
+                        'twrPct': evidence.get('twr_pct'), 'maxDrawdownPct': evidence.get('max_drawdown_pct'),
+                        'strategyAttributionKnown': (evidence.get('accounting') or {}).get('strategy_attribution_known'),
+                        'accountingAsOf': evidence.get('accounting_as_of'),
+                        'performanceSince': (evidence.get('marks') or [{}])[0].get('as_of'),
+                        'performanceThrough': (evidence.get('marks') or [{}])[-1].get('as_of'),
+                        'lastAttemptCoverage': evidence.get('last_attempt_coverage'),
+                        'coverage': evidence.get('coverage')})
+    except Exception:
+        return jsonify({'success': False, 'mode': mode, 'message': 'Account ledger evidence is unavailable.'}), 503
 
 
 @app.route('/api/ai-agent/pipeline-auto/status', methods=['GET'])
@@ -54872,13 +55986,22 @@ def pipeline_auto_status():
             config.get('time_horizon') or config.get('timeHorizon') or 'mid',
             config.get('mode') or 'hybrid',
             config.get('leverage_enabled', False),
+            _equity_swing_enabled(config),
         ),
         'effectiveLimits': _strategy_policy(
             config.get('risk_profile') or config.get('riskProfile') or 'medium',
             config.get('time_horizon') or config.get('timeHorizon') or 'mid',
             config.get('mode') or 'hybrid',
             config.get('leverage_enabled', False),
+            _equity_swing_enabled(config),
         )['effectiveLimits'],
+        'strategyProgram': config.get('strategy_program') or 'legacy',
+        'businessStatus': (config.get('last_backend_scan_summary') or {}).get('businessStatus', 'unknown'),
+        'blockingReasons': (config.get('last_backend_scan_summary') or {}).get('blockers', []),
+        'dataVersion': (config.get('last_backend_scan_summary') or {}).get('dataVersion'),
+        'strategyVersion': (config.get('last_backend_scan_summary') or {}).get('strategyVersion'),
+        'riskBudget': (config.get('last_backend_scan_summary') or {}).get('riskBudget'),
+        'researchAdmission': (config.get('last_backend_scan_summary') or {}).get('researchAdmission'),
         'contextSource': _pa_resolve_auto_run_context(uid, config)['contextSource'],
         'lastBackendRunAt': last_run_at,
         'lastBackendRunStatus': (
@@ -54888,7 +56011,7 @@ def pipeline_auto_status():
             )
             else persisted_backend_status
             if persisted_backend_status in (
-                'success', 'failed', 'stopped', 'skipped'
+                'success', 'failed', 'stopped', 'skipped', 'degraded'
             )
             else 'success'
             if last_decision in (

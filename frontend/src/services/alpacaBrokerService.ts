@@ -10,10 +10,10 @@ export interface AlpacaAccount {
   portfolioValue: number;
   longMarketValue: number;
   shortMarketValue: number;
-  patternDayTrader: boolean;
-  tradingBlocked: boolean;
-  transfersBlocked: boolean;
-  accountBlocked: boolean;
+  patternDayTrader?: boolean | null;
+  tradingBlocked?: boolean | null;
+  transfersBlocked?: boolean | null;
+  accountBlocked?: boolean | null;
   currency: string;
 }
 
@@ -77,10 +77,10 @@ class AlpacaBrokerService {
           portfolioValue: Number(accountData.portfolio_value || accountData.equity || 0),
           longMarketValue: Number(accountData.long_market_value || 0),
           shortMarketValue: Number(accountData.short_market_value || 0),
-          patternDayTrader: accountData.pattern_day_trader || false,
-          tradingBlocked: accountData.trading_blocked || false,
-          transfersBlocked: accountData.transfers_blocked || false,
-          accountBlocked: accountData.account_blocked || false,
+          patternDayTrader: typeof accountData.pattern_day_trader === 'boolean' ? accountData.pattern_day_trader : null,
+          tradingBlocked: typeof accountData.trading_blocked === 'boolean' ? accountData.trading_blocked : null,
+          transfersBlocked: typeof accountData.transfers_blocked === 'boolean' ? accountData.transfers_blocked : null,
+          accountBlocked: typeof accountData.account_blocked === 'boolean' ? accountData.account_blocked : null,
           currency: accountData.currency || 'USD'
         };
       } else {

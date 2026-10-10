@@ -56,7 +56,7 @@ export interface AccountData {
   short_market_value: number;
   initial_margin: number;
   maintenance_margin: number;
-  daytrade_count: number;
+  daytrade_count?: number | null;
   dataSource: string;
   paper_trading: boolean;
   timestamp: string;
